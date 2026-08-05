@@ -1,0 +1,66 @@
+{
+  "scenario": "canonical-current-behaviour",
+  "_comment": [
+    "ENV-116 expected-fail baseline.",
+    "",
+    "Each entry records an invariant that CURRENT PM behaviour violates, with the",
+    "exact violation codes and counts produced by the canonical scenario seeded in",
+    "scripts/workflow-invariants-db-test.ts. That scenario is the only consumer:",
+    "counts are deterministic there, unlike a live database.",
+    "",
+    "The suite is green only while observed == expected, code for code and count",
+    "for count. A new code is a regression; a code that stops firing is an",
+    "'unrecorded pass' and also fails. That second rule is deliberate: an Epic item",
+    "must delete its baseline entry in the SAME commit that makes the invariant",
+    "pass, so 'fixed' and 'recorded as fixed' can never drift apart.",
+    "",
+    "WFI-001 has no entry — it already holds. Do not add one to silence it."
+  ],
+  "entries": [
+    {
+      "invariantId": "WFI-002",
+      "epicItem": 2,
+      "codes": { "WFI-002/lease-not-renewed": 1 },
+      "note": "PmChannelRun has no lease column and nothing expires an accepted run; it sits accepted forever."
+    },
+    {
+      "invariantId": "WFI-003",
+      "epicItem": 2,
+      "codes": { "WFI-003/stale-active-run-without-successor": 1 },
+      "note": "An In Progress task still reads as 'being worked' off a stale accepted run that was never superseded."
+    },
+    {
+      "invariantId": "WFI-004",
+      "epicItem": 1,
+      "codes": { "WFI-004/continuation-action-settled-episode": 1 },
+      "note": "recordPmChannelRunWorkflowAction settles the run complete for every action, including continuation-required ones such as start."
+    },
+    {
+      "invariantId": "WFI-005",
+      "epicItem": 3,
+      "codes": { "WFI-005/missing-disposition": 2 },
+      "note": "No disposition is recorded anywhere, so every terminal run is missing one."
+    },
+    {
+      "invariantId": "WFI-006",
+      "epicItem": 3,
+      "codes": { "WFI-006/empty-final-response": 1 },
+      "note": "A turn that produces no durable response and takes no workflow action still settles complete instead of interrupted."
+    },
+    {
+      "invariantId": "WFI-007",
+      "epicItem": 6,
+      "codes": {
+        "WFI-007/blocker-missing-external-actor": 1,
+        "WFI-007/blocker-missing-requirement": 1
+      },
+      "note": "A general flag_blocker stores only free prose; neither the external actor nor the requirement is structured."
+    },
+    {
+      "invariantId": "WFI-008",
+      "epicItem": 4,
+      "codes": { "WFI-008/checklist-parsed-from-prose": 1 },
+      "note": "createActionPlanSubtasksForTask scrapes Markdown headings and list items; approved plans carry no structured steps."
+    }
+  ]
+}
