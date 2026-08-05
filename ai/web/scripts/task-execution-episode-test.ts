@@ -1314,6 +1314,116 @@ async function sectionB(): Promise<void> {
       0,
       "B12c: a seal past its retry budget is left alone (and stays queryable as a stall)",
     );
+
+    // ------------------------------------------------------------------
+    // B12d — the OTHER failing path is bounded too (fourth review round).
+    //
+    // B12c only ever exercised the no-run-row path, which counts its attempt
+    // inside `scheduleSuccessorEpisode` and commits it. The path where the
+    // claim succeeds and `armPmChannelContinuations` then THROWS was not
+    // bounded at all: the claim and its increment rolled back together with
+    // the failed arm, so the row re-matched `successorScheduledAt IS NULL AND
+    // attempts < MAX` completely unchanged and every later worker drain
+    // re-attempted and re-failed forever.
+    //
+    // The failure is injected in the database, not around it: a sqlite trigger
+    // that aborts any continuation insert for this run. So the real arm really
+    // does throw inside the real transaction.
+    // ------------------------------------------------------------------
+    const crashRun = await db.pmChannelRun.findFirstOrThrow({
+      where: { taskId: crashTask.id, agentSlug: AGENT_SLUG, messageId: crashMessageId },
+      orderBy: { createdAt: "desc" },
+      select: { id: true },
+    });
+    await db.pmChannelContinuation.deleteMany({
+      where: { taskId: crashTask.id, action: "episode_rollover" },
+    });
+    await db.taskExecutionEpisode.update({
+      where: { id: crashEpisode.id },
+      data: { successorScheduledAt: null, successorScheduleAttempts: 0 },
+    });
+    await db.$executeRawUnsafe(
+      `CREATE TRIGGER env121_arm_throws BEFORE INSERT ON "PmChannelContinuation"
+       FOR EACH ROW WHEN NEW."runId" = '${crashRun.id}'
+       BEGIN SELECT RAISE(ABORT, 'injected arm failure'); END;`,
+    );
+    try {
+      for (let pass = 1; pass <= 3; pass += 1) {
+        const swept = await sweepUnscheduledEpisodeSuccessors({ graceMs: 0 });
+        assertEqual(swept.scheduled, 0, `B12d: pass ${pass} arms nothing — the arm throws`);
+        const row = await db.taskExecutionEpisode.findFirstOrThrow({
+          where: { id: crashEpisode.id },
+          select: {
+            successorScheduleAttempts: true,
+            successorScheduledAt: true,
+            nextAction: true,
+          },
+        });
+        assertEqual(
+          row.successorScheduleAttempts,
+          pass,
+          `B12d: pass ${pass} counts its failed attempt OUTSIDE the rolled-back transaction`,
+        );
+        assertEqual(
+          row.successorScheduledAt,
+          null,
+          `B12d: pass ${pass} leaves the claim unclaimed — nothing was scheduled`,
+        );
+        assertEqual(
+          row.nextAction,
+          "crash-turn next action",
+          `B12d: pass ${pass} never touches the durable checkpoint`,
+        );
+      }
+      assertEqual(
+        await db.pmChannelContinuation.count({
+          where: { taskId: crashTask.id, action: "episode_rollover" },
+        }),
+        0,
+        "B12d: a throwing arm arms no continuation at all",
+      );
+      // Burn the remaining budget and prove the row stops being re-attempted.
+      for (let pass = 4; pass <= MAX_SUCCESSOR_SCHEDULE_ATTEMPTS; pass += 1) {
+        await sweepUnscheduledEpisodeSuccessors({ graceMs: 0 });
+      }
+      assertEqual(
+        (
+          await db.taskExecutionEpisode.findFirstOrThrow({
+            where: { id: crashEpisode.id },
+            select: { successorScheduleAttempts: true },
+          })
+        ).successorScheduleAttempts,
+        MAX_SUCCESSOR_SCHEDULE_ATTEMPTS,
+        "B12d: the throwing path reaches the retry ceiling",
+      );
+      await sweepUnscheduledEpisodeSuccessors({ graceMs: 0 });
+      assertEqual(
+        (
+          await db.taskExecutionEpisode.findFirstOrThrow({
+            where: { id: crashEpisode.id },
+            select: { successorScheduleAttempts: true },
+          })
+        ).successorScheduleAttempts,
+        MAX_SUCCESSOR_SCHEDULE_ATTEMPTS,
+        "B12d: past the ceiling the row is no longer re-attempted — the retry is bounded",
+      );
+    } finally {
+      await db.$executeRawUnsafe(`DROP TRIGGER IF EXISTS env121_arm_throws;`);
+    }
+    // With the injected failure gone, the same stranded row still recovers:
+    // bounding the retry must not have cost us the repair.
+    await db.taskExecutionEpisode.update({
+      where: { id: crashEpisode.id },
+      data: { successorScheduledAt: null, successorScheduleAttempts: 0 },
+    });
+    await sweepUnscheduledEpisodeSuccessors({ graceMs: 0 });
+    assertEqual(
+      await db.pmChannelContinuation.count({
+        where: { taskId: crashTask.id, action: "episode_rollover" },
+      }),
+      1,
+      "B12d: once the arm stops throwing, the sweep repairs the seal with exactly one continuation",
+    );
   } finally {
     await rm(sandbox, { recursive: true, force: true });
   }

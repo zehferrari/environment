@@ -231,8 +231,22 @@ export async function sweepUnscheduledEpisodeSuccessors(args: {
           messageId,
         }),
       )
-      .catch((err) => {
+      .catch(async (err) => {
         console.warn("[pm-channel] failed to schedule stranded episode successor", err);
+        // Count the failed attempt in its OWN transaction. The attempt counter
+        // is what bounds this retry, and the increment inside the scheduling
+        // transaction bounds nothing when that transaction throws: the claim
+        // AND its increment roll back together, the row re-matches
+        // `successorScheduledAt IS NULL AND attempts < MAX` completely
+        // unchanged, and every later worker drain re-attempts and re-fails
+        // forever. Only the no-run-row path commits its own increment, so only
+        // that path was ever actually bounded. Counting here — and only here —
+        // bounds the throwing path without double-counting the other.
+        await db
+          .$transaction((tx) =>
+            recordEpisodeSuccessorScheduleAttempt(tx, { episodeId: episode.id }),
+          )
+          .catch(() => undefined);
         return false;
       });
     if (ok) scheduled += 1;
