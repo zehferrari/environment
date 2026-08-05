@@ -127,16 +127,27 @@ async function dispatchContinuation(row: ContinuationRow): Promise<"dispatched" 
     return "superseded";
   }
 
+  // ENV-121: a rollover continuation is not a recovery from a turn that went
+  // quiet — it is the NEXT EPISODE of work that is proceeding normally. Saying
+  // "your turn ended without a terminal action" there would be false and would
+  // push the agent to re-audit finished work instead of continuing.
+  const isEpisodeRollover = row.action === "episode_rollover";
   const continuation = await sendTaskWorkflowNotification({
     taskId: task.id,
     targetUserId: task.assigneeId,
     actor: { id: agent.user.id, kind: "agent", username: row.agentSlug },
     reason: "monitor_recovery",
-    body: [
-      `Your execution turn for "${task.title}" recorded the workflow action \`${row.action}\`, which continues the episode rather than ending it, and then the turn ended without an episode-terminal action.`,
-      "The task is still In Progress and PM has scheduled this fresh execution turn for you. Nothing about the previous turn was lost: check the task's current status, checklist, and comments before repeating any step.",
-      "Continue the remaining implementation and verification now. Finish through ready_for_review, or record one precise external dependency with flag_blocker. Do not stop at another progress comment.",
-    ].join("\n"),
+    body: isEpisodeRollover
+      ? [
+          `Your previous execution episode on "${task.title}" spent its bounded budget and was closed. This is the next episode, in a fresh session.`,
+          "Everything the previous episode recorded is in the EXECUTION EPISODE BRIEF above: completed work, evidence, the open checklist, the next exact action and current risks. Start from the next exact action — do not re-derive work the brief already reports as done.",
+          "Full task history stays retrievable through the scoped grant URLs; a small brief is not missing context. Continue the implementation and finish through ready_for_review, or record one precise external dependency with flag_blocker.",
+        ].join("\n")
+      : [
+          `Your execution turn for "${task.title}" recorded the workflow action \`${row.action}\`, which continues the episode rather than ending it, and then the turn ended without an episode-terminal action.`,
+          "The task is still In Progress and PM has scheduled this fresh execution turn for you. Nothing about the previous turn was lost: check the task's current status, checklist, and comments before repeating any step.",
+          "Continue the remaining implementation and verification now. Finish through ready_for_review, or record one precise external dependency with flag_blocker. Do not stop at another progress comment.",
+        ].join("\n"),
   });
 
   if (!continuation) {

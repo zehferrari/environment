@@ -727,6 +727,22 @@ export async function runPmChannelWorkerDrain(
   // that took a continuation-required action and then ended gets its next
   // execution turn from here, so "start" can never leave a task silently
   // parked as a successful workflow.
+  // ENV-121 (second review): seal first, drain second. A successor episode is
+  // scheduled only once its predecessor's checkpoint is durable, so a turn that
+  // died without writing one would otherwise stall the task forever. The
+  // sweeper writes PM's derived checkpoint after a grace period and queues the
+  // successor, and running it before the drain means that successor goes out in
+  // this same pass rather than the next one.
+  let episodeBarriers = { sealed: 0, scheduled: 0 };
+  try {
+    const { sweepUnsealedEpisodeRolloverBarriers } = await import(
+      "@/lib/agents/episodes/rollover"
+    );
+    episodeBarriers = await sweepUnsealedEpisodeRolloverBarriers();
+  } catch (err) {
+    console.warn("[pm-channel] episode rollover barrier sweep failed", err);
+  }
+
   let continuations = { dispatched: 0, superseded: 0, failed: 0 };
   try {
     const { drainPmChannelContinuations } = await import(
@@ -749,7 +765,7 @@ export async function runPmChannelWorkerDrain(
     }
   }
 
-  return { claimed, accepted, retryableOrFailed, errors, continuations };
+  return { claimed, accepted, retryableOrFailed, errors, continuations, episodeBarriers };
 }
 
 export async function markPmChannelJobCompleteForTarget(target: unknown) {

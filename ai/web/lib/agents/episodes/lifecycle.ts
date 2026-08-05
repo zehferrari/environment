@@ -98,6 +98,7 @@ export interface EpisodeCheckpoint {
 
 export interface TaskExecutionEpisodeSummary {
   id: string;
+  taskId: string;
   episodeNo: number;
   agentSlug: string;
   status: string;
@@ -186,6 +187,7 @@ export function checkpointUpdateData(checkpoint: EpisodeCheckpoint | null | unde
 
 export function summarizeEpisode(row: {
   id: string;
+  taskId: string;
   episodeNo: number;
   agentSlug: string;
   status: string;
@@ -210,6 +212,7 @@ export function summarizeEpisode(row: {
 }): TaskExecutionEpisodeSummary {
   return {
     id: row.id,
+    taskId: row.taskId,
     episodeNo: row.episodeNo,
     agentSlug: row.agentSlug,
     status: row.status,
@@ -238,6 +241,7 @@ export function summarizeEpisode(row: {
 
 const EPISODE_SELECT = {
   id: true,
+  taskId: true,
   episodeNo: true,
   agentSlug: true,
   status: true,
@@ -565,20 +569,89 @@ export async function resolveEpisodeRolloverBarrier(args: {
  * Write the fenced message's final checkpoint onto the episode it exhausted —
  * NOT onto the successor, which belongs to a session that has not run yet —
  * and consume the barrier so the message cannot act again.
+ *
+ * ENV-121 (second review) — this is a CONDITIONAL, ATOMIC consume. The earlier
+ * version read the barrier state and then updated unconditionally, so two
+ * concurrent checkpoint requests (a retry, a duplicate dispatch) both passed
+ * the read and both wrote: the "single-use" barrier was single-use only when
+ * nothing raced it, and the second write silently overwrote the first agent's
+ * checkpoint — the very words the successor episode is briefed from.
+ *
+ * `updateMany` with `barrierReleasedAt: null` in the predicate compiles to one
+ * `UPDATE … WHERE id = ? AND barrier_released_at IS NULL` statement. The loser
+ * matches zero rows, writes nothing, and gets `null` back so the caller can
+ * reject it. Returns null when the barrier was already consumed.
  */
 export async function releaseEpisodeRolloverBarrier(
   tx: Prisma.TransactionClient,
   args: { episodeId: string; checkpoint: EpisodeCheckpoint },
-) {
-  const row = await tx.taskExecutionEpisode.update({
-    where: { id: args.episodeId },
+): Promise<TaskExecutionEpisodeSummary | null> {
+  const consumed = await tx.taskExecutionEpisode.updateMany({
+    where: { id: args.episodeId, barrierReleasedAt: null },
     data: {
       ...checkpointUpdateData(args.checkpoint),
       barrierReleasedAt: new Date(),
     },
+  });
+  if (consumed.count === 0) return null;
+  const row = await tx.taskExecutionEpisode.findUnique({
+    where: { id: args.episodeId },
     select: EPISODE_SELECT,
   });
-  return summarizeEpisode(row);
+  return row ? summarizeEpisode(row) : null;
+}
+
+/**
+ * The checkpoint PM writes when a fenced turn ends without authoring one.
+ *
+ * ENV-121 (second review): tool-budget exhaustion fences a message that has no
+ * idea it has been fenced — nothing in the stream path can interrupt a model
+ * mid-turn — so the turn can simply finish. Without this the barrier would
+ * never be consumed and the successor episode would never be dispatched: the
+ * task would stall instead of rolling over.
+ *
+ * It is deliberately DERIVED, never invented. `completedWork` and
+ * `openChecklist` are left untouched (PM's observed per-cycle record already
+ * fills them); only the two fields a stalled successor cannot proceed without
+ * are synthesised, and the risk line says plainly that the agent did not write
+ * this.
+ */
+export function serverGeneratedEpisodeCheckpoint(
+  episode: TaskExecutionEpisodeSummary,
+  reason: string,
+): EpisodeCheckpoint {
+  const provenance = `Episode ${episode.episodeNo} ended without an agent-authored checkpoint (${reason}). The completed-work list below is PM's observed record of workflow actions, not the agent's own summary — re-read the task state before assuming a step is finished.`;
+  return {
+    nextAction:
+      episode.checkpoint.nextAction ||
+      `Resume from the open checklist: episode ${episode.episodeNo} was closed by ${episode.closeReason ?? "budget exhaustion"} and its turn ended without recording a next exact action. Re-read the task status, sub-task checklist and latest comments, then continue at the first unfinished item.`,
+    risks: [...episode.checkpoint.risks, provenance],
+  };
+}
+
+/**
+ * Barriers that were raised but never consumed: an episode PM closed and
+ * fenced, whose turn then ended (or died) without a final checkpoint.
+ *
+ * The sweeper below turns these into server-generated checkpoints. Ordering by
+ * `closedAt` keeps the oldest stall first.
+ */
+export async function findUnsealedEpisodeRolloverBarriers(args: {
+  olderThan: Date;
+  take?: number;
+}): Promise<TaskExecutionEpisodeSummary[]> {
+  const rows = await db.taskExecutionEpisode.findMany({
+    where: {
+      status: EPISODE_STATUS.closed,
+      exhaustedByMessageId: { not: null },
+      barrierReleasedAt: null,
+      closedAt: { lte: args.olderThan },
+    },
+    orderBy: { closedAt: "asc" },
+    take: args.take ?? 20,
+    select: EPISODE_SELECT,
+  });
+  return rows.map(summarizeEpisode);
 }
 
 /**

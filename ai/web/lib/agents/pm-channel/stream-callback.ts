@@ -26,7 +26,7 @@ import {
 import { isAuthorizedPmChannelCallbackTarget } from "@/lib/agents/pm-channel/target-authorization";
 import { continueActionableTaskAfterReply } from "@/lib/agents/workflow/execution-continuation";
 import { recordTaskExecutionToolCycle } from "@/lib/agents/episodes/lifecycle";
-import { armPmChannelContinuations } from "@/lib/agents/pm-channel/continuations";
+import { sealEpisodeRolloverBarrierOnTurnEnd } from "@/lib/agents/episodes/rollover";
 
 export type PmChannelStreamTransportMode = "http" | "inproc" | "uds";
 
@@ -135,47 +135,54 @@ async function recordStreamError(target: PmChannelReplyTarget, error: string | u
 /**
  * ENV-121 (review) — spend one tool cycle of the open execution episode.
  *
- * When that exhausts the budget the episode is closed, the successor is opened
- * and THIS message is fenced (see resolveEpisodeRolloverBarrier): from here on
- * the workflow route accepts only its final checkpoint. Nothing in the stream
- * path can stop the model mid-turn, so the barrier is what makes the boundary
- * real — the turn may keep talking, but it can no longer mutate the task or
- * bank work against episode N+1.
+ * When that exhausts the budget the episode is closed, the successor row is
+ * opened and THIS message is fenced (see resolveEpisodeRolloverBarrier): from
+ * here on the workflow route accepts only its final checkpoint. Nothing in the
+ * stream path can stop the model mid-turn, so the barrier is what makes the
+ * boundary real — the turn may keep talking, but it can no longer mutate the
+ * task or bank work against episode N+1.
  *
- * The rollover also arms a continuation, because unlike a workflow-action
- * rollover there is no action here to arm one. Without it the successor
- * episode would sit open with nobody scheduled to run it.
+ * ENV-121 (second review) — what this deliberately does NOT do is schedule the
+ * successor. It used to arm a continuation right here, which meant episode N+1
+ * was queued at the instant of the `tool:call`, before N had any checkpoint —
+ * and if the fenced turn then finished without calling `checkpoint` (it has no
+ * way of knowing it was fenced) the successor would be briefed from nothing.
+ * The successor is armed only by a successful SEAL: the fenced turn's own final
+ * checkpoint, or PM's derived one written when the turn ends
+ * (sealTaskExecutionEpisodeOnTurnEnd) or when the sweeper gives up on it.
  */
 async function countTaskExecutionToolCycle(
   target: Extract<PmChannelReplyTarget, { kind: "task-chat" | "task-comment" }>,
 ) {
   try {
-    const outcome = await recordTaskExecutionToolCycle({
+    await recordTaskExecutionToolCycle({
       taskId: target.taskId,
       agentSlug: target.agentSlug,
       messageId: target.messageId,
     });
-    if (!outcome?.rolledOver) return;
-
-    const run = await db.pmChannelRun.findUnique({
-      where: { targetKey: pmChannelRunTargetKey(target) },
-      select: { id: true, projectId: true, taskId: true, epicId: true },
-    });
-    if (!run?.taskId) return;
-    await db.$transaction((tx) =>
-      armPmChannelContinuations(tx, {
-        runs: [run],
-        agentSlug: target.agentSlug,
-        messageId: target.messageId,
-        action: "episode_tool_budget_rollover",
-        now: new Date(),
-      }),
-    );
   } catch (err) {
     // Budget accounting must never break the agent's stream. A lost tool cycle
     // costs accuracy; a thrown error here would cost the turn.
     console.warn("[pm-channel] failed to record execution tool cycle", err);
   }
+}
+
+/**
+ * The turn is ending. If it exhausted an episode and never wrote its final
+ * checkpoint, write the derived one now and release the successor.
+ *
+ * This runs BEFORE the run settles, so the continuation it arms is still
+ * `armed` when `queuePmChannelContinuationsForRun` promotes it to `queued` —
+ * the same path every other continuation takes.
+ */
+async function sealTaskExecutionEpisodeOnTurnEnd(
+  target: Extract<PmChannelReplyTarget, { kind: "task-chat" | "task-comment" }>,
+) {
+  await sealEpisodeRolloverBarrierOnTurnEnd({
+    taskId: target.taskId,
+    agentSlug: target.agentSlug,
+    messageId: target.messageId,
+  });
 }
 
 export async function applyPmChannelStreamCallback(args: {
@@ -201,6 +208,18 @@ export async function applyPmChannelStreamCallback(args: {
 
   if (!(await isAuthorizedPmChannelCallbackTarget(target))) {
     return { status: 403, body: { error: "Stream target is not authorized" } };
+  }
+
+  // ENV-121 (second review). Sits ahead of every early return below — a
+  // rate-limited, silent or transient terminal event still ends the turn, and a
+  // fenced episode that is never sealed is a successor that is never
+  // dispatched. Placing it before the settle also keeps the continuation on the
+  // normal armed → queued path.
+  if (
+    (event === "done" || event === "error" || event === "final") &&
+    (target.kind === "task-chat" || target.kind === "task-comment")
+  ) {
+    await sealTaskExecutionEpisodeOnTurnEnd(target);
   }
 
   if (event === "done") {

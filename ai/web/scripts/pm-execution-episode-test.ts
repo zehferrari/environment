@@ -189,6 +189,7 @@ function comment(n: number, body: string): TimelineItemForBudget {
 {
   const row = {
     id: "ep1",
+    taskId: "t1",
     episodeNo: 3,
     agentSlug: "barekbaal",
     status: "closed",

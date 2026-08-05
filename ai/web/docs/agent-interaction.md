@@ -516,6 +516,27 @@ ever-growing conversation.
   turn was still live, and that turn's subsequent actions were accepted and
   counted against the successor, so one stable conversation could span
   arbitrarily many nominal episodes.
+
+  The barrier is consumed by ONE conditional atomic update
+  (`UPDATE … WHERE barrier_released_at IS NULL`), so two concurrent checkpoint
+  submissions — a retry, a duplicate dispatch — cannot both write. Exactly one
+  is accepted; the other gets `409` and the first agent's words stand.
+- **The successor dispatch is gated on the predecessor's checkpoint.** A
+  rollover raises the barrier and opens the successor ROW; it schedules
+  nothing. Episode N+1 is queued only when N's checkpoint is durable, which
+  happens one of two ways:
+  - the fenced turn's own `action=checkpoint` (preferred — its own words), or
+  - a **deterministic PM-generated checkpoint** written when that turn ends
+    (`done` / `final` / `error`), or by the barrier sweeper in the PM channel
+    worker drain if the turn died without ending cleanly.
+
+  This matters most for the tool-cycle budget: nothing can interrupt a model
+  mid-turn, so a tool-fenced turn is never told it was fenced and may simply
+  finish without checkpointing. Arming the successor at rollover time would
+  brief a fresh session from a checkpoint that was never written; never arming
+  it would stall the task. The derived checkpoint is explicit about its
+  provenance — it records that the agent did not author it, and PM's observed
+  per-cycle record is what the successor reads.
 - The successor is opened with **no `sessionKey` and no `messageId`**, and the
   dispatcher treats that emptiness as "never carried by a session": it gets a
   fresh episode-scoped session key and a full brief, never the incremental

@@ -51,11 +51,14 @@ import { hasNewerIndependentTaskAlert } from "@/lib/tasks/checkpoint-blocker";
 import {
   EPISODE_CLOSE_REASON,
   latestTaskExecutionCheckpoint,
-  releaseEpisodeRolloverBarrier,
   resolveEpisodeRolloverBarrier,
   taskExecutionEpisodeHistory,
   type EpisodeCheckpoint,
 } from "@/lib/agents/episodes/lifecycle";
+import {
+  EPISODE_SEAL_REASON,
+  sealEpisodeRolloverBarrier,
+} from "@/lib/agents/episodes/rollover";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -380,19 +383,39 @@ async function handleTaskWorkflowAction(
         error: "checkpoint requires at least one of completedWork, evidence, openChecklist, nextAction, risks.",
       }, { status: 400 });
     }
-    const released = await db.$transaction((tx) =>
-      releaseEpisodeRolloverBarrier(tx, {
-        episodeId: rolloverBarrier.episode.id,
-        checkpoint: finalCheckpoint,
-      }),
-    );
+    // The seal is what SCHEDULES the successor episode: PM deliberately does
+    // not arm a continuation at rollover time, because episode N+1 must never
+    // be dispatched before N's checkpoint is durable. Consuming the barrier is
+    // a conditional atomic update, so a concurrent duplicate checkpoint gets
+    // null here and is rejected below rather than overwriting these words.
+    const sealed = await sealEpisodeRolloverBarrier({
+      taskId: task.id,
+      agentSlug: agent.slug,
+      messageId,
+      checkpoint: finalCheckpoint,
+      reason: EPISODE_SEAL_REASON.agentCheckpoint,
+    });
+    if (!sealed) {
+      return NextResponse.json({
+        error: "This execution episode's final checkpoint is already recorded. Stop this turn now — PM has already dispatched the next episode in a fresh session. Nothing you send from this turn will be applied.",
+        episodeBudgetExhausted: true,
+        episodeClosed: true,
+        episode: barrierEpisode,
+      }, { status: 409 });
+    }
+    const released = sealed.episode;
     return NextResponse.json({
       ok: true,
       taskId: task.id,
       episodeNo: released.episodeNo,
       cycleCount: released.cycleCount,
       cycleBudget: released.cycleBudget,
-      checkpoint: released.checkpoint,
+      // Deliberately NOT `checkpoint`: the POST decorator spreads the workflow
+      // action result over this body, and that result carries a `checkpoint`
+      // LABEL string. Naming the structured checkpoint separately is what stops
+      // the agent's own words from being replaced by "execution_checkpoint_saved".
+      savedCheckpoint: released.checkpoint,
+      successorScheduled: sealed.successorScheduled,
       // Read by the POST decorator: this response already carries the terminal
       // episode instruction, so it must not be re-decorated with the generic
       // "record a checkpoint and stop" one.

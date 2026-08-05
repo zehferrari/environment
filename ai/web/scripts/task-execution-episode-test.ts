@@ -21,6 +21,14 @@
 //      gets exactly one final checkpoint
 //   B9 the successor is dispatched in a DIFFERENT session and briefed from
 //      that checkpoint rather than told to resume a transcript it never saw
+//   B10 the DISPATCH GATE: a `tool:call` that exhausts the tool budget
+//      schedules nothing — episode N+1 cannot be dispatched until N's
+//      checkpoint is durable, and it is the checkpoint that releases it
+//   B10b a fenced turn that ends without checkpointing (it has no way of
+//      knowing it was fenced) gets PM's deterministic derived checkpoint, so
+//      gating the dispatch cannot turn a rollover into a permanent stall
+//   B11 the barrier is single-use UNDER CONCURRENCY: two simultaneous
+//      checkpoint submissions, exactly one accepted, no overwrite, one turn
 //
 // Never touches the live pm.db: DATABASE_URL is repointed at a temp file
 // before any lib import, per the scripts/workflow-action-effect-test.ts
@@ -87,6 +95,8 @@ function sectionA(): void {
 }
 
 const AGENT_SLUG = "episodebot";
+/** Small enough that two stream events exhaust it, which keeps B10 readable. */
+const TOOL_BUDGET = 2;
 
 async function sectionB(): Promise<void> {
   const sandbox = await mkdtemp(path.join(tmpdir(), "task-execution-episode-"));
@@ -98,6 +108,7 @@ async function sectionB(): Promise<void> {
   process.env.AUTH_SECRET = process.env.AUTH_SECRET ?? "task-execution-episode-test-secret";
   // A small, explicit budget keeps the rollover assertions readable.
   process.env.PM_EPISODE_MAX_CYCLES = "3";
+  process.env.PM_EPISODE_MAX_TOOL_CYCLES = String(TOOL_BUDGET);
 
   try {
     await dbPush(dbUrl);
@@ -626,6 +637,356 @@ async function sectionB(): Promise<void> {
     assert(
       successorPayload.systemPrompt?.includes("resume the migration in the next episode"),
       "B9: the brief carries the fenced turn's final next action",
+    );
+
+    // ------------------------------------------------------------------
+    // B10 — the DISPATCH GATE (ENV-121 second review).
+    //
+    // Tool-budget exhaustion used to arm the successor continuation on the
+    // spot. That scheduled episode N+1 while N had no checkpoint, and since
+    // nothing can interrupt a model mid-turn, the fenced message could simply
+    // finish without ever calling `checkpoint` — the successor would then be
+    // briefed from nothing. So: a `tool:call` rollover must schedule NOTHING.
+    // The successor is released only when N's checkpoint is durable.
+    // ------------------------------------------------------------------
+    const { applyPmChannelStreamCallback } = await import(
+      "@/lib/agents/pm-channel/stream-callback"
+    );
+    const { pmChannelRunTargetKey } = await import("@/lib/agents/pm-channel/runs");
+    const { drainPmChannelContinuations } = await import(
+      "@/lib/agents/pm-channel/continuation-drain"
+    );
+
+    const gateTask = await db.task.create({
+      data: {
+        projectId: barrierProject.id,
+        title: "Tool budget gate",
+        status: "In Progress",
+        assigneeId: agentUser.id,
+        actingManagerId: owner.id,
+        reporterId: owner.id,
+        approvedOn: new Date(),
+        description: "Gate the successor on a durable checkpoint.",
+      },
+    });
+    const gateTurn = await sendTaskWorkflowNotification({
+      taskId: gateTask.id,
+      targetUserId: agentUser.id,
+      actor: { id: owner.id, kind: "human", username: "episode-owner" },
+      reason: "monitor_recovery",
+      body: "Continue the implementation.",
+    });
+    assert(gateTurn, "B10: the dispatcher produced the turn we are going to exhaust");
+    const gateMessageId = gateTurn!.messageId;
+    const gateTarget = {
+      kind: "task-comment" as const,
+      agentSlug: AGENT_SLUG,
+      taskId: gateTask.id,
+      messageId: gateMessageId,
+    };
+    // The gateway has accepted the turn and is streaming it: that is the state
+    // a real `tool:call` arrives in, and the callback refuses a queued target.
+    await db.pmChannelRun.update({
+      where: { targetKey: pmChannelRunTargetKey(gateTarget) },
+      data: { status: "streaming" },
+    });
+
+    const toolCall = () =>
+      applyPmChannelStreamCallback({
+        payload: {
+          target: gateTarget,
+          event: "tool:call",
+          toolStatus: "call",
+          toolName: "Bash",
+        },
+        rateLimit: false,
+      });
+    for (let i = 1; i <= TOOL_BUDGET; i += 1) {
+      const res = await toolCall();
+      assertEqual(res.status, 200, `B10: tool call ${i} is accepted by the stream callback`);
+    }
+
+    const gateEpisodeOne = await db.taskExecutionEpisode.findFirstOrThrow({
+      where: { taskId: gateTask.id, episodeNo: 1 },
+      select: {
+        status: true,
+        closeReason: true,
+        exhaustedByMessageId: true,
+        barrierReleasedAt: true,
+        toolCycleCount: true,
+      },
+    });
+    assertEqual(gateEpisodeOne.status, "closed", "B10: the tool budget closed episode 1");
+    assertEqual(
+      gateEpisodeOne.closeReason,
+      "tool_cycle_budget_exhausted",
+      "B10: it closed for the TOOL budget, not the workflow-action backstop",
+    );
+    assertEqual(
+      gateEpisodeOne.exhaustedByMessageId,
+      gateMessageId,
+      "B10: the streaming turn is the one that gets fenced",
+    );
+    assertEqual(
+      gateEpisodeOne.barrierReleasedAt,
+      null,
+      "B10: no checkpoint has been written yet, so the barrier is still raised",
+    );
+
+    // THE GATE. Nothing may be scheduled for the successor yet.
+    assertEqual(
+      await db.pmChannelContinuation.count({ where: { taskId: gateTask.id } }),
+      0,
+      "B10: a tool-budget rollover schedules NOTHING — N+1 waits for N's checkpoint",
+    );
+    assertEqual(
+      (await drainPmChannelContinuations()).dispatched,
+      0,
+      "B10: the drain cannot dispatch the successor before the checkpoint is durable",
+    );
+    assertEqual(
+      (
+        await db.taskExecutionEpisode.findFirstOrThrow({
+          where: { taskId: gateTask.id, episodeNo: 2 },
+          select: { sessionKey: true },
+        })
+      ).sessionKey,
+      null,
+      "B10: the successor is still bound to no session",
+    );
+
+    const gateWorkflow = async (action: string, extra: Record<string, unknown> = {}) => {
+      const req = new NextRequest(
+        `http://127.0.0.1/api/agent/tasks/${gateTask.id}/workflow`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            messageId: gateMessageId,
+            token: createTaskWorkflowToken(gateMessageId, gateTask.id, AGENT_SLUG),
+            action,
+            ...extra,
+          }),
+        },
+      );
+      const res = await runRouteHandler(() =>
+        taskWorkflowPost(req, { params: Promise.resolve({ taskId: gateTask.id }) }),
+      );
+      return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+    };
+
+    // A tool-fenced message is fenced for workflow actions too — the two
+    // budgets share one barrier.
+    assertEqual(
+      (await gateWorkflow("add_subtask", { subtaskText: "smuggled" })).status,
+      409,
+      "B10: the tool-fenced turn cannot take a workflow action either",
+    );
+
+    // Now the checkpoint. THIS is what releases the successor.
+    const gateCheckpoint = await gateWorkflow("checkpoint", {
+      nextAction: "finish the barrier sweep",
+      evidence: ["tool budget spent on Bash"],
+    });
+    assertEqual(gateCheckpoint.status, 200, "B10: the fenced turn's final checkpoint is accepted");
+    assertEqual(
+      gateCheckpoint.body.successorScheduled,
+      true,
+      "B10: the checkpoint — and only the checkpoint — schedules the successor",
+    );
+    const gateContinuation = await db.pmChannelContinuation.findFirstOrThrow({
+      where: { taskId: gateTask.id },
+      select: { action: true, status: true, messageId: true },
+    });
+    assertEqual(
+      gateContinuation.action,
+      "episode_rollover",
+      "B10: the successor is scheduled as an episode rollover, not a recovery",
+    );
+    assertEqual(
+      gateContinuation.messageId,
+      gateMessageId,
+      "B10: the continuation is keyed to the turn whose checkpoint released it",
+    );
+
+    // ------------------------------------------------------------------
+    // B10b — the fenced turn ENDS without checkpointing.
+    //
+    // It has no way of knowing it was fenced, so this is the common case, not
+    // the exotic one. Gating the dispatch would turn it into a permanent stall
+    // unless PM writes a deterministic checkpoint of its own at turn end.
+    // ------------------------------------------------------------------
+    const endTask = await db.task.create({
+      data: {
+        projectId: barrierProject.id,
+        title: "Turn ends unfenced",
+        status: "In Progress",
+        assigneeId: agentUser.id,
+        actingManagerId: owner.id,
+        reporterId: owner.id,
+        approvedOn: new Date(),
+        description: "Seal on turn end.",
+      },
+    });
+    const endTurn = await sendTaskWorkflowNotification({
+      taskId: endTask.id,
+      targetUserId: agentUser.id,
+      actor: { id: owner.id, kind: "human", username: "episode-owner" },
+      reason: "monitor_recovery",
+      body: "Continue the implementation.",
+    });
+    assert(endTurn, "B10b: the dispatcher produced a turn");
+    const endTarget = {
+      kind: "task-comment" as const,
+      agentSlug: AGENT_SLUG,
+      taskId: endTask.id,
+      messageId: endTurn!.messageId,
+    };
+    await db.pmChannelRun.update({
+      where: { targetKey: pmChannelRunTargetKey(endTarget) },
+      data: { status: "streaming" },
+    });
+    for (let i = 1; i <= TOOL_BUDGET; i += 1) {
+      await applyPmChannelStreamCallback({
+        payload: { target: endTarget, event: "tool:call", toolStatus: "call", toolName: "Read" },
+        rateLimit: false,
+      });
+    }
+    assertEqual(
+      await db.pmChannelContinuation.count({ where: { taskId: endTask.id } }),
+      0,
+      "B10b: still nothing scheduled at rollover",
+    );
+
+    // The turn simply finishes. No checkpoint was ever called.
+    await applyPmChannelStreamCallback({
+      payload: { target: endTarget, event: "done" },
+      rateLimit: false,
+    });
+    const endEpisodeOne = await db.taskExecutionEpisode.findFirstOrThrow({
+      where: { taskId: endTask.id, episodeNo: 1 },
+      select: { barrierReleasedAt: true, nextAction: true, risks: true },
+    });
+    assert(
+      endEpisodeOne.barrierReleasedAt,
+      "B10b: ending the turn seals the barrier with PM's derived checkpoint",
+    );
+    assert(
+      endEpisodeOne.nextAction && endEpisodeOne.nextAction.length > 0,
+      "B10b: the derived checkpoint always carries a next exact action",
+    );
+    assert(
+      endEpisodeOne.risks?.includes("without an agent-authored checkpoint"),
+      "B10b: and says plainly that the agent did not write it",
+    );
+    const endContinuation = await db.pmChannelContinuation.findFirstOrThrow({
+      where: { taskId: endTask.id },
+      select: { status: true, action: true },
+    });
+    assertEqual(
+      endContinuation.action,
+      "episode_rollover",
+      "B10b: the successor is released once the derived checkpoint is durable",
+    );
+    assert(
+      endContinuation.status === "queued" || endContinuation.status === "armed",
+      `B10b: the released continuation is drainable (got ${endContinuation.status})`,
+    );
+
+    // ------------------------------------------------------------------
+    // B11 — the barrier is single-use UNDER CONCURRENCY.
+    //
+    // The previous round read the barrier state and then updated
+    // unconditionally, so two concurrent checkpoint submissions (a retry, a
+    // duplicate dispatch) both passed the read and both wrote: the second one
+    // silently overwrote the first agent's checkpoint — the exact words the
+    // successor episode is briefed from — and scheduled a second turn in the
+    // same lane. The consume is now one conditional atomic UPDATE.
+    // ------------------------------------------------------------------
+    const raceTask = await db.task.create({
+      data: {
+        projectId: barrierProject.id,
+        title: "Checkpoint race",
+        status: "In Progress",
+        assigneeId: agentUser.id,
+        actingManagerId: owner.id,
+        reporterId: owner.id,
+        approvedOn: new Date(),
+        description: "Two checkpoints, one barrier.",
+      },
+    });
+    const raceTurn = await sendTaskWorkflowNotification({
+      taskId: raceTask.id,
+      targetUserId: agentUser.id,
+      actor: { id: owner.id, kind: "human", username: "episode-owner" },
+      reason: "monitor_recovery",
+      body: "Continue the implementation.",
+    });
+    assert(raceTurn, "B11: the dispatcher produced the racing turn");
+    const raceMessageId = raceTurn!.messageId;
+    const raceWorkflow = async (action: string, extra: Record<string, unknown> = {}) => {
+      const req = new NextRequest(
+        `http://127.0.0.1/api/agent/tasks/${raceTask.id}/workflow`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            messageId: raceMessageId,
+            token: createTaskWorkflowToken(raceMessageId, raceTask.id, AGENT_SLUG),
+            action,
+            ...extra,
+          }),
+        },
+      );
+      const res = await runRouteHandler(() =>
+        taskWorkflowPost(req, { params: Promise.resolve({ taskId: raceTask.id }) }),
+      );
+      return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+    };
+    // Spend the workflow budget (3) so the barrier is raised.
+    for (let i = 1; i <= 3; i += 1) {
+      await raceWorkflow("add_subtask", { subtaskText: `race step ${i}` });
+    }
+    assert(
+      (
+        await db.taskExecutionEpisode.findFirstOrThrow({
+          where: { taskId: raceTask.id, episodeNo: 1 },
+          select: { exhaustedByMessageId: true },
+        })
+      ).exhaustedByMessageId === raceMessageId,
+      "B11: the barrier is raised against the racing turn",
+    );
+
+    // Both submissions are in flight before either has committed.
+    const [raceA, raceB] = await Promise.all([
+      raceWorkflow("checkpoint", { nextAction: "checkpoint A" }),
+      raceWorkflow("checkpoint", { nextAction: "checkpoint B" }),
+    ]);
+    const raceStatuses = [raceA.status, raceB.status].sort();
+    assertEqual(
+      JSON.stringify(raceStatuses),
+      JSON.stringify([200, 409]),
+      `B11: exactly one concurrent checkpoint succeeds (got ${JSON.stringify(raceStatuses)})`,
+    );
+
+    const winnerNextAction = raceA.status === 200 ? "checkpoint A" : "checkpoint B";
+    const storedNextAction = (
+      await db.taskExecutionEpisode.findFirstOrThrow({
+        where: { taskId: raceTask.id, episodeNo: 1 },
+        select: { nextAction: true },
+      })
+    ).nextAction;
+    assertEqual(
+      storedNextAction,
+      winnerNextAction,
+      "B11: the stored checkpoint is the winner's and was not overwritten by the loser",
+    );
+    assertEqual(
+      await db.pmChannelContinuation.count({
+        where: { taskId: raceTask.id, action: "episode_rollover" },
+      }),
+      1,
+      "B11: the losing checkpoint does not schedule a second turn in the same lane",
     );
   } finally {
     await rm(sandbox, { recursive: true, force: true });
