@@ -279,6 +279,9 @@ export async function POST(
           data: {
             taskId: flaggedTask.id,
             userId: agent.user!.id,
+            authorAgentSlug: agent.slug,
+            commentKind: "workflow_action",
+            isGenerated: true,
             body: `Deploy review flagged this task and returned it to To Do:\n\n${reason}`,
           },
           select: { id: true },

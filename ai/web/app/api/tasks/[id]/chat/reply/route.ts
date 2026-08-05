@@ -170,6 +170,16 @@ export async function POST(
     originCommentId: original.originCommentId,
   });
 
+  // ENV-122: Look up the active PmChannelRun to wire runId, provider, and model provenance.
+  const runProvenance = await db.pmChannelRun.findFirst({
+    where: { messageId, agentSlug, status: { in: ["queued", "accepted", "streaming", "completed"] } },
+    select: { id: true, provider: true, model: true },
+    orderBy: { createdAt: "desc" },
+  });
+  const runId = runProvenance?.id ?? null;
+  const runProvider = runProvenance?.provider ?? null;
+  const runModel = runProvenance?.model ?? null;
+
   const reply = await db.$transaction(async (tx) => {
     if (origin.channel === "comment") {
       const comment = await tx.comment.create({
@@ -177,6 +187,12 @@ export async function POST(
           taskId,
           userId: agent.user!.id,
           body,
+          authorAgentSlug: original.agentSlug,
+          commentKind: "agent_reply",
+          isGenerated: false,
+          runId,
+          provider: runProvider,
+          model: runModel,
         },
         select: { id: true },
       });

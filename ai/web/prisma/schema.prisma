@@ -732,12 +732,27 @@ model Comment {
   deletedAt   DateTime?
   deletedById String?
   deletedBy   User?     @relation("CommentDeletedBy", fields: [deletedById], references: [id])
+  // ENV-122 — comment metadata for identity-normalized rendering.
+  // authorAgentSlug: agent slug if author is an agent, null for humans.
+  // provider/model: LLM provenance when produced via a PM-channel run.
+  // runId: FK to PmChannelRun.id when produced via a PM-channel run.
+  // commentKind: agent_reply | workflow_action | blocker_notice | runtime_error | human
+  // isGenerated: true if PM/system generated this comment (not authored by a human/agent).
+  authorAgentSlug String? @map("author_agent_slug")
+  provider        String?
+  model           String?
+  runId           String?  @map("run_id")
+  run             PmChannelRun? @relation(fields: [runId], references: [id], onDelete: SetNull)
+  commentKind     String? @map("comment_kind")
+  isGenerated     Boolean @default(false) @map("is_generated")
 
   @@index([taskId])
   @@index([epicId])
   @@index([userId])
   @@index([deletedAt])
   @@index([deletedById])
+  @@index([authorAgentSlug])
+  @@index([commentKind])
 }
 
 model ActivityLog {
@@ -909,6 +924,11 @@ model PmChannelRun {
   completedAt         DateTime?
   failedAt            DateTime?
   lastEventAt         DateTime?
+  // ENV-122: LLM provenance — the provider and model that handled this run.
+  // Captured at dispatch time so comment metadata can copy them without
+  // the comment creation sites needing their own model identity source.
+  provider            String?
+  model               String?
   streamSeq           Int                    @default(0)
   workItemGrantUsedAt DateTime?
   createdAt           DateTime               @default(now())
@@ -917,6 +937,7 @@ model PmChannelRun {
   streamEvents        PmChannelStreamEvent[]
   contextGrants       ContextGrant[]
   continuations       PmChannelContinuation[]
+  comments            Comment[]
 
   @@index([agentSlug])
   @@index([messageId])

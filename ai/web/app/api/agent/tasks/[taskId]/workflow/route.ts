@@ -90,6 +90,17 @@ function isWorkflowAction(value: unknown): value is WorkflowAction {
   return typeof value === "string" && (ACTIONS as readonly string[]).includes(value);
 }
 
+// ENV-122: Look up the active PmChannelRun for a workflow action to wire
+// runId, provider, and model provenance into comment metadata.
+async function resolveActiveRunId(messageId: string, agentSlug: string): Promise<{ id: string | null; provider: string | null; model: string | null }> {
+  const run = await db.pmChannelRun.findFirst({
+    where: { messageId, agentSlug, status: { in: ["queued", "accepted", "streaming", "completed"] } },
+    select: { id: true, provider: true, model: true },
+    orderBy: { createdAt: "desc" },
+  });
+  return { id: run?.id ?? null, provider: run?.provider ?? null, model: run?.model ?? null };
+}
+
 // ENV-118: takes a transaction client so a continuation-required action can
 // commit the status move together with its continuation-outbox row. `client`
 // defaults to the base db, which keeps the multi-statement write atomic on its
@@ -1029,9 +1040,10 @@ async function handleTaskWorkflowAction(
 
     let reviewCommentId: string | null = null;
     if (comment) {
+      const run = await resolveActiveRunId(messageId, agent.slug);
       const created = await db.$transaction(async (tx) => {
         const row = await tx.comment.create({
-          data: { taskId: task.id, userId: agent.user!.id, body: comment },
+          data: { taskId: task.id, userId: agent.user!.id, body: comment, authorAgentSlug: agent.slug, commentKind: "agent_reply", isGenerated: false, runId: run.id, provider: run.provider, model: run.model },
           select: { id: true },
         });
         await tx.activityLog.create({
@@ -1101,9 +1113,10 @@ async function handleTaskWorkflowAction(
       where: { projectId: task.projectId, status: "To Do", deletedAt: null },
       _min: { rank: true },
     });
+    const run = await resolveActiveRunId(messageId, agent.slug);
     const created = await db.$transaction(async (tx) => {
       const row = await tx.comment.create({
-        data: { taskId: task.id, userId: agent.user!.id, body: comment },
+        data: { taskId: task.id, userId: agent.user!.id, body: comment, authorAgentSlug: agent.slug, commentKind: "agent_reply", isGenerated: false, runId: run.id, provider: run.provider, model: run.model },
         select: { id: true },
       });
       await tx.task.update({
@@ -1441,13 +1454,16 @@ async function handleTaskWorkflowAction(
   const requesterSlug = agent.slug;
   const requestTaskId = task.id;
   const requestProjectId = task.projectId;
+  // ENV-122: Resolve the active PmChannelRun for this workflow turn to wire
+  // runId, provider, and model provenance into comment metadata.
+  const workflowRun = await resolveActiveRunId(messageId, agent.slug);
   async function postWorkflowComment(
     body: string,
     kind: string,
     payloadExtra?: Record<string, unknown>,
   ) {
     const created = await db.comment.create({
-      data: { taskId: requestTaskId, userId: requesterUserId, body },
+      data: { taskId: requestTaskId, userId: requesterUserId, body, authorAgentSlug: requesterSlug, commentKind: "workflow_action", isGenerated: false, runId: workflowRun.id, provider: workflowRun.provider, model: workflowRun.model },
       select: { id: true },
     });
     await db.activityLog.create({
@@ -1685,6 +1701,12 @@ async function handleTaskWorkflowAction(
         data: {
           taskId: task.id,
           userId: requesterUserId,
+          authorAgentSlug: requesterSlug,
+          commentKind: "blocker_notice",
+          isGenerated: false,
+          runId: workflowRun.id,
+          provider: workflowRun.provider,
+          model: workflowRun.model,
           body: [
             `**Blocker raised** by @${requesterUsername} (assignee):`,
             "",
@@ -1806,6 +1828,12 @@ async function handleTaskWorkflowAction(
           data: {
             taskId: task.id,
             userId: agentUser.id,
+            authorAgentSlug: agent.slug,
+            commentKind: "workflow_action",
+            isGenerated: false,
+            runId: workflowRun.id,
+            provider: workflowRun.provider,
+            model: workflowRun.model,
             body: [
               `**Blocker cleared** by @${agentUser.username} (assignee):`,
               "",

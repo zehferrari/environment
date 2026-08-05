@@ -947,10 +947,10 @@ async function writeDeploymentOutcome(args: {
     if (anyFailed || allDeployed) {
       await args.db.epic.update({ where: { id: args.row.epicId }, data: { deploymentStatus: anyFailed ? "Deployment Error" : "Successfully Deployed" } });
     }
-    await args.db.comment.create({ data: { epicId: args.row.epicId, userId: args.row.reporterUserId, body } });
+    await args.db.comment.create({ data: { epicId: args.row.epicId, userId: args.row.reporterUserId, body, commentKind: "workflow_action", isGenerated: true } });
   } else if (args.row.taskId) {
     await args.db.task.update({ where: { id: args.row.taskId }, data: { deploymentStatus: failed ? "Deployment Error" : "Successfully Deployed" } });
-    await args.db.comment.create({ data: { taskId: args.row.taskId, userId: args.row.reporterUserId, body } });
+    await args.db.comment.create({ data: { taskId: args.row.taskId, userId: args.row.reporterUserId, body, commentKind: "workflow_action", isGenerated: true } });
   }
   await args.db.activityLog.create({
     data: {
