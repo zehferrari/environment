@@ -369,6 +369,10 @@ export async function recordPmChannelRunQueued(args: {
               finishedAt: now,
               finishedReason: "superseded_by_newer_run",
               supersededByRunId: reservedRunId,
+              // A supersede is a terminal write, so WFI-005 wants a
+              // disposition — and it is `continue`, never `completed`: the
+              // episode did not finish, a newer run took it over.
+              disposition: "continue",
             },
           });
         }
@@ -386,6 +390,7 @@ export async function recordPmChannelRunQueued(args: {
               finishedAt: now,
               finishedReason: "superseded_by_replacement",
               supersededByRunId: reservedRunId,
+              disposition: "continue",
             },
           });
         }
@@ -590,22 +595,31 @@ export async function recordPmChannelRunWorkflowAction(args: {
     async () => {
       const runs = await db.pmChannelRun.findMany({
         where: { targetKey: { in: targetKeys } },
-        select: { id: true, projectId: true, taskId: true, epicId: true },
+        select: { id: true, status: true, projectId: true, taskId: true, epicId: true },
       });
       if (runs.length === 0) return;
       const runIds = runs.map((run) => run.id);
+      // A workflow action can queue its own follow-up notification (completing
+      // the last subtask raises `ready_for_review_available`), and ENV-117
+      // supersedes the older run the moment the newer one queues. So by the
+      // time we get here the run this action belongs to may already be
+      // superseded. The action still happened and must still be recorded — but
+      // the newer run IS the continuation, so arming a second one would put two
+      // turns in the same lane (WFI-001).
+      const liveRuns = runs.filter((run) => ACTIVE_STATUSES.has(run.status));
 
       // One interactive transaction, so the continuation outbox write and the
       // run/job write commit together. A crash between "start task" and "queue
       // the next turn" can no longer lose the continuation.
       await db.$transaction(async (tx) => {
         if (effect === "continue") {
-          // Renew the lease and leave the run active. The turn is still going.
+          // Record the action on every run the agent's grant covers, live or
+          // already superseded: `continue` settles nothing, so there is no
+          // terminal write to protect with a status guard, and a superseded
+          // run whose disposition stayed null would read as "turn ended, no
+          // reason given".
           await tx.pmChannelRun.updateMany({
-            where: {
-              id: { in: runIds },
-              status: { in: ["queued", "accepted", "streaming", "retryable"] },
-            },
+            where: { id: { in: runIds } },
             data: {
               error: null,
               lastEventAt: now,
@@ -614,13 +628,24 @@ export async function recordPmChannelRunWorkflowAction(args: {
               disposition: "continue",
             },
           });
+          // Only a live run arms a continuation. A superseded one already has
+          // its successor queued.
           await armPmChannelContinuations(tx, {
-            runs,
+            runs: liveRuns,
             agentSlug: args.agentSlug,
             messageId: args.messageId,
             action: args.action,
             now,
           });
+          const retiredRunIds = runs
+            .filter((run) => !ACTIVE_STATUSES.has(run.status))
+            .map((run) => run.id);
+          if (retiredRunIds.length > 0) {
+            await supersedePmChannelContinuations(tx, {
+              runIds: retiredRunIds,
+              reason: "a newer run took over the episode",
+            });
+          }
           return;
         }
 
@@ -927,7 +952,7 @@ export async function recordPmChannelRunEvent(args: {
       // A `final` is a turn ending: if a continuation is armed, this settle is
       // `continue`, not a successful completion, and the outbox row becomes
       // drainable. A plain streaming chunk settles nothing.
-      const disposition = status === "complete"
+      const disposition = status === "completed"
         ? await resolveSettleDisposition({ targetKey, status: "complete", now })
         : undefined;
       await db.pmChannelRun.upsert({

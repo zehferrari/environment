@@ -703,8 +703,10 @@ async function pmRunSettlementSlice() {
       const { runStatuses, jobStatuses } = await runStates(slug, messageId);
       assert(runStatuses.length === 2, `${action}: both target-key runs must exist`);
       assert(
-        runStatuses.every((status) => status === "complete"),
-        `${action}: both PM runs must settle complete (got ${runStatuses.join(", ")})`,
+        // Run vocabulary is "completed" (ENV-117); the job vocabulary is
+        // "complete". They are deliberately different words.
+        runStatuses.every((status) => status === "completed"),
+        `${action}: both PM runs must settle completed (got ${runStatuses.join(", ")})`,
       );
       assert(
         jobStatuses.every((status) => status === "complete"),
@@ -724,7 +726,7 @@ async function pmRunSettlementSlice() {
       const { runStatuses, jobStatuses } = await runStates(slug, messageId);
       assert(runStatuses.length === 2, `${action}: both target-key runs must exist`);
       assert(
-        runStatuses.every((status) => status !== "complete"),
+        runStatuses.every((status) => status !== "completed"),
         `${action}: a continuation-required action must not settle the PM runs (got ${runStatuses.join(", ")})`,
       );
       assert(
@@ -733,17 +735,35 @@ async function pmRunSettlementSlice() {
       );
       const runs = await db.pmChannelRun.findMany({
         where: { messageId, agentSlug: slug },
-        select: { id: true, disposition: true, settledByAction: true },
+        select: { id: true, status: true, disposition: true, settledByAction: true },
       });
       assert(
         runs.every((run) => run.disposition === "continue" && run.settledByAction === null),
-        `${action}: a continuation-required action records the continue disposition and settles nothing`,
+        `${action}: a continuation-required action records the continue disposition and settles nothing (got ${runs
+          .map((run) => `${run.status}:${run.disposition ?? "null"}/${run.settledByAction ?? "null"}`)
+          .join(", ")})`,
+      );
+      // Only a run that is still live in its lane arms a continuation. If the
+      // action's own follow-up notification already queued a newer run
+      // (ENV-117 supersedes the old one), that newer run IS the continuation
+      // and arming a second one would put two turns in the same lane.
+      const liveRunIds = runs
+        .filter((run) => run.status === "queued" || run.status === "accepted" || run.status === "streaming")
+        .map((run) => run.id);
+      assert(
+        await db.pmChannelContinuation.count({
+          where: { runId: { in: liveRunIds }, status: "armed" },
+        }) === liveRunIds.length,
+        `${action}: each live run arms a continuation in the same transaction`,
       );
       assert(
         await db.pmChannelContinuation.count({
-          where: { runId: { in: runs.map((run) => run.id) }, status: "armed" },
-        }) === runs.length,
-        `${action}: each run arms a continuation in the same transaction`,
+          where: {
+            runId: { in: runs.filter((run) => !liveRunIds.includes(run.id)).map((run) => run.id) },
+            status: "armed",
+          },
+        }) === 0,
+        `${action}: a superseded run must not keep a second continuation lane armed`,
       );
     };
 

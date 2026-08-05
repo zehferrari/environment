@@ -371,7 +371,16 @@ async function sectionB(): Promise<void> {
     // correctly) make the drain below stand down instead of dispatching.
     await db.pmChannelRun.update({
       where: { id: b2.id },
-      data: { status: "complete", completedAt: new Date(), disposition: "completed" },
+      data: { status: "completed", completedAt: new Date(), disposition: "completed" },
+    });
+    // Seeding b2 also superseded b1 — queueing a run retires the older run in
+    // the same (task, agent) lane (ENV-117). That is correct, but it is not
+    // what B3/B4 are about: they need b1 to still be the live run of its
+    // episode, exactly as it is in production when an agent calls start and
+    // then falls silent. Put it back where recordPmChannelRunQueued left it.
+    await db.pmChannelRun.update({
+      where: { id: b1.id },
+      data: { status: "queued" },
     });
 
     // ---- B3: repeating an action inside one episode is idempotent ----
@@ -475,7 +484,7 @@ async function sectionB(): Promise<void> {
     });
     assertEqual(submitted.actionEffect, "finish", "ready_for_review finishes the episode");
     const b6Row = await runRow(b6.id);
-    assertEqual(b6Row.status, "complete", "an episode-terminal action settles the run");
+    assertEqual(b6Row.status, "completed", "an episode-terminal action settles the run");
     assertEqual(b6Row.disposition, "ready_for_review", "the settle records its disposition");
     assertEqual(b6Row.settledByAction, "ready_for_review", "the settle names its action");
     assertEqual(b6Row.jobs[0]?.status, "complete", "an episode-terminal action settles the job");
@@ -500,7 +509,7 @@ async function sectionB(): Promise<void> {
     });
     assertEqual(blocked.actionEffect, "wait", "flag_blocker waits on an external actor");
     const b7Row = await runRow(b7.id);
-    assertEqual(b7Row.status, "complete", "a wait action still ends the agent's turn");
+    assertEqual(b7Row.status, "completed", "a wait action still ends the agent's turn");
     assertEqual(b7Row.disposition, "waiting_external", "a wait action records waiting_external");
     assertEqual(b7Row.settledByAction, "flag_blocker", "the settle names the blocking action");
 

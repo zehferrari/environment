@@ -236,22 +236,30 @@ async function main() {
     });
     const settledComment = await runRow(`task-comment:${agentSlug}:${task.id}:${mA}`);
     const settledChat = await runRow(`task-chat:${agentSlug}:${task.id}:${mA}`);
-    assert.equal(settledComment.status, "complete", "workflow action settles the task-comment run");
-    assert.equal(settledChat.status, "complete", "workflow action settles the task-chat run");
+    // ENV-117 allows at most one ACTIVE run per (taskId, agentSlug), so
+    // enqueueing the chat surface supersedes the comment surface of the same
+    // turn. The live run is the one an episode-terminal action settles.
+    assert.equal(settledChat.status, "completed", "workflow action settles the live run");
+    assert.equal(settledComment.status, "superseded", "the earlier surface was superseded on enqueue");
     assert.equal(
       settledComment.disposition,
+      "continue",
+      "a superseded run did not finish its episode (WFI-005)",
+    );
+    assert.equal(
+      settledChat.disposition,
       "ready_for_review",
       "an episode-terminal action records its disposition (WFI-005)",
     );
     assert.equal(
-      settledComment.settledByAction,
+      settledChat.settledByAction,
       "ready_for_review",
       "settledByAction names the action that actually settled the run",
     );
     assert.deepEqual(
-      [...settledComment.jobs, ...settledChat.jobs].map((job) => job.status),
-      ["complete", "complete"],
-      "workflow action settles both jobs",
+      settledChat.jobs.map((job) => job.status),
+      ["complete"],
+      "workflow action settles the live run's job",
     );
 
     // ---- A0 (ENV-118): a continuation-required action must NOT settle the
@@ -286,12 +294,12 @@ async function main() {
     );
 
     await recordPmChannelRunEvent({
-      target: commentTarget(mA),
+      target: chatTarget(mA),
       event: "error",
       error: "gateway aborted turn (cancel endpoint)",
     });
-    const anomalous = await runRow(`task-comment:${agentSlug}:${task.id}:${mA}`);
-    assert.equal(anomalous.status, "complete", "late error must not flip the settled status");
+    const anomalous = await runRow(`task-chat:${agentSlug}:${task.id}:${mA}`);
+    assert.equal(anomalous.status, "completed", "late error must not flip the settled status");
     assert.equal(anomalous.error, null, "late error must not land in the run error field");
     assert.equal(
       anomalous.completionAnomaly,
@@ -303,7 +311,7 @@ async function main() {
     const a1Log = await anomalyLog(mA);
     assert.ok(a1Log, "pm.channel.completion_anomaly ActivityLog row must exist");
     const a1Payload = JSON.parse(a1Log!.payload!) as Record<string, unknown>;
-    assert.equal(a1Payload.settledStatus, "complete", "anomaly payload records the settled status");
+    assert.equal(a1Payload.settledStatus, "completed", "anomaly payload records the settled status");
     assert.equal(a1Payload.hadDurableReply, false, "anomaly payload records durable-reply state");
     assert.equal(a1Payload.event, "error");
 
@@ -319,7 +327,7 @@ async function main() {
     await durableReply(mB);
     await recordPmChannelRunEvent({ target: chatTarget(mB), event: "done" });
     const cleanDone = await runRow(`task-chat:${agentSlug}:${task.id}:${mB}`);
-    assert.equal(cleanDone.status, "complete", "done after durable reply settles complete");
+    assert.equal(cleanDone.status, "completed", "done after durable reply settles complete");
     assert.equal(cleanDone.completionAnomaly, null, "plain done must stay anomaly-free");
     assert.equal(await anomalyLog(mB), null, "no anomaly ActivityLog for a clean settle");
 
@@ -343,7 +351,7 @@ async function main() {
     });
     assert.equal(callbackResult.status, 200, "durable-reply error callback is accepted");
     const converted = await runRow(`task-chat:${agentSlug}:${task.id}:${mC}`);
-    assert.equal(converted.status, "complete", "durable reply still settles the run complete");
+    assert.equal(converted.status, "completed", "durable reply still settles the run complete");
     assert.equal(
       converted.completionAnomaly,
       "gateway aborted turn: post-action abort",

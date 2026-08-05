@@ -62,7 +62,7 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
     taskId: "task-1",
     epicId: null,
     messageId: `msg-${runSeq}`,
-    status: "complete",
+    status: "completed",
     createdAt: FRESH,
     acceptedAt: FRESH,
     streamingAt: null,
@@ -414,7 +414,7 @@ function expectViolations(
       "WFI-004",
       snapshot({
         runs: [
-          run({ status: "complete", settledByAction: action, completedAt: FRESH }),
+          run({ status: "completed", settledByAction: action, completedAt: FRESH }),
         ],
       }),
       ["WFI-004/continuation-action-settled-episode"],
@@ -426,7 +426,7 @@ function expectViolations(
     "WFI-004",
     snapshot({
       runs: [
-        run({ status: "complete", settledByAction: "ready_for_review", completedAt: FRESH }),
+        run({ status: "completed", settledByAction: "ready_for_review", completedAt: FRESH }),
       ],
     }),
     [],
@@ -439,7 +439,7 @@ function expectViolations(
       runs: [
         run({
           id: "settled",
-          status: "complete",
+          status: "completed",
           settledByAction: "start",
           completedAt: STALE,
           createdAt: STALE,
@@ -458,7 +458,7 @@ function expectViolations(
 {
   expectViolations(
     "WFI-005",
-    snapshot({ runs: [run({ status: "complete", disposition: null })] }),
+    snapshot({ runs: [run({ status: "completed", disposition: null })] }),
     ["WFI-005/missing-disposition"],
     "a complete run with no disposition violates WFI-005",
   );
@@ -474,21 +474,21 @@ function expectViolations(
 
   expectViolations(
     "WFI-005",
-    snapshot({ runs: [run({ status: "complete", disposition: "succeeded" })] }),
+    snapshot({ runs: [run({ status: "completed", disposition: "succeeded" })] }),
     ["WFI-005/unknown-disposition"],
     "an off-enum disposition violates WFI-005",
   );
 
   expectViolations(
     "WFI-005",
-    snapshot({ runs: [run({ status: "complete", disposition: "completed" })] }),
+    snapshot({ runs: [run({ status: "completed", disposition: "completed" })] }),
     [],
     "a valid disposition satisfies WFI-005",
   );
 
   expectViolations(
     "WFI-005",
-    snapshot({ runs: [run({ status: "canceled", disposition: null })] }),
+    snapshot({ runs: [run({ status: "cancelled", disposition: null })] }),
     [],
     "cancellation is not an agent turn ending",
   );
@@ -509,7 +509,7 @@ function expectViolations(
     expectViolations(
       "WFI-006",
       snapshot({
-        runs: [run({ status: "complete", finalResponseText: text, settledByAction: null })],
+        runs: [run({ status: "completed", finalResponseText: text, settledByAction: null })],
       }),
       ["WFI-006/empty-final-response"],
       `an empty final response (${JSON.stringify(text)}) violates WFI-006`,
@@ -521,7 +521,7 @@ function expectViolations(
     snapshot({
       runs: [
         run({
-          status: "complete",
+          status: "completed",
           finalResponseText: null,
           settledByAction: "ready_for_review",
         }),
@@ -645,8 +645,8 @@ function expectViolations(
 
   const matching = snapshot({
     runs: [
-      run({ id: "m1", status: "complete", disposition: null, settledByAction: "ready_for_review" }),
-      run({ id: "m2", status: "complete", disposition: null, settledByAction: "ready_for_review" }),
+      run({ id: "m1", status: "completed", disposition: null, settledByAction: "ready_for_review" }),
+      run({ id: "m2", status: "completed", disposition: null, settledByAction: "ready_for_review" }),
     ],
   });
   assertEqual(
@@ -657,7 +657,7 @@ function expectViolations(
 
   const undercount = snapshot({
     runs: [
-      run({ id: "u1", status: "complete", disposition: null, settledByAction: "ready_for_review" }),
+      run({ id: "u1", status: "completed", disposition: null, settledByAction: "ready_for_review" }),
     ],
   });
   const undercountDrift = compareToBaseline(
@@ -683,11 +683,11 @@ function expectViolations(
 
   const regressed = snapshot({
     runs: [
-      run({ id: "r1", status: "complete", disposition: null, settledByAction: "ready_for_review" }),
-      run({ id: "r2", status: "complete", disposition: null, settledByAction: "ready_for_review" }),
+      run({ id: "r1", status: "completed", disposition: null, settledByAction: "ready_for_review" }),
+      run({ id: "r2", status: "completed", disposition: null, settledByAction: "ready_for_review" }),
       // Valid disposition, so this run adds a NEW code rather than inflating
       // the baselined WFI-005 count.
-      run({ id: "r3", status: "complete", disposition: "completed", finalResponseText: null, settledByAction: null }),
+      run({ id: "r3", status: "completed", disposition: "completed", finalResponseText: null, settledByAction: null }),
     ],
   });
   const regressedDrift = compareToBaseline(
