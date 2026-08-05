@@ -299,22 +299,28 @@ async function persistTaskReply(
         }),
       },
     });
+
+    // ENV-119: Persist structured action plan inside the same transaction
+    // for true atomicity. If plan persistence fails, the entire reply
+    // (chat message + activity log + archive update) rolls back.
+    if (validatedActionPlan && taskForActionPlan && !taskForActionPlan.approvedOn) {
+      await persistActionPlan({
+        taskId: target.taskId,
+        input: validatedActionPlan,
+        client: tx,
+      });
+    } else if (!actionPlanPayload && taskForActionPlan && !taskForActionPlan.approvedOn) {
+      // Legacy Markdown fallback bridge — best-effort, don't fail the reply
+      // if Markdown parsing finds nothing or errors.
+      await persistActionPlanFromMarkdown({
+        taskId: target.taskId,
+        body: persistedBody,
+        client: tx,
+      }).catch(() => null);
+    }
+
     return { id: created.id, channel: "chat" as const };
   });
-
-  // ENV-119: Persist structured action plan or legacy Markdown fallback.
-  // Validation already happened above (before the transaction). Now persist
-  // the structured plan using the transaction client for atomicity.
-  if (reply.channel === "chat" && validatedActionPlan && taskForActionPlan && !taskForActionPlan.approvedOn) {
-    await persistActionPlan({ taskId: target.taskId, input: validatedActionPlan });
-  } else if (reply.channel === "chat" && !actionPlanPayload && taskForActionPlan && !taskForActionPlan.approvedOn) {
-    // Legacy Markdown fallback bridge: parse Section A/B replies on
-    // unapproved tasks and store parsed steps as ActionPlanStep rows.
-    await persistActionPlanFromMarkdown({
-      taskId: target.taskId,
-      body: persistedBody,
-    }).catch(() => null);
-  }
 
   const reviewAutomation = reply.channel === "comment"
     ? await tryCompleteTaskFromReviewerComment({

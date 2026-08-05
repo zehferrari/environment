@@ -27,127 +27,126 @@ execSync(`npx prisma db push --force-reset --skip-generate`, {
   env: { ...process.env, DATABASE_URL: `file:${dbPath}` },
 });
 
-// Dynamic imports after DATABASE_URL is set so PrismaClient picks it up.
-const { db } = await import("../lib/db");
-const {
-  validateActionPlanInput,
-  persistActionPlan,
-  persistActionPlanFromMarkdown,
-  getActionPlanForTask,
-  createChecklistAndDelegatableTasksFromPlan,
-  parseAcceptanceCriteria,
-} = await import("../lib/tasks/action-plan-store");
-const { createActionPlanSubtasksForTask } = await import("../lib/tasks/action-plan-subtasks");
-
 const TEST_SLUG = `env119-test-${process.pid}`;
 
-async function bootstrapTestEnv() {
-  let workspace = await db.workspace.findFirst({
-    where: { slug: TEST_SLUG },
-    select: { id: true },
-  });
-  if (!workspace) {
-    workspace = await db.workspace.create({
-      data: { slug: TEST_SLUG, name: "ENV-119 Test WS" },
+async function main() {
+  // Dynamic imports after DATABASE_URL is set so PrismaClient picks it up.
+  const { db } = await import("../lib/db");
+  const {
+    validateActionPlanInput,
+    persistActionPlan,
+    persistActionPlanFromMarkdown,
+    getActionPlanForTask,
+    createChecklistAndDelegatableTasksFromPlan,
+    parseAcceptanceCriteria,
+  } = await import("../lib/tasks/action-plan-store");
+  const { createActionPlanSubtasksForTask } = await import("../lib/tasks/action-plan-subtasks");
+
+  async function bootstrapTestEnv() {
+    let workspace = await db.workspace.findFirst({
+      where: { slug: TEST_SLUG },
       select: { id: true },
     });
-  }
+    if (!workspace) {
+      workspace = await db.workspace.create({
+        data: { slug: TEST_SLUG, name: "ENV-119 Test WS" },
+        select: { id: true },
+      });
+    }
 
-  let project = await db.project.findFirst({
-    where: { slug: TEST_SLUG },
-    select: { id: true, slug: true },
-  });
-  if (!project) {
-    project = await db.project.create({
-      data: {
-        slug: TEST_SLUG,
-        name: "ENV-119 Test Project",
-        workItemKeyPrefix: `EV${process.pid.toString().slice(-3)}`,
-        workspaces: { create: { workspaceId: workspace.id } },
-      },
+    let project = await db.project.findFirst({
+      where: { slug: TEST_SLUG },
       select: { id: true, slug: true },
     });
-  }
+    if (!project) {
+      project = await db.project.create({
+        data: {
+          slug: TEST_SLUG,
+          name: "ENV-119 Test Project",
+          workItemKeyPrefix: `EV${process.pid.toString().slice(-3)}`,
+          workspaces: { create: { workspaceId: workspace.id } },
+        },
+        select: { id: true, slug: true },
+      });
+    }
 
-  let user = await db.user.findFirst({
-    where: { username: "env119-test-user" },
-    select: { id: true, username: true },
-  });
-  if (!user) {
-    user = await db.user.create({
-      data: {
-        username: "env119-test-user",
-        email: "env119-test@test.local",
-        kind: "agent",
-        status: "active",
-        passwordHash: "test",
-      },
+    let user = await db.user.findFirst({
+      where: { username: "env119-test-user" },
       select: { id: true, username: true },
     });
+    if (!user) {
+      user = await db.user.create({
+        data: {
+          username: "env119-test-user",
+          email: "env119-test@test.local",
+          kind: "agent",
+          status: "active",
+          passwordHash: "test",
+        },
+        select: { id: true, username: true },
+      });
+    }
+
+    let membership = await db.projectMember.findFirst({
+      where: { projectId: project.id, userId: user.id },
+      select: { id: true },
+    });
+    if (!membership) {
+      await db.projectMember.create({
+        data: { projectId: project.id, userId: user.id, role: "developer" },
+      });
+    }
+
+    return { project, user };
   }
 
-  let membership = await db.projectMember.findFirst({
-    where: { projectId: project.id, userId: user.id },
-    select: { id: true },
-  });
-  if (!membership) {
-    await db.projectMember.create({
-      data: { projectId: project.id, userId: user.id, role: "developer" },
+  async function makeTestTask(projectId: string, assigneeId: string) {
+    return db.task.create({
+      data: {
+        projectId,
+        title: `ENV-119 test ${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        status: "To Do",
+        assigneeId,
+      },
+      select: { id: true, projectId: true, assigneeId: true },
     });
   }
 
-  return { project, user };
-}
-
-async function makeTestTask(projectId: string, assigneeId: string) {
-  return db.task.create({
-    data: {
-      projectId,
-      title: `ENV-119 test ${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      status: "To Do",
-      assigneeId,
-    },
-    select: { id: true, projectId: true, assigneeId: true },
-  });
-}
-
-async function cleanupTask(taskId: string) {
-  const children = await db.task.findMany({
-    where: { parentTaskId: taskId },
-    select: { id: true },
-  });
-  for (const child of children) {
-    await db.subTask.deleteMany({ where: { taskId: child.id } }).catch(() => {});
-    await db.task.delete({ where: { id: child.id } }).catch(() => {});
+  async function cleanupTask(taskId: string) {
+    const children = await db.task.findMany({
+      where: { parentTaskId: taskId },
+      select: { id: true },
+    });
+    for (const child of children) {
+      await db.subTask.deleteMany({ where: { taskId: child.id } }).catch(() => {});
+      await db.task.delete({ where: { id: child.id } }).catch(() => {});
+    }
+    await db.subTask.deleteMany({ where: { taskId } }).catch(() => {});
+    await db.actionPlan.deleteMany({ where: { taskId } }).catch(() => {});
+    await db.task.delete({ where: { id: taskId } }).catch(() => {});
   }
-  await db.subTask.deleteMany({ where: { taskId } }).catch(() => {});
-  await db.actionPlan.deleteMany({ where: { taskId } }).catch(() => {});
-  await db.task.delete({ where: { id: taskId } }).catch(() => {});
-}
 
-async function cleanupBootstrap(projectId: string, userId: string) {
-  const tasks = await db.task.findMany({
-    where: { projectId },
-    select: { id: true },
-  });
-  for (const t of tasks) {
-    await cleanupTask(t.id);
+  async function cleanupBootstrap(projectId: string, userId: string) {
+    const tasks = await db.task.findMany({
+      where: { projectId },
+      select: { id: true },
+    });
+    for (const t of tasks) {
+      await cleanupTask(t.id);
+    }
+    await db.projectMember.deleteMany({ where: { projectId } }).catch(() => {});
+    await db.workspaceProject.deleteMany({ where: { projectId } }).catch(() => {});
+    await db.project.delete({ where: { id: projectId } }).catch(() => {});
+    const ws = await db.workspace.findFirst({ where: { slug: TEST_SLUG }, select: { id: true } });
+    if (ws) await db.workspace.delete({ where: { id: ws.id } }).catch(() => {});
+    await db.user.deleteMany({ where: { username: { startsWith: "env119-" } } }).catch(() => {});
   }
-  await db.projectMember.deleteMany({ where: { projectId } }).catch(() => {});
-  await db.workspaceProject.deleteMany({ where: { projectId } }).catch(() => {});
-  await db.project.delete({ where: { id: projectId } }).catch(() => {});
-  const ws = await db.workspace.findFirst({ where: { slug: TEST_SLUG }, select: { id: true } });
-  if (ws) await db.workspace.delete({ where: { id: ws.id } }).catch(() => {});
-  await db.user.deleteMany({ where: { username: { startsWith: "env119-" } } }).catch(() => {});
-}
 
-async function main() {
   const { project, user: agentUser } = await bootstrapTestEnv();
 
   let pass = 0;
   let fail = 0;
   const taskIds: string[] = [];
-  const outsiderIds: string[] = [];
 
   function ok(label: string, fn: () => void) {
     try {
@@ -488,7 +487,6 @@ async function main() {
         },
         select: { id: true },
       });
-      outsiderIds.push(outsider.id);
       try {
         await assert.rejects(
           () => persistActionPlan({
@@ -530,9 +528,6 @@ async function main() {
     });
 
     ok("persistActionPlan does not create rows on validation failure", () => {
-      // Validation happens before persistence — invalid input throws or returns errors
-      // before any DB write. This is enforced by validateActionPlanInput being called
-      // by the reply route before persistActionPlan.
       const result = validateActionPlanInput({ summary: "", steps: [] });
       assert.ok("errors" in result);
       assert.ok(result.errors.length > 0);
@@ -551,7 +546,6 @@ async function main() {
           ],
         },
       });
-      // Verify both steps were created in the same transaction
       const plan = await getActionPlanForTask(task6.id);
       assert.ok(plan);
       assert.equal(plan!.steps.length, 2);
@@ -559,16 +553,73 @@ async function main() {
       assert.equal(plan!.steps[1].stepId, "s2");
     });
 
+    await okAsync("rollback: failed plan persistence does not leave partial data", async () => {
+      const task7 = await makeTestTask(project.id, agentUser.id);
+      taskIds.push(task7.id);
+      // Persist a valid plan first
+      await persistActionPlan({
+        taskId: task7.id,
+        input: {
+          summary: "Original plan",
+          steps: [
+            { id: "s1", title: "Original step", acceptanceCriteria: [], kind: "sequential" as const },
+          ],
+        },
+      });
+      // Approve the plan to prevent replacement
+      await db.actionPlan.update({
+        where: { taskId: task7.id },
+        data: { approvedOn: new Date(), approvedById: agentUser.id },
+      });
+      // Attempt to replace the approved plan — should throw and leave original intact
+      await assert.rejects(
+        () => persistActionPlan({
+          taskId: task7.id,
+          input: {
+            summary: "Should fail",
+            steps: [
+              { id: "s1", title: "Should not exist", acceptanceCriteria: [], kind: "sequential" as const },
+            ],
+          },
+        }),
+        /already approved/i,
+      );
+      // Verify original plan is untouched
+      const plan = await getActionPlanForTask(task7.id);
+      assert.ok(plan);
+      assert.equal(plan!.summary, "Original plan");
+      assert.equal(plan!.steps.length, 1);
+      assert.equal(plan!.steps[0].title, "Original step");
+    });
+
+    await okAsync("rollback: transaction client isolates plan writes", async () => {
+      const task8 = await makeTestTask(project.id, agentUser.id);
+      taskIds.push(task8.id);
+      // Use a transaction to persist the plan, then verify it's visible outside
+      await db.$transaction(async (tx) => {
+        await persistActionPlan({
+          taskId: task8.id,
+          input: {
+            summary: "In-transaction plan",
+            steps: [
+              { id: "s1", title: "Tx step", acceptanceCriteria: ["c"], kind: "sequential" as const },
+            ],
+          },
+          client: tx,
+        });
+      });
+      const plan = await getActionPlanForTask(task8.id);
+      assert.ok(plan);
+      assert.equal(plan!.summary, "In-transaction plan");
+      assert.equal(plan!.steps[0].stepId, "s1");
+      assert.deepEqual(plan!.steps[0].acceptanceCriteria, ["c"]);
+    });
+
   } finally {
-    // Cleanup
     for (const taskId of taskIds) {
       await cleanupTask(taskId);
     }
-    for (const oid of outsiderIds) {
-      await db.user.delete({ where: { id: oid } }).catch(() => {});
-    }
     await cleanupBootstrap(project.id, agentUser.id);
-    // Remove temp database
     try { fs.unlinkSync(dbPath); } catch {}
   }
 
