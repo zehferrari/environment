@@ -138,8 +138,11 @@ async function main() {
         status: true,
         error: true,
         failedAt: true,
+        completedAt: true,
         completionAnomaly: true,
         completionAnomalyAt: true,
+        disposition: true,
+        settledByAction: true,
         sessionKey: true,
         jobs: { select: { id: true, status: true, attemptCount: true, availableAt: true, lastError: true, payload: true } },
       },
@@ -216,8 +219,11 @@ async function main() {
       select: { payload: true },
     });
 
-    // ---- A1: workflow action settles the run; a late error becomes an
-    // anomaly instead of being discarded or flipping the settle. ----
+    // ---- A1: an EPISODE-TERMINAL workflow action settles the run; a late
+    // error becomes an anomaly instead of being discarded or flipping the
+    // settle. ENV-118 changed which actions settle: `start` is
+    // continuation-required and deliberately leaves the run open, so this
+    // case uses ready_for_review. A0 below covers the continuation half. ----
     const mA = "lifecycle-a1";
     await grantMessage(mA);
     await enqueue({ target: commentTarget(mA), text: "turn A1 comment" });
@@ -226,16 +232,57 @@ async function main() {
       taskId: task.id,
       agentSlug,
       messageId: mA,
-      action: "start",
+      action: "ready_for_review",
     });
     const settledComment = await runRow(`task-comment:${agentSlug}:${task.id}:${mA}`);
     const settledChat = await runRow(`task-chat:${agentSlug}:${task.id}:${mA}`);
     assert.equal(settledComment.status, "complete", "workflow action settles the task-comment run");
     assert.equal(settledChat.status, "complete", "workflow action settles the task-chat run");
+    assert.equal(
+      settledComment.disposition,
+      "ready_for_review",
+      "an episode-terminal action records its disposition (WFI-005)",
+    );
+    assert.equal(
+      settledComment.settledByAction,
+      "ready_for_review",
+      "settledByAction names the action that actually settled the run",
+    );
     assert.deepEqual(
       [...settledComment.jobs, ...settledChat.jobs].map((job) => job.status),
       ["complete", "complete"],
       "workflow action settles both jobs",
+    );
+
+    // ---- A0 (ENV-118): a continuation-required action must NOT settle the
+    // run or its job. Reporting the job complete on `start` is exactly the
+    // "workflow succeeded before any work happened" bug. ----
+    const mA0 = "lifecycle-a0";
+    await grantMessage(mA0);
+    await enqueue({ target: commentTarget(mA0), text: "turn A0 comment" });
+    const startResult = await recordPmChannelRunWorkflowAction({
+      taskId: task.id,
+      agentSlug,
+      messageId: mA0,
+      action: "start",
+    });
+    assert.equal(startResult.actionEffect, "continue", "start is a continuation-required action");
+    assert.equal(startResult.turnComplete, false, "start does not complete the turn");
+    assert.equal(startResult.nextAction, "ready_for_review", "start names the terminal next action");
+    const startedRun = await runRow(`task-comment:${agentSlug}:${task.id}:${mA0}`);
+    assert.equal(startedRun.status, "queued", "start leaves the run active");
+    assert.equal(startedRun.completedAt, null, "start records no completion time");
+    assert.equal(startedRun.disposition, "continue", "start records the continue disposition");
+    assert.equal(startedRun.settledByAction, null, "start settles nothing, so it names no settling action");
+    assert.deepEqual(
+      startedRun.jobs.map((job) => job.status),
+      ["queued"],
+      "start leaves the PM job unsettled",
+    );
+    assert.equal(
+      await db.pmChannelContinuation.count({ where: { runId: startedRun.id, status: "armed" } }),
+      1,
+      "start arms exactly one continuation",
     );
 
     await recordPmChannelRunEvent({

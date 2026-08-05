@@ -696,6 +696,9 @@ async function pmRunSettlementSlice() {
       return { status: res.status, body: await res.json() as Record<string, unknown> };
     };
 
+    // ENV-118 split this in two. An EPISODE-TERMINAL action settles the run
+    // and its job; a CONTINUATION-REQUIRED action must not, because settling
+    // there reports a successful turn for work that has not happened yet.
     const assertSettled = async (slug: string, messageId: string, action: string) => {
       const { runStatuses, jobStatuses } = await runStates(slug, messageId);
       assert(runStatuses.length === 2, `${action}: both target-key runs must exist`);
@@ -707,6 +710,60 @@ async function pmRunSettlementSlice() {
         jobStatuses.every((status) => status === "complete"),
         `${action}: both PM jobs must settle complete (got ${jobStatuses.join(", ")})`,
       );
+      const dispositions = await db.pmChannelRun.findMany({
+        where: { messageId, agentSlug: slug },
+        select: { disposition: true, settledByAction: true },
+      });
+      assert(
+        dispositions.every((run) => run.disposition != null && run.settledByAction != null),
+        `${action}: a settling action must record its disposition and settledByAction`,
+      );
+    };
+
+    const assertContinued = async (slug: string, messageId: string, action: string) => {
+      const { runStatuses, jobStatuses } = await runStates(slug, messageId);
+      assert(runStatuses.length === 2, `${action}: both target-key runs must exist`);
+      assert(
+        runStatuses.every((status) => status !== "complete"),
+        `${action}: a continuation-required action must not settle the PM runs (got ${runStatuses.join(", ")})`,
+      );
+      assert(
+        jobStatuses.every((status) => status !== "complete"),
+        `${action}: a continuation-required action must not settle the PM jobs (got ${jobStatuses.join(", ")})`,
+      );
+      const runs = await db.pmChannelRun.findMany({
+        where: { messageId, agentSlug: slug },
+        select: { id: true, disposition: true, settledByAction: true },
+      });
+      assert(
+        runs.every((run) => run.disposition === "continue" && run.settledByAction === null),
+        `${action}: a continuation-required action records the continue disposition and settles nothing`,
+      );
+      assert(
+        await db.pmChannelContinuation.count({
+          where: { runId: { in: runs.map((run) => run.id) }, status: "armed" },
+        }) === runs.length,
+        `${action}: each run arms a continuation in the same transaction`,
+      );
+    };
+
+    const assertActionResult = (
+      body: Record<string, unknown>,
+      action: string,
+      effect: "continue" | "wait" | "finish",
+    ) => {
+      assert(
+        body.actionEffect === effect,
+        `${action}: the response must report actionEffect=${effect} (got ${String(body.actionEffect)})`,
+      );
+      assert(
+        typeof body.checkpoint === "string" && typeof body.nextAction === "string",
+        `${action}: the response must carry a checkpoint and a nextAction`,
+      );
+      assert(
+        body.turnComplete === (effect !== "continue"),
+        `${action}: turnComplete must follow the action effect`,
+      );
     };
 
     // add_subtask (assignee)
@@ -716,7 +773,8 @@ async function pmRunSettlementSlice() {
       subtaskText: "settle step one",
     });
     assert(added.status === 200, `add_subtask must succeed (got ${added.status}: ${JSON.stringify(added.body)})`);
-    await assertSettled("wf-assignee", addGrant, "add_subtask");
+    assertActionResult(added.body, "add_subtask", "continue");
+    await assertContinued("wf-assignee", addGrant, "add_subtask");
 
     // complete_subtask (assignee)
     const completeGrant = await grantFor("wf-assignee");
@@ -726,7 +784,8 @@ async function pmRunSettlementSlice() {
       minutesSpent: 3,
     });
     assert(completed.status === 200, `complete_subtask must succeed (got ${completed.status}: ${JSON.stringify(completed.body)})`);
-    await assertSettled("wf-assignee", completeGrant, "complete_subtask");
+    assertActionResult(completed.body, "complete_subtask", "continue");
+    await assertContinued("wf-assignee", completeGrant, "complete_subtask");
 
     // remove_subtask (assignee) — obsolete/duplicate checklist cleanup must
     // be possible through the same agent workflow capability.
@@ -736,14 +795,15 @@ async function pmRunSettlementSlice() {
       subtaskText: "obsolete duplicate step",
     });
     assert(obsolete.status === 200, `obsolete add_subtask must succeed (got ${obsolete.status}: ${JSON.stringify(obsolete.body)})`);
-    await assertSettled("wf-assignee", addObsoleteGrant, "add_subtask obsolete item");
+    await assertContinued("wf-assignee", addObsoleteGrant, "add_subtask obsolete item");
     const removeGrant = await grantFor("wf-assignee");
     const removed = await call("wf-assignee", removeGrant, {
       action: "remove_subtask",
       subtaskId: obsolete.body.subtaskId,
     });
     assert(removed.status === 200, `remove_subtask must succeed (got ${removed.status}: ${JSON.stringify(removed.body)})`);
-    await assertSettled("wf-assignee", removeGrant, "remove_subtask");
+    assertActionResult(removed.body, "remove_subtask", "continue");
+    await assertContinued("wf-assignee", removeGrant, "remove_subtask");
     assert(
       await db.subTask.findUnique({ where: { id: String(obsolete.body.subtaskId) } }) === null,
       "remove_subtask must delete the selected stale checklist item",
@@ -760,6 +820,7 @@ async function pmRunSettlementSlice() {
       requestedSubtask.status === 200,
       `request_subtask must succeed (got ${requestedSubtask.status}: ${JSON.stringify(requestedSubtask.body)})`,
     );
+    assertActionResult(requestedSubtask.body, "request_subtask", "wait");
     await assertSettled("wf-reviewer", requestSubtaskGrant, "request_subtask");
 
     // request_task (assignee -> epic acting manager)
@@ -785,6 +846,7 @@ async function pmRunSettlementSlice() {
       permissionScope: "Allow the assignee to retry the named deployment-host repository check after the reporter updates access.",
     });
     assert(activeFlagged.status === 200, `flag_blocker must succeed (got ${activeFlagged.status}: ${JSON.stringify(activeFlagged.body)})`);
+    assertActionResult(activeFlagged.body, "flag_blocker", "wait");
     await assertSettled("wf-assignee", activeBlockerGrant, "flag_blocker");
     assert((await db.task.findUniqueOrThrow({ where: { id: task.id } })).alertReporter, "flag_blocker must set alertReporter");
     const formalBlocker = await db.activityLog.findFirstOrThrow({
@@ -846,7 +908,8 @@ async function pmRunSettlementSlice() {
       comment: "dedicated deploy key now authenticates and git fetch succeeds",
     });
     assert(cleared.status === 200, `clear_blocker must succeed (got ${cleared.status}: ${JSON.stringify(cleared.body)})`);
-    await assertSettled("wf-assignee", clearBlockerGrant, "clear_blocker");
+    assertActionResult(cleared.body, "clear_blocker", "continue");
+    await assertContinued("wf-assignee", clearBlockerGrant, "clear_blocker");
     assert(!(await db.task.findUniqueOrThrow({ where: { id: task.id } })).alertReporter, "clear_blocker must clear alertReporter");
 
     const preservedBlockerGrant = await grantFor("wf-assignee");
@@ -871,7 +934,7 @@ async function pmRunSettlementSlice() {
       comment: "external decision arrived; repository alert still needs operator attention",
     });
     assert(preservedClear.status === 200, `clear_blocker with independent alert must succeed (got ${preservedClear.status}: ${JSON.stringify(preservedClear.body)})`);
-    await assertSettled("wf-assignee", preservedClearGrant, "clear_blocker");
+    await assertContinued("wf-assignee", preservedClearGrant, "clear_blocker");
     assert((await db.task.findUniqueOrThrow({ where: { id: task.id } })).alertReporter, "clear_blocker must preserve a newer independent true alert");
     await db.task.update({ where: { id: task.id }, data: { alertReporter: false } });
 
@@ -882,6 +945,7 @@ async function pmRunSettlementSlice() {
       comment: "requested extra scope blocks the approved plan",
     });
     assert(flagged.status === 200, `flag_extra_work_blocker must succeed (got ${flagged.status}: ${JSON.stringify(flagged.body)})`);
+    assertActionResult(flagged.body, "flag_extra_work_blocker", "wait");
     await assertSettled("wf-assignee", blockerGrant, "flag_extra_work_blocker");
 
     // Role violation: a reviewer calling add_subtask (implementation kind)

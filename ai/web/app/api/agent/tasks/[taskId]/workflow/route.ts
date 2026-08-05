@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { sendTaskCommentNotifications, sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
 import { recordPmChannelRunWorkflowAction } from "@/lib/agents/pm-channel/runs";
+import { workflowActionResult } from "@/lib/agents/workflow/action-effect";
 import { verifyTaskWorkflowToken } from "@/lib/agents/workflow/token/task";
 import {
   canApproveActionPlanForActor,
@@ -110,11 +111,17 @@ async function moveTaskStatus(args: {
   publishBoardTouch(args.projectId);
 }
 
-export async function POST(
+// ENV-118. Every successful action answers with an explicit action result, so
+// the agent learns whether its episode continues instead of inferring "done"
+// from a bare `ok: true`. The handler below stays a plain per-action function;
+// the exported POST decorates whatever it returned.
+async function handleTaskWorkflowAction(
   req: NextRequest,
   ctx: { params: Promise<{ taskId: string }> },
+  captured: { action?: WorkflowAction; taskId?: string },
 ) {
   const { taskId } = await ctx.params;
+  captured.taskId = taskId;
   let payload: {
     messageId?: unknown;
     token?: unknown;
@@ -150,6 +157,7 @@ export async function POST(
   if (comment.length > 8000) {
     return NextResponse.json({ error: "comment must be <= 8000 chars" }, { status: 400 });
   }
+  captured.action = action;
 
   const original = await db.agentChatMessage.findUnique({
     where: { id: messageId },
@@ -1635,4 +1643,35 @@ export async function POST(
   }
 
   return NextResponse.json({ error: "Unsupported action" }, { status: 400 });
+}
+
+export async function POST(
+  req: NextRequest,
+  ctx: { params: Promise<{ taskId: string }> },
+) {
+  const captured: { action?: WorkflowAction; taskId?: string } = {};
+  const response = await handleTaskWorkflowAction(req, ctx, captured);
+  if (!response.ok || !captured.action) return response;
+
+  let body: Record<string, unknown>;
+  try {
+    body = (await response.clone().json()) as Record<string, unknown>;
+  } catch {
+    return response;
+  }
+  if (body.ok !== true) return response;
+
+  // taskState is read AFTER the action so the agent sees where the task
+  // actually landed, not where the handler assumed it would.
+  const current = captured.taskId
+    ? await db.task.findUnique({
+        where: { id: captured.taskId },
+        select: { status: true },
+      })
+    : null;
+  const result = workflowActionResult({
+    action: captured.action,
+    taskState: current?.status ?? null,
+  });
+  return NextResponse.json({ ...body, ...result }, { status: response.status });
 }
