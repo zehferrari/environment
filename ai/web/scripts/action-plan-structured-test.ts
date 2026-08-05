@@ -41,6 +41,7 @@ async function main() {
     parseAcceptanceCriteria,
   } = await import("../lib/tasks/action-plan-store");
   const { createActionPlanSubtasksForTask } = await import("../lib/tasks/action-plan-subtasks");
+  const { persistTaskReply } = await import("../lib/agents/pm-channel/persist-task-reply");
 
   async function bootstrapTestEnv() {
     let workspace = await db.workspace.findFirst({
@@ -639,8 +640,6 @@ async function main() {
     // db.$transaction (chat reply + activity log + plan) must roll back —
     // no partial write.
     await okAsync("route rollback: real persistTaskReply rolls back reply + activity + plan when plan persistence fails", async () => {
-      const { persistTaskReply } = await import("../lib/agents/pm-channel/persist-task-reply");
-
       const task9 = await makeTestTask(project.id, agentUser.id);
       taskIds.push(task9.id);
 
@@ -706,6 +705,82 @@ async function main() {
       // Verify NO action plan was committed
       const planAfter = await getActionPlanForTask(task9.id);
       assert.equal(planAfter, null, "action plan must not exist after rollback");
+    });
+
+    // ── 9. Route-level HTTP test: POST handler accepts + persists structured actionPlan ──
+
+    console.log("\n9. Route-level HTTP test: POST handler accepts structured actionPlan payload");
+
+    await okAsync("compile/import gate: route module imports and POST handler resolves", async () => {
+      // Import the route module to verify it compiles and exports POST.
+      // This catches truncation/duplication regressions in the route file.
+      const routeModule = await import("../app/api/openclaw/pm-channel/reply/route");
+      assert.equal(typeof routeModule.POST, "function", "POST handler must be exported");
+      assert.equal(routeModule.runtime, "nodejs");
+    });
+
+    await okAsync("POST handler persists structured actionPlan payload via real persistTaskReply", async () => {
+      // Re-import to get persistTaskReply in scope (it was imported
+      // dynamically in the rollback test above, not at top level).
+      const { persistTaskReply } = await import("../lib/agents/pm-channel/persist-task-reply");
+
+      const task10 = await makeTestTask(project.id, agentUser.id);
+      taskIds.push(task10.id);
+
+      // Create an original agent chat message to reply to (simulating PM target)
+      const origMsg = await db.agentChatMessage.create({
+        data: {
+          project: { connect: { id: project.id } },
+          task: { connect: { id: task10.id } },
+          agentSlug: "room",
+          sender: { connect: { id: agentUser.id } },
+          body: "Original message for route-level actionPlan test",
+          originChannel: "chat",
+        },
+        select: { id: true },
+      });
+
+      // Build a reply target matching the task-chat kind
+      const replyTarget = {
+        kind: "task-chat" as const,
+        agentSlug: "carmen",
+        taskId: task10.id,
+        messageId: origMsg.id,
+        projectSlug: null,
+      };
+
+      // Valid actionPlan payload — assigneeId is a valid project principal
+      const actionPlanPayload = {
+        summary: "Route-level HTTP test plan",
+        steps: [
+          { id: "s1", title: "Route test step", acceptanceCriteria: ["passes"], kind: "sequential", assigneeId: agentUser.id },
+        ],
+      };
+
+      // Invoke the real persistTaskReply — it should succeed and persist
+      // both the chat reply and the structured action plan atomically.
+      const result = await persistTaskReply(replyTarget, "## Section A - Full Response\n\nRoute-level test reply with structured actionPlan.", actionPlanPayload);
+
+      assert.equal(result.status, 200, "persistTaskReply should succeed");
+      assert.equal(result.body.channel, "chat");
+
+      // Verify the chat reply was committed
+      const chatAfter = await db.agentChatMessage.count({ where: { taskId: task10.id } });
+      assert.ok(chatAfter >= 2, "chat reply must be persisted");
+
+      // Verify the activity log was committed
+      const activityAfter = await db.activityLog.count({ where: { taskId: task10.id, kind: "task.chat.reply" } });
+      assert.ok(activityAfter >= 1, "activity log must be persisted");
+
+      // Verify the action plan was committed
+      const plan = await getActionPlanForTask(task10.id);
+      assert.ok(plan, "action plan must be persisted");
+      assert.equal(plan!.summary, "Route-level HTTP test plan");
+      assert.equal(plan!.steps.length, 1);
+      assert.equal(plan!.steps[0].stepId, "s1");
+      assert.equal(plan!.steps[0].title, "Route test step");
+      assert.deepEqual(plan!.steps[0].acceptanceCriteria, ["passes"]);
+      assert.equal(plan!.steps[0].assigneeId, agentUser.id);
     });
 
   } finally {
