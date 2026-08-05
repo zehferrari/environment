@@ -46,6 +46,7 @@ import {
   persistActionPlan,
   persistActionPlanFromMarkdown,
   type ActionPlanInput,
+  type ActionPlanValidationError,
 } from "@/lib/tasks/action-plan-store";
 import { createActionPlanSubtasksForTask } from "@/lib/tasks/action-plan-subtasks";
 
@@ -201,6 +202,35 @@ async function persistTaskReply(
     ? normalizeDiscussionReplySections(body)
     : body;
 
+  // ENV-119: Validate action plan payload BEFORE persisting the chat reply
+  // to enforce the no-partial-write contract. If validation fails, return 400
+  // without persisting anything. If validation passes, persist the chat reply
+  // and the structured action plan atomically in the same transaction.
+  let validatedActionPlan: ActionPlanInput | null = null;
+  let actionPlanValidationErrors: ActionPlanValidationError[] | null = null;
+  if (origin.channel === "chat" && actionPlanPayload) {
+    const validated = validateActionPlanInput(actionPlanPayload);
+    if ("errors" in validated) {
+      actionPlanValidationErrors = validated.errors;
+    } else {
+      validatedActionPlan = validated;
+    }
+  }
+  if (actionPlanValidationErrors) {
+    return {
+      status: 400,
+      body: { error: "Invalid action plan", details: actionPlanValidationErrors },
+    };
+  }
+
+  // Fetch task approvedOn state before the transaction (needed for action plan persistence decision)
+  const taskForActionPlan = validatedActionPlan || (origin.channel === "chat" && !actionPlanPayload)
+    ? await db.task.findUnique({
+        where: { id: target.taskId },
+        select: { approvedOn: true },
+      })
+    : null;
+
   const reply = await db.$transaction(async (tx) => {
     if (origin.channel === "comment") {
       const comment = await tx.comment.create({
@@ -272,36 +302,18 @@ async function persistTaskReply(
     return { id: created.id, channel: "chat" as const };
   });
 
-  // ENV-119: Persist structured action plan if provided, or fall back to
-  // legacy Markdown parsing for replies on unapproved tasks.
-  if (reply.channel === "chat" && actionPlanPayload) {
-    const validated = validateActionPlanInput(actionPlanPayload);
-    if ("errors" in validated) {
-      return {
-        status: 400,
-        body: { error: "Invalid action plan", details: validated.errors },
-      };
-    }
-    const task = await db.task.findUnique({
-      where: { id: target.taskId },
-      select: { approvedOn: true },
-    });
-    if (task && !task.approvedOn) {
-      await persistActionPlan({ taskId: target.taskId, input: validated });
-    }
-  } else if (reply.channel === "chat" && !actionPlanPayload) {
+  // ENV-119: Persist structured action plan or legacy Markdown fallback.
+  // Validation already happened above (before the transaction). Now persist
+  // the structured plan using the transaction client for atomicity.
+  if (reply.channel === "chat" && validatedActionPlan && taskForActionPlan && !taskForActionPlan.approvedOn) {
+    await persistActionPlan({ taskId: target.taskId, input: validatedActionPlan });
+  } else if (reply.channel === "chat" && !actionPlanPayload && taskForActionPlan && !taskForActionPlan.approvedOn) {
     // Legacy Markdown fallback bridge: parse Section A/B replies on
     // unapproved tasks and store parsed steps as ActionPlanStep rows.
-    const task = await db.task.findUnique({
-      where: { id: target.taskId },
-      select: { approvedOn: true },
-    });
-    if (task && !task.approvedOn) {
-      await persistActionPlanFromMarkdown({
-        taskId: target.taskId,
-        body: persistedBody,
-      }).catch(() => null);
-    }
+    await persistActionPlanFromMarkdown({
+      taskId: target.taskId,
+      body: persistedBody,
+    }).catch(() => null);
   }
 
   const reviewAutomation = reply.channel === "comment"

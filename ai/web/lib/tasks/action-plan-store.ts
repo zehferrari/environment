@@ -168,23 +168,41 @@ export async function persistActionPlan(args: {
     throw new Error("Action plan already approved — cannot replace");
   }
 
-  // Verify assigneeIds reference active project principals if any are set
+  // Verify assigneeIds reference active principals of the task's project
   const assigneeIds = steps.filter((s) => s.assigneeId).map((s) => s.assigneeId!) as string[];
   if (assigneeIds.length > 0) {
-    const validAssignees = await client.user.findMany({
-      where: { id: { in: assigneeIds }, status: "active" },
-      select: { id: true },
+    const task = await client.task.findUnique({
+      where: { id: args.taskId },
+      select: { projectId: true },
     });
-    const validIds = new Set(validAssignees.map((u) => u.id));
+    if (!task) {
+      throw new Error(`Task not found: ${args.taskId}`);
+    }
+    // Look up active project members (principals) for the task's project
+    const members = await client.projectMember.findMany({
+      where: {
+        projectId: task.projectId,
+        role: { not: "inactive" },
+      },
+      select: { userId: true },
+    });
+    const validPrincipalIds = new Set(members.map((m) => m.userId));
     for (const id of assigneeIds) {
-      if (!validIds.has(id)) {
-        throw new Error(`Invalid assigneeId: ${id} — not an active user`);
+      if (!validPrincipalIds.has(id)) {
+        throw new Error(
+          `Invalid assigneeId: ${id} — not an active principal of the task's project`,
+        );
       }
     }
   }
 
-  const txClient = args.client ?? db;
-  const plan = await (txClient as typeof db).$transaction(async (tx: Prisma.TransactionClient) => {
+  // Perform writes directly on the supplied client. When a TransactionClient
+  // is passed (from an outer $transaction), we must NOT call $transaction on
+  // it — Prisma TransactionClient has no $transaction method. When no client
+  // is supplied, we use the default db and wrap in a transaction.
+  const writeTarget = args.client ?? db;
+
+  async function doWrites(tx: Prisma.TransactionClient | typeof db) {
     // Delete existing unapproved plan + steps if present (idempotent replace)
     if (existing) {
       await tx.actionPlanStep.deleteMany({ where: { actionPlanId: existing.id } });
@@ -210,7 +228,11 @@ export async function persistActionPlan(args: {
     });
 
     return created;
-  });
+  }
+
+  const plan = args.client
+    ? await doWrites(args.client)
+    : await db.$transaction(async (tx: Prisma.TransactionClient) => doWrites(tx));
 
   return {
     id: plan.id,
