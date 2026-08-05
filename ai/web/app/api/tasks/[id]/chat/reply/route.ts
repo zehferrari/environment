@@ -1,7 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
-import { pmChannelRunTargetKey } from "@/lib/agents/pm-channel/bus";
 import { verifyTaskChatReplyToken } from "@/lib/agents/workflow/chat/task/token";
 import { sendTaskCommentNotifications } from "@/lib/agents/workflow/notifications/task";
 import { revalidateTaskReplyScope, revalidateTaskShell } from "@/lib/tasks/cache";
@@ -171,12 +170,15 @@ export async function POST(
     originCommentId: original.originCommentId,
   });
 
-  // ENV-122: Look up the active PmChannelRun to wire runId provenance.
-  const runId = await db.pmChannelRun.findFirst({
+  // ENV-122: Look up the active PmChannelRun to wire runId, provider, and model provenance.
+  const runProvenance = await db.pmChannelRun.findFirst({
     where: { messageId, agentSlug, status: { in: ["queued", "accepted", "streaming", "completed"] } },
-    select: { id: true },
+    select: { id: true, provider: true, model: true },
     orderBy: { createdAt: "desc" },
-  }).then((r) => r?.id ?? null);
+  });
+  const runId = runProvenance?.id ?? null;
+  const runProvider = runProvenance?.provider ?? null;
+  const runModel = runProvenance?.model ?? null;
 
   const reply = await db.$transaction(async (tx) => {
     if (origin.channel === "comment") {
@@ -189,6 +191,8 @@ export async function POST(
           commentKind: "agent_reply",
           isGenerated: false,
           runId,
+          provider: runProvider,
+          model: runModel,
         },
         select: { id: true },
       });

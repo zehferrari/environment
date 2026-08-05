@@ -131,11 +131,14 @@ export async function persistTaskReply(
       })
     : null;
 
-  // ENV-122: Look up the active PmChannelRun to wire runId provenance.
-  const runId = await db.pmChannelRun.findUnique({
+  // ENV-122: Look up the active PmChannelRun to wire runId, provider, and model provenance.
+  const runProvenance = await db.pmChannelRun.findUnique({
     where: { targetKey: pmChannelRunTargetKey(target) },
-    select: { id: true },
-  }).then((r) => r?.id ?? null);
+    select: { id: true, provider: true, model: true },
+  });
+  const runId = runProvenance?.id ?? null;
+  const runProvider = runProvenance?.provider ?? null;
+  const runModel = runProvenance?.model ?? null;
 
   const reply = await db.$transaction(async (tx) => {
     if (origin.channel === "comment") {
@@ -148,6 +151,8 @@ export async function persistTaskReply(
           commentKind: "agent_reply",
           isGenerated: false,
           runId,
+          provider: runProvider,
+          model: runModel,
         },
         select: { id: true },
       });

@@ -68,6 +68,10 @@ export interface SendPmChannelTurnResult {
   error?: string;
   driver: "openclaw-pm-channel";
   transportMode?: PmChannelTransportMode;
+  // ENV-122: LLM provenance captured from the OpenClaw gateway dispatch
+  // response so comment metadata can copy provider/model from the run.
+  provider?: string | null;
+  model?: string | null;
 }
 
 export function buildPmTurnSessionKey(baseSessionKey: string, messageId: string): string {
@@ -346,11 +350,25 @@ export async function dispatchOpenClawPmChannelTurnViaHttp(
       return result;
     }
 
+    // ENV-122: Parse provider/model from the OpenClaw gateway dispatch
+    // response so they can be persisted on the PmChannelRun and copied
+    // into comment metadata at all comment creation sites.
+    let provider: string | null = null;
+    let model: string | null = null;
+    try {
+      const body = await res.json().catch(() => null);
+      provider = typeof body?.provider === "string" ? body.provider : null;
+      model = typeof body?.model === "string" ? body.model : null;
+    } catch {
+      // Non-JSON response — leave provider/model null.
+    }
     const result: SendPmChannelTurnResult = {
       ok: true,
       status: res.status,
       driver: "openclaw-pm-channel",
       transportMode,
+      provider,
+      model,
     };
     await recordPmChannelRunDispatch({ target: args.replyTarget, result });
     return result;

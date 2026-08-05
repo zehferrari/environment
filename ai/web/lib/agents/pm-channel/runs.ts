@@ -525,6 +525,10 @@ export async function recordPmChannelRunDispatch(args: {
   const now = new Date();
   const ok = args.result.ok;
   const leaseExpiresAt = ok ? new Date(now.getTime() + leaseDurationMs()) : null;
+  // ENV-122: Persist provider/model provenance from the dispatch response
+  // so comment creation sites can copy them from the run.
+  const provider = ok ? (args.result.provider ?? null) : null;
+  const model = ok ? (args.result.model ?? null) : null;
   await record(
     () => db.pmChannelRun.update({
       where: { targetKey: pmChannelRunTargetKey(args.target) },
@@ -542,6 +546,8 @@ export async function recordPmChannelRunDispatch(args: {
         finishedAt: ok ? null : now,
         finishedReason: ok ? null : clippedError(args.result.error) ?? "dispatch_failed",
         lastEventAt: now,
+        ...(provider !== null ? { provider } : {}),
+        ...(model !== null ? { model } : {}),
       },
     }),
     "dispatch run state",

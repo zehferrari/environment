@@ -66,6 +66,33 @@ function replyBody(payload: Record<string, unknown>) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+// ENV-122: Extract provider/model from the OpenClaw reply payload's agentMeta,
+// then persist them to the PmChannelRun so comment creation sites can copy
+// provenance from the run row instead of each needing its own model identity.
+function extractRunProvenance(payload: Record<string, unknown>): { provider: string | null; model: string | null } {
+  const meta = (payload.meta ?? payload.result) as Record<string, unknown> | undefined;
+  const agentMeta = meta?.agentMeta as Record<string, unknown> | undefined;
+  return {
+    provider: typeof agentMeta?.provider === "string" ? agentMeta.provider : null,
+    model: typeof agentMeta?.model === "string" ? agentMeta.model : null,
+  };
+}
+
+async function persistRunProvenance(target: PmChannelReplyTarget, provenance: { provider: string | null; model: string | null }) {
+  if (provenance.provider === null && provenance.model === null) return;
+  try {
+    await db.pmChannelRun.update({
+      where: { targetKey: pmChannelRunTargetKey(target) },
+      data: {
+        ...(provenance.provider !== null ? { provider: provenance.provider } : {}),
+        ...(provenance.model !== null ? { model: provenance.model } : {}),
+      },
+    });
+  } catch (err) {
+    console.warn("[pm-channel] failed to persist run provenance", err);
+  }
+}
+
 async function persistDirectReply(target: Extract<PmChannelReplyTarget, { kind: "direct" }>, body: string) {
   const [original, agentUser] = await Promise.all([
     db.directAgentChatMessage.findUnique({
@@ -354,6 +381,12 @@ export async function POST(req: NextRequest) {
     });
     return NextResponse.json({ ok: true, duplicate: true });
   }
+
+  // ENV-122: Extract provider/model from the OpenClaw reply payload and
+  // persist them to the PmChannelRun before persisting the reply, so the
+  // comment creation sites can copy provenance from the run row.
+  const provenance = extractRunProvenance(payload);
+  await persistRunProvenance(target, provenance);
 
   const actionPlanPayload = payload.actionPlan;
 

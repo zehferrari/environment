@@ -221,6 +221,27 @@ export async function applyPmChannelStreamCallback(args: {
     return { status: 200, body: { ok: true, silent: true } };
   }
 
+  // ENV-122: Extract provider/model from the stream payload's agentMeta and
+  // persist them to the PmChannelRun. The final event carries the completed
+  // turn's metadata from OpenClaw; earlier events may also include it.
+  const streamMeta = (args.payload.meta ?? args.payload.result) as Record<string, unknown> | undefined;
+  const streamAgentMeta = streamMeta?.agentMeta as Record<string, unknown> | undefined;
+  const streamProvider = typeof streamAgentMeta?.provider === "string" ? streamAgentMeta.provider : null;
+  const streamModel = typeof streamAgentMeta?.model === "string" ? streamAgentMeta.model : null;
+  if (streamProvider || streamModel) {
+    try {
+      await db.pmChannelRun.update({
+        where: { targetKey: pmChannelRunTargetKey(target) },
+        data: {
+          ...(streamProvider ? { provider: streamProvider } : {}),
+          ...(streamModel ? { model: streamModel } : {}),
+        },
+      });
+    } catch (err) {
+      console.warn("[pm-channel] failed to persist run provenance from stream", err);
+    }
+  }
+
   const eventInput = {
     target,
     event,

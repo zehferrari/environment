@@ -844,6 +844,11 @@ model PmChannelRun {
   completedAt         DateTime?
   failedAt            DateTime?
   lastEventAt         DateTime?
+  // ENV-122: LLM provenance — the provider and model that handled this run.
+  // Captured at dispatch time so comment metadata can copy them without
+  // the comment creation sites needing their own model identity source.
+  provider            String?
+  model               String?
   streamSeq           Int                    @default(0)
   workItemGrantUsedAt DateTime?
   createdAt           DateTime               @default(now())
