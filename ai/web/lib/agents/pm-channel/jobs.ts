@@ -749,6 +749,29 @@ export async function runPmChannelWorkerDrain(
     console.warn("[pm-channel] episode rollover barrier sweep failed", err);
   }
 
+  // ENV-123: detect and repair BEFORE the continuation drain, for the same
+  // reason the episode seal runs before it — a recovery continuation the
+  // watchdog queues here goes out in this pass instead of the next one. The
+  // watchdog only ever writes outbox rows and settles dead runs, so the drain
+  // below is what actually schedules the turns, exactly as it does for
+  // ordinary continuations.
+  let watchdog = { findings: 0, repaired: 0, escalated: 0, breakerOpen: 0 };
+  try {
+    const { runWorkflowWatchdog } = await import("@/lib/agents/watchdog/run");
+    const report = await runWorkflowWatchdog();
+    watchdog = {
+      findings: report.counts.findings,
+      repaired: report.repaired,
+      escalated: report.escalated,
+      breakerOpen: report.breakerOpen,
+    };
+    for (const error of report.errors.slice(0, 3)) {
+      console.warn("[pm-channel] workflow watchdog", error);
+    }
+  } catch (err) {
+    console.warn("[pm-channel] workflow watchdog failed", err);
+  }
+
   let continuations = { dispatched: 0, superseded: 0, failed: 0 };
   try {
     const { drainPmChannelContinuations } = await import(
@@ -779,6 +802,7 @@ export async function runPmChannelWorkerDrain(
     continuations,
     episodeBarriers,
     episodeSuccessors,
+    watchdog,
   };
 }
 

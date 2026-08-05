@@ -457,6 +457,7 @@ model Task {
   checklist              SubTask[]               @relation("TaskChecklist")
   repositoryRun          TaskRepositoryRun?
   executionEpisodes      TaskExecutionEpisode[]
+  executionState         TaskExecutionState?
 
   @@index([projectId])
   @@index([workItemKey])
@@ -580,6 +581,57 @@ model TaskExecutionEpisode {
   @@index([exhaustedByMessageId])
   @@index([successorScheduledAt])
   @@map("task_execution_episodes")
+}
+
+// ENV-123 — the operator-visible execution state of a task.
+//
+// One row per Task. Everything an operator previously had to infer by reading
+// comments ("is this agent actually working, or did its turn die twenty
+// minutes ago?") is a column here, written by the watchdog pass and by ordinary
+// workflow transitions. The task detail page renders it verbatim:
+//
+//   Execution: stalled
+//   Reason: no active run
+//   Last durable action: started at 09:24
+//   Recovery: new run queued
+//
+// `recoveryCount` and `breakerOpenUntil` are the circuit breaker. A detector
+// whose repair does not stick would otherwise re-fire forever, so the watchdog
+// stops repairing a task after a bounded number of auto-recoveries per window
+// and escalates instead. That is what keeps the watchdog from becoming the
+// runaway loop it exists to catch.
+model TaskExecutionState {
+  id        String @id @default(cuid())
+  taskId    String @unique @map("task_id")
+  task      Task   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  projectId String? @map("project_id")
+  // running | idle | stalled | blocked | waiting_review
+  state     String
+  // Stable machine identity for the reason, e.g. "no_active_run".
+  reasonCode   String?  @map("reason_code")
+  // One human sentence rendered under "Reason:".
+  reasonDetail String?  @map("reason_detail")
+  // The last workflow action PM durably recorded for this task, and when.
+  lastDurableAction   String?   @map("last_durable_action")
+  lastDurableActionAt DateTime? @map("last_durable_action_at")
+  // What the watchdog did about it, and when. Null = nothing was needed.
+  recoveryAction String?   @map("recovery_action")
+  recoveryAt     DateTime? @map("recovery_at")
+  // Which detector produced the current state.
+  detectorId     String?   @map("detector_id")
+  // Circuit breaker accounting.
+  recoveryCount    Int       @default(0) @map("recovery_count")
+  recoveryWindowAt DateTime? @map("recovery_window_at")
+  breakerOpenUntil DateTime? @map("breaker_open_until")
+  // Set when the breaker tripped or an escalate-only detector fired, so the
+  // reporter/acting manager is notified exactly once per episode of trouble.
+  escalatedAt DateTime? @map("escalated_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@index([state])
+  @@index([projectId])
+  @@map("task_execution_states")
 }
 
 // Lightweight sub-task checklist (ENV-60). A SubTask is NOT a Task: it has no
