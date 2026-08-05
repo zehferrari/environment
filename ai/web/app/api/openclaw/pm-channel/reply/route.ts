@@ -42,14 +42,9 @@ import {
   taskWorkflowReasonForMessage,
 } from "@/lib/agents/workflow/execution-continuation";
 import {
-  validateActionPlanInput,
-  persistActionPlan,
-  persistActionPlanFromMarkdown,
-  type ActionPlanInput,
-  type ActionPlanValidationError,
-} from "@/lib/tasks/action-plan-store";
-import { createActionPlanSubtasksForTask } from "@/lib/tasks/action-plan-subtasks";
-import { persistTaskReply } from "@/lib/agents/pm-channel/persist-task-reply";
+  persistTaskReply,
+  activeAgentUser,
+} from "@/lib/agents/pm-channel/persist-task-reply";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -69,21 +64,6 @@ function bearerToken(req: NextRequest) {
 function replyBody(payload: Record<string, unknown>) {
   const value = payload.text ?? payload.body;
   return typeof value === "string" ? value.trim() : "";
-}
-
-async function activeAgentUser(agentSlug: string) {
-  const agent = await db.agent.findUnique({
-    where: { slug: agentSlug },
-    select: {
-      slug: true,
-      deactivatedAt: true,
-      user: { select: { id: true, status: true } },
-    },
-  });
-  if (!agent?.user || agent.deactivatedAt || agent.user.status !== "active") {
-    return null;
-  }
-  return agent.user;
 }
 
 async function persistDirectReply(target: Extract<PmChannelReplyTarget, { kind: "direct" }>, body: string) {
@@ -142,19 +122,6 @@ async function persistDirectReply(target: Extract<PmChannelReplyTarget, { kind: 
   return { status: 200, body: { ok: true, id: reply.id, channel: "direct" }, streamText: body };
 }
 
-async function resolveTaskReplyOrigin(args: {
-  messageId: string;
-  taskId: string;
-  agentSlug: string;
-  targetKind: "task-chat" | "task-comment";
-  originChannel?: string | null;
-  originCommentId?: string | null;
-}) {
-  if (args.targetKind === "task-comment" || args.originChannel === "comment") {
-    return { channel: "comment" as const, originCommentId: args.originCommentId ?? null };
-  }
-  return { channel: "chat" as const, originCommentId: null };
-}
 
 
 async function persistEpicReply(
