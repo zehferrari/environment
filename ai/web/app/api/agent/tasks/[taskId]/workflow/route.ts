@@ -48,12 +48,19 @@ import {
   type FormalBlockerReport,
 } from "@/lib/tasks/formal-blocker";
 import { hasNewerIndependentTaskAlert } from "@/lib/tasks/checkpoint-blocker";
+import {
+  EPISODE_CLOSE_REASON,
+  latestTaskExecutionCheckpoint,
+  taskExecutionEpisodeHistory,
+  type EpisodeCheckpoint,
+} from "@/lib/agents/episodes/lifecycle";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const ACTIONS = [
   "start",
+  "checkpoint",
   "publish_checkpoint",
   "ready_for_review",
   "submit_review",
@@ -136,7 +143,7 @@ async function moveTaskStatus(args: {
 async function handleTaskWorkflowAction(
   req: NextRequest,
   ctx: { params: Promise<{ taskId: string }> },
-  captured: { action?: WorkflowAction; taskId?: string },
+  captured: { action?: WorkflowAction; taskId?: string; agentSlug?: string },
 ) {
   const { taskId } = await ctx.params;
   captured.taskId = taskId;
@@ -156,6 +163,11 @@ async function handleTaskWorkflowAction(
     permissionKind?: unknown;
     permissionScope?: unknown;
     blockerReport?: unknown;
+    completedWork?: unknown;
+    evidence?: unknown;
+    openChecklist?: unknown;
+    nextAction?: unknown;
+    risks?: unknown;
   };
   try {
     payload = (await req.json()) as typeof payload;
@@ -283,6 +295,9 @@ async function handleTaskWorkflowAction(
   if (!agent?.user || agent.deactivatedAt || agent.user.status !== "active") {
     return NextResponse.json({ error: "Agent not active" }, { status: 403 });
   }
+  // ENV-121: the response decorator needs the slug to report episode/cycle
+  // state back to the caller.
+  captured.agentSlug = agent.slug;
   if (!task || task.deletedAt) {
     return NextResponse.json({ error: "Task not found" }, { status: 404 });
   }
@@ -402,6 +417,70 @@ async function handleTaskWorkflowAction(
       status: "In Progress",
       worktreePath: worktree.required ? worktree.worktreePath : null,
       branchName: worktree.required ? worktree.branchName : null,
+    });
+  }
+
+  // ENV-121. The agent's own words, persisted before its episode budget runs
+  // out. Every other continuation-required action folds a DERIVED checkpoint
+  // into the episode ("checklist_updated (complete_subtask)"), which records
+  // that something happened but not what the agent knows. This action is how
+  // the next episode inherits intent — the next exact action and the live
+  // risks — instead of re-deriving them from the board.
+  //
+  // It writes nothing to the task itself, so it deliberately does not spend a
+  // cycle: an agent must never have to choose between checkpointing and
+  // working.
+  if (action === "checkpoint") {
+    if (!isAssignee) {
+      return NextResponse.json({ error: "Only the assignee can checkpoint execution state" }, { status: 403 });
+    }
+    if (task.status !== "In Progress") {
+      return NextResponse.json({
+        error: "Execution checkpoints only exist for active implementation. Move the task to In Progress with action=start first.",
+        currentStatus: task.status,
+      }, { status: 409 });
+    }
+    const checkpoint = {
+      completedWork: payload.completedWork,
+      evidence: payload.evidence,
+      openChecklist: payload.openChecklist,
+      nextAction: payload.nextAction,
+      risks: payload.risks,
+    } as EpisodeCheckpoint;
+    if (
+      checkpoint.completedWork === undefined &&
+      checkpoint.evidence === undefined &&
+      checkpoint.openChecklist === undefined &&
+      checkpoint.nextAction === undefined &&
+      checkpoint.risks === undefined
+    ) {
+      return NextResponse.json({
+        error: "checkpoint requires at least one of completedWork, evidence, openChecklist, nextAction, risks.",
+      }, { status: 400 });
+    }
+    // The recorder itself is the single writer (applyWorkflowActionEpisode),
+    // so the checkpoint and the run bookkeeping share one transaction and the
+    // mutation callback has nothing of its own to do.
+    const outcome = await runWorkflowActionAtomically(
+      {
+        taskId: task.id,
+        agentSlug: agent.slug,
+        messageId,
+        action,
+        taskState: task.status,
+        checkpoint,
+        countsAgainstEpisodeBudget: false,
+      },
+      async () => null,
+    );
+    const saved = await latestTaskExecutionCheckpoint({ taskId: task.id, agentSlug: agent.slug });
+    return NextResponse.json({
+      ok: true,
+      taskId: task.id,
+      episodeNo: outcome.result.episode?.episodeNo ?? saved?.episodeNo ?? null,
+      cycleCount: outcome.result.episode?.cycleCount ?? saved?.cycleCount ?? null,
+      cycleBudget: outcome.result.episode?.cycleBudget ?? saved?.cycleBudget ?? null,
+      checkpoint: saved?.checkpoint ?? null,
     });
   }
 
@@ -1070,6 +1149,7 @@ async function handleTaskWorkflowAction(
     revalidatePath(`/projects/${task.project.slug}`);
     return NextResponse.json({ ok: true, taskId: task.id, status: "To Do" });
   }
+
 
   // Progress checklist (ENV-60). The assignee maintains a lightweight sub-task
   // checklist (text + done) so the board card shows how close the task is to
@@ -1830,7 +1910,7 @@ export async function POST(
   req: NextRequest,
   ctx: { params: Promise<{ taskId: string }> },
 ) {
-  const captured: { action?: WorkflowAction; taskId?: string } = {};
+  const captured: { action?: WorkflowAction; taskId?: string; agentSlug?: string } = {};
   const response = await handleTaskWorkflowAction(req, ctx, captured);
   if (!response.ok || !captured.action) return response;
 
@@ -1854,5 +1934,45 @@ export async function POST(
     action: captured.action,
     taskState: current?.status ?? null,
   });
-  return NextResponse.json({ ...body, ...result }, { status: response.status });
+  // ENV-121. Cycle accounting is only useful if the agent can SEE it: an
+  // episode that rolls over silently is indistinguishable from one that did
+  // not, and the agent has no reason to checkpoint before its budget runs out.
+  //
+  // Read after the action, like taskState above, so this reports where the
+  // episode actually landed. A rollover leaves the successor at cycleCount 0
+  // with its predecessor closed as budget-exhausted, which is exactly the
+  // signal the brief's EPISODE RULES tell the agent to watch for.
+  if (captured.taskId && captured.agentSlug) {
+    const [newest, previous] = await taskExecutionEpisodeHistory({
+      taskId: captured.taskId,
+      agentSlug: captured.agentSlug,
+      take: 2,
+    });
+    if (newest) {
+      result.episode = {
+        episodeNo: newest.episodeNo,
+        cycleCount: newest.cycleCount,
+        cycleBudget: newest.cycleBudget,
+        cyclesRemaining: Math.max(0, newest.cycleBudget - newest.cycleCount),
+        rolledOver:
+          newest.cycleCount === 0 &&
+          previous?.closeReason === EPISODE_CLOSE_REASON.budgetExhausted,
+        nextEpisodeNo: null,
+      };
+    }
+  }
+  return NextResponse.json(
+    {
+      ...body,
+      ...result,
+      ...(result.episode?.rolledOver
+        ? {
+            episodeBudgetExhausted: true,
+            instruction:
+              "Your execution episode budget is spent. Record what you know with action=checkpoint (completedWork, evidence, openChecklist, nextAction, risks) and stop — PM dispatches the next episode with a fresh session briefed from that checkpoint.",
+          }
+        : {}),
+    },
+    { status: response.status },
+  );
 }

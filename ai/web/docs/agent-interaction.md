@@ -410,7 +410,7 @@ token for:
 POST /api/agent/tasks/<taskId>/workflow
 ```
 
-Allowed actions are `start`, `publish_checkpoint`, `ready_for_review`, `review_feedback`,
+Allowed actions are `start`, `checkpoint`, `publish_checkpoint`, `ready_for_review`, `review_feedback`,
 `review_done`, `triage_to_todo`, `approve_plan`,
 `assign_after_plan_approval`, `add_subtask`, `complete_subtask`, and
 `remove_subtask`
@@ -424,6 +424,13 @@ Allowed actions are `start`, `publish_checkpoint`, `ready_for_review`, `review_f
   Progress including auto-start) or when the task's effective branch
   clashes with another agent's active work; the rejection names exactly
   what to finish first.
+- `checkpoint` — assignee-only, In Progress only (ENV-121). Persists the
+  agent's own structured execution checkpoint — `completedWork`, `evidence`,
+  `openChecklist`, `nextAction`, `risks`, any subset — against the open
+  execution episode. It changes nothing on the task and deliberately spends NO
+  episode cycle, so an agent is never choosing between saving state and making
+  progress. Not to be confused with `publish_checkpoint`, which is a Git
+  publication.
 - `publish_checkpoint` — assignee-only, Epic-child only, and the Task stays In
   Progress. Use it only when open live-verification work requires a remotely
   deployable commit. The request must include a concise `comment` plus
@@ -470,6 +477,35 @@ Allowed actions are `start`, `publish_checkpoint`, `ready_for_review`, `review_f
   for an Action Plan when none is approved yet, or sends a start-work
   turn when the plan is already approved. When a task has a reviewer but
   no assignee, picking the assignee this way is the reviewer's job.
+
+### Execution episodes (ENV-121)
+
+An agent's work on a task runs in bounded **execution episodes** rather than one
+ever-growing conversation.
+
+- PM opens episode N when it dispatches an execution turn to the assignee of an
+  In Progress task, and names the OpenClaw session after it. A new episode is a
+  new session.
+- Every workflow action the agent records is one observable **cycle** on the
+  server (`TaskExecutionEpisode.cycleCount`). Rollover is driven by that
+  counter, never by the agent's self-report.
+- Every successful action answers with an `episode` block: `episodeNo`,
+  `cycleCount`, `cycleBudget`, `cyclesRemaining`, `rolledOver`,
+  `nextEpisodeNo`. When `rolledOver` is true the episode ended; PM closes it
+  with its checkpoint and opens the successor in the same transaction.
+  `@@unique(taskId, agentSlug, episodeNo)` makes a duplicated or concurrent
+  rollover fail rather than mint a second episode with the same number.
+- `action=checkpoint` persists the agent's own `completedWork` / `evidence` /
+  `openChecklist` / `nextAction` / `risks`, and costs no cycle.
+- **First contact** (no prior checkpoint) is dispatched with the full bounded
+  context packet. A **continuation** is dispatched with a much smaller
+  *episode brief*: task snapshot, approved plan, open checklist, newest blocker,
+  the previous episode's checkpoint, and a handful of recent evidence rows.
+  Everything else stays reachable through the same scoped loopback grants. A
+  small brief is retrieval, not amnesia — and compaction goes back to being the
+  fallback it was meant to be.
+- Budget: `PM_EPISODE_MAX_CYCLES`. Brief size: `PM_EPISODE_*` caps in
+  `lib/agents/context/caps.ts`.
 
 PM validates the addressed agent,
 task assignee/reviewer role, task status, and parent Epic status before
