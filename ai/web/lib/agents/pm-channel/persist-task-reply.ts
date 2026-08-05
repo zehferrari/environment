@@ -305,14 +305,22 @@ export async function persistTaskReply(
     }
   }
 
-  revalidateTaskReplyScope(target.taskId, reply.channel);
-  if (reviewAutomation?.completed) {
-    revalidateTaskShell(target.taskId);
-    for (const next of reviewAutomation.nextTasks ?? []) {
-      revalidateTaskShell(next.id);
-      revalidatePath(`/projects/${next.projectSlug}/tasks/${next.id}`);
+  // Cache revalidation may fail outside Next.js request context (e.g. standalone
+  // test scripts). The database transaction has already committed at this point;
+  // a cache miss is a stale-UI concern, not a data-integrity issue.
+  try {
+    revalidateTaskReplyScope(target.taskId, reply.channel);
+    if (reviewAutomation?.completed) {
+      revalidateTaskShell(target.taskId);
+      for (const next of reviewAutomation.nextTasks ?? []) {
+        revalidateTaskShell(next.id);
+        revalidatePath(`/projects/${next.projectSlug}/tasks/${next.id}`);
+      }
+      revalidatePath(`/projects/${reviewAutomation.projectSlug}`);
     }
-    revalidatePath(`/projects/${reviewAutomation.projectSlug}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/static generation store missing/i.test(message)) throw error;
   }
   return {
     status: 200,
