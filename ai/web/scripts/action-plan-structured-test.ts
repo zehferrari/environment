@@ -40,6 +40,7 @@ async function main() {
     createChecklistAndDelegatableTasksFromPlan,
     parseAcceptanceCriteria,
   } = await import("../lib/tasks/action-plan-store");
+  type ActionPlanInput = import("../lib/tasks/action-plan-store").ActionPlanInput;
   const { createActionPlanSubtasksForTask } = await import("../lib/tasks/action-plan-subtasks");
 
   async function bootstrapTestEnv() {
@@ -613,6 +614,100 @@ async function main() {
       assert.equal(plan!.summary, "In-transaction plan");
       assert.equal(plan!.steps[0].stepId, "s1");
       assert.deepEqual(plan!.steps[0].acceptanceCriteria, ["c"]);
+    });
+
+    // Route/service rollback: simulate the exact persistTaskReply transaction
+    // pattern (chat reply + activity log + persistActionPlan all in one
+    // db.$transaction) and force plan persistence to fail. Verify both the
+    // reply and activity log roll back — no partial write.
+    await okAsync("route rollback: reply + activity + plan all roll back when plan persistence fails", async () => {
+      const task9 = await makeTestTask(project.id, agentUser.id);
+      taskIds.push(task9.id);
+
+      // Create an original agent chat message to reply to (simulating PM target)
+      const origMsg = await db.agentChatMessage.create({
+        data: {
+          project: { connect: { id: project.id } },
+          task: { connect: { id: task9.id } },
+          agentSlug: "room",
+          sender: { connect: { id: agentUser.id } },
+          body: "Original message for route rollback test",
+          originChannel: "chat",
+        },
+        select: { id: true },
+      });
+
+      // Snapshot counts before the transaction
+      const chatBefore = await db.agentChatMessage.count({ where: { taskId: task9.id } });
+      const activityBefore = await db.activityLog.count({ where: { taskId: task9.id } });
+
+      // Pure validation passes — assigneeId is a non-empty string.
+      // The DB-level project-principal check inside persistActionPlan will
+      // throw because the assigneeId doesn't belong to any project member.
+      const validated = validateActionPlanInput({
+        summary: "Route rollback test plan",
+        steps: [
+          { id: "s1", title: "Step that fails", acceptanceCriteria: ["x"], kind: "sequential", assigneeId: "nonexistent-principal-id" },
+        ],
+      });
+      assert.ok(!("errors" in validated));
+
+      // Simulate the exact persistTaskReply transaction: reply first, then
+      // persistActionPlan inside the same db.$transaction. The plan will
+      // fail the project-principal check, causing full rollback.
+      await assert.rejects(
+        db.$transaction(async (tx) => {
+          // 1. Persist chat reply (same as persistTaskReply chat branch)
+          const created = await tx.agentChatMessage.create({
+            data: {
+              project: { connect: { id: project.id } },
+              task: { connect: { id: task9.id } },
+              agentSlug: "room",
+              sender: { connect: { id: agentUser.id } },
+              body: "Reply that should roll back",
+              originChannel: "chat",
+            },
+            select: { id: true, createdAt: true },
+          });
+          // 2. Persist activity log
+          await tx.activityLog.create({
+            data: {
+              projectId: project.id,
+              taskId: task9.id,
+              userId: agentUser.id,
+              kind: "task.chat.reply",
+              targetAgent: "carmen",
+              payload: JSON.stringify({ messageId: created.id }),
+            },
+          });
+          // 3. Persist action plan — this throws because assigneeId is not
+          //    an active principal of the task's project.
+          await persistActionPlan({
+            taskId: task9.id,
+            input: validated as ActionPlanInput,
+            client: tx,
+          });
+        }),
+        /not an active principal/i,
+      );
+
+      // Verify NO new chat message was committed
+      const chatAfter = await db.agentChatMessage.count({ where: { taskId: task9.id } });
+      assert.equal(
+        chatAfter, chatBefore,
+        "chat message must roll back — no partial write",
+      );
+
+      // Verify NO new activity log was committed
+      const activityAfter = await db.activityLog.count({ where: { taskId: task9.id } });
+      assert.equal(
+        activityAfter, activityBefore,
+        "activity log must roll back — no partial write",
+      );
+
+      // Verify NO action plan was committed
+      const planAfter = await getActionPlanForTask(task9.id);
+      assert.equal(planAfter, null, "action plan must not exist after rollback");
     });
 
   } finally {
