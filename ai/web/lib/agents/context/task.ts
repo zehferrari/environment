@@ -9,7 +9,7 @@ import {
   renderDirectedSilenceRule,
   type DirectedDescriptor,
 } from "@/lib/agents/ops/directed-targets";
-import { resolveAgentCaps, type ContextCaps } from "@/lib/agents/context/caps";
+import { episodeCaps, resolveAgentCaps, type ContextCaps } from "@/lib/agents/context/caps";
 import { clip, clipWithMeta, renderBudgetedTimeline } from "@/lib/agents/context/budget";
 import { effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
 import { effectiveTaskBranchName } from "@/lib/work-items/branches";
@@ -969,6 +969,281 @@ export function renderAgentContextPacket(packet: AgentContextPacket): string {
   );
 
   return lines.join("\n");
+}
+
+// ------------------------------------------------------------------
+// ENV-121 — the continuation-episode brief
+// ------------------------------------------------------------------
+//
+// buildTaskAgentContextPacket above is the FIRST-CONTACT packet: it inlines
+// the whole bounded working set because the agent has never seen this task.
+// A CONTINUATION episode has already seen it. What it needs is the resume
+// point, not the archive:
+//
+//   task snapshot + approved plan + open checklist
+//   + latest unresolved blocker
+//   + the previous episode's structured checkpoint
+//   + the last few evidence rows
+//
+// Everything else stays reachable through the same scoped loopback grants the
+// full packet advertises. That is the whole point of the Epic item: retrieval,
+// not injection, with compaction demoted to the fallback it was meant to be.
+
+export type TaskEpisodeBrief = {
+  scope: { type: "task"; id: string; projectId: string | null; projectSlug: string | null };
+  targetAgentSlug: string;
+  caps: ContextCaps;
+  episodeNo: number | null;
+  renderedPrompt: string;
+};
+
+/** Blocker-shaped activity kinds, newest of which is inlined verbatim. */
+const BLOCKER_ACTIVITY_KINDS = [
+  "task.blocker",
+  "task.extra_work.blocker",
+  "task.blocker.cleared",
+  "task.blocker.permission.granted",
+];
+
+export async function buildTaskEpisodeBrief(args: {
+  taskId: string;
+  agentSlug: string;
+  currentTurn: TaskAgentCurrentTurn;
+  episode?: { episodeNo: number; checkpointLines: string[] } | null;
+}): Promise<TaskEpisodeBrief> {
+  const caps = episodeCaps();
+  const task = await db.task.findFirst({
+    where: {
+      id: args.taskId,
+      private: false,
+      AND: [
+        { OR: [{ epicId: null }, { epic: { private: false } }] },
+        {
+          OR: [
+            { parentTaskId: null },
+            { parent: { private: false, OR: [{ epicId: null }, { epic: { private: false } }] } },
+          ],
+        },
+      ],
+    },
+    select: {
+      id: true,
+      workItemKey: true,
+      title: true,
+      status: true,
+      description: true,
+      branchName: true,
+      commitPrefix: true,
+      approvedOn: true,
+      project: { select: { id: true, slug: true, name: true } },
+      epic: {
+        select: {
+          id: true,
+          title: true,
+          status: true,
+          workItemKey: true,
+          branchName: true,
+          commitPrefix: true,
+        },
+      },
+      assignee: { select: { username: true, kind: true } },
+      actingManager: { select: { username: true, kind: true } },
+      blockedBy: {
+        select: {
+          workItemKey: true,
+          status: true,
+          private: true,
+          epic: { select: { private: true } },
+          parent: { select: { private: true, epic: { select: { private: true } } } },
+        },
+      },
+      checklist: {
+        orderBy: { rank: "asc" },
+        take: 50,
+        select: { id: true, text: true, completedAt: true, minutesSpent: true },
+      },
+      // The approved plan lives in the discussion room as the assignee's
+      // Action Plan message. ENV-119 will hand this over as structured steps;
+      // until then the newest room message from this agent is the plan of
+      // record, and it is inlined once rather than re-derived every turn.
+      chats: {
+        where: { archiveId: null, deletedAt: null, originChannel: "chat" },
+        orderBy: { createdAt: "desc" },
+        take: caps.maxLiveChats,
+        select: {
+          id: true,
+          agentSlug: true,
+          targetType: true,
+          targetValue: true,
+          targetLabel: true,
+          body: true,
+          createdAt: true,
+          sender: { select: { username: true, kind: true, isOwner: true } },
+        },
+      },
+      comments: {
+        where: { deletedAt: null },
+        orderBy: { createdAt: "desc" },
+        take: caps.maxComments,
+        select: {
+          id: true,
+          body: true,
+          createdAt: true,
+          user: { select: { username: true, kind: true, isOwner: true } },
+        },
+      },
+      activity: {
+        orderBy: { createdAt: "desc" },
+        take: caps.maxActivity,
+        select: {
+          id: true,
+          kind: true,
+          payload: true,
+          targetAgent: true,
+          targetFile: true,
+          createdAt: true,
+          user: { select: { username: true, kind: true, isOwner: true } },
+        },
+      },
+    },
+  });
+
+  const scope = {
+    type: "task" as const,
+    id: args.taskId,
+    projectId: task?.project.id ?? null,
+    projectSlug: task?.project.slug ?? null,
+  };
+
+  if (!task) {
+    return {
+      scope,
+      targetAgentSlug: args.agentSlug,
+      caps,
+      episodeNo: args.episode?.episodeNo ?? null,
+      renderedPrompt: [
+        "CURRENT TURN:",
+        clip(args.currentTurn.body, 4000),
+        "",
+        "EXECUTION EPISODE BRIEF:",
+        `Task ${args.taskId} could not be loaded. Use the current turn only.`,
+      ].join("\n"),
+    };
+  }
+
+  const lines: string[] = [
+    "CURRENT TURN:",
+    `${currentTurnSource(args.currentTurn.source)} from ${actorLabelFromParts(args.currentTurn.actorUsername, args.currentTurn.actorKind)}${args.currentTurn.createdAt ? ` at ${formatDate(args.currentTurn.createdAt)}` : ""}`,
+    args.currentTurn.id ? `Turn id: ${args.currentTurn.id}` : "Turn id: (not set)",
+    "-----",
+    clip(args.currentTurn.body, 4000),
+    "-----",
+    "",
+    "EXECUTION EPISODE BRIEF (bounded continuation context):",
+    `This is execution episode ${args.episode?.episodeNo ?? "(unnumbered)"} for @${args.agentSlug} on this task. You have worked it before.`,
+    "This brief is deliberately SMALL: task state, the approved plan, the open checklist, the newest blocker, your last checkpoint, and recent evidence. It is not the full history.",
+    "The complete comment/activity history is still available — fetch it through the scoped loopback grant URLs in this prompt when you actually need it. Do not assume something is missing just because it is not inlined here.",
+    "",
+    "TASK SNAPSHOT:",
+    `Task: ${task.title} (${task.workItemKey || task.id}; system id: ${task.id})`,
+    `Project: ${task.project.name} (${task.project.slug})`,
+    `Status: ${task.status}`,
+    `Assignee: ${actorLabel(task.assignee)}`,
+    `Reviewer: ${actorLabel(task.actingManager)}`,
+    `Blocked by: ${
+      task.blockedBy &&
+      !task.blockedBy.private &&
+      !task.blockedBy.epic?.private &&
+      !task.blockedBy.parent?.private &&
+      !task.blockedBy.parent?.epic?.private
+        ? `${task.blockedBy.workItemKey ?? "another task"} (${task.blockedBy.status})`
+        : "(none)"
+    }`,
+    `Action Plan approved_on: ${formatDate(task.approvedOn) || "(not approved)"}`,
+    `Branch: ${effectiveTaskBranchName(task) || "(not set)"}`,
+    `Commit prefix: ${effectiveTaskCommitPrefix(task) || "(not set)"}`,
+  ];
+  if (task.epic) {
+    lines.push(`Epic: ${task.epic.title} (${task.epic.status}, ${task.epic.id})`);
+  }
+  lines.push("");
+  pushDescription(lines, "TASK DESCRIPTION", task.description, caps.taskDescriptionMax);
+
+  // Approved plan of record: the newest room message authored by this agent
+  // before approval. Structured plan steps replace this once ENV-119 lands.
+  const planMessage = [...task.chats]
+    .reverse()
+    .filter((chat) => chat.sender?.username === args.agentSlug && !chat.body.startsWith("PM workflow notification"))
+    .pop();
+  lines.push("", "APPROVED ACTION PLAN (your plan of record):");
+  lines.push(
+    planMessage
+      ? clip(planMessage.body, caps.maxTimelineBody)
+      : "(no plan message found inline — fetch the task grant and read the Action Plan discussion)",
+  );
+
+  lines.push("", "OPEN CHECKLIST (tick each with action=complete_subtask as it lands):");
+  const open = task.checklist.filter((item) => item.completedAt === null);
+  const doneCount = task.checklist.length - open.length;
+  lines.push(`Progress: ${doneCount}/${task.checklist.length} done`);
+  if (open.length === 0) {
+    lines.push("- (no open items)");
+  } else {
+    for (const item of open) lines.push(`- [ ] ${item.text} (id: ${item.id})`);
+  }
+
+  const blockerRow = task.activity.find((row) => BLOCKER_ACTIVITY_KINDS.includes(row.kind));
+  lines.push("", "LATEST BLOCKER SIGNAL:");
+  lines.push(
+    blockerRow
+      ? `[${formatDate(blockerRow.createdAt)}] ${blockerRow.kind} ${actorLabel(blockerRow.user)}: ${clip(payloadText(blockerRow.payload), caps.maxActivityBody)}`
+      : "(none recorded)",
+  );
+
+  lines.push("", ...(args.episode?.checkpointLines ?? ["LAST EXECUTION CHECKPOINT:", "(none recorded)"]));
+
+  // Recent evidence only: the newest comments/chats, rendered through the same
+  // budgeted renderer the full packet uses so one cap governs both paths.
+  const evidence: AgentContextPacket["timeline"] = [
+    ...task.comments.map((comment) => ({
+      type: "comment" as const,
+      id: comment.id,
+      actor: actorLabel(comment.user),
+      body: comment.body,
+      createdAt: formatDate(comment.createdAt)!,
+    })),
+    ...task.chats.map((chat) => ({
+      type: "chat" as const,
+      id: chat.id,
+      actor: actorLabel(chat.sender),
+      body: chatTimelineBody(chat),
+      createdAt: formatDate(chat.createdAt)!,
+    })),
+  ]
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .slice(-caps.recentTimelineVerbatimItems);
+
+  lines.push("", `RECENT EVIDENCE (last ${evidence.length} rows only — older rows exist and are retrievable):`);
+  lines.push(...renderBudgetedTimeline(evidence, caps).lines);
+
+  lines.push(
+    "",
+    "EPISODE RULES:",
+    "Work the open checklist from the checkpoint's next exact action. Do not re-derive the plan and do not redo work the checkpoint already records as complete.",
+    "Tick each checklist item with action=complete_subtask the moment it lands; PM counts those as episode cycles.",
+    "This episode has two budgets, both counted server-side: workflow actions (cycleCount/cycleBudget) and PM-observed tool calls (toolCycleCount/toolCycleBudget). Every workflow response reports both.",
+    "When PM answers with episodeBudgetExhausted, this episode is CLOSED and enforced closed: the only action PM will still accept from this turn is action=checkpoint. Record completedWork, evidence, openChecklist, nextAction and risks, then stop. Every other action returns 409 and changes nothing — PM dispatches the next episode with a fresh session briefed from your checkpoint.",
+    "Finish through ready_for_review, or record one precise external dependency with flag_blocker. Do not stop at a progress comment.",
+    `If this turn requires no visible contribution, reply exactly ${PM_SILENT_REPLY_TOKEN} and nothing else.`,
+  );
+
+  return {
+    scope,
+    targetAgentSlug: args.agentSlug,
+    caps,
+    episodeNo: args.episode?.episodeNo ?? null,
+    renderedPrompt: lines.join("\n"),
+  };
 }
 
 export async function buildTaskAgentUserMessage(args: {

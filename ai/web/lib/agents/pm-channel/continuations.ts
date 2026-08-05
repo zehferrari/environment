@@ -27,6 +27,12 @@ type TxClient = Prisma.TransactionClient | typeof db;
  * Arm one continuation per run inside the caller's transaction. Idempotent on
  * (runId, messageId, action): repeating the same action in one episode renews
  * the row rather than queueing a second turn.
+ *
+ * `status` defaults to `armed`, which is right while the turn is still running:
+ * the run's settle promotes it to `queued`. ENV-121's rollover seal can happen
+ * AFTER its run has already settled (the fenced turn ended, then PM wrote the
+ * derived checkpoint), and there is no settle left to promote the row — those
+ * callers pass `queued` so the drain can see it.
  */
 export async function armPmChannelContinuations(
   tx: TxClient,
@@ -36,8 +42,10 @@ export async function armPmChannelContinuations(
     messageId: string;
     action: string;
     now: Date;
+    status?: "armed" | "queued";
   },
 ) {
+  const status = args.status ?? "armed";
   for (const run of args.runs) {
     // Only task episodes can be continued: an epic workflow turn has no
     // assignee-owned implementation loop to resume.
@@ -58,11 +66,11 @@ export async function armPmChannelContinuations(
         epicId: run.epicId,
         messageId: args.messageId,
         action: args.action,
-        status: "armed",
+        status,
         availableAt: args.now,
       },
       update: {
-        status: "armed",
+        status,
         availableAt: args.now,
         lastError: null,
       },

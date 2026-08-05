@@ -24,6 +24,13 @@ import {
   isContinuationRequiredAction,
   type WorkflowDisposition,
 } from "@/lib/workflow-invariants";
+import {
+  closeOpenTaskExecutionEpisode,
+  recordTaskExecutionEpisodeCycle,
+  EPISODE_CLOSE_REASON,
+  type EpisodeCheckpoint,
+  type EpisodeCycleOutcome,
+} from "@/lib/agents/episodes/lifecycle";
 
 // Re-exported for existing importers; the definition moved to bus.ts so the
 // bus envelope id and the run identity can never drift apart.
@@ -575,6 +582,13 @@ export interface PmChannelWorkflowActionArgs {
   messageId: string;
   action: string;
   taskState?: string | null;
+  /** ENV-121: structured checkpoint material to fold into the open episode. */
+  checkpoint?: EpisodeCheckpoint | null;
+  /**
+   * ENV-121: set false for an explicit `checkpoint` action, which persists
+   * state rather than making progress and so must not spend episode budget.
+   */
+  countsAgainstEpisodeBudget?: boolean;
 }
 
 function workflowActionTargetKeys(args: PmChannelWorkflowActionArgs): string[] {
@@ -604,6 +618,57 @@ function workflowActionTargetKeys(args: PmChannelWorkflowActionArgs): string[] {
 }
 
 /**
+ * ENV-121 — the episode half of a workflow action.
+ *
+ * A `continue` action is one observable cycle inside the episode: it counts,
+ * folds in whatever checkpoint material the caller holds, and rolls the
+ * episode over when the budget is spent. A `wait`/`finish` action ended the
+ * episode, so the open episode is closed with a terminal reason instead.
+ *
+ * Epic-scoped actions (no taskId) have no episode; they return null.
+ */
+async function applyWorkflowActionEpisode(
+  tx: Prisma.TransactionClient,
+  args: PmChannelWorkflowActionArgs,
+  effect: ReturnType<typeof workflowActionEffectOrFinish>,
+) {
+  if (!args.taskId) return null;
+
+  if (effect !== "continue") {
+    await closeOpenTaskExecutionEpisode(tx, {
+      taskId: args.taskId,
+      agentSlug: args.agentSlug,
+      closeReason: `${EPISODE_CLOSE_REASON.terminalAction}:${args.action}`,
+      checkpoint: args.checkpoint ?? null,
+    });
+    return null;
+  }
+
+  const outcome: EpisodeCycleOutcome = await recordTaskExecutionEpisodeCycle(tx, {
+    taskId: args.taskId,
+    agentSlug: args.agentSlug,
+    // An explicit `checkpoint` carries the agent's OWN completed-work list;
+    // appending PM's derived "execution_checkpoint_saved" line on top of it
+    // would bury the thing the next episode actually needs to read.
+    action: args.action === "checkpoint" ? null : args.action,
+    messageId: args.messageId,
+    checkpoint: args.checkpoint ?? null,
+    countsAgainstBudget: args.countsAgainstEpisodeBudget !== false,
+  });
+  return {
+    episodeNo: outcome.episode.episodeNo,
+    cycleCount: outcome.episode.cycleCount,
+    cycleBudget: outcome.episode.cycleBudget,
+    cyclesRemaining: Math.max(0, outcome.episode.cycleBudget - outcome.episode.cycleCount),
+    toolCycleCount: outcome.episode.toolCycleCount,
+    toolCycleBudget: outcome.episode.toolCycleBudget,
+    toolCyclesRemaining: Math.max(0, outcome.episode.toolCycleBudget - outcome.episode.toolCycleCount),
+    rolledOver: outcome.rolledOver,
+    nextEpisodeNo: outcome.nextEpisode?.episodeNo ?? null,
+  };
+}
+
+/**
  * The run/job/outbox half of a workflow action, executed on the CALLER'S
  * transaction client.
  *
@@ -629,10 +694,17 @@ export async function applyPmChannelRunWorkflowAction(
   const now = new Date();
   const targetKeys = workflowActionTargetKeys(args);
   const result = workflowActionResult({ action: args.action, taskState: args.taskState });
-  if (targetKeys.length === 0) return result;
-
   const effect = workflowActionEffectOrFinish(args.action);
   const disposition = workflowActionDisposition(args.action);
+
+  // ENV-121. Episode accounting is about the TASK, not about whether a
+  // PmChannelRun row happens to exist for this turn — a replayed or
+  // out-of-band action still moved the work forward, and its checkpoint must
+  // survive. So it runs before the target-key early return, on the caller's
+  // transaction, alongside the domain mutation.
+  result.episode = await applyWorkflowActionEpisode(tx, args, effect);
+
+  if (targetKeys.length === 0) return result;
 
   const runs = await tx.pmChannelRun.findMany({
     where: { targetKey: { in: targetKeys } },
@@ -747,11 +819,18 @@ export async function recordPmChannelRunWorkflowAction(
     );
   }
   const result = workflowActionResult({ action: args.action, taskState: args.taskState });
+  // ENV-121: keep the APPLIED result when the transaction succeeded, so the
+  // caller sees the real episode/cycle accounting rather than the pre-computed
+  // shell. A swallowed failure falls back to the shell, which is honest: no
+  // cycle was counted.
+  let applied: WorkflowActionResult | null = null;
   await record(
-    () => db.$transaction((tx) => applyPmChannelRunWorkflowAction(tx, args)),
+    async () => {
+      applied = await db.$transaction((tx) => applyPmChannelRunWorkflowAction(tx, args));
+    },
     `workflow action run state (${args.action})`,
   );
-  return result;
+  return applied ?? result;
 }
 
 export async function recordPmChannelRunEvent(args: {

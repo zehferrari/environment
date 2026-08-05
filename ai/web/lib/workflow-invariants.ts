@@ -98,6 +98,10 @@ export const WORKFLOW_ACTION_CLASS: Readonly<
   remove_subtask: "continuation-required",
   clear_blocker: "continuation-required",
   publish_checkpoint: "continuation-required",
+  // ENV-121. Persisting an execution checkpoint is emphatically NOT the end of
+  // the agent's turn — it is the agent buying durability for the work it has
+  // already done before its episode budget runs out.
+  checkpoint: "continuation-required",
 
   // Episode-terminal: the agent has handed control back to PM or a human.
   ready_for_review: "episode-terminal",

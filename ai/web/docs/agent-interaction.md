@@ -410,7 +410,7 @@ token for:
 POST /api/agent/tasks/<taskId>/workflow
 ```
 
-Allowed actions are `start`, `publish_checkpoint`, `ready_for_review`, `review_feedback`,
+Allowed actions are `start`, `checkpoint`, `publish_checkpoint`, `ready_for_review`, `review_feedback`,
 `review_done`, `triage_to_todo`, `approve_plan`,
 `assign_after_plan_approval`, `add_subtask`, `complete_subtask`, and
 `remove_subtask`
@@ -424,6 +424,13 @@ Allowed actions are `start`, `publish_checkpoint`, `ready_for_review`, `review_f
   Progress including auto-start) or when the task's effective branch
   clashes with another agent's active work; the rejection names exactly
   what to finish first.
+- `checkpoint` — assignee-only, In Progress only (ENV-121). Persists the
+  agent's own structured execution checkpoint — `completedWork`, `evidence`,
+  `openChecklist`, `nextAction`, `risks`, any subset — against the open
+  execution episode. It changes nothing on the task and deliberately spends NO
+  episode cycle, so an agent is never choosing between saving state and making
+  progress. Not to be confused with `publish_checkpoint`, which is a Git
+  publication.
 - `publish_checkpoint` — assignee-only, Epic-child only, and the Task stays In
   Progress. Use it only when open live-verification work requires a remotely
   deployable commit. The request must include a concise `comment` plus
@@ -470,6 +477,101 @@ Allowed actions are `start`, `publish_checkpoint`, `ready_for_review`, `review_f
   for an Action Plan when none is approved yet, or sends a start-work
   turn when the plan is already approved. When a task has a reviewer but
   no assignee, picking the assignee this way is the reviewer's job.
+
+### Execution episodes (ENV-121)
+
+An agent's work on a task runs in bounded **execution episodes** rather than one
+ever-growing conversation.
+
+- PM opens episode N when it dispatches an execution turn to the assignee of an
+  In Progress task, and names the OpenClaw session after it. A new episode is a
+  new session.
+- An episode has **two server-observed budgets**, and either one ends it:
+  - **Tool cycles** (`toolCycleCount` / `toolCycleBudget`, `PM_EPISODE_MAX_TOOL_CYCLES`)
+    — one per `tool:call` stream event PM receives from the turn. This is the
+    finest unit PM can actually see, and the one that grows a turn's context,
+    so it is the real boundary on a browser- or tool-heavy episode.
+  - **Workflow cycles** (`cycleCount` / `cycleBudget`, `PM_EPISODE_MAX_CYCLES`)
+    — one per continuation-required workflow action. This is the *coarser*
+    unit: a turn can do a great deal of work between two actions. It is the
+    backstop for turns that stream nothing, not the primary bound.
+
+  Both are counted on the server, never from the agent's self-report.
+- Every successful action answers with an `episode` block: `episodeNo`,
+  `cycleCount`, `cycleBudget`, `cyclesRemaining`, `toolCycleCount`,
+  `toolCycleBudget`, `toolCyclesRemaining`, `rolledOver`, `nextEpisodeNo`.
+  When `rolledOver` is true the episode ended; PM closes it with its checkpoint
+  and opens the successor in the same transaction.
+  `@@unique(taskId, agentSlug, episodeNo)` makes a duplicated or concurrent
+  rollover fail rather than mint a second episode with the same number.
+- **The rollover barrier.** Exhausting a budget records
+  `exhaustedByMessageId` on the closed episode, which *fences that PM turn*.
+  From then on the workflow route accepts exactly one more thing from it:
+  `action=checkpoint`, written onto the episode it exhausted. Every other
+  action — including terminal ones like `ready_for_review` — returns `409`
+  with `episodeBudgetExhausted: true` and changes nothing. A second checkpoint
+  is rejected too; the barrier is single-use.
+
+  Without this the boundary was advisory: PM opened episode N+1 while the old
+  turn was still live, and that turn's subsequent actions were accepted and
+  counted against the successor, so one stable conversation could span
+  arbitrarily many nominal episodes.
+
+  The barrier is consumed by ONE conditional atomic update
+  (`UPDATE … WHERE barrier_released_at IS NULL`), so two concurrent checkpoint
+  submissions — a retry, a duplicate dispatch — cannot both write. Exactly one
+  is accepted; the other gets `409` and the first agent's words stand.
+- **The successor dispatch is gated on the predecessor's checkpoint.** A
+  rollover raises the barrier and opens the successor ROW; it schedules
+  nothing. Episode N+1 is queued only when N's checkpoint is durable, which
+  happens one of two ways:
+  - the fenced turn's own `action=checkpoint` (preferred — its own words), or
+  - a **deterministic PM-generated checkpoint** written when that turn ends
+    (`done` / `final` / `error`), or by the barrier sweeper in the PM channel
+    worker drain if the turn died without ending cleanly.
+
+  This matters most for the tool-cycle budget: nothing can interrupt a model
+  mid-turn, so a tool-fenced turn is never told it was fenced and may simply
+  finish without checkpointing. Arming the successor at rollover time would
+  brief a fresh session from a checkpoint that was never written; never arming
+  it would stall the task. The derived checkpoint is explicit about its
+  provenance — it records that the agent did not author it, and PM's observed
+  per-cycle record is what the successor reads.
+- **The seal is one transaction, and its outbox state is durable.** Consuming
+  the barrier (writing the checkpoint) and arming the successor's continuation
+  commit together, so a failure to arm rolls the checkpoint back rather than
+  leaving a consumed barrier with no successor — a state the unsealed-barrier
+  sweeper cannot see, because it searches `barrier_released_at IS NULL`.
+
+  One partial state is still legitimate: there may be no `PmChannelRun` row to
+  hang the continuation on. That is recorded explicitly —
+  `barrier_released_at IS NOT NULL AND successor_scheduled_at IS NULL` — and
+  `sweepUnscheduledEpisodeSuccessors` in the worker drain retries the
+  *scheduling half only*, never rewriting the durable checkpoint. The claim on
+  `successor_scheduled_at` is the same conditional atomic update the barrier
+  uses, so concurrent sweeps arm exactly one turn in the lane.
+  `successor_schedule_attempts` bounds the retry
+  (`MAX_SUCCESSOR_SCHEDULE_ATTEMPTS`); a row past it stops being retried but
+  stays queryable as an observable stall.
+- The successor is opened with **no `sessionKey` and no `messageId`**, and the
+  dispatcher treats that emptiness as "never carried by a session": it gets a
+  fresh episode-scoped session key and a full brief, never the incremental
+  "continue from PM turn X" prompt, which would point a brand-new model
+  session at a transcript it has never seen.
+- `action=checkpoint` persists the agent's own `completedWork` / `evidence` /
+  `openChecklist` / `nextAction` / `risks`, and costs no cycle.
+- **First contact** (no prior checkpoint) is dispatched with the full bounded
+  context packet. A **continuation** is dispatched with a much smaller
+  *episode brief*: task snapshot, approved plan, open checklist, newest blocker,
+  the previous episode's checkpoint, and a handful of recent evidence rows.
+  Everything else stays reachable through the same scoped loopback grants. A
+  small brief is retrieval, not amnesia — and compaction goes back to being the
+  fallback it was meant to be.
+- Budgets: `PM_EPISODE_MAX_TOOL_CYCLES` (default 60) and
+  `PM_EPISODE_MAX_CYCLES` (default 6). Both are snapshotted on the episode row
+  at open time, so changing the env mid-flight cannot retroactively exhaust or
+  revive a running episode. Brief size: `PM_EPISODE_*` caps in
+  `lib/agents/context/caps.ts`.
 
 PM validates the addressed agent,
 task assignee/reviewer role, task status, and parent Epic status before

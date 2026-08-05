@@ -204,6 +204,7 @@ function expectViolations(
   // accepts. Kept in sync by hand; this assertion is the tripwire.
   const endpointActions = [
     "start",
+    "checkpoint",
     "publish_checkpoint",
     "ready_for_review",
     "submit_review",

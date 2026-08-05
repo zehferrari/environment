@@ -73,6 +73,7 @@ function assertEqual<T>(actual: T, expected: T, label: string): void {
 // defaulting.
 const TASK_ROUTE_ACTIONS = [
   "start",
+  "checkpoint",
   "publish_checkpoint",
   "ready_for_review",
   "submit_review",

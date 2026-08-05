@@ -456,6 +456,7 @@ model Task {
   actionPlan            ActionPlan?
   checklist              SubTask[]               @relation("TaskChecklist")
   repositoryRun          TaskRepositoryRun?
+  executionEpisodes      TaskExecutionEpisode[]
 
   @@index([projectId])
   @@index([workItemKey])
@@ -500,6 +501,85 @@ model TaskRepositoryRun {
   @@index([phase])
   @@index([validationOutcome])
   @@map("task_repository_runs")
+}
+
+// ENV-121 — one bounded execution episode for one (Task, agent).
+//
+// The problem this replaces: a single OpenClaw session carried the whole task
+// — description, every comment, every browser trace, every continuation — and
+// grew until compaction was the only memory strategy left. Compaction is lossy
+// and unobservable; a structured checkpoint is neither.
+//
+// An episode is opened when PM dispatches an execution turn, accrues one
+// `cycleCount` per continuation-required workflow action, and is CLOSED with a
+// structured checkpoint when the budget is spent or the turn reaches an
+// episode-terminal action. The next episode starts from that checkpoint in a
+// fresh model session instead of inheriting the transcript.
+//
+// Duplicate-episode safety (the property the reviewer asked for): `episodeNo`
+// is allocated inside the same transaction that closes the previous episode,
+// and @@unique([taskId, agentSlug, episodeNo]) makes a retried or concurrent
+// rollover fail loudly instead of minting a second episode 3.
+model TaskExecutionEpisode {
+  id           String   @id @default(cuid())
+  taskId       String   @map("task_id")
+  task         Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  projectId    String?  @map("project_id")
+  agentSlug    String   @map("agent_slug")
+  // Monotonic per (task, agent). Allocated as max+1 under the unique index.
+  episodeNo    Int      @map("episode_no")
+  // The OpenClaw session this episode ran in, and the PM turn that opened it.
+  sessionKey   String?  @map("session_key")
+  messageId    String?  @map("message_id")
+  runId        String?  @map("run_id")
+  // Observable server-side cycle accounting. `cycleBudget` is snapshotted at
+  // open time so changing the env default mid-flight cannot retroactively
+  // exhaust (or revive) an episode that is already running.
+  cycleCount   Int      @default(0) @map("cycle_count")
+  cycleBudget  Int      @map("cycle_budget")
+  // Finer-grained observable budget: PM-visible `tool:call` stream events seen
+  // while this episode was open. Workflow actions are the coarse unit; tool
+  // calls are the unit that actually grows a turn's context.
+  toolCycleCount  Int   @default(0) @map("tool_cycle_count")
+  toolCycleBudget Int   @default(0) @map("tool_cycle_budget")
+  // The rollover barrier. When a budget is exhausted PM records WHICH PM turn
+  // spent it; that message is then fenced out of the successor episode and may
+  // only write one final checkpoint, which sets `barrierReleasedAt`.
+  exhaustedByMessageId String?   @map("exhausted_by_message_id")
+  barrierReleasedAt    DateTime? @map("barrier_released_at")
+  // The successor half of the seal, kept as durable outbox state. Consuming
+  // the barrier and arming the successor's continuation happen in one
+  // transaction, so `barrier_released_at IS NOT NULL AND
+  // successor_scheduled_at IS NULL` means the seal committed but the
+  // continuation could not be armed (no run row to hang it on yet). That is a
+  // recoverable state, not a stall: the sweeper retries the scheduling half
+  // without ever touching the stored checkpoint.
+  successorScheduledAt      DateTime? @map("successor_scheduled_at")
+  successorScheduleAttempts Int       @default(0) @map("successor_schedule_attempts")
+  // open | closed
+  status       String   @default("open")
+  // Structured checkpoint. JSON-encoded string arrays, kept as TEXT because
+  // the deployment target is SQLite. Written on every cycle (derived) and
+  // overwritable verbatim by the agent through action=checkpoint.
+  completedWork String? @map("completed_work")
+  evidence      String?
+  openChecklist String? @map("open_checklist")
+  nextAction    String? @map("next_action")
+  risks         String?
+  checkpointAt  DateTime? @map("checkpoint_at")
+  closeReason   String?   @map("close_reason")
+  startedAt    DateTime @default(now()) @map("started_at")
+  closedAt     DateTime? @map("closed_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@unique([taskId, agentSlug, episodeNo])
+  @@index([taskId, status])
+  @@index([agentSlug])
+  @@index([runId])
+  @@index([exhaustedByMessageId])
+  @@index([successorScheduledAt])
+  @@map("task_execution_episodes")
 }
 
 // Lightweight sub-task checklist (ENV-60). A SubTask is NOT a Task: it has no

@@ -120,6 +120,7 @@ const CHECKPOINTS: Readonly<Record<string, string>> = {
   remove_subtask: "checklist_updated",
   clear_blocker: "blocker_cleared",
   publish_checkpoint: "checkpoint_published",
+  checkpoint: "execution_checkpoint_saved",
   ready_for_review: "submitted_for_review",
   submit_review: "submitted_for_review",
   review_feedback: "review_feedback_recorded",
@@ -155,9 +156,39 @@ export function workflowActionNextAction(action: string): string {
   }
 }
 
+/**
+ * ENV-121 — what the server-side cycle counter says about the agent's current
+ * execution episode. Echoed on every action result so an agent learns it is
+ * near rollover from the response body, not from guessing.
+ *
+ * Structurally typed rather than imported from the episode module: that module
+ * imports `workflowActionCheckpoint` from here, and a type import back would
+ * make the cycle real.
+ */
+export interface WorkflowActionEpisodeProgress {
+  episodeNo: number;
+  cycleCount: number;
+  cycleBudget: number;
+  cyclesRemaining: number;
+  /**
+   * The finer PM-visible unit: `tool:call` stream events observed during this
+   * episode. Workflow actions are the coarse backstop; this is the budget a
+   * tool-heavy turn actually spends.
+   */
+  toolCycleCount: number;
+  toolCycleBudget: number;
+  toolCyclesRemaining: number;
+  /** True when this action exhausted the budget and PM rolled the episode over. */
+  rolledOver: boolean;
+  /** The successor episode number, when a rollover happened. */
+  nextEpisodeNo: number | null;
+}
+
 export interface WorkflowActionResult {
   /** Whether the agent's execution episode continues, waits, or is over. */
   actionEffect: WorkflowActionEffect;
+  /** Episode/cycle accounting for this action, when the action ran on a task. */
+  episode?: WorkflowActionEpisodeProgress | null;
   /** The task's status after the action, when the caller knows it. */
   taskState: string | null;
   /** Stable name of the durable state this action reached. */
