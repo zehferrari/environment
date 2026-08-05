@@ -2,7 +2,9 @@ import { revalidatePath } from "next/cache";
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { sendTaskCommentNotifications, sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
+import type { Prisma } from "@prisma/client";
 import { recordPmChannelRunWorkflowAction } from "@/lib/agents/pm-channel/runs";
+import { runWorkflowActionAtomically } from "@/lib/agents/workflow/transactional-action";
 import { workflowActionResult } from "@/lib/agents/workflow/action-effect";
 import { verifyTaskWorkflowToken } from "@/lib/agents/workflow/token/task";
 import {
@@ -71,6 +73,10 @@ function isWorkflowAction(value: unknown): value is WorkflowAction {
   return typeof value === "string" && (ACTIONS as readonly string[]).includes(value);
 }
 
+// ENV-118: takes a transaction client so a continuation-required action can
+// commit the status move together with its continuation-outbox row. `client`
+// defaults to the base db, which keeps the multi-statement write atomic on its
+// own for the callers that do not participate in a larger transaction.
 async function moveTaskStatus(args: {
   taskId: string;
   projectId: string;
@@ -78,21 +84,22 @@ async function moveTaskStatus(args: {
   from: string;
   to: string;
   action: WorkflowAction;
+  client?: Prisma.TransactionClient;
 }) {
-  const maxRank = await db.task.aggregate({
-    where: { status: args.to, deletedAt: null },
-    _max: { rank: true },
-  });
-  await db.$transaction([
-    db.task.update({
+  const write = async (tx: Prisma.TransactionClient) => {
+    const maxRank = await tx.task.aggregate({
+      where: { status: args.to, deletedAt: null },
+      _max: { rank: true },
+    });
+    await tx.task.update({
       where: { id: args.taskId },
       data: {
         status: args.to,
         rank: (maxRank._max.rank ?? 0) + 1,
         statusChangedAt: new Date(),
       },
-    }),
-    db.activityLog.create({
+    });
+    await tx.activityLog.create({
       data: {
         projectId: args.projectId,
         taskId: args.taskId,
@@ -105,10 +112,16 @@ async function moveTaskStatus(args: {
           action: args.action,
         }),
       },
-    }),
-  ]);
-  revalidateTaskShell(args.taskId);
-  publishBoardTouch(args.projectId);
+    });
+  };
+  if (args.client) await write(args.client);
+  else await db.$transaction((tx) => write(tx));
+  // Cache/board fan-out is not rollback-able, so it deliberately stays outside
+  // the transaction. Callers inside one call these after it commits.
+  if (!args.client) {
+    revalidateTaskShell(args.taskId);
+    publishBoardTouch(args.projectId);
+  }
 }
 
 // ENV-118. Every successful action answers with an explicit action result, so
@@ -268,10 +281,13 @@ async function handleTaskWorkflowAction(
     return NextResponse.json({ error: "Task not found" }, { status: 404 });
   }
 
+  // Bound once so the narrowing above survives into the transaction callbacks
+  // below: TypeScript discards property narrowing inside a function expression.
+  const agentUser = agent.user;
   const actor = {
-    id: agent.user.id,
+    id: agentUser.id,
     kind: "agent" as const,
-    username: agent.user.username,
+    username: agentUser.username,
   };
   const reviewerId = resolveReviewOwnerId(task);
   const doneOwnerId = resolveDoneOwnerId(task);
@@ -346,26 +362,32 @@ async function handleTaskWorkflowAction(
       return NextResponse.json({ error: message }, { status: 409 });
     }
 
-    await moveTaskStatus({
-      taskId: task.id,
-      projectId: task.projectId,
-      actorUserId: agent.user.id,
-      from: task.status,
-      to: "In Progress",
-      action,
-    });
-    await promoteEpicOnTaskInProgress(db, {
-      epicId: task.epicId,
-      projectId: task.projectId,
-      actorId: agent.user.id,
-      via: "agent-workflow",
-    });
-    await recordPmChannelRunWorkflowAction({
-      taskId: task.id,
-      agentSlug: agent.slug,
-      messageId,
-      action,
-    });
+    // ENV-118 (review): the status move, the Epic promotion and the
+    // continuation-outbox arm commit together. A crash anywhere in here leaves
+    // the task in To Do, which the agent can simply retry — never In Progress
+    // with nobody scheduled to work it.
+    await runWorkflowActionAtomically(
+      { taskId: task.id, agentSlug: agent.slug, messageId, action, taskState: "In Progress" },
+      async (tx) => {
+        await moveTaskStatus({
+          taskId: task.id,
+          projectId: task.projectId,
+          actorUserId: agentUser.id,
+          from: task.status,
+          to: "In Progress",
+          action,
+          client: tx,
+        });
+        await promoteEpicOnTaskInProgress(tx, {
+          epicId: task.epicId,
+          projectId: task.projectId,
+          actorId: agentUser.id,
+          via: "agent-workflow",
+        });
+      },
+    );
+    revalidateTaskShell(task.id);
+    publishBoardTouch(task.projectId);
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
     revalidatePath(`/projects/${task.project.slug}`);
     return NextResponse.json({
@@ -723,29 +745,32 @@ async function handleTaskWorkflowAction(
       }, { status: 409 });
     }
 
-    if (checkpoint.enqueued) {
-      await db.activityLog.create({
-        data: {
-          projectId: task.projectId,
-          taskId: task.id,
-          userId: agent.user.id,
-          kind: "pm.repo.checkpoint.enqueue",
-          targetAgent: agent.slug,
-          payload: JSON.stringify({
-            jobId: checkpoint.jobId,
-            taskBranch,
-            epicBranch,
-            authorizationCommentId,
-          }),
-        },
-      });
-    }
-    await recordPmChannelRunWorkflowAction({
-      taskId: task.id,
-      agentSlug: agent.slug,
-      messageId,
-      action,
-    });
+    // ENV-118 (review): the enqueue itself is a filesystem job spool, which no
+    // database transaction can cover. Its DURABLE database half — the
+    // authorization-consuming `pm.repo.checkpoint.enqueue` row — does share the
+    // transaction with the continuation arm, so the record that spends the
+    // owner's single-use grant and the turn that follows it commit together.
+    await runWorkflowActionAtomically(
+      { taskId: task.id, agentSlug: agent.slug, messageId, action, taskState: task.status },
+      async (tx) => {
+        if (!checkpoint.enqueued) return;
+        await tx.activityLog.create({
+          data: {
+            projectId: task.projectId,
+            taskId: task.id,
+            userId: agentUser.id,
+            kind: "pm.repo.checkpoint.enqueue",
+            targetAgent: agent.slug,
+            payload: JSON.stringify({
+              jobId: checkpoint.jobId,
+              taskBranch,
+              epicBranch,
+              authorizationCommentId,
+            }),
+          },
+        });
+      },
+    );
     revalidateTaskShell(task.id);
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
     publishBoardTouch(task.projectId);
@@ -1055,9 +1080,15 @@ async function handleTaskWorkflowAction(
     }
     const text = typeof payload.subtaskText === "string" ? payload.subtaskText.trim() : "";
     if (!text) return NextResponse.json({ error: "subtaskText is required" }, { status: 400 });
+    // The checklist row and the continuation arm commit together (ENV-118
+    // review): a crash must not leave a recorded sub-task whose turn nothing
+    // will resume.
     let created: { id: string } | null = null;
     try {
-      created = await createSubTaskItem({ taskId: task.id, text, actorUserId: agent.user.id, kind });
+      created = (await runWorkflowActionAtomically(
+        { taskId: task.id, agentSlug: agent.slug, messageId, action, taskState: task.status },
+        (tx) => createSubTaskItem({ taskId: task.id, text, actorUserId: agentUser.id, kind, client: tx }),
+      )).value;
     } catch (err) {
       return NextResponse.json({ error: err instanceof Error ? err.message : "Could not add sub-task" }, { status: 409 });
     }
@@ -1066,14 +1097,6 @@ async function handleTaskWorkflowAction(
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
     revalidatePath(`/projects/${task.project.slug}`);
     publishBoardTouch(task.projectId);
-    // The sub-task row is a durable outcome of this turn: settle the PM run
-    // so a post-action gateway abort cannot mask the completed work (PH-124).
-    await recordPmChannelRunWorkflowAction({
-      taskId: task.id,
-      agentSlug: agent.slug,
-      messageId,
-      action,
-    });
     return NextResponse.json({ ok: true, taskId: task.id, subtaskId: created.id, subtaskKind: kind });
   }
 
@@ -1094,14 +1117,40 @@ async function handleTaskWorkflowAction(
     const completed = payload.completed === undefined ? true : payload.completed === true;
     // Optional self-reported effort for this step.
     const minutesSpent = typeof payload.minutesSpent === "number" ? payload.minutesSpent : undefined;
-    const result = await setSubTaskCompletion({
-      subTaskId: subtaskId,
-      completed,
-      minutesSpent,
-      actorUserId: agent.user.id,
-      expectTaskId: task.id,
-    });
-    if (!result) return NextResponse.json({ error: "Sub-task not found on this task" }, { status: 404 });
+    // ENV-118 (review): the tick and the continuation arm commit together, and
+    // the "is this the last open item" count is read inside the same
+    // transaction so it cannot observe a half-applied state.
+    // The sub-task was found above, so this only fires on a concurrent delete.
+    // Throwing rolls the whole transaction back rather than arming a
+    // continuation for an action that did nothing.
+    const SUBTASK_VANISHED = "env118:subtask-vanished";
+    let ticked: { updated: NonNullable<Awaited<ReturnType<typeof setSubTaskCompletion>>>; remainingOpen: number };
+    try {
+      ticked = (await runWorkflowActionAtomically(
+        { taskId: task.id, agentSlug: agent.slug, messageId, action, taskState: task.status },
+        async (tx) => {
+          const updated = await setSubTaskCompletion({
+            subTaskId: subtaskId,
+            completed,
+            minutesSpent,
+            actorUserId: agentUser.id,
+            expectTaskId: task.id,
+            client: tx,
+          });
+          if (!updated) throw new Error(SUBTASK_VANISHED);
+          const remainingOpen = await tx.subTask.count({
+            where: { taskId: task.id, completedAt: null, kind: { not: "review" } },
+          });
+          return { updated, remainingOpen };
+        },
+      )).value;
+    } catch (err) {
+      if (err instanceof Error && err.message === SUBTASK_VANISHED) {
+        return NextResponse.json({ error: "Sub-task not found on this task" }, { status: 404 });
+      }
+      throw err;
+    }
+    const result = ticked.updated;
     revalidateTaskShell(task.id);
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
     revalidatePath(`/projects/${task.project.slug}`);
@@ -1112,6 +1161,11 @@ async function handleTaskWorkflowAction(
     // same response, while they still hold a valid reusable token — to call
     // ready_for_review immediately, and belt-and-braces dispatch a fresh
     // workflow turn in case this turn ends without acting.
+    //
+    // The notification queues a NEW run, which ENV-117 lets supersede this
+    // one. The continuation armed above then loses its race deliberately: the
+    // drain's competing-run guard settles it `superseded` because the newer
+    // run IS the continuation. One turn, not two (WFI-001).
     let allImplementationSubtasksComplete = false;
     if (
       result.completedAt !== null &&
@@ -1119,10 +1173,7 @@ async function handleTaskWorkflowAction(
       isAssignee &&
       task.status === "In Progress"
     ) {
-      const remainingOpen = await db.subTask.count({
-        where: { taskId: task.id, completedAt: null, kind: { not: "review" } },
-      });
-      if (remainingOpen === 0) {
+      if (ticked.remainingOpen === 0) {
         allImplementationSubtasksComplete = true;
         await sendTaskWorkflowNotification({
           taskId: task.id,
@@ -1137,15 +1188,6 @@ async function handleTaskWorkflowAction(
         });
       }
     }
-    // Durable outcome: the tick/reopen persisted, so settle the PM run. The
-    // ready_for_review_available notification above targets a NEW messageId
-    // (its own run), so settling this grant's run does not interfere.
-    await recordPmChannelRunWorkflowAction({
-      taskId: task.id,
-      agentSlug: agent.slug,
-      messageId,
-      action,
-    });
     return NextResponse.json({
       ok: true,
       taskId: task.id,
@@ -1175,22 +1217,20 @@ async function handleTaskWorkflowAction(
     } else if (!isAssignee) {
       return NextResponse.json({ error: "Only the assignee can remove implementation sub-tasks" }, { status: 403 });
     }
-    const removed = await deleteSubTaskItem({
-      subTaskId: subtaskId,
-      actorUserId: agent.user.id,
-      expectTaskId: task.id,
-    });
+    const { value: removed } = await runWorkflowActionAtomically(
+      { taskId: task.id, agentSlug: agent.slug, messageId, action, taskState: task.status },
+      (tx) => deleteSubTaskItem({
+        subTaskId: subtaskId,
+        actorUserId: agentUser.id,
+        expectTaskId: task.id,
+        client: tx,
+      }),
+    );
     if (!removed) return NextResponse.json({ error: "Sub-task not found on this task" }, { status: 404 });
     revalidateTaskShell(task.id);
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
     revalidatePath(`/projects/${task.project.slug}`);
     publishBoardTouch(task.projectId);
-    await recordPmChannelRunWorkflowAction({
-      taskId: task.id,
-      agentSlug: agent.slug,
-      messageId,
-      action,
-    });
     return NextResponse.json({ ok: true, taskId: task.id, subtaskId, removed: true });
   }
 
@@ -1425,11 +1465,14 @@ async function handleTaskWorkflowAction(
       select: { kind: true, createdAt: true },
     });
     if (!latestBlocker || latestBlocker.kind === "task.blocker.cleared") {
+      // Nothing to clear: this branch writes no durable row, so there is no
+      // mutation to bind the continuation arm to.
       await recordPmChannelRunWorkflowAction({
         taskId: task.id,
         agentSlug: agent.slug,
         messageId,
         action,
+        withoutDomainMutation: true,
       });
       return NextResponse.json({ ok: true, taskId: task.id, cleared: "blocker", alreadyCleared: true });
     }
@@ -1440,50 +1483,52 @@ async function handleTaskWorkflowAction(
     );
     const preserveIndependentAlert =
       task.repositoryRun?.phase === "operational_error" || hasNewerIndependentAlert;
-    const [created] = await db.$transaction([
-      db.comment.create({
-        data: {
-          taskId: task.id,
-          userId: agent.user.id,
-          body: [
-            `**Blocker cleared** by @${agent.user.username} (assignee):`,
-            "",
-            comment,
-            "",
-            preserveIndependentAlert
-              ? "Active implementation may resume, but a separate operational alert remains active."
-              : "Active implementation has resumed.",
-          ].join("\n"),
-        },
-        select: { id: true },
-      }),
-      db.activityLog.create({
-        data: {
-          projectId: task.projectId,
-          taskId: task.id,
-          userId: agent.user.id,
-          kind: "task.blocker.cleared",
-          targetAgent: agent.slug,
-          payload: JSON.stringify({ action, preserveIndependentAlert }),
-        },
-      }),
-      db.task.update({
-        where: { id: task.id },
-        data: { alertReporter: preserveIndependentAlert },
-      }),
-    ]);
+    // ENV-118 (review): unblocking evidence, the cleared-blocker audit row, the
+    // alert flag and the continuation arm are one transaction. Clearing a
+    // blocker without scheduling the resumed turn is the same loss window as
+    // `start`.
+    const { value: created } = await runWorkflowActionAtomically(
+      { taskId: task.id, agentSlug: agent.slug, messageId, action, taskState: task.status },
+      async (tx) => {
+        const row = await tx.comment.create({
+          data: {
+            taskId: task.id,
+            userId: agentUser.id,
+            body: [
+              `**Blocker cleared** by @${agentUser.username} (assignee):`,
+              "",
+              comment,
+              "",
+              preserveIndependentAlert
+                ? "Active implementation may resume, but a separate operational alert remains active."
+                : "Active implementation has resumed.",
+            ].join("\n"),
+          },
+          select: { id: true },
+        });
+        await tx.activityLog.create({
+          data: {
+            projectId: task.projectId,
+            taskId: task.id,
+            userId: agentUser.id,
+            kind: "task.blocker.cleared",
+            targetAgent: agent.slug,
+            payload: JSON.stringify({ action, preserveIndependentAlert }),
+          },
+        });
+        await tx.task.update({
+          where: { id: task.id },
+          data: { alertReporter: preserveIndependentAlert },
+        });
+        return row;
+      },
+    );
     revalidateTaskReplyScope(task.id, "comment");
     revalidateTaskReplyScope(task.id, "chat");
     revalidateTaskShell(task.id);
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
     revalidatePath(`/projects/${task.project.slug}`);
     publishBoardTouch(task.projectId);
-    await recordPmChannelRunWorkflowAction({
-      taskId: task.id,
-      agentSlug: agent.slug,
-      messageId,
-      action,
-    });
     return NextResponse.json({
       ok: true,
       taskId: task.id,

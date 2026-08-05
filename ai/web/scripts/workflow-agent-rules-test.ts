@@ -395,15 +395,49 @@ assert(
   "repository validation must resolve the Monitor Agent by role rather than a deployment username",
 );
 
-// PH-124 item B: every workflow action with a durable outcome settles the
-// PM-channel run. The formal external-blocker lifecycle adds flag_blocker and
-// clear_blocker to the previous durable outcomes; each idempotent
-// already-settled response has its own call site. Task ownership never gains a
-// second hidden dependency lifecycle.
+// PH-124 item B: every workflow action with a durable outcome records against
+// the PM-channel run. ENV-118 splits HOW by effect: an episode-terminal action
+// settles through the standalone recorder, while a continuation-required one
+// must go through runWorkflowActionAtomically so its domain mutation and its
+// continuation-outbox row commit together (the ENV-118 review finding).
 assert(
-  taskWorkflowRoute.split("recordPmChannelRunWorkflowAction(").length - 1 === 18,
-  "all durable-outcome and idempotent workflow paths must settle the PM-channel run",
+  taskWorkflowRoute.split("recordPmChannelRunWorkflowAction(").length - 1 === 12,
+  "every episode-terminal and idempotent workflow path must settle the PM-channel run",
 );
+{
+  const CONTINUATION_REQUIRED_ROUTE_ACTIONS = [
+    "start",
+    "publish_checkpoint",
+    "add_subtask",
+    "complete_subtask",
+    "remove_subtask",
+    "clear_blocker",
+  ];
+  // Slice each action's handler out of the route and check it in isolation, so
+  // a new continuation-required action cannot pass by sitting next to one that
+  // does the right thing.
+  const blockStarts = [...taskWorkflowRoute.matchAll(/\n {2}if \(action === /g)].map((m) => m.index ?? 0);
+  for (const action of CONTINUATION_REQUIRED_ROUTE_ACTIONS) {
+    const start = taskWorkflowRoute.indexOf(`\n  if (action === "${action}"`);
+    assert(start >= 0, `the task workflow route still handles "${action}"`);
+    const end = blockStarts.find((index) => index > start) ?? taskWorkflowRoute.length;
+    const block = taskWorkflowRoute.slice(start, end);
+    assert(
+      block.includes("runWorkflowActionAtomically("),
+      `continuation-required action "${action}" must record through runWorkflowActionAtomically, ` +
+        "so its domain mutation cannot commit without the continuation",
+    );
+    // A standalone recorder call inside one of these blocks is only legitimate
+    // when the branch declares it wrote nothing durable.
+    const standaloneCalls = block.split("recordPmChannelRunWorkflowAction(").length - 1;
+    const declaredNoops = block.split("withoutDomainMutation: true").length - 1;
+    assert(
+      standaloneCalls === declaredNoops,
+      `every standalone recorder call inside "${action}" must declare withoutDomainMutation ` +
+        `(found ${standaloneCalls} calls, ${declaredNoops} declared)`,
+    );
+  }
+}
 
 // request-workflow-turn: PM-bearer-authenticated self-service turn re-arm.
 const requestTurnRoute = readFileSync(join(root, "app/api/agent/tasks/[taskId]/request-workflow-turn/route.ts"), "utf8");

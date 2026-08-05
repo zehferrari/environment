@@ -79,6 +79,19 @@ async function main(): Promise<void> {
       recordPmChannelRunQueued,
       recordPmChannelRunWorkflowAction,
     } = await import("@/lib/agents/pm-channel/runs");
+    const { runWorkflowActionAtomically } = await import(
+      "@/lib/agents/workflow/transactional-action"
+    );
+    // ENV-118: production routes every continuation-required action through the
+    // atomic primitive; the standalone recorder now refuses them outright. The
+    // task.move above stands in for the domain mutation this scenario is not
+    // exercising, so the callback is deliberately empty.
+    const recordAction = async (args: {
+      taskId: string;
+      agentSlug: string;
+      messageId: string;
+      action: string;
+    }) => (await runWorkflowActionAtomically(args, async () => {})).result;
     const { createActionPlanSubtasksForTask, extractActionPlanSteps } =
       await import("@/lib/tasks/action-plan-subtasks");
     const { loadWorkflowInvariantSnapshot, checkWorkflowInvariants } =
@@ -191,7 +204,7 @@ async function main(): Promise<void> {
         }),
       },
     });
-    const startResult = await recordPmChannelRunWorkflowAction({
+    const startResult = await recordAction({
       taskId: t1.id,
       agentSlug: AGENT_SLUG,
       messageId: t1Target.messageId,

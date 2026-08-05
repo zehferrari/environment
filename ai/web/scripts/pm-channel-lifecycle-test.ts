@@ -51,6 +51,17 @@ async function main() {
     recordPmChannelRunEvent,
     recordPmChannelRunWorkflowAction,
   } = await import("@/lib/agents/pm-channel/runs");
+  const { runWorkflowActionAtomically } = await import(
+    "@/lib/agents/workflow/transactional-action"
+  );
+  // ENV-118: continuation-required actions only reach the recorder through the
+  // atomic primitive now (see workflow-action-effect-test B8/B9).
+  const recordContinuationAction = async (args: {
+    taskId: string;
+    agentSlug: string;
+    messageId: string;
+    action: string;
+  }) => (await runWorkflowActionAtomically(args, async () => {})).result;
   const {
     enqueueOpenClawPmChannelTurn,
     isRetryablePmChannelTurnFailure,
@@ -268,7 +279,7 @@ async function main() {
     const mA0 = "lifecycle-a0";
     await grantMessage(mA0);
     await enqueue({ target: commentTarget(mA0), text: "turn A0 comment" });
-    const startResult = await recordPmChannelRunWorkflowAction({
+    const startResult = await recordContinuationAction({
       taskId: task.id,
       agentSlug,
       messageId: mA0,
@@ -386,9 +397,13 @@ async function main() {
     const beforeRetry = Date.now();
     await recordPmChannelRunEvent({ target: chatTarget(mD), event: "done" });
     const retried = await runRow(d1Key);
-    assert.equal(retried.status, "retryable", "notification no-reply run goes retryable");
-    assert.equal(retried.error, NO_REPLY_ERROR, "retryable run keeps the no-reply error");
-    assert.equal(retried.failedAt, null, "retryable run clears failedAt");
+    // ENV-117 removed `retryable` from the RUN status vocabulary — it is a job
+    // status now. A retrying turn leaves the run `failed` with failedAt null
+    // (the distinction from an exhausted failure) while the job re-enters the
+    // ladder. This expectation was stale on pm-workflow and failed there too.
+    assert.equal(retried.status, "failed", "notification no-reply run records the failed attempt");
+    assert.equal(retried.error, NO_REPLY_ERROR, "the retrying run keeps the no-reply error");
+    assert.equal(retried.failedAt, null, "a retrying run clears failedAt; only an exhausted one stamps it");
     assert.equal(retried.jobs[0]!.status, "retryable", "job re-enters the ladder");
     assert.equal(retried.jobs[0]!.lastError, NO_REPLY_ERROR);
     const delayMs = retried.jobs[0]!.availableAt.getTime() - beforeRetry;
@@ -481,10 +496,17 @@ async function main() {
     await db.pmChannelRun.update({ where: { id: d4Seed.id }, data: { status: "streaming" } });
     await recordPmChannelRunEvent({ target: chatTarget(mF), event: "done" });
     const heuristicRetried = await runRow(d4Key);
+    // Same ENV-117 vocabulary change as D1: the retry lands on the job, and the
+    // run records a non-terminal `failed` attempt.
     assert.equal(
       heuristicRetried.status,
-      "retryable",
+      "failed",
       "prefix heuristic must classify legacy notification jobs as retryable",
+    );
+    assert.equal(
+      heuristicRetried.jobs[0]!.status,
+      "retryable",
+      "the legacy-notification job re-enters the retry ladder",
     );
 
     // ---- D5: the retried dispatch carries the idempotency preamble on the
@@ -545,7 +567,12 @@ async function main() {
     const contextFailure = "⚠️ Context is too large and auto-compaction could not recover this turn. Try again.";
     await recordPmChannelRunEvent({ target: chatTarget(mH), event: "error", error: contextFailure });
     const contextRetried = await runRow(d6Key);
-    assert.equal(contextRetried.status, "retryable", "terminal context failure remains on the bounded retry ladder");
+    assert.equal(contextRetried.status, "failed", "a retrying run records a non-terminal failed attempt");
+    assert.equal(
+      contextRetried.jobs[0]!.status,
+      "retryable",
+      "terminal context failure remains on the bounded retry ladder",
+    );
     assert.notEqual(contextRetried.sessionKey, oldSessionKey, "the retry run must point at a fresh OpenClaw session");
     const rotatedBinding = await db.agentSessionBinding.findFirstOrThrow({
       where: { scopeType: "task", scopeId: task.id, agentSlug },

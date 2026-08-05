@@ -14,10 +14,18 @@
 //   B5 the drain turns a queued continuation into a fresh execution turn
 //   B6 an episode-terminal action settles the run and supersedes the outbox
 //   B7 a wait action records waiting_external
+//   B8 failure injection at the REAL route boundary: a crash between the task
+//      mutation and the outbox arm commits neither
+//   B9 the standalone recorder refuses continuation-required actions, so the
+//      split path cannot be reopened by copy-paste
 //
 // Never touches the live pm.db: DATABASE_URL is repointed at a temp file
 // before any lib import, per the scripts/pm-acceptance-baseline-test.ts
 // convention.
+
+// MUST precede every other import: B8 drives the real route handler, and Next
+// captures `globalThis.AsyncLocalStorage` at module-eval time.
+import "./lib/next-als-polyfill";
 
 import { execFile } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -242,6 +250,20 @@ async function sectionB(): Promise<void> {
     const { drainPmChannelContinuations } = await import(
       "@/lib/agents/pm-channel/continuation-drain"
     );
+    const { runWorkflowActionAtomically } = await import(
+      "@/lib/agents/workflow/transactional-action"
+    );
+
+    // Production runs every continuation-required action through the atomic
+    // primitive, and `recordPmChannelRunWorkflowAction` now refuses them
+    // outright (see B9). Mirror that here: these cases are about the run/outbox
+    // half, so the domain mutation is an intentional no-op.
+    const recordAction = async (args: {
+      taskId: string;
+      agentSlug: string;
+      messageId: string;
+      action: string;
+    }) => (await runWorkflowActionAtomically(args, async () => {})).result;
 
     const agent = await db.agent.create({
       data: { slug: AGENT_SLUG, name: "Effect Bot", role: "coding" },
@@ -321,7 +343,7 @@ async function sectionB(): Promise<void> {
 
     // ---- B1: a continuation-required action settles nothing ----
     const b1 = await seedRun("effect-b1");
-    const started = await recordPmChannelRunWorkflowAction({
+    const started = await recordAction({
       taskId: task.id,
       agentSlug: AGENT_SLUG,
       messageId: "effect-b1",
@@ -384,7 +406,7 @@ async function sectionB(): Promise<void> {
     });
 
     // ---- B3: repeating an action inside one episode is idempotent ----
-    await recordPmChannelRunWorkflowAction({
+    await recordAction({
       taskId: task.id,
       agentSlug: AGENT_SLUG,
       messageId: "effect-b1",
@@ -395,7 +417,7 @@ async function sectionB(): Promise<void> {
       1,
       "repeating an action renews its continuation rather than adding another",
     );
-    await recordPmChannelRunWorkflowAction({
+    await recordAction({
       taskId: task.id,
       agentSlug: AGENT_SLUG,
       messageId: "effect-b1",
@@ -465,7 +487,7 @@ async function sectionB(): Promise<void> {
 
     // ---- B6: an episode-terminal action settles and supersedes ----
     const b6 = await seedRun("effect-b6");
-    await recordPmChannelRunWorkflowAction({
+    await recordAction({
       taskId: task.id,
       agentSlug: AGENT_SLUG,
       messageId: "effect-b6",
@@ -512,6 +534,166 @@ async function sectionB(): Promise<void> {
     assertEqual(b7Row.status, "completed", "a wait action still ends the agent's turn");
     assertEqual(b7Row.disposition, "waiting_external", "a wait action records waiting_external");
     assertEqual(b7Row.settledByAction, "flag_blocker", "the settle names the blocking action");
+
+    // ---- B8: failure injection around the REAL workflow action path ----
+    //
+    // B2 only proves `armPmChannelContinuations` rolls back inside a synthetic
+    // transaction. The review's finding was about the boundary one level up:
+    // the route committed `moveTaskStatus` and only THEN opened a separate
+    // transaction for the run/outbox bookkeeping, so a crash in between left an
+    // In Progress task with no continuation.
+    //
+    // So this case drives POST /api/agent/tasks/<id>/workflow itself, with the
+    // crash injected at exactly that point, and asserts the task mutation could
+    // not commit alone. Then it repeats the identical call without the crash
+    // and asserts both halves landed — otherwise a route that silently did
+    // nothing would also "pass".
+    const { runRouteHandler } = await import("./lib/next-route-harness");
+    const { NextRequest } = await import("next/server");
+    const { POST: taskWorkflowPost } = await import(
+      "@/app/api/agent/tasks/[taskId]/workflow/route"
+    );
+    const { createTaskWorkflowToken } = await import("@/lib/agents/workflow/token/task");
+    const { __setWorkflowActionCrashHook } = await import(
+      "@/lib/agents/workflow/transactional-action"
+    );
+
+    // Its own project: the fixture task above is already In Progress for this
+    // agent, and the route's per-project WIP gate would reject the start with
+    // a 409 before it ever reached the transaction under test.
+    const startProject = await db.project.create({
+      data: { slug: "effects-start", name: "Effects Start" },
+    });
+    const startTask = await db.task.create({
+      data: {
+        projectId: startProject.id,
+        title: "Atomic start task",
+        status: "To Do",
+        assigneeId: agentUser.id,
+        reporterId: owner.id,
+        approvedOn: new Date(),
+      },
+    });
+    const callStart = async (messageId: string) => {
+      await db.agentChatMessage.create({
+        data: {
+          id: messageId,
+          projectId: startProject.id,
+          taskId: startTask.id,
+          agentSlug: AGENT_SLUG,
+          senderUserId: owner.id,
+          body: "PM workflow notification for @effectbot",
+          originChannel: "comment",
+        },
+      });
+      const run = await recordPmChannelRunQueued({
+        target: {
+          kind: "task-comment",
+          agentSlug: AGENT_SLUG,
+          taskId: startTask.id,
+          messageId,
+        },
+        kind: "task-comment",
+        projectId: startProject.id,
+      });
+      if (!run) fail(`could not seed a run for ${messageId}`);
+      const req = new NextRequest(
+        `http://127.0.0.1/api/agent/tasks/${startTask.id}/workflow`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            messageId,
+            token: createTaskWorkflowToken(messageId, startTask.id, AGENT_SLUG),
+            action: "start",
+          }),
+        },
+      );
+      const res = await runRouteHandler(() =>
+        taskWorkflowPost(req, { params: Promise.resolve({ taskId: startTask.id }) }),
+      );
+      return { runId: run.id, status: res.status };
+    };
+
+    __setWorkflowActionCrashHook(() => {
+      throw new Error("simulated crash between the task mutation and the outbox arm");
+    });
+    let crashedStatus = 0;
+    try {
+      crashedStatus = (await callStart("effect-b8-crash")).status;
+    } catch {
+      // A throw that escapes the route is equally acceptable evidence: what
+      // matters is that nothing committed.
+      crashedStatus = 500;
+    } finally {
+      __setWorkflowActionCrashHook(null);
+    }
+    assert(crashedStatus >= 500, "the injected crash failed the action rather than reporting success");
+    assertEqual(
+      (await db.task.findUniqueOrThrow({ where: { id: startTask.id }, select: { status: true } })).status,
+      "To Do",
+      "the task mutation could not commit without the continuation (the review's loss window)",
+    );
+    assertEqual(
+      await db.activityLog.count({ where: { taskId: startTask.id, kind: "task.move" } }),
+      0,
+      "the crashed action left no task.move audit row behind",
+    );
+    assertEqual(
+      await db.pmChannelContinuation.count({ where: { taskId: startTask.id } }),
+      0,
+      "the crashed action armed no continuation",
+    );
+
+    // Same call, no crash: both halves must land together.
+    const clean = await callStart("effect-b8-ok");
+    assertEqual(clean.status, 200, "the uninjected start succeeds");
+    assertEqual(
+      (await db.task.findUniqueOrThrow({ where: { id: startTask.id }, select: { status: true } })).status,
+      "In Progress",
+      "a successful start commits the task mutation",
+    );
+    assertEqual(
+      await db.pmChannelContinuation.count({
+        where: { runId: clean.runId, status: "armed" },
+      }),
+      1,
+      "a successful start commits the continuation in the same transaction",
+    );
+    assertEqual(
+      (await runRow(clean.runId)).status,
+      "queued",
+      "a successful start still leaves the run unsettled",
+    );
+
+    // ---- B9: the split path is closed, not just unused ----
+    // A future action must not be able to reopen the loss window by copying an
+    // episode-terminal call site.
+    let guardThrew = false;
+    try {
+      await recordPmChannelRunWorkflowAction({
+        taskId: startTask.id,
+        agentSlug: AGENT_SLUG,
+        messageId: "effect-b8-ok",
+        action: "start",
+      });
+    } catch {
+      guardThrew = true;
+    }
+    assert(
+      guardThrew,
+      "the standalone recorder refuses a continuation-required action that may own a domain mutation",
+    );
+    // The escape hatch stays available for call sites that genuinely write
+    // nothing (the already-cleared clear_blocker branch).
+    const noop = await recordPmChannelRunWorkflowAction({
+      taskId: startTask.id,
+      agentSlug: AGENT_SLUG,
+      messageId: "effect-b8-ok",
+      action: "clear_blocker",
+      withoutDomainMutation: true,
+    });
+    assertEqual(noop.actionEffect, "continue", "the declared no-op still records a continue effect");
 
     console.log(`[workflow-action-effect] OK — ${checks} assertions passed`);
   } finally {
