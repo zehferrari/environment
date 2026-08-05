@@ -143,9 +143,9 @@ export async function isAuthorizedPmChannelDispatchTarget(
   });
   if (
     !run
-    || run.status === "canceled"
+    || run.status === "cancelled"
     || run.status === "failed"
-    || run.status === "complete"
+    || run.status === "completed"
     || !runMatchesDispatch(run, args)
   ) {
     return false;
@@ -267,7 +267,7 @@ export async function isAuthorizedPmChannelCallbackTarget(
   // A gateway can report a retryable/failed delivery after the agent already
   // received the turn. Preserve that late-final recovery path, but never
   // accept a callback for a queued or explicitly canceled target.
-  if (!run || run.status === "queued" || run.status === "canceled") return false;
+  if (!run || run.status === "queued" || run.status === "cancelled") return false;
 
   if (target.kind === "direct") {
     const original = await db.directAgentChatMessage.findUnique({

@@ -71,7 +71,7 @@ function streamStateFromRun(
   if (!run) return null;
   const status = run.status === "failed"
     ? "error"
-    : run.status === "complete"
+    : run.status === "completed"
       ? "done"
       : "streaming";
   return {

@@ -193,7 +193,7 @@ async function main(): Promise<void> {
       const last = full[full.length - 1];
       assertEqual(last.state.text, "Hello world", "replayed final text is fully reconstructed");
       assertEqual(last.state.status, "done", "replayed final frame is done");
-      assertEqual(last.state.runStatus, "complete", "replayed final frame run status complete");
+      assertEqual(last.state.runStatus, "completed", "replayed final frame run status completed");
 
       // Reconnect window: client already saw through e2; the compacted final
       // is still after that cursor and carries the full accumulated text.
@@ -236,7 +236,7 @@ async function main(): Promise<void> {
       assertEqual(job.status, "retryable", "after first failure job is retryable, not dropped");
       assertEqual(job.attemptCount, 1, "attempt count incremented to 1");
       let run = await db.pmChannelRun.findUniqueOrThrow({ where: { targetKey } });
-      assertEqual(run.status, "retryable", "run mirrors retryable status");
+      assertEqual(run.status, "failed", "run mirrors failed status (job handles retry)");
 
       // Make it claimable again immediately (skip the backoff wait).
       await db.pmChannelJob.update({ where: { id: job.id }, data: { availableAt: new Date() } });
