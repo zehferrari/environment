@@ -39,10 +39,14 @@ function assertEqual<T>(actual: T, expected: T, label: string): void {
   }
 }
 
-async function dbPush(dbUrl: string): Promise<void> {
+// `migrate deploy`, not `db push`: the schema alone omits the raw-SQL partial
+// unique indexes the run repairs depend on, so the pushed database diverges
+// from the one the watchdog actually runs against. Same convention as
+// scripts/pm-channel-lease-lifecycle-test.ts.
+async function migrateDeploy(dbUrl: string): Promise<void> {
   await execFileP(
     "pnpm",
-    ["prisma", "db", "push", "--skip-generate", "--accept-data-loss", "--schema=prisma/schema.prisma"],
+    ["prisma", "migrate", "deploy", "--schema=prisma/schema.prisma"],
     { env: { ...process.env, DATABASE_URL: dbUrl }, cwd: process.cwd() },
   );
 }
@@ -59,7 +63,7 @@ async function main(): Promise<void> {
   process.env.PM_WATCHDOG_MAX_RECOVERIES = "3";
 
   try {
-    await dbPush(dbUrl);
+    await migrateDeploy(dbUrl);
 
     const { db } = await import("@/lib/db");
     const { runWorkflowWatchdog } = await import("@/lib/agents/watchdog/run");
