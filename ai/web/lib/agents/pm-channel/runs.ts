@@ -282,29 +282,89 @@ export async function recordPmChannelRunQueued(args: {
   const ids = targetIds(args.target);
   const targetKey = pmChannelRunTargetKey(args.target);
   try {
-    // Supersede any existing non-terminal run for the same (taskId, agentSlug)
-    // before creating/upserting. The unique partial index on (taskId, agentSlug)
-    // WHERE status IN active statuses prevents duplicates at the DB level.
+    // Transactionally supersede ALL existing non-terminal runs for the same
+    // (taskId, agentSlug) and create/refresh the new run in one atomic operation.
+    // This prevents races where a crash between the supersede and the upsert
+    // could leave no active run or incorrect lineage.
     if (ids.taskId) {
-      const existingActive = await db.pmChannelRun.findFirst({
-        where: {
-          taskId: ids.taskId,
-          agentSlug: args.target.agentSlug,
-          status: { in: [...ACTIVE_STATUSES] },
-          targetKey: { not: targetKey },
-        },
-        select: { id: true },
-      });
-      if (existingActive) {
-        await db.pmChannelRun.update({
-          where: { id: existingActive.id },
-          data: {
-            status: "superseded",
-            finishedAt: now,
-            finishedReason: "superseded_by_newer_run",
+      return await db.$transaction(async (tx) => {
+        // Find ALL active duplicates for this (taskId, agentSlug).
+        const existingActive = await tx.pmChannelRun.findMany({
+          where: {
+            taskId: ids.taskId,
+            agentSlug: args.target.agentSlug,
+            status: { in: [...ACTIVE_STATUSES] },
+            targetKey: { not: targetKey },
+          },
+          select: { id: true },
+        });
+
+        // Create or update the new run first so we have its id for lineage.
+        const newRun = await tx.pmChannelRun.upsert({
+          where: { targetKey },
+          create: {
+            targetKey,
+            kind: args.kind,
+            agentSlug: args.target.agentSlug,
+            messageId: args.target.messageId,
+            projectId: args.projectId ?? null,
+            taskId: ids.taskId,
+            epicId: ids.epicId,
+            sessionKey: args.sessionKey ?? null,
+            gatewayPort: args.gatewayPort ?? null,
+            status: "queued",
+            error: null,
+            lastEventAt: now,
+          },
+          update: {
+            kind: args.kind,
+            agentSlug: args.target.agentSlug,
+            messageId: args.target.messageId,
+            projectId: args.projectId ?? null,
+            taskId: ids.taskId,
+            epicId: ids.epicId,
+            sessionKey: args.sessionKey ?? null,
+            gatewayPort: args.gatewayPort ?? null,
+            httpStatus: null,
+            status: "queued",
+            error: null,
+            // Full timestamp reset — no contradictory history (ENV-117)
+            acceptedAt: null,
+            streamingAt: null,
+            completedAt: null,
+            failedAt: null,
+            leaseExpiresAt: null,
+            heartbeatAt: null,
+            finishedAt: null,
+            finishedReason: null,
+            supersededByRunId: null,
+            lastEventAt: now,
+          },
+          select: {
+            id: true,
+            targetKey: true,
+            status: true,
+            streamSeq: true,
           },
         });
-      }
+
+        // Supersede every prior active run, pointing each to the new run.
+        if (existingActive.length > 0) {
+          await tx.pmChannelRun.updateMany({
+            where: {
+              id: { in: existingActive.map((r) => r.id) },
+            },
+            data: {
+              status: "superseded",
+              finishedAt: now,
+              finishedReason: "superseded_by_newer_run",
+              supersededByRunId: newRun.id,
+            },
+          });
+        }
+
+        return newRun;
+      });
     }
 
     return await db.pmChannelRun.upsert({
@@ -335,7 +395,6 @@ export async function recordPmChannelRunQueued(args: {
         httpStatus: null,
         status: "queued",
         error: null,
-        // Full timestamp reset — no contradictory history (ENV-117)
         acceptedAt: null,
         streamingAt: null,
         completedAt: null,

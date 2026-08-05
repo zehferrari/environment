@@ -737,7 +737,6 @@ export async function markPmChannelJobCompleteForTarget(target: unknown) {
     where: { runId: run.id, status: { in: ["queued", "claimed", "accepted", "retryable"] } },
     data: { status: "complete", completedAt: new Date(), lastError: null },
   });
-  });
 }
 
 export async function pmChannelQueueStats() {

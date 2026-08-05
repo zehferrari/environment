@@ -27,9 +27,6 @@ export function waitingCopy(args: {
   if (args.runStatus === "superseded") {
     return "superseded";
   }
-  if (args.runStatus === "retryable") {
-    return "retrying...";
-  }
 
   if (args.toolStatus === "call") {
     return args.toolName ? `Using ${args.toolName}...` : "Using tool...";
