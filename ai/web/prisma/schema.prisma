@@ -76,6 +76,8 @@ model User {
   workItemProposalsApplied       WorkItemProposal[]              @relation("WorkItemProposalAppliedBy")
   workItemProposalsRejected      WorkItemProposal[]              @relation("WorkItemProposalRejectedBy")
   archivedWorkspaces             Workspace[]                     @relation("WorkspaceArchivedBy")
+  actionPlans                    ActionPlan[]                     @relation("ActionPlanApprovedBy")
+  actionPlanStepAssignees        ActionPlanStep[]                 @relation("ActionPlanStepAssignee")
 
   @@index([kind])
   @@index([status])
@@ -451,6 +453,7 @@ model Task {
   chatRoomArchives       AgentChatRoomArchive[]  @relation("TaskChatRoomArchive")
   // Lightweight sub-task checklist (ENV-60). NOT the legacy self-referential
   // child-Task hierarchy above (parentTaskId) — that is now dormant. See SubTask.
+  actionPlan            ActionPlan?
   checklist              SubTask[]               @relation("TaskChecklist")
   repositoryRun          TaskRepositoryRun?
 
@@ -530,6 +533,52 @@ model SubTask {
 
   @@index([taskId])
   @@index([taskId, kind])
+}
+
+// ------------------------------------------------------------------
+// ENV-119: Structured Action Plans. Replaces parsing Markdown from
+// AgentChatMessage.body. The ActionPlan is a 1:1 row per Task; each
+// ActionPlanStep is a structured step with acceptance criteria, kind,
+// and optional assignee. Markdown body remains in AgentChatMessage as
+// presentation only.
+// ------------------------------------------------------------------
+
+model ActionPlan {
+  id           String           @id @default(cuid())
+  taskId       String           @unique
+  task         Task             @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  summary      String
+  approvedOn   DateTime?
+  approvedById String?
+  approvedBy   User?            @relation("ActionPlanApprovedBy", fields: [approvedById], references: [id])
+  steps        ActionPlanStep[]
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  @@index([approvedById])
+}
+
+enum StepKind {
+  sequential
+  parallel
+}
+
+model ActionPlanStep {
+  id                 String       @id @default(cuid())
+  actionPlanId       String
+  actionPlan         ActionPlan   @relation(fields: [actionPlanId], references: [id], onDelete: Cascade)
+  stepId             String
+  title              String
+  acceptanceCriteria String       // JSON-encoded string[]
+  kind               StepKind     @default(sequential)
+  assigneeId         String?
+  assignee           User?        @relation("ActionPlanStepAssignee", fields: [assigneeId], references: [id])
+  rank               Int          @default(0)
+  createdAt          DateTime     @default(now())
+
+  @@unique([actionPlanId, stepId])
+  @@index([actionPlanId, rank])
+  @@index([assigneeId])
 }
 
 // ------------------------------------------------------------------
@@ -1237,4 +1286,51 @@ model WebPushSubscription {
   lastUsedAt DateTime?
 
   @@index([userId])
+}
+
+// ------------------------------------------------------------------
+// ActionPlan — structured representation of an agent's action plan for
+// a task. Replaces parsing Markdown from AgentChatMessage.body. Each
+// task has at most one ActionPlan (1:1). The plan is persisted when an
+// agent posts a reply with a dedicated `actionPlan` JSON payload; legacy
+// Markdown Section A/B replies are bridged via persistActionPlanFromMarkdown.
+// Markdown body remains in AgentChatMessage as presentation only.
+// ------------------------------------------------------------------
+
+model ActionPlan {
+  id           String          @id @default(cuid())
+  taskId       String          @unique
+  task         Task            @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  summary      String
+  approvedOn   DateTime?
+  approvedById String?
+  approvedBy   User?           @relation("ActionPlanApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
+  steps        ActionPlanStep[]
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  @@index([approvedById])
+}
+
+enum StepKind {
+  sequential
+  parallel
+}
+
+model ActionPlanStep {
+  id                 String      @id @default(cuid())
+  actionPlanId       String
+  actionPlan         ActionPlan  @relation(fields: [actionPlanId], references: [id], onDelete: Cascade)
+  stepId             String      // agent-supplied, unique within plan
+  title              String
+  acceptanceCriteria String      // JSON array of strings, stored as text
+  kind               StepKind    @default(sequential)
+  assigneeId         String?
+  assignee           User?       @relation("ActionPlanStepAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  rank               Int         @default(0)
+  createdAt          DateTime    @default(now())
+
+  @@unique([actionPlanId, stepId])
+  @@index([actionPlanId, rank])
+  @@index([assigneeId])
 }

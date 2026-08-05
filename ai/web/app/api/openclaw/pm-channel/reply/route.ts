@@ -41,6 +41,13 @@ import {
   continueActionableTaskAfterReply,
   taskWorkflowReasonForMessage,
 } from "@/lib/agents/workflow/execution-continuation";
+import {
+  validateActionPlanInput,
+  persistActionPlan,
+  persistActionPlanFromMarkdown,
+  type ActionPlanInput,
+} from "@/lib/tasks/action-plan-store";
+import { createActionPlanSubtasksForTask } from "@/lib/tasks/action-plan-subtasks";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -150,6 +157,7 @@ async function resolveTaskReplyOrigin(args: {
 async function persistTaskReply(
   target: Extract<PmChannelReplyTarget, { kind: "task-chat" | "task-comment" }>,
   body: string,
+  actionPlanPayload?: unknown,
 ) {
   const original = await db.agentChatMessage.findUnique({
     where: { id: target.messageId },
@@ -263,6 +271,38 @@ async function persistTaskReply(
     });
     return { id: created.id, channel: "chat" as const };
   });
+
+  // ENV-119: Persist structured action plan if provided, or fall back to
+  // legacy Markdown parsing for replies on unapproved tasks.
+  if (reply.channel === "chat" && actionPlanPayload) {
+    const validated = validateActionPlanInput(actionPlanPayload);
+    if ("errors" in validated) {
+      return {
+        status: 400,
+        body: { error: "Invalid action plan", details: validated.errors },
+      };
+    }
+    const task = await db.task.findUnique({
+      where: { id: target.taskId },
+      select: { approvedOn: true },
+    });
+    if (task && !task.approvedOn) {
+      await persistActionPlan({ taskId: target.taskId, input: validated });
+    }
+  } else if (reply.channel === "chat" && !actionPlanPayload) {
+    // Legacy Markdown fallback bridge: parse Section A/B replies on
+    // unapproved tasks and store parsed steps as ActionPlanStep rows.
+    const task = await db.task.findUnique({
+      where: { id: target.taskId },
+      select: { approvedOn: true },
+    });
+    if (task && !task.approvedOn) {
+      await persistActionPlanFromMarkdown({
+        taskId: target.taskId,
+        body: persistedBody,
+      }).catch(() => null);
+    }
+  }
 
   const reviewAutomation = reply.channel === "comment"
     ? await tryCompleteTaskFromReviewerComment({
@@ -600,13 +640,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, duplicate: true });
   }
 
+  const actionPlanPayload = payload.actionPlan;
+
   const result = isSilentPmReplyText(body)
     ? await persistSilentReply(target)
     : target.kind === "direct"
     ? await persistDirectReply(target, body)
     : target.kind === "epic-chat"
     ? await persistEpicReply(target, body)
-    : await persistTaskReply(target, body);
+    : await persistTaskReply(target, body, actionPlanPayload);
 
   if (result.status >= 200 && result.status < 300) {
     const executionContinuation = target.kind === "task-chat" || target.kind === "task-comment"
