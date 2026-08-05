@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { db } from "@/lib/db";
 import type {
   PmChannelReplyTarget,
@@ -288,21 +289,65 @@ export async function recordPmChannelRunQueued(args: {
     // could leave no active run or incorrect lineage.
     if (ids.taskId) {
       return await db.$transaction(async (tx) => {
-        // Find ALL active duplicates for this (taskId, agentSlug).
+        // Find ALL active duplicates for this (taskId, agentSlug), including
+        // the current targetKey if it already exists as active.
         const existingActive = await tx.pmChannelRun.findMany({
           where: {
             taskId: ids.taskId,
             agentSlug: args.target.agentSlug,
             status: { in: [...ACTIVE_STATUSES] },
-            targetKey: { not: targetKey },
           },
-          select: { id: true },
+          select: { id: true, targetKey: true },
         });
 
-        // Create or update the new run first so we have its id for lineage.
+        // Reserve a new run ID for lineage BEFORE superseding, so the
+        // supersede update can set supersededByRunId atomically. This avoids
+        // creating a second active row (which would violate the partial
+        // unique index) before the old rows are moved out of active status.
+        const reservedRunId = randomUUID();
+
+        // Supersede every prior active run FIRST, pointing each to the
+        // reserved new run ID. This clears the active slot before we insert
+        // the replacement, so the partial unique index is never violated.
+        const priorActive = existingActive.filter((r) => r.targetKey !== targetKey);
+        if (priorActive.length > 0) {
+          await tx.pmChannelRun.updateMany({
+            where: {
+              id: { in: priorActive.map((r) => r.id) },
+            },
+            data: {
+              status: "superseded",
+              finishedAt: now,
+              finishedReason: "superseded_by_newer_run",
+              supersededByRunId: reservedRunId,
+            },
+          });
+        }
+
+        // If the current targetKey already exists as active, supersede it
+        // too (it will be replaced by the upsert below, but we need to clear
+        // its active status first to avoid a transient unique-index conflict
+        // if another row for the same taskId+agentSlug was just superseded).
+        const currentActive = existingActive.find((r) => r.targetKey === targetKey);
+        if (currentActive) {
+          await tx.pmChannelRun.update({
+            where: { id: currentActive.id },
+            data: {
+              status: "superseded",
+              finishedAt: now,
+              finishedReason: "superseded_by_replacement",
+              supersededByRunId: reservedRunId,
+            },
+          });
+        }
+
+        // Now create or upsert the replacement run with the reserved ID.
+        // All prior active rows are already superseded, so the partial unique
+        // index will not conflict.
         const newRun = await tx.pmChannelRun.upsert({
           where: { targetKey },
           create: {
+            id: reservedRunId,
             targetKey,
             kind: args.kind,
             agentSlug: args.target.agentSlug,
@@ -347,21 +392,6 @@ export async function recordPmChannelRunQueued(args: {
             streamSeq: true,
           },
         });
-
-        // Supersede every prior active run, pointing each to the new run.
-        if (existingActive.length > 0) {
-          await tx.pmChannelRun.updateMany({
-            where: {
-              id: { in: existingActive.map((r) => r.id) },
-            },
-            data: {
-              status: "superseded",
-              finishedAt: now,
-              finishedReason: "superseded_by_newer_run",
-              supersededByRunId: newRun.id,
-            },
-          });
-        }
 
         return newRun;
       });

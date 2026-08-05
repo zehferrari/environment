@@ -1,7 +1,7 @@
 -- PmChannelRun leased state machine: add lease, heartbeat, finish, and supersede columns.
-ALTER TABLE "PmChannelRun" ADD COLUMN "leaseExpiresAt" DateTime;
-ALTER TABLE "PmChannelRun" ADD COLUMN "heartbeatAt" DateTime;
-ALTER TABLE "PmChannelRun" ADD COLUMN "finishedAt" DateTime;
+ALTER TABLE "PmChannelRun" ADD COLUMN "leaseExpiresAt" DATETIME;
+ALTER TABLE "PmChannelRun" ADD COLUMN "heartbeatAt" DATETIME;
+ALTER TABLE "PmChannelRun" ADD COLUMN "finishedAt" DATETIME;
 ALTER TABLE "PmChannelRun" ADD COLUMN "finishedReason" TEXT;
 ALTER TABLE "PmChannelRun" ADD COLUMN "supersededByRunId" TEXT;
 

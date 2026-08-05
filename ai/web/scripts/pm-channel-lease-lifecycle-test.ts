@@ -1,7 +1,8 @@
 // ENV-117 focused tests: lease renewal, transactional supersession/lineage,
 // and ghost-run reconciliation.
 //
-// Hermetic sqlite via prisma db push. Exit 0 on success, non-zero on first failure.
+// Hermetic sqlite via prisma migrate deploy (applies raw-SQL partial indexes).
+// Exit 0 on success, non-zero on first failure.
 
 import { execFile } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -27,10 +28,11 @@ function assertEqual<T>(actual: T, expected: T, label: string): void {
   }
 }
 
-async function dbPush(dbUrl: string): Promise<void> {
+async function dbMigrateDeploy(dbUrl: string): Promise<void> {
+  // Use migrate deploy (not db push) so raw-SQL partial unique indexes are applied.
   await execFileP(
     "pnpm",
-    ["prisma", "db", "push", "--skip-generate", "--accept-data-loss", "--schema=prisma/schema.prisma"],
+    ["prisma", "migrate", "deploy", "--schema=prisma/schema.prisma"],
     { env: { ...process.env, DATABASE_URL: dbUrl }, cwd: process.cwd() },
   );
 }
@@ -48,7 +50,10 @@ async function main(): Promise<void> {
   process.env.PM_OPENCLAW_LEASE_MS = "120000";
 
   try {
-    await dbPush(dbUrl);
+    await dbMigrateDeploy(dbUrl);
+
+    // Small delay to ensure the migrate connection is fully released
+    await new Promise((r) => setTimeout(r, 200));
 
     const { db } = await import("@/lib/db");
     const {
@@ -192,77 +197,103 @@ async function main(): Promise<void> {
       console.log("Section 2 passed: transactional supersession with lineage");
     }
 
-    // ---- Section 3: Multiple active duplicates all superseded ----
+    // ---- Section 3: Migration reconciliation of pre-existing duplicates ----
     {
-      // Manually create two active runs for the same task+agent to simulate
-      // pre-existing duplicates, then verify a new run supersedes both.
-      const taskId = task.id;
-      const dupKey1 = `dup-${randomUUID()}`;
-      const dupKey2 = `dup-${randomUUID()}`;
-      const newMessageId = randomUUID();
-      const newTarget = {
-        kind: "task-comment" as const,
-        agentSlug,
-        taskId,
-        messageId: newMessageId,
-      };
+      // The migration's reconciliation step marks all but the newest active
+      // duplicate per (taskId, agentSlug) as superseded before creating the
+      // partial unique index. Verify this by creating duplicates in a fresh
+      // DB before the index exists, then running the migration.
+      //
+      // Since the migration already ran (via dbMigrateDeploy), we test the
+      // reconciliation logic directly: create a second task with two active
+      // runs by temporarily dropping the index, inserting duplicates, and
+      // re-running the reconciliation SQL.
+      const reconTask = await db.task.create({
+        data: { projectId: project.id, title: "Recon test task", status: "In Progress" },
+      });
+      const reconKey1 = `recon-${randomUUID()}`;
+      const reconKey2 = `recon-${randomUUID()}`;
 
-      await db.pmChannelRun.createMany({
-        data: [
-          {
-            targetKey: dupKey1,
-            kind: "task-comment",
-            agentSlug,
-            messageId: randomUUID(),
-            taskId,
-            status: "accepted",
-            acceptedAt: new Date(),
-            lastEventAt: new Date(),
-          },
-          {
-            targetKey: dupKey2,
-            kind: "task-comment",
-            agentSlug,
-            messageId: randomUUID(),
-            taskId,
-            status: "streaming",
-            streamingAt: new Date(),
-            lastEventAt: new Date(),
-          },
-        ],
+      // Drop the partial unique index temporarily to simulate pre-migration state
+      await db.$executeRawUnsafe('DROP INDEX IF EXISTS "PmChannelRun_active_task_agent_unique"');
+
+      // Insert two active runs for the same (taskId, agentSlug) — now possible
+      await db.pmChannelRun.create({
+        data: {
+          targetKey: reconKey1,
+          kind: "task-comment",
+          agentSlug,
+          messageId: randomUUID(),
+          taskId: reconTask.id,
+          status: "accepted",
+          acceptedAt: new Date(Date.now() - 60000),
+          lastEventAt: new Date(Date.now() - 60000),
+        },
+      });
+      await db.pmChannelRun.create({
+        data: {
+          targetKey: reconKey2,
+          kind: "task-comment",
+          agentSlug,
+          messageId: randomUUID(),
+          taskId: reconTask.id,
+          status: "streaming",
+          streamingAt: new Date(),
+          lastEventAt: new Date(),
+        },
       });
 
-      // Create a new run — should supersede BOTH duplicates
-      await recordPmChannelRunQueued({ target: newTarget, kind: "task-comment" });
+      // Run the migration reconciliation SQL: mark all but the newest as superseded
+      await db.$executeRawUnsafe(`
+        UPDATE "PmChannelRun" SET
+          status = 'superseded',
+          "finishedAt" = COALESCE("finishedAt", datetime('now')),
+          "finishedReason" = 'reconciled_duplicate_pre_index'
+        WHERE id IN (
+          SELECT id FROM (
+            SELECT
+              r.id AS id,
+              ROW_NUMBER() OVER (
+                PARTITION BY r."taskId", r."agentSlug"
+                ORDER BY r."updatedAt" DESC
+              ) AS rn
+            FROM "PmChannelRun" r
+            WHERE r."taskId" IS NOT NULL
+              AND r.status IN ('queued', 'accepted', 'streaming')
+          )
+          WHERE rn > 1
+        )
+      `);
 
-      const dup1 = await db.pmChannelRun.findUniqueOrThrow({
-        where: { targetKey: dupKey1 },
-        select: { status: true, supersededByRunId: true },
-      });
-      const dup2 = await db.pmChannelRun.findUniqueOrThrow({
-        where: { targetKey: dupKey2 },
-        select: { status: true, supersededByRunId: true },
-      });
-      assertEqual(dup1.status, "superseded", "first duplicate must be superseded");
-      assertEqual(dup2.status, "superseded", "second duplicate must be superseded");
-      assert(dup1.supersededByRunId !== null, "first duplicate must have supersededByRunId");
-      assert(dup2.supersededByRunId !== null, "second duplicate must have supersededByRunId");
+      // Recreate the partial unique index
+      await db.$executeRawUnsafe(
+        'CREATE UNIQUE INDEX "PmChannelRun_active_task_agent_unique" ON "PmChannelRun"("taskId", "agentSlug") WHERE "status" IN (\'queued\', \'accepted\', \'streaming\')'
+      );
 
-      const newRun = await db.pmChannelRun.findUniqueOrThrow({
-        where: { targetKey: pmChannelRunTargetKey(newTarget) },
-        select: { id: true },
+      // Verify: exactly one active run remains, the other is superseded
+      const activeCount = await db.pmChannelRun.count({
+        where: { taskId: reconTask.id, agentSlug, status: { in: ["queued", "accepted", "streaming"] } },
       });
-      assertEqual(dup1.supersededByRunId, newRun.id, "first dup lineage points to new run");
-      assertEqual(dup2.supersededByRunId, newRun.id, "second dup lineage points to new run");
+      assertEqual(activeCount, 1, "exactly one active run should remain after reconciliation");
 
-      console.log("Section 3 passed: multiple active duplicates all superseded with lineage");
+      const supersededCount = await db.pmChannelRun.count({
+        where: { taskId: reconTask.id, agentSlug, status: "superseded" },
+      });
+      assertEqual(supersededCount, 1, "one duplicate should be superseded by reconciliation");
+
+      console.log("Section 3 passed: migration reconciliation deduplicates active runs");
     }
 
     // ---- Section 4: Ghost-run reconciliation ----
     {
+      // Use a dedicated task so the partial unique index doesn't conflict
+      // with active runs from prior sections.
+      const ghostTask = await db.task.create({
+        data: { projectId: project.id, title: "Ghost test task", status: "In Progress" },
+      });
       // Create a stale non-terminal run (old lastEventAt, no lease)
       const staleKey = `stale-${randomUUID()}`;
-      const staleTaskId = task.id;
+      const staleTaskId = ghostTask.id;
       await db.pmChannelRun.create({
         data: {
           targetKey: staleKey,
@@ -323,11 +354,14 @@ async function main(): Promise<void> {
 
     // ---- Section 5: Snapshot respects lease expiry ----
     {
+      const leaseTask = await db.task.create({
+        data: { projectId: project.id, title: "Lease expiry test task", status: "In Progress" },
+      });
       const messageId = randomUUID();
       const target = {
         kind: "task-comment" as const,
         agentSlug,
-        taskId: task.id,
+        taskId: leaseTask.id,
         messageId,
       };
       const targetKey = pmChannelRunTargetKey(target);
@@ -339,7 +373,7 @@ async function main(): Promise<void> {
           kind: "task-comment",
           agentSlug,
           messageId,
-          taskId: task.id,
+          taskId: leaseTask.id,
           status: "streaming",
           streamingAt: new Date(),
           leaseExpiresAt: new Date(Date.now() - 60_000), // expired 1 min ago
@@ -357,11 +391,14 @@ async function main(): Promise<void> {
 
     // ---- Section 6: Retry path fully resets timestamps ----
     {
+      const retryTask = await db.task.create({
+        data: { projectId: project.id, title: "Retry test task", status: "In Progress" },
+      });
       const messageId = randomUUID();
       const target = {
         kind: "task-comment" as const,
         agentSlug,
-        taskId: task.id,
+        taskId: retryTask.id,
         messageId,
       };
       const targetKey = pmChannelRunTargetKey(target);
@@ -411,6 +448,97 @@ async function main(): Promise<void> {
       assertEqual(afterRetry.supersededByRunId, null, "supersededByRunId must be null after retry reset");
 
       console.log("Section 6 passed: retry path fully resets timestamps");
+    }
+
+    // ---- Section 7: Partial unique index enforced (migrate deploy) ----
+    {
+      // Verify the partial unique index exists and prevents two active runs
+      // for the same (taskId, agentSlug) with different targetKeys.
+      const idxCheck = await db.$queryRaw<{name: string}[]>`
+        SELECT name FROM sqlite_master
+        WHERE type='index' AND name='PmChannelRun_active_task_agent_unique'
+      `;
+      assert(idxCheck.length === 1, "partial unique index must exist after migrate deploy");
+
+      // Use a dedicated task for this section's index enforcement test.
+      const idxTask = await db.task.create({
+        data: { projectId: project.id, title: "Index enforcement test task", status: "In Progress" },
+      });
+
+      // Create one active run for this task+agent (legitimate)
+      const idxTarget = {
+        kind: "task-comment" as const,
+        agentSlug,
+        taskId: idxTask.id,
+        messageId: randomUUID(),
+      };
+      await recordPmChannelRunQueued({ target: idxTarget, kind: "task-comment" });
+
+      // Attempt to directly insert a second active run for the same task+agent
+      // (bypassing recordPmChannelRunQueued) should fail with a unique constraint violation.
+      const conflictKey = `conflict-${randomUUID()}`;
+      let constraintError: unknown = null;
+      try {
+        await db.pmChannelRun.create({
+          data: {
+            targetKey: conflictKey,
+            kind: "task-comment",
+            agentSlug,
+            messageId: randomUUID(),
+            taskId: idxTask.id,
+            status: "accepted",
+            acceptedAt: new Date(),
+            lastEventAt: new Date(),
+          },
+        });
+      } catch (err) {
+        constraintError = err;
+      }
+      assert(constraintError !== null, "inserting a second active run must fail the partial unique index");
+
+      // Verify that recordPmChannelRunQueued still works correctly with the index:
+      // it should supersede the existing active run and create a new one without error.
+      const replaceTarget = {
+        kind: "task-comment" as const,
+        agentSlug,
+        taskId: idxTask.id,
+        messageId: randomUUID(),
+      };
+      const replaceKey = pmChannelRunTargetKey(replaceTarget);
+
+      // Find the currently-active run for this task+agent
+      const activeBefore = await db.pmChannelRun.findFirst({
+        where: { taskId: idxTask.id, agentSlug, status: { in: [...["queued", "accepted", "streaming"]] } },
+        select: { id: true, targetKey: true },
+      });
+      assert(activeBefore !== null, "there must be an active run before replacement");
+
+      await recordPmChannelRunQueued({ target: replaceTarget, kind: "task-comment" });
+
+      // The old active run must now be superseded
+      if (activeBefore && activeBefore.targetKey !== replaceKey) {
+        const oldRun = await db.pmChannelRun.findUniqueOrThrow({
+          where: { targetKey: activeBefore.targetKey },
+          select: { status: true, supersededByRunId: true },
+        });
+        assertEqual(oldRun.status, "superseded", "old active run must be superseded by replacement");
+        assert(oldRun.supersededByRunId !== null, "old run must have supersededByRunId set");
+      }
+
+      // The new run must be active (queued)
+      const newActive = await db.pmChannelRun.findUniqueOrThrow({
+        where: { targetKey: replaceKey },
+        select: { status: true },
+      });
+      assertEqual(newActive.status, "queued", "replacement run must be queued and active");
+
+      // Only one active run for this task+agent should exist
+      const activeCount = await db.pmChannelRun.count({
+        where: { taskId: idxTask.id, agentSlug, status: { in: [...["queued", "accepted", "streaming"]] } },
+      });
+      assertEqual(activeCount, 1, "exactly one active run must exist after replacement");
+
+      console.log("Section 7 passed: partial unique index enforced, replacement works with index");
     }
 
     await db.$disconnect();
