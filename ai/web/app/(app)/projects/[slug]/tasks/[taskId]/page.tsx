@@ -2570,6 +2570,16 @@ export default async function TaskDetailPage({
                               {authorRole.label}
                             </span>
                           ) : null}
+                          {c.isGenerated ? (
+                            <span className="rounded-full border border-line bg-bg-elev px-2 py-0.5 text-nano font-semibold uppercase tracking-wide text-text-muted">
+                              System
+                            </span>
+                          ) : null}
+                          {c.provider && c.model ? (
+                            <span className="rounded-full border border-line bg-bg-elev px-2 py-0.5 text-nano font-medium text-text-muted" title={`${c.provider}/${c.model}`}>
+                              {c.provider}/{c.model}
+                            </span>
+                          ) : null}
                           <MessageTimestamp value={c.createdAt} />
                         </div>
                         {canDeleteComments ? (

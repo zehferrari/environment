@@ -108,6 +108,11 @@ export type AgentContextPacket = {
     body: string;
     createdAt: string;
     kind?: string;
+    commentKind?: string | null;
+    authorAgentSlug?: string | null;
+    isGenerated?: boolean;
+    provider?: string | null;
+    model?: string | null;
   }>;
   attachments: AttachmentContext[];
   renderedPrompt: string;
@@ -524,6 +529,11 @@ export async function buildTaskAgentContextPacket(args: {
           id: true,
           body: true,
           createdAt: true,
+          authorAgentSlug: true,
+          provider: true,
+          model: true,
+          commentKind: true,
+          isGenerated: true,
           user: { select: { username: true, kind: true, isOwner: true } },
         },
       },
@@ -704,6 +714,11 @@ export async function buildTaskAgentContextPacket(args: {
         actor: actorLabel(comment.user),
         body: comment.body,
         createdAt: formatDate(comment.createdAt)!,
+        commentKind: comment.commentKind,
+        authorAgentSlug: comment.authorAgentSlug,
+        isGenerated: comment.isGenerated,
+        provider: comment.provider,
+        model: comment.model,
       })),
       ...archivedChats.map((chat) => ({
         type: "chat" as const,

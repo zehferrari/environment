@@ -73,7 +73,7 @@ export async function applyBlockerPermissionGrant(args: {
   try {
     return await db.$transaction(async (tx) => {
       const authorization = await tx.comment.create({
-        data: { taskId: args.taskId, userId: args.actorUserId, body: args.authorizationBody },
+        data: { taskId: args.taskId, userId: args.actorUserId, body: args.authorizationBody, commentKind: "blocker_notice", isGenerated: true },
         select: { id: true },
       });
 

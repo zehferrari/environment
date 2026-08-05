@@ -219,7 +219,18 @@ export function getCachedTaskComments(taskId: string) {
     // Soft-deleted comments are returned to humans on the task page so
     // they can render the collapsed dotted divider. Agent context queries
     // filter deletedAt: null upstream so agents never see deleted bodies.
-    include: {
+    select: {
+      id: true,
+      body: true,
+      createdAt: true,
+      deletedAt: true,
+      deletedById: true,
+      userId: true,
+      authorAgentSlug: true,
+      provider: true,
+      model: true,
+      commentKind: true,
+      isGenerated: true,
       user: {
         select: {
           id: true,

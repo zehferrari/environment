@@ -137,6 +137,9 @@ export async function persistTaskReply(
           taskId: target.taskId,
           userId: agentUser.id,
           body: persistedBody,
+          authorAgentSlug: target.agentSlug,
+          commentKind: "agent_reply",
+          isGenerated: false,
         },
         select: { id: true },
       });

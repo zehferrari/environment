@@ -177,6 +177,9 @@ export async function POST(
           taskId,
           userId: agent.user!.id,
           body,
+          authorAgentSlug: original.agentSlug,
+          commentKind: "agent_reply",
+          isGenerated: false,
         },
         select: { id: true },
       });

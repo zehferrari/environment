@@ -106,6 +106,8 @@ export async function settleConsumedCheckpointBlocker(args: {
         data: {
           taskId: args.taskId,
           userId: args.actor.id,
+          commentKind: "blocker_notice",
+          isGenerated: true,
           body: [
             `**Checkpoint permission blocker closed automatically by PM (${args.outcome === "checkpoint_published" ? "published" : "attempt failed"}).**`,
             "",

@@ -842,7 +842,7 @@ async function handleTaskWorkflowAction(
     if (comment) {
       const created = await db.$transaction(async (tx) => {
         const row = await tx.comment.create({
-          data: { taskId: task.id, userId: agent.user!.id, body: comment },
+          data: { taskId: task.id, userId: agent.user!.id, body: comment, authorAgentSlug: agent.slug, commentKind: "agent_reply", isGenerated: false },
           select: { id: true },
         });
         await tx.activityLog.create({
@@ -914,7 +914,7 @@ async function handleTaskWorkflowAction(
     });
     const created = await db.$transaction(async (tx) => {
       const row = await tx.comment.create({
-        data: { taskId: task.id, userId: agent.user!.id, body: comment },
+        data: { taskId: task.id, userId: agent.user!.id, body: comment, authorAgentSlug: agent.slug, commentKind: "agent_reply", isGenerated: false },
         select: { id: true },
       });
       await tx.task.update({
@@ -1257,7 +1257,7 @@ async function handleTaskWorkflowAction(
     payloadExtra?: Record<string, unknown>,
   ) {
     const created = await db.comment.create({
-      data: { taskId: requestTaskId, userId: requesterUserId, body },
+      data: { taskId: requestTaskId, userId: requesterUserId, body, authorAgentSlug: requesterSlug, commentKind: "workflow_action", isGenerated: false },
       select: { id: true },
     });
     await db.activityLog.create({
@@ -1495,6 +1495,9 @@ async function handleTaskWorkflowAction(
         data: {
           taskId: task.id,
           userId: requesterUserId,
+          authorAgentSlug: requesterSlug,
+          commentKind: "blocker_notice",
+          isGenerated: false,
           body: [
             `**Blocker raised** by @${requesterUsername} (assignee):`,
             "",
@@ -1616,6 +1619,9 @@ async function handleTaskWorkflowAction(
           data: {
             taskId: task.id,
             userId: agentUser.id,
+            authorAgentSlug: agent.slug,
+            commentKind: "workflow_action",
+            isGenerated: false,
             body: [
               `**Blocker cleared** by @${agentUser.username} (assignee):`,
               "",
