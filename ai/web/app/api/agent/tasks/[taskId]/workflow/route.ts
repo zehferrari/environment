@@ -37,10 +37,15 @@ import {
 } from "@/lib/deploy/checkpoint-authorization";
 import { isProtectedBranch } from "@/lib/projects/protected-branches";
 import {
+  blockerDiagnosticsFingerprint,
+  blockerFailureSignature,
   blockerMetadataFromPayload,
   blockerPermissionGrantForComment,
+  classifyBlockerFailure,
+  formalBlockerReportFromValue,
   isBlockerPermissionKind,
   type BlockerPermissionRequest,
+  type FormalBlockerReport,
 } from "@/lib/tasks/formal-blocker";
 import { hasNewerIndependentTaskAlert } from "@/lib/tasks/checkpoint-blocker";
 
@@ -150,6 +155,7 @@ async function handleTaskWorkflowAction(
     authorizationCommentId?: unknown;
     permissionKind?: unknown;
     permissionScope?: unknown;
+    blockerReport?: unknown;
   };
   try {
     payload = (await req.json()) as typeof payload;
@@ -1245,7 +1251,11 @@ async function handleTaskWorkflowAction(
   const requesterSlug = agent.slug;
   const requestTaskId = task.id;
   const requestProjectId = task.projectId;
-  async function postWorkflowComment(body: string, kind: string) {
+  async function postWorkflowComment(
+    body: string,
+    kind: string,
+    payloadExtra?: Record<string, unknown>,
+  ) {
     const created = await db.comment.create({
       data: { taskId: requestTaskId, userId: requesterUserId, body },
       select: { id: true },
@@ -1257,7 +1267,7 @@ async function handleTaskWorkflowAction(
         userId: requesterUserId,
         kind,
         targetAgent: requesterSlug,
-        payload: JSON.stringify({ commentId: created.id, action }),
+        payload: JSON.stringify({ commentId: created.id, action, ...payloadExtra }),
       },
     });
     return created.id;
@@ -1336,6 +1346,110 @@ async function handleTaskWorkflowAction(
         epicBranch,
       };
     }
+    // ENV-120. A formal blocker moves the task into a human-blocked state, so
+    // the claim is validated as structured data before that happens. A
+    // permission round is the one case PM can complete itself: the dependency
+    // IS the reporter's grant, so the report is synthesized from the validated
+    // permission request rather than demanded from the caller again.
+    let blockerReport: FormalBlockerReport;
+    if (permissionRequest) {
+      const supplied = formalBlockerReportFromValue(payload.blockerReport);
+      blockerReport = {
+        blockedOn: "permission",
+        requestedActor: supplied?.requestedActor ?? "the task reporter",
+        requestedAction: permissionRequest.scope,
+        evidence: supplied?.evidence ?? comment,
+        diagnosticsAttempted: supplied?.diagnosticsAttempted?.length
+          ? supplied.diagnosticsAttempted
+          : ["No agent-side retry can grant this permission; the scope is owner-authorized by design."],
+        resumeCondition: supplied?.resumeCondition
+          ?? `The task reporter grants "${permissionRequest.scope}" on this blocker comment.`,
+        reporterCanResolve: true,
+        permission: permissionRequest,
+      };
+    } else {
+      // Escalation is earned with DISTINCT diagnostic evidence, never with
+      // elapsed time or a bare retry counter: count the earlier incident
+      // rounds for this same failure whose diagnosis differs from this one.
+      const candidate = formalBlockerReportFromValue(payload.blockerReport);
+      let priorDistinctDiagnostics = 0;
+      if (candidate) {
+        const signature = blockerFailureSignature(candidate);
+        const fingerprint = blockerDiagnosticsFingerprint(candidate);
+        const incidents = await db.activityLog.findMany({
+          where: { taskId: task.id, kind: "task.blocker.incident", targetAgent: agent.slug },
+          orderBy: { createdAt: "desc" },
+          take: 50,
+          select: { payload: true },
+        });
+        const distinct = new Set<string>();
+        for (const row of incidents) {
+          if (!row.payload) continue;
+          try {
+            const parsed = JSON.parse(row.payload) as { signature?: unknown; diagnosticsFingerprint?: unknown };
+            if (parsed.signature !== signature) continue;
+            if (typeof parsed.diagnosticsFingerprint !== "string") continue;
+            if (parsed.diagnosticsFingerprint === fingerprint) continue;
+            distinct.add(parsed.diagnosticsFingerprint);
+          } catch {
+            // A malformed incident row cannot earn an escalation.
+          }
+        }
+        priorDistinctDiagnostics = distinct.size;
+      }
+
+      const classification = classifyBlockerFailure(payload.blockerReport, {
+        assigneeIdentifiers: [agent.slug, agentUser.username, agentUser.id],
+        priorDistinctDiagnostics,
+      });
+      if (classification.outcome === "reject") {
+        // No run action is recorded: a refused blocker is not a turn outcome.
+        // The episode continues and the agent fixes the report or the work.
+        return NextResponse.json({
+          error: classification.message,
+          rejectedRule: classification.rule,
+          requiredFields: {
+            blockedOn: "person | permission | external_service | decision | dependency",
+            requestedActor: "who must act (never you)",
+            requestedAction: "the exact action they must perform",
+            evidence: "the observed failure: exact error text, endpoint or identifier",
+            diagnosticsAttempted: ["what you already tried"],
+            resumeCondition: "the observable condition that lets work resume",
+            reporterCanResolve: "true | false",
+          },
+        }, { status: 422 });
+      }
+      if (classification.outcome === "incident") {
+        // Recoverable technical failure: audited, but the task stays In
+        // Progress and no decision owner is woken.
+        await db.activityLog.create({
+          data: {
+            projectId: task.projectId,
+            taskId: task.id,
+            userId: agentUser.id,
+            kind: "task.blocker.incident",
+            targetAgent: agent.slug,
+            payload: JSON.stringify({
+              action,
+              rule: classification.rule,
+              signature: candidate ? blockerFailureSignature(candidate) : null,
+              diagnosticsFingerprint: candidate ? blockerDiagnosticsFingerprint(candidate) : null,
+              priorDistinctDiagnostics,
+              report: candidate,
+            }),
+          },
+        });
+        return NextResponse.json({
+          error: classification.message,
+          incident: true,
+          rejectedRule: classification.rule,
+          guidance: classification.guidance,
+          priorDistinctDiagnostics,
+        }, { status: 422 });
+      }
+      blockerReport = classification.report;
+    }
+
     const latestBlocker = await db.activityLog.findFirst({
       where: {
         taskId: task.id,
@@ -1390,6 +1504,12 @@ async function handleTaskWorkflowAction(
               `**Reporter permission requested:** ${permissionRequest.scope}`,
             ] : []),
             "",
+            `**Blocked on:** ${blockerReport.blockedOn} — ${blockerReport.requestedActor}`,
+            `**Requested action:** ${blockerReport.requestedAction}`,
+            `**Evidence:** ${blockerReport.evidence}`,
+            `**Diagnostics attempted:** ${blockerReport.diagnosticsAttempted.map((entry) => `\n- ${entry}`).join("")}`,
+            `**Resume condition:** ${blockerReport.resumeCondition}`,
+            "",
             "The task remains In Progress, but active implementation is paused pending external or owner intervention.",
           ].join("\n"),
         },
@@ -1402,7 +1522,7 @@ async function handleTaskWorkflowAction(
           userId: requesterUserId,
           kind: "task.blocker",
           targetAgent: agent.slug,
-          payload: JSON.stringify({ action, commentId: row.id, permissionRequest }),
+          payload: JSON.stringify({ action, commentId: row.id, permissionRequest, blockerReport }),
         },
       });
       await tx.task.update({ where: { id: task.id }, data: { alertReporter: true } });
@@ -1423,6 +1543,8 @@ async function handleTaskWorkflowAction(
         body: [
           `Assignee @${agent.user.username} raised a blocker on "${task.title}":`,
           comment,
+          `Blocked on ${blockerReport.blockedOn} (${blockerReport.requestedActor}) — required action: ${blockerReport.requestedAction}`,
+          `Work resumes when: ${blockerReport.resumeCondition}`,
           permissionRequest
             ? `This is marked as permission-only. The task reporter can grant the narrowly scoped permission (${permissionRequest.scope}) from the blocker comment in Mission Control.`
             : "Resolve or decide the external dependency, then reply with the unblocking evidence so the assignee can clear the blocker and resume.",
@@ -1653,6 +1775,20 @@ async function handleTaskWorkflowAction(
         "This extra scope needs a decision before it is absorbed into the current task.",
       ].join("\n"),
       "task.extra_work.blocker",
+      {
+        // An extra-work blocker has a fixed shape: it is always a scope
+        // DECISION owed by the reviewer/reporter, never a technical failure,
+        // so PM can state the structured claim itself (WFI-007).
+        blockerReport: {
+          blockedOn: "decision",
+          requestedActor: "the task reviewer or reporter",
+          requestedAction: "Decide whether the requested extra scope is in or out of this task.",
+          evidence: reason,
+          diagnosticsAttempted: ["Assessed the requested extra work against the approved plan scope."],
+          resumeCondition: "The reviewer or reporter records an in-scope / out-of-scope decision on this task.",
+          reporterCanResolve: true,
+        } satisfies FormalBlockerReport,
+      },
     );
     await db.task.update({ where: { id: task.id }, data: { alertReporter: true } });
     const targets = new Set<string>();

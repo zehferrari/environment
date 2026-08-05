@@ -970,6 +970,17 @@ async function pmRunSettlementSlice() {
     const preservedFlagged = await call("wf-assignee", preservedBlockerGrant, {
       action: "flag_blocker",
       comment: "external decision remains pending while a separate repository alert is raised",
+      // ENV-120: a non-permission blocker must carry a validated structured
+      // report before the task may enter a human-blocked state.
+      blockerReport: {
+        blockedOn: "decision",
+        requestedActor: "@wf-owner",
+        requestedAction: "Decide whether the deployment host swap goes ahead this week.",
+        evidence: "The host swap changes the verification target and no decision is recorded on the task.",
+        diagnosticsAttempted: ["Re-read the task context and Epic description for an existing decision."],
+        resumeCondition: "The reporter records a go/no-go decision for the deployment host swap on this task.",
+        reporterCanResolve: true,
+      },
     });
     assert(preservedFlagged.status === 200, `second flag_blocker must succeed (got ${preservedFlagged.status}: ${JSON.stringify(preservedFlagged.body)})`);
     await assertSettled("wf-assignee", preservedBlockerGrant, "flag_blocker");

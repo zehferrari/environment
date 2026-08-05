@@ -50,15 +50,15 @@ list, so adding an action without classifying it fails the suite.
 | WFI-004 | turn-disposition | 1 | A continuation-required action must not be what settles a run as a successful terminal outcome. | **passes** (ENV-118) |
 | WFI-005 | turn-disposition | 3 | Every terminal run must carry an explicit disposition from the closed enum. | **passes** (ENV-118) |
 | WFI-006 | turn-disposition | 3 | A run may not be complete with an empty final response and no workflow action standing in for it. | red |
-| WFI-007 | blocker | 6 | Every active formal blocker must name an external actor and a concrete actionable requirement, as structured data. | red |
+| WFI-007 | blocker | 6 | Every active formal blocker must name an external actor and a concrete actionable requirement, as structured data. | **passes** (ENV-120) |
 | WFI-008 | action-plan | 4 | An approved plan on an assigned task must yield a durable checklist from structured steps, never scraped Markdown. | red |
 
-WFI-001 already holds. WFI-004 and WFI-005 were closed by ENV-118. Do not add
-baseline entries for any of the three.
+WFI-001 already holds. WFI-004 and WFI-005 were closed by ENV-118, and WFI-007
+by ENV-120. Do not add baseline entries for any of the four.
 
 ## The expected-fail baseline
 
-Five of the eight invariants are still **red on purpose**. They describe the Epic's
+Four of the eight invariants are still **red on purpose**. They describe the Epic's
 target state, not today's. Rather than land a broken suite or water the
 invariants down, the known-violated set is recorded in
 `lib/workflow-invariants-baseline.json` and the suite is green while observed ==
@@ -84,6 +84,45 @@ hand-written strawman.
 Neither new script is wired into an aggregate test target; run them explicitly
 until the Epic closes. ENV-118 adds a third, `pnpm test:workflow-action-effect`,
 covering the effect classification and the continuation outbox end to end.
+
+## Deterministic blockers (ENV-120)
+
+WFI-007 is closed by making the blocker claim *checkable*. `flag_blocker` no
+longer accepts prose alone: it requires a `blockerReport`
+(`lib/tasks/formal-blocker.ts`) and runs it through two pure functions before
+the task may enter a human-blocked state.
+
+`validateFormalBlockerReport` checks shape — `blockedOn` from the closed enum,
+plus a non-empty `requestedActor`, `requestedAction`, `evidence`,
+`diagnosticsAttempted[]` and a concrete `resumeCondition`.
+`classifyBlockerFailure` then decides what the claim actually is:
+
+| Outcome | When | What PM does |
+| --- | --- | --- |
+| `accept` | a human class (`person`/`permission`/`decision`), or a technical class that has earned escalation | raise the formal blocker; persist the report on the `task.blocker` row |
+| `reject` | malformed report, or `requestedActor` resolves to the assignee | `422` naming the rule that fired; no run action is recorded, so the episode continues |
+| `incident` | a recoverable `external_service`/`dependency` failure | write `task.blocker.incident`; task stays In Progress, nobody is woken, the agent retries |
+
+Escalation out of the incident state is a bounded policy over **distinct
+diagnostic evidence**, never elapsed time or a retry counter: the report needs
+at least `FORMAL_BLOCKER_MIN_DISTINCT_DIAGNOSES` distinct diagnoses *and* at
+least `FORMAL_BLOCKER_MIN_PRIOR_INCIDENTS` earlier incident round for the same
+failure signature carrying a different diagnosis. Diagnoses are compared
+case- and trailing-punctuation-insensitively, so restating one attempt cannot
+buy a promotion.
+
+The other half is the grant path (`lib/tasks/blocker-permission-grant.ts`). One
+click commits four effects in one transaction: record the grant, clear the round
+it answers, supersede every competing active run for that (task, agent), and
+reserve exactly one authorization-linked continuation. Deterministic activity
+ids make it idempotent — a double click collides and rolls back. The
+`publish_checkpoint` kind is the deliberate exception to "clear on grant": its
+single-use authorization must stay resolvable from the *active* blocker while
+the runner consumes it, so that round is closed by its own settlement
+(`lib/tasks/checkpoint-blocker.ts`).
+
+Suites: `pnpm test:formal-blocker-validation` (pure rules) and
+`pnpm test:blocker-permission-grant` (grant atomicity and idempotency).
 
 ## Action effects and the continuation outbox (ENV-118)
 

@@ -48,6 +48,8 @@
     "test:board-layout": "node --import tsx scripts/board-layout-contract-test.ts",
     "test:board-blocker-indicator": "node --import tsx scripts/board-blocker-indicator-test.ts",
     "test:checkpoint-blocker-lifecycle": "node --import tsx scripts/checkpoint-blocker-lifecycle-test.ts",
+    "test:formal-blocker-validation": "node --import tsx scripts/formal-blocker-validation-test.ts",
+    "test:blocker-permission-grant": "node --import tsx scripts/blocker-permission-grant-test.ts",
     "test:pm-channel-lifecycle": "node --import tsx scripts/pm-channel-lifecycle-test.ts",
     "test:task-bulk-edit": "node --import tsx scripts/task-bulk-edit-contract-test.ts",
     "test:attachment-target": "node --import tsx scripts/attachment-target-contract-test.ts",

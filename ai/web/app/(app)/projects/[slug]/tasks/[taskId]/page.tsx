@@ -39,6 +39,7 @@ import {
   activeFormalBlockersByTask,
   blockerPermissionGrantForComment,
 } from "@/lib/tasks/formal-blocker";
+import { applyBlockerPermissionGrant } from "@/lib/tasks/blocker-permission-grant";
 import {
   createSubTaskItem,
   setSubTaskCompletion,
@@ -1053,37 +1054,26 @@ async function grantBlockerPermission(formData: FormData) {
     ].join("\n\n");
   }
 
-  let authorization: { id: string };
-  try {
-    authorization = await db.$transaction(async (tx) => {
-      const created = await tx.comment.create({
-        data: { taskId: task.id, userId: actor.id, body },
-        select: { id: true },
-      });
-      // The deterministic activity id makes simultaneous double-clicks roll
-      // back their extra comment with the unique collision. Sequential clicks
-      // already return above after observing the durable grant.
-      await tx.activityLog.create({
-        data: {
-          id: `blocker-permission-${blockerCommentId}`,
-          projectId: task.projectId,
-          taskId: task.id,
-          userId: actor.id,
-          kind: "task.blocker.permission.granted",
-          payload: JSON.stringify({
-            blockerCommentId,
-            permissionKind: request.kind,
-            permissionScope: request.scope,
-            authorizationCommentId: created.id,
-          }),
-        },
-      });
-      return created;
-    });
-  } catch (error) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") return;
-    throw error;
-  }
+  // ENV-120: the grant is one deterministic transaction — record, clear the
+  // round it answers, supersede competing runs, reserve exactly one
+  // continuation. The deterministic activity ids make simultaneous
+  // double-clicks roll back; sequential clicks already returned above.
+  const assigneeAgent = await db.agent.findFirst({
+    where: { user: { id: task.assigneeId } },
+    select: { slug: true },
+  });
+  const grant = await applyBlockerPermissionGrant({
+    taskId: task.id,
+    projectId: task.projectId,
+    actorUserId: actor.id,
+    assigneeSlug: assigneeAgent?.slug ?? null,
+    blockerCommentId,
+    permissionKind: request.kind,
+    permissionScope: request.scope,
+    authorizationBody: body,
+  });
+  if (!grant.granted) return;
+  const authorization = { id: grant.authorizationCommentId };
 
   // Owner comments use the ordinary directed-comment path. A non-owner task
   // reporter's generic approval is delivered as a PM-validated workflow
@@ -1105,6 +1095,9 @@ async function grantBlockerPermission(formData: FormData) {
       body: [
         `PM validated the task reporter's narrowly scoped permission grant in comment ${authorization.id}.`,
         body,
+        grant.blockerCleared
+          ? "PM already cleared this blocker round and superseded any competing run for you. Resume implementation now; do not call clear_blocker for it."
+          : "This permission round stays open until the authorized attempt settles; PM closes it automatically on success or failure.",
       ].join("\n\n"),
     });
   }

@@ -22,7 +22,12 @@
     "",
     "WFI-006 stays red. ENV-118 makes an interrupted turn recoverable (the",
     "continuation outbox schedules a fresh execution turn) but it does not make",
-    "an empty response a concrete completion — that is Epic item 3."
+    "an empty response a concrete completion — that is Epic item 3.",
+    "",
+    "WFI-007 was removed by ENV-120: flag_blocker now validates a structured",
+    "FormalBlockerReport before a task may enter a human-blocked state, so every",
+    "active blocker names its external actor and its actionable requirement.",
+    "Do not re-add it."
   ],
   "entries": [
     {
@@ -42,15 +47,6 @@
       "epicItem": 3,
       "codes": { "WFI-006/empty-final-response": 1 },
       "note": "A turn that produces no durable response and takes no workflow action still settles complete instead of interrupted."
-    },
-    {
-      "invariantId": "WFI-007",
-      "epicItem": 6,
-      "codes": {
-        "WFI-007/blocker-missing-external-actor": 1,
-        "WFI-007/blocker-missing-requirement": 1
-      },
-      "note": "A general flag_blocker stores only free prose; neither the external actor nor the requirement is structured."
     },
     {
       "invariantId": "WFI-008",

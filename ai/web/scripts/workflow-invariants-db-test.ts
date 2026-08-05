@@ -303,7 +303,9 @@ async function main(): Promise<void> {
     // workflow action behind it — the exact shape WFI-006 objects to.
     await recordPmChannelRunEvent({ target: t3Target, event: "done" });
 
-    // T4 — the unstructured blocker case (Epic item 6).
+    // T4 — the formal blocker case (Epic item 6). ENV-120 makes flag_blocker
+    // persist a validated structured report alongside the prose comment, so
+    // the canonical row now carries the external actor and the requirement.
     const t4 = await db.task.create({
       data: {
         projectId: project.id,
@@ -327,7 +329,22 @@ async function main(): Promise<void> {
         userId: agentUser.id,
         kind: "task.blocker",
         targetAgent: AGENT_SLUG,
-        payload: JSON.stringify({ commentId: blockerComment.id, action: "flag_blocker" }),
+        payload: JSON.stringify({
+          commentId: blockerComment.id,
+          action: "flag_blocker",
+          blockerReport: {
+            blockedOn: "external_service",
+            requestedActor: "the deploy host operator",
+            requestedAction: "Restore SSH push access for the PM deploy key on the release host.",
+            evidence: "git push -> Permission denied (publickey) from release-host:22",
+            diagnosticsAttempted: [
+              "Retried the push with a fresh session and a regenerated agent socket.",
+              "Confirmed the same key authenticates against the origin remote.",
+            ],
+            resumeCondition: "git push to release-host succeeds for the PM deploy key.",
+            reporterCanResolve: false,
+          },
+        }),
       },
     });
 
@@ -390,13 +407,13 @@ async function main(): Promise<void> {
     assertEqual(snapshot.blockers[0].taskId, t4.id, "the blocker belongs to T4");
     assertEqual(
       snapshot.blockers[0].externalActor,
-      null,
-      "a general blocker names no external actor",
+      "the deploy host operator",
+      "the adapter reads the external actor out of the structured report",
     );
     assertEqual(
       snapshot.blockers[0].requirement,
-      null,
-      "a general blocker states no structured requirement",
+      "Restore SSH push access for the PM deploy key on the release host.",
+      "the adapter reads the actionable requirement out of the structured report",
     );
 
     // ---------------- baseline match ----------------
