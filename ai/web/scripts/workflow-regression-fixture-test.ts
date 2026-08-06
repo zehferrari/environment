@@ -833,11 +833,11 @@ async function main(): Promise<void> {
         where: { targetKey },
         select: { status: true, disposition: true, completedAt: true },
       });
-      c.assertEqual(run.status, "failed", "the dead turn reads as failed, never as completed");
+      c.assertEqual(run.status, "queued", "the dead turn remains non-terminal while retry is pending");
       c.assertEqual(
         run.disposition,
-        null,
-        "and records no terminal disposition: the episode is interrupted, not over",
+        "continue",
+        "and records an explicit continuation disposition",
       );
       c.assertEqual(run.completedAt, null, "nothing about it claims completion");
 
@@ -1022,10 +1022,11 @@ async function main(): Promise<void> {
       c.assertEqual(blockerRun!.lastAction, "flag_blocker", "the run records the action the turn took");
 
       // ...and the round closes, which is what the fixture's 13/13 proves.
-      const clearedResponse = await turn.post("clear_blocker", {
+      const clearTurn = await dispatchWorkflowTurn({ boot, world, taskId: seededTask.id });
+      const clearedResponse = await clearTurn.post("clear_blocker", {
         comment: "Replay: the reporter granted the scoped permission, so the drill resumes.",
       });
-      c.assertEqual(clearedResponse.status, 200, "the same turn can clear the blocker it raised");
+      c.assertEqual(clearedResponse.status, 200, "a fresh authorized turn clears the blocker after external action");
       const resumed = await readTaskProgress(db, seededTask.id);
       c.assertEqual(resumed.alertReporter, false, "clearing the blocker lowers the reporter alert");
       c.assertEqual(resumed.status, "In Progress", "and the task resumes where it was");

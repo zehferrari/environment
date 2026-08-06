@@ -173,6 +173,8 @@ export async function loadWorkflowInvariantSnapshot(
       completedAt: true,
       failedAt: true,
       lastEventAt: true,
+      leaseExpiresAt: true,
+      heartbeatAt: true,
       disposition: true,
       settledByAction: true,
     },
@@ -200,6 +202,12 @@ export async function loadWorkflowInvariantSnapshot(
       checklist: {
         where: { kind: "implementation" },
         select: { id: true },
+      },
+      actionPlan: {
+        select: {
+          approvedOn: true,
+          steps: { select: { id: true }, take: 1 },
+        },
       },
     },
   });
@@ -328,6 +336,8 @@ export async function loadWorkflowInvariantSnapshot(
     completedAt: ms(run.completedAt),
     failedAt: ms(run.failedAt),
     lastEventAt: ms(run.lastEventAt),
+    leaseExpiresAt: ms(run.leaseExpiresAt),
+    heartbeatAt: ms(run.heartbeatAt),
     // The column is authoritative. Only a pre-ENV-118 row (no disposition
     // recorded by any writer) falls back to the ActivityLog derivation.
     settledByAction: run.disposition == null
@@ -345,11 +355,11 @@ export async function loadWorkflowInvariantSnapshot(
       : null,
     approvedOn: ms(task.approvedOn),
     checklistCount: task.checklist.length,
-    // PM stores no provenance for checklist items. The only automated producer
-    // today is the Markdown scraper in lib/tasks/action-plan-subtasks.ts, so a
-    // populated checklist is classified as prose-derived until Epic item 4
-    // makes approved-plan steps structured data.
-    planStepSource: task.checklist.length > 0 ? "markdown-prose" : "none",
+    planStepSource: task.checklist.length === 0
+      ? "none"
+      : task.actionPlan?.approvedOn && task.actionPlan.steps.length > 0
+        ? "structured"
+        : "markdown-prose",
   }));
 
   // ---- blockers: newest activity row per task decides the active state ----

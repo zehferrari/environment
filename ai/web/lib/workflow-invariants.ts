@@ -22,13 +22,9 @@
 // Definitions the schema has no primitive for yet
 // ------------------------------------------------------------------
 
-// A run's lease is not a column. It is derived: the most recent proof of life
-// (lastEventAt, else streamingAt, else acceptedAt, else createdAt) plus a TTL.
-// "Renew or become terminal" is expressed against that, so these invariants
-// need no migration to be testable.
-//
-// Aligned with PM_CHANNEL_JOB_ACCEPTED_TIMEOUT_MS (lib/agents/pm-channel/runs.ts),
-// whose default is 30 minutes.
+// New rows carry an authoritative lease expiry and heartbeat. Historical rows
+// without those fields retain the derived fallback (latest proof of life plus
+// the accepted-job TTL), so the monitor can evaluate both eras truthfully.
 export const WORKFLOW_RUN_LEASE_TTL_MS = 30 * 60 * 1000;
 
 // Every agent turn must end with one of these. There is no implicit sixth
@@ -110,6 +106,8 @@ export const WORKFLOW_ACTION_CLASS: Readonly<
   review_done: "episode-terminal",
   triage_to_todo: "episode-terminal",
   approve_plan: "episode-terminal",
+  submit_plan: "episode-terminal",
+  assign_task: "episode-terminal",
   assign_after_plan_approval: "episode-terminal",
   request_subtask: "episode-terminal",
   request_task: "episode-terminal",
@@ -156,6 +154,10 @@ export interface RunRecord {
   completedAt: number | null;
   failedAt: number | null;
   lastEventAt: number | null;
+  /** Authoritative lease deadline. Missing only on pre-ENV-117 fixtures/rows. */
+  leaseExpiresAt?: number | null;
+  /** Latest explicit lease renewal. Missing only on pre-ENV-117 fixtures/rows. */
+  heartbeatAt?: number | null;
   /** Workflow action that settled this run, if a workflow action did. */
   settledByAction: string | null;
   /** The turn's durable final response text, if any was persisted. */
@@ -246,7 +248,7 @@ function result(violations: InvariantViolation[]): InvariantResult {
 // ------------------------------------------------------------------
 
 export function runLeaseAnchor(run: RunRecord): number {
-  return run.lastEventAt ?? run.streamingAt ?? run.acceptedAt ?? run.createdAt;
+  return run.heartbeatAt ?? run.lastEventAt ?? run.streamingAt ?? run.acceptedAt ?? run.createdAt;
 }
 
 export function runLeaseExpired(
@@ -254,6 +256,7 @@ export function runLeaseExpired(
   now: number,
   ttlMs: number = WORKFLOW_RUN_LEASE_TTL_MS,
 ): boolean {
+  if (run.leaseExpiresAt != null) return now > run.leaseExpiresAt;
   return now - runLeaseAnchor(run) > ttlMs;
 }
 

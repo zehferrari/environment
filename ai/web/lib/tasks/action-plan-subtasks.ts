@@ -5,13 +5,10 @@
 // steps remain. These are lightweight checklist items (text only), NOT child
 // tasks.
 //
-// The primary path reads from the structured ActionPlan + ActionPlanStep
-// tables (ENV-119). The legacy Markdown parser (extractActionPlanSteps) is
-// retained as a compatibility bridge for pre-migration replies that have no
-// structured ActionPlan row.
+// The only production path reads ActionPlan + ActionPlanStep. Rendered
+// Markdown is presentation and is never interpreted as workflow state.
 
 import { db } from "@/lib/db";
-import { createSubTaskItem } from "@/lib/tasks/subtasks";
 import {
   getActionPlanForTask,
   createChecklistAndDelegatableTasksFromPlan,
@@ -74,9 +71,7 @@ export function extractActionPlanSteps(body: string) {
 }
 
 // On Action Plan approval, seed the task's progress checklist (SubTask rows)
-// from the assignee's posted plan. Primary path: read from structured
-// ActionPlan + ActionPlanStep tables (ENV-119). Fallback: parse Markdown
-// from the latest chat message for pre-migration compatibility.
+// from the assignee's structured plan.
 // No-op if the task already has a checklist, has no assignee, or its
 // plan has no parseable steps.
 export async function createActionPlanSubtasksForTask(args: {
@@ -97,7 +92,6 @@ export async function createActionPlanSubtasksForTask(args: {
     return { created: 0, reason: "not_applicable" as const };
   }
 
-  // Primary path: structured ActionPlan rows
   const plan = await getActionPlanForTask(task.id);
   if (plan && plan.steps.length > 0) {
     const result = await createChecklistAndDelegatableTasksFromPlan({
@@ -111,31 +105,5 @@ export async function createActionPlanSubtasksForTask(args: {
     };
   }
 
-  // Fallback: legacy Markdown parsing for pre-migration replies
-  const latestPlan = await db.agentChatMessage.findFirst({
-    where: {
-      taskId: task.id,
-      archiveId: null,
-      deletedAt: null,
-      originChannel: "chat",
-      body: { not: { startsWith: "PM workflow notification for @" } },
-      ...(task.assigneeId ? { senderUserId: task.assigneeId } : {}),
-    },
-    orderBy: { createdAt: "desc" },
-    select: { id: true, body: true },
-  });
-  if (!latestPlan) return { created: 0, reason: "no_plan" as const };
-
-  const steps = extractActionPlanSteps(latestPlan.body);
-  if (steps.length === 0) return { created: 0, reason: "no_steps" as const };
-
-  for (const step of steps) {
-    await createSubTaskItem({
-      taskId: task.id,
-      text: step,
-      actorUserId: task.assigneeId,
-    });
-  }
-
-  return { created: steps.length, reason: "created" as const };
+  return { created: 0, reason: "no_structured_plan" as const };
 }

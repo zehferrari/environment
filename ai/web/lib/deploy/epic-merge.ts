@@ -9,6 +9,7 @@ import { effectiveEpicBranchName, effectiveTaskBranchName } from "@/lib/work-ite
 import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
 import {
   inspectOriginBranch,
+  inspectValidatedCandidateWorktree,
   mergeTaskBranchIntoEpic,
   publishTaskCheckpointToEpic,
   publishEpicBranch,
@@ -31,6 +32,8 @@ import {
   validateCheckpointAuthorizationText,
 } from "@/lib/deploy/checkpoint-authorization";
 import { settleConsumedCheckpointBlocker } from "@/lib/tasks/checkpoint-blocker";
+import { applyTaskTransition, type WorkflowEffect } from "@/lib/tasks/transition-kernel";
+import { drainWorkflowOutbox } from "@/lib/tasks/workflow-outbox-drain";
 
 // Auto-merge a Done Epic-child task's branch into the Epic integration branch.
 //
@@ -82,6 +85,7 @@ export type EpicMergeJob =
       projectId: string;
       requestedByUserId: string;
       requestedByUsername: string;
+      candidateSha: string;
       attempt?: number;
       enqueuedAt: string;
     }
@@ -102,7 +106,7 @@ export type EpicMergeJob =
 // are runner claim states (see deploy/pm-epic-merge-runner).
 function jobFileName(job: EpicMergeJob) {
   if (job.kind === "merge") return `merge-${job.taskId}.json`;
-  if (job.kind === "finalize") return `finalize-${job.taskId}.json`;
+  if (job.kind === "finalize") return `finalize-${job.taskId}-${job.candidateSha.slice(0, 16)}.json`;
   if (job.kind === "checkpoint") return `checkpoint-${job.taskId}.json`;
   return `cleanup-${job.epicId}.json`;
 }
@@ -133,6 +137,7 @@ export async function enqueueTaskReviewFinalization(args: {
   projectId: string;
   requestedByUserId: string;
   requestedByUsername: string;
+  candidateSha: string;
 }) {
   const job: Extract<EpicMergeJob, { kind: "finalize" }> = {
     kind: "finalize",
@@ -141,6 +146,7 @@ export async function enqueueTaskReviewFinalization(args: {
     projectId: args.projectId,
     requestedByUserId: args.requestedByUserId,
     requestedByUsername: args.requestedByUsername,
+    candidateSha: args.candidateSha,
     enqueuedAt: new Date().toISOString(),
   };
   const target = path.join(EPIC_MERGE_DIR, jobFileName(job));
@@ -227,6 +233,7 @@ type MergeCandidate = {
   workItemKey: string | null;
   branchName: string | null;
   assigneeId: string | null;
+  workflowVersion: number;
   project: {
     slug: string;
     repositoryPath: string | null;
@@ -249,6 +256,7 @@ const MERGE_CANDIDATE_SELECT = {
   workItemKey: true,
   branchName: true,
   assigneeId: true,
+  workflowVersion: true,
   project: {
     select: {
       slug: true,
@@ -289,30 +297,41 @@ async function bounceTaskToReview(args: {
   const { task, epicBranch, taskBranch, reason } = args;
   const actor = await resolveEpicMergeActor(task.epic?.deployReviewerId ?? null);
   const now = new Date();
+  const effects: WorkflowEffect[] = [
+    { type: "board_touch", key: "board-epic-merge-failed", payload: {} },
+  ];
+  if (task.assigneeId && actor) {
+    effects.push({
+      type: "task_notification",
+      key: `epic-merge-feedback:${task.assigneeId}`,
+      payload: {
+        taskId: task.id,
+        targetUserId: task.assigneeId,
+        actor: { id: actor.id, username: actor.username, kind: "agent" },
+        reason: "review_feedback",
+        body: [
+          `Your task "${task.title}" could not be auto-merged into the Epic branch \`${epicBranch}\` and is back in Review.`,
+          reason,
+          `Resolve it and commit your changes locally on \`${taskBranch}\` — never push Epic-child branches. When the task is moved to Done again the integration retries automatically.`,
+        ].join("\n"),
+      },
+    });
+  }
 
   await db.$transaction(async (tx) => {
-    const maxRank = await tx.task.aggregate({
-      where: { status: "Review", archivedAt: null, deletedAt: null },
-      _max: { rank: true },
-    });
-    await tx.task.update({
-      where: { id: task.id },
-      data: {
-        status: "Review",
-        rank: (maxRank._max.rank ?? 0) + 1,
-        statusChangedAt: now,
-        archivedAt: null,
-        archivedById: null,
-      },
-    });
-    await tx.activityLog.create({
-      data: {
-        projectId: task.projectId,
-        taskId: task.id,
-        userId: actor?.id ?? null,
-        kind: "task.move",
-        payload: JSON.stringify({ from: "Done", to: "Review", via: "epic_merge_failed", epicBranch, taskBranch }),
-      },
+    await applyTaskTransition(tx, {
+      taskId: task.id,
+      projectId: task.projectId,
+      actorUserId: actor?.id ?? null,
+      intent: "repository_reopen",
+      from: "Done",
+      to: "Review",
+      source: "epic_merge_failed",
+      idempotencyKey: `epic-merge-failed:${epicBranch}:${taskBranch}:v${task.workflowVersion + 1}`,
+      expectedVersion: task.workflowVersion,
+      taskData: { archivedAt: null, archivedById: null },
+      evidence: { epicBranch, taskBranch, reason },
+      effects,
     });
 
     // A prematurely-Done Epic (rolled to Done by this being its last child) must
@@ -364,21 +383,7 @@ async function bounceTaskToReview(args: {
       },
     });
   });
-
-  if (task.assigneeId && actor) {
-    await sendTaskWorkflowNotification({
-      taskId: task.id,
-      targetUserId: task.assigneeId,
-      actor: { id: actor.id, username: actor.username, kind: "agent" },
-      reason: "review_feedback",
-      body: [
-        `Your task "${task.title}" could not be auto-merged into the Epic branch \`${epicBranch}\` and is back in Review.`,
-        reason,
-        `Resolve it and commit your changes locally on \`${taskBranch}\` — never push Epic-child branches. When the task is moved to Done again the integration retries automatically.`,
-      ].join("\n"),
-    }).catch((err) => console.error("[pm] epic merge bounce notify failed:", task.id, err));
-  }
-
+  await drainWorkflowOutbox({ limit: effects.length }).catch(() => {});
   publishBoardTouch(task.projectId);
 }
 
@@ -1078,6 +1083,7 @@ async function executeFinalizeJob(
           repoTouched: true,
           worktreePath: true,
           validationOutcome: true,
+          reviewedSha: true,
         },
       },
       activity: {
@@ -1148,35 +1154,42 @@ async function executeFinalizeJob(
     return { taskId: task.id, outcome: "action-required" as const, reason };
   };
 
+  if (!candidateSha || job.candidateSha !== candidateSha || task.repositoryRun?.reviewedSha !== job.candidateSha) {
+    return fail(
+      `Finalization job candidate ${job.candidateSha} no longer matches the reviewer-approved repository candidate ${task.repositoryRun?.reviewedSha ?? "none"}.`,
+    );
+  }
+
   if (!repositoryPath || !taskBranch || !candidateSha) {
     return fail("The validated repository path, task branch, or candidate SHA is missing.");
   }
   const finalizedRepositoryPath = repositoryPath;
   const finalizedTaskBranch = taskBranch;
   const validatedCandidateSha = candidateSha;
+  const finalizedWorktreePath = task.repositoryRun?.worktreePath;
+
+  // The review decision is a lease on one immutable candidate, not permission
+  // to merge whatever happens to be in the task worktree later. Re-check the
+  // registered worktree immediately before every cleanup/merge/publish path.
+  // A dirty tree, branch switch, or new commit invalidates the review and must
+  // return to the assignee; treating it as an operational retry would keep
+  // retrying a candidate that no reviewer ever approved.
+  if (!finalizedWorktreePath) {
+    return fail("The validated candidate has no registered task worktree.");
+  }
+  const candidateInspection = await inspectValidatedCandidateWorktree({
+    worktreePath: finalizedWorktreePath,
+    taskBranch: finalizedTaskBranch,
+    candidateSha: validatedCandidateSha,
+  });
+  if (!candidateInspection.ok) {
+    return fail(
+      candidateInspection.reason,
+      isOperationalRepositoryFailure(candidateInspection.reason),
+    );
+  }
 
   if (!repoTouched) {
-    const worktreePath = task.repositoryRun?.worktreePath;
-    if (!worktreePath) {
-      return fail("The no-change submission has no registered task worktree to clean up.");
-    }
-    try {
-      const [dirty, head] = await Promise.all([
-        runGit(worktreePath, ["status", "--porcelain"]),
-        runGit(worktreePath, ["rev-parse", "HEAD"]),
-      ]);
-      if (dirty) {
-        return fail("The task declared no repository changes, but its worktree is dirty.");
-      }
-      if (head !== validatedCandidateSha) {
-        return fail(
-          `The task declared no repository changes, but worktree HEAD ${head || "is missing"} does not match its start SHA ${validatedCandidateSha}.`,
-        );
-      }
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      return fail(detail, isOperationalRepositoryFailure(detail));
-    }
     const noChangeEpicBranch = task.epic ? effectiveEpicBranchName(task.epic) : null;
     const cleanup = await removeFinalizedTaskWorktree(finalizedRepositoryPath, finalizedTaskBranch, noChangeEpicBranch
       ? [noChangeEpicBranch]
@@ -1269,6 +1282,16 @@ async function executeFinalizeJob(
     via: "repository-finalization",
     repositoryFinalized: true,
   });
+  if (completion.completed) {
+    await db.reviewRun.updateMany({
+      where: {
+        taskId: task.id,
+        candidateSha: validatedCandidateSha,
+        status: "accepted",
+      },
+      data: { status: "completed" },
+    });
+  }
   publishBoardTouch(task.projectId);
   return {
     taskId: task.id,

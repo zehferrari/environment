@@ -210,7 +210,19 @@ The OpenClaw `pm` channel posts final visible replies to PM:
     "agentSlug": "<agent slug>",
     "messageId": "<origin PM message id>"
   },
-  "text": "<agent reply text>"
+  "text": "<agent reply text>",
+  "actionPlan": {
+    "summary": "<required for Task Action Plan submissions>",
+    "steps": [
+      {
+        "id": "<stable step id>",
+        "title": "<step title>",
+        "acceptanceCriteria": ["<criterion>"],
+        "kind": "sequential | parallel",
+        "assigneeId": null
+      }
+    ]
+  }
 }
 ```
 
@@ -218,6 +230,10 @@ The route is `POST /api/openclaw/pm-channel/reply` with
 `Authorization: Bearer <PM_OPENCLAW_CHANNEL_TOKEN>`. PM validates the
 target and active agent user before writing the reply to direct chat,
 task chat, epic chat, or task comments.
+
+For an unapproved Task Action Plan reply, `actionPlan` is required structured
+data. `text` is the human presentation; PM never derives authoritative steps
+from that Markdown. Non-plan replies omit `actionPlan`.
 
 If the final reply text is exactly `PM_SILENT_NO_CONTRIBUTION`, PM does
 not write a visible reply. It records a `*.silent` ActivityLog row with
@@ -412,7 +428,7 @@ POST /api/agent/tasks/<taskId>/workflow
 
 Allowed actions are `start`, `checkpoint`, `publish_checkpoint`, `ready_for_review`, `review_feedback`,
 `review_done`, `triage_to_todo`, `approve_plan`,
-`assign_after_plan_approval`, `add_subtask`, `complete_subtask`, and
+`assign_task`, `add_subtask`, `complete_subtask`, and
 `remove_subtask`
 (`submit_review` is accepted as a deprecated alias for
 `ready_for_review`). Core transition semantics:
@@ -468,7 +484,7 @@ Allowed actions are `start`, `checkpoint`, `publish_checkpoint`, `ready_for_revi
   while the Epic is To Do / In Progress.
 - `approve_plan` — the resolved reviewer stamps `approved_on` and reserves
   the repository contract. It does not create a worktree; In Progress does.
-- `assign_after_plan_approval` — the resolved reviewer asks PM to pick
+- `assign_task` — the resolved reviewer asks PM to pick
   an eligible coding agent, or names one via the optional
   `{assignee: "<username>"}` body field. Callable on an UNASSIGNED task
   in Backlog / To Do regardless of plan state (moving Backlog to To Do

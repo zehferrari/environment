@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import {
   effectiveEpicBranchName,
@@ -41,12 +42,13 @@ type RepositoryStatePatch = {
 export async function updateTaskRepositoryState(
   taskId: string,
   patch: RepositoryStatePatch,
+  client: Prisma.TransactionClient | typeof db = db,
 ) {
   const {
     incrementAttempt,
     ...data
   } = patch;
-  return db.taskRepositoryRun.upsert({
+  return client.taskRepositoryRun.upsert({
     where: { taskId },
     create: {
       taskId,

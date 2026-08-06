@@ -15,6 +15,13 @@ import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation
 import { revalidateTaskShell } from "@/lib/tasks/cache";
 import { ensureTaskCodeWorktree, TaskWorktreeError } from "@/lib/tasks/worktree-claim";
 import { activeFormalBlockersByTask } from "@/lib/tasks/formal-blocker";
+import {
+  transitionTask,
+  type TaskTransitionIntent,
+  type TaskWorkflowStatus,
+  type WorkflowEffect,
+} from "@/lib/tasks/transition-kernel";
+import { drainWorkflowOutbox } from "@/lib/tasks/workflow-outbox-drain";
 import { createWorkspace, restoreWorkspace } from "@/lib/workspaces/service";
 import { workspaceLogoPublicUrl } from "@/lib/workspaces/storage";
 import { uploadAttachment } from "@/lib/attachments/actions";
@@ -150,6 +157,7 @@ async function moveTask(taskId: string, status: string, _scopeSlug: string): Pro
       id: true,
       title: true,
       status: true,
+      workflowVersion: true,
       projectId: true,
       assigneeId: true,
       actingManagerId: true,
@@ -185,7 +193,7 @@ async function moveTask(taskId: string, status: string, _scopeSlug: string): Pro
     const check = checkStatusTransition({ from: current.status, to: status, actor });
     if (!check.ok) return { ok: false, code: check.code, message: check.message };
   }
-  if (actor.kind !== "human" && status === "In Progress" && !current.approvedOn) {
+  if (status === "In Progress" && !current.approvedOn) {
     return {
       ok: false,
       code: "EXPLICIT_USER_ACTION_REQUIRED",
@@ -193,8 +201,15 @@ async function moveTask(taskId: string, status: string, _scopeSlug: string): Pro
     };
   }
   if (status === "In Progress") {
+    if (!current.assigneeId) {
+      return {
+        ok: false,
+        code: "EXPLICIT_USER_ACTION_REQUIRED",
+        message: "Assign an implementation owner before moving this task to In Progress.",
+      };
+    }
     try {
-      await ensureTaskCodeWorktree(current.id, actor.id);
+      await ensureTaskCodeWorktree(current.id, current.assigneeId);
     } catch (err) {
       return {
         ok: false,
@@ -252,80 +267,83 @@ async function moveTask(taskId: string, status: string, _scopeSlug: string): Pro
     return { ok: true };
   }
 
-  // Item 1: a task pulled back from Review to To Do returns to the FRONT of the
-  // To Do column (priority for the next assignee pick); every other move appends
-  // to the bottom of the target column.
-  const toTopOfTodo = current.status === "Review" && status === "To Do";
-  let nextRank: number;
-  if (toTopOfTodo) {
-    const minRank = await db.task.aggregate({
-      where: { status: "To Do", archivedAt: null, deletedAt: null },
-      _min: { rank: true },
-    });
-    nextRank = (minRank._min.rank ?? 0) - 1;
-  } else {
-    const maxRank = await db.task.aggregate({
-      where: { status, archivedAt: null, deletedAt: null },
-      _max: { rank: true },
-    });
-    nextRank = (maxRank._max.rank ?? 0) + 1;
+  const edge = `${current.status}->${status}`;
+  const intentByEdge: Record<string, TaskTransitionIntent> = {
+    "Backlog->To Do": "triage",
+    "To Do->In Progress": "start",
+    "In Progress->To Do": "queue",
+    "Review->To Do": "request_changes",
+    "Done->To Do": "reopen",
+    "To Do->Backlog": "cancel",
+    "In Progress->Backlog": "cancel",
+    "Review->Backlog": "cancel",
+  };
+  const intent = intentByEdge[edge];
+  if (!intent) {
+    return {
+      ok: false,
+      code: "EXPLICIT_USER_ACTION_REQUIRED",
+      message: `The ${edge} edge requires a dedicated workflow action; board drag cannot override it.`,
+    };
   }
-  await db.$transaction([
-    db.task.update({
-      where: { id: taskId },
-      data: { status, rank: nextRank, statusChangedAt: new Date() },
-    }),
-    db.activityLog.create({
-      data: {
-        projectId: current.projectId,
-        taskId,
-        userId: actor.id,
-        kind: "task.move",
-        payload: JSON.stringify({
-          from: current.status,
-          to: status,
-          via: actor.kind === "human" ? "human-board-move" : "agent-board-move",
-        }),
-      },
-    }),
-  ]);
-  await syncEpicOnHumanTaskStatus(db, {
-    epicId: current.epicId,
-    projectId: current.projectId,
-    taskId,
-    actorId: actor.id,
-    actorKind: actor.kind,
-    targetStatus: status,
-    via: "human-board-move",
-  });
-  if (status === "In Progress" && current.epicId) {
-    await promoteEpicOnTaskInProgress(db, {
-      epicId: current.epicId,
-      projectId: current.projectId,
-      actorId: actor.id,
-      via: "board_move",
-    });
-  }
+  const effects: WorkflowEffect[] = [{ type: "board_touch", key: `board:${intent}`, payload: {} }];
   if (status === "To Do" && current.assigneeId) {
     const approved = Boolean(current.approvedOn);
-    await sendTaskWorkflowNotification({
-      taskId,
-      targetUserId: current.assigneeId,
-      actor,
-      reason: "todo_start_required",
-      body: approved
-        ? [
-            `Task "${current.title}" is now in To Do and assigned to you.`,
-            "The Action Plan is approved. Move it to In Progress through the workflow endpoint and start work immediately.",
-            "Do not post a visible acknowledgement unless you have new task information to add.",
-          ].join("\n")
-        : [
-            `Task "${current.title}" is now in To Do and assigned to you.`,
-            "Before starting work, post one concise technical implementation plan in Action Plan and wait for reviewer/reporter approval.",
-            "Do not move it to In Progress until approved_on is set.",
-          ].join("\n"),
+    effects.push({
+      type: "task_notification",
+      key: `todo-start-required:${current.assigneeId}`,
+      payload: {
+        taskId,
+        targetUserId: current.assigneeId,
+        actor,
+        reason: "todo_start_required",
+        body: approved
+          ? [
+              `Task "${current.title}" is now in To Do and assigned to you.`,
+              "The Action Plan is approved. Move it to In Progress through the workflow endpoint and start work immediately.",
+              "Do not post a visible acknowledgement unless you have new task information to add.",
+            ].join("\n")
+          : [
+              `Task "${current.title}" is now in To Do and assigned to you.`,
+              "Before starting work, post one concise technical implementation plan in Action Plan and wait for reviewer/reporter approval.",
+              "Do not move it to In Progress until approved_on is set.",
+            ].join("\n"),
+      },
     });
   }
+  await transitionTask({
+    taskId,
+    projectId: current.projectId,
+    actorUserId: actor.id,
+    intent,
+    from: current.status as TaskWorkflowStatus,
+    to: status as TaskWorkflowStatus,
+    source: actor.kind === "human" ? "human-workspace-landing-move" : "agent-workspace-landing-move",
+    idempotencyKey: `workspace-landing:${actor.id}:v${current.workflowVersion + 1}:${status}`,
+    expectedVersion: current.workflowVersion,
+    rank: current.status === "Review" && status === "To Do" ? "front" : "back",
+    effects,
+    mutate: async ({ tx }) => {
+      await syncEpicOnHumanTaskStatus(tx, {
+        epicId: current.epicId,
+        projectId: current.projectId,
+        taskId,
+        actorId: actor.id,
+        actorKind: actor.kind,
+        targetStatus: status,
+        via: "human-board-move",
+      });
+      if (status === "In Progress" && current.epicId) {
+        await promoteEpicOnTaskInProgress(tx, {
+          epicId: current.epicId,
+          projectId: current.projectId,
+          actorId: actor.id,
+          via: "board_move",
+        });
+      }
+    },
+  });
+  await drainWorkflowOutbox({ limit: effects.length }).catch(() => {});
   // Proactive queue refill — same trigger as the project board: a human
   // completing a task or parking one unassigned frees capacity now.
   if (

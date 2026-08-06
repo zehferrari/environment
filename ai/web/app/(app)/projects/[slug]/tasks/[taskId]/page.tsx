@@ -12,7 +12,6 @@ import {
 import {
   checkAssignment,
   checkActingManager,
-  checkStatusTransition,
 } from "@/lib/workflow";
 import { COLUMN_IDS } from "../../columns";
 import {
@@ -54,15 +53,19 @@ import {
   isActionableEpicStatus,
   resolveReviewOwnerId,
 } from "@/lib/tasks/workflow-actors";
-import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation";
-import { runTaskReviewHandoff } from "@/lib/tasks/review-handoff";
 import { syncEpicOnHumanTaskStatus } from "@/lib/epics/sync-on-human-task-move";
 import { startApprovedTodoTaskIfIdle } from "@/lib/tasks/auto-start";
 import { getTaskGitChanges, getTaskGitFileDiff } from "@/lib/tasks/git-changes";
-import { createActionPlanSubtasksForTask } from "@/lib/tasks/action-plan-subtasks";
-import { ensureTaskCodeWorktree } from "@/lib/tasks/worktree-claim";
+import { createChecklistAndDelegatableTasksFromPlan } from "@/lib/tasks/action-plan-store";
+import { moveTaskStatus as transitionTaskStatus } from "@/lib/tasks/move-status";
 import { reserveTaskRepositoryState } from "@/lib/tasks/repository-state";
 import { effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
+import {
+  applyTaskTransition,
+  enqueueWorkflowEffects,
+  type WorkflowEffect,
+} from "@/lib/tasks/transition-kernel";
+import { drainWorkflowOutbox } from "@/lib/tasks/workflow-outbox-drain";
 import {
   getCachedLatestRepoVerifyActivity,
   getCachedPendingTaskProposals,
@@ -214,6 +217,7 @@ async function updateTask(formData: FormData) {
       description: true,
       private: true,
       status: true,
+      workflowVersion: true,
       epicId: true,
       branchName: true,
       commitPrefix: true,
@@ -252,8 +256,6 @@ async function updateTask(formData: FormData) {
   let assignmentChanged = false;
   let reviewerPlanTargetId: string | null = null;
   let statusChangedTo: string | null = null;
-  let completeReviewAfterSave = false;
-  let requestReviewAfterSave = false;
 
   if (hasPrivateField && newPrivate !== task.private) {
     data.private = newPrivate;
@@ -285,51 +287,14 @@ async function updateTask(formData: FormData) {
     if (task.repositoryRun?.phase === "finalizing") {
       throw new Error("Repository finalization is running; wait for it to complete before changing status.");
     }
-    // Browser-session human saves are authoritative. Workflow policy still
-    // constrains agent/generic automation paths, but a human task-form action
-    // must persist once the target column is a known PM status.
-    if (actor.kind !== "human") {
-      const check = checkStatusTransition({
-        from: task.status,
-        to: newStatus,
-        actor,
-      });
-      if (!check.ok) throw new Error(check.message);
-    }
-    if (actor.kind !== "human" && newStatus === "In Progress" && !task.approvedOn) {
-      throw new Error("Action Plan must be approved before this task can move to In Progress.");
-    }
     if (newStatus === "In Progress") {
       if (newBranch !== task.branchName || newEpicId !== task.epicId) {
         throw new Error("Save the task branch/Epic change before moving it to In Progress so PM can provision the correct worktree.");
       }
-      await ensureTaskCodeWorktree(task.id, actor.id);
     }
-    if (task.status === "Review" && newStatus === "Done" && canTriggerAgents) {
-      completeReviewAfterSave = true;
-    } else if (newStatus === "Review") {
-      if (task.status !== "In Progress") {
-        throw new Error("A task can enter Review only through validation from In Progress.");
-      }
-      requestReviewAfterSave = true;
-    } else {
-      const maxRank = await db.task.aggregate({
-        where: { status: newStatus, archivedAt: null, deletedAt: null },
-        _max: { rank: true },
-      });
-      data.status = newStatus;
-      data.rank = (maxRank._max.rank ?? 0) + 1;
-      data.statusChangedAt = new Date();
-      statusChangedTo = newStatus;
-      activity.push({
-        kind: "task.move",
-        payload: JSON.stringify({
-          from: task.status,
-          to: newStatus,
-          via: actor.kind === "human" ? "human-board-move" : "agent-board-move",
-        }),
-      });
-    }
+    // The editor is only an adapter. The shared move service owns every gate,
+    // transition ledger row, repository handoff, and durable side effect.
+    statusChangedTo = newStatus;
   }
 
   // Epic (must belong to the same project)
@@ -521,7 +486,7 @@ async function updateTask(formData: FormData) {
     });
   }
 
-  if (activity.length === 0 && !completeReviewAfterSave && !requestReviewAfterSave) return; // nothing changed
+  if (activity.length === 0 && !statusChangedTo) return; // nothing changed
 
   if (activity.length > 0) {
     await db.$transaction([
@@ -540,15 +505,20 @@ async function updateTask(formData: FormData) {
     ]);
   }
 
-  await syncEpicOnHumanTaskStatus(db, {
-    epicId: newEpicId,
-    projectId: task.projectId,
-    taskId,
-    actorId: actor.id,
-    actorKind: actor.kind,
-    targetStatus: statusChangedTo ?? task.status,
-    via: "task-edit",
-  });
+  if (statusChangedTo) {
+    const moved = await transitionTaskStatus(taskId, statusChangedTo, slug);
+    if (!moved.ok) throw new Error(moved.message);
+  } else {
+    await syncEpicOnHumanTaskStatus(db, {
+      epicId: newEpicId,
+      projectId: task.projectId,
+      taskId,
+      actorId: actor.id,
+      actorKind: actor.kind,
+      targetStatus: task.status,
+      via: "task-edit",
+    });
+  }
 
   try {
     const { deleteDescriptionDraft } = await import("@/lib/description-drafts");
@@ -648,48 +618,15 @@ async function updateTask(formData: FormData) {
       taskId: task.id,
       targetUserId: reviewerPlanTargetId,
       actor,
-      reason: "reviewer_plan_requested",
+      reason: "reviewer_assignment_requested",
       body: [
         `You have been set as Reviewer for "${titleRaw}".`,
-        "If the task has no assignee, read the full task context and post one reviewer plan of action in Action Plan, including the subtasks/topics/items that must be addressed or watched.",
-        "Do not start implementation or move status. After the reporter approves the plan, call action=assign_after_plan_approval so PM can assign an eligible coding agent and move Backlog to To Do if needed.",
+        "If the task has no assignee, call action=assign_task so PM can select an eligible coding agent.",
+        "The assignee authors the implementation plan. Review it after submission; do not start implementation yourself.",
       ].join("\n"),
     });
   }
 
-  if (completeReviewAfterSave) {
-    const actorUser = await db.user.findUnique({
-      where: { id: actor.id },
-      select: { username: true },
-    });
-    await completeReviewedTaskAndAssignNext({
-      taskId: task.id,
-      actor: {
-        id: actor.id,
-        username: actorUser?.username ?? "unknown",
-        kind: actor.kind,
-      },
-      via: "task-edit",
-    });
-  }
-
-  if (requestReviewAfterSave) {
-    // Human status saves request the same validation gate as ready_for_review.
-    // Code tasks stay In Progress until the repository runner releases them.
-    const actorUser = await db.user.findUnique({
-      where: { id: actor.id },
-      select: { username: true },
-    });
-    const handoff = await runTaskReviewHandoff({
-      taskId: task.id,
-      actor: { id: actor.id, kind: actor.kind, username: actorUser?.username ?? null },
-      via: "human-board-move",
-      movedFromStatus: task.status,
-    });
-    for (const assigned of handoff.refillAssignments) {
-      revalidatePath(`/projects/${slug}/tasks/${assigned.taskId}`);
-    }
-  }
 }
 
 async function approveTaskActionPlan(formData: FormData) {
@@ -706,12 +643,14 @@ async function approveTaskActionPlan(formData: FormData) {
       id: true,
       title: true,
       status: true,
+      workflowVersion: true,
       projectId: true,
       approvedOn: true,
       assigneeId: true,
       actingManagerId: true,
       reporterId: true,
       deletedAt: true,
+      actionPlan: { select: { id: true, steps: { select: { id: true }, take: 1 } } },
       project: { select: { slug: true, onlyReportersCanApproveActionPlans: true } },
       epic: { select: { status: true, actingManagerId: true } },
     },
@@ -726,27 +665,98 @@ async function approveTaskActionPlan(formData: FormData) {
       : "Only the task reviewer or reporter can approve the Action Plan.");
   }
   if (task.approvedOn) return;
+  if (task.status !== "Backlog" && task.status !== "To Do") {
+    throw new Error("Action Plans can only be approved before implementation starts.");
+  }
+  if (!task.actionPlan || task.actionPlan.steps.length === 0) {
+    throw new Error("A validated structured Action Plan must be submitted before approval.");
+  }
 
   // Approval reserves the repository contract. Worktree provisioning belongs
   // to the In Progress transition so queued work has no writable tree.
   await reserveTaskRepositoryState(task.id);
 
   const approvedAt = new Date();
-  const statusUpdate =
-    task.status === "Backlog"
-      ? { status: "To Do", statusChangedAt: approvedAt }
-      : {};
-
-  await db.$transaction([
-    db.task.update({
-      where: { id: task.id },
-      data: {
-        approvedOn: approvedAt,
-        approvedById: actor.id,
-        ...statusUpdate,
+  const reviewerId = resolveReviewOwnerId(task);
+  const effects: WorkflowEffect[] = [
+    { type: "board_touch", key: "board-plan-approved", payload: {} },
+  ];
+  if (task.assigneeId) {
+    effects.push({
+      type: "task_notification",
+      key: `plan-approved:${task.assigneeId}`,
+      payload: {
+        taskId: task.id,
+        targetUserId: task.assigneeId,
+        actor,
+        reason: "todo_start_required",
+        body: [
+          `The Action Plan for "${task.title}" was approved.`,
+          "PM will auto-start it if the execution lane and repository gates are free. Check the current status: implement immediately if In Progress, otherwise call action=start when it remains To Do.",
+          "Keep visible replies concise; use a comment only if a blocker or material plan change appears.",
+        ].join("\n"),
       },
-    }),
-    db.activityLog.create({
+    });
+  } else if (reviewerId) {
+    effects.push({
+      type: "task_notification",
+      key: `assignment-required:${reviewerId}`,
+      payload: {
+        taskId: task.id,
+        targetUserId: reviewerId,
+        actor,
+        reason: "reviewer_assignment_requested",
+        body: [
+          `The Action Plan for "${task.title}" was approved, but the task has no assignee.`,
+          "Call action=assign_task so PM can select an eligible coding agent. Do not start implementation yourself.",
+        ].join("\n"),
+      },
+    });
+  }
+
+  await db.$transaction(async (tx) => {
+    if (task.status === "Backlog") {
+      await applyTaskTransition(tx, {
+        taskId: task.id,
+        projectId: task.projectId,
+        actorUserId: actor.id,
+        intent: "approve_plan",
+        from: "Backlog",
+        to: "To Do",
+        source: "action-plan-approval",
+        idempotencyKey: `human-plan-approval:v${task.workflowVersion + 1}`,
+        expectedVersion: task.workflowVersion,
+        taskData: { approvedOn: approvedAt, approvedById: actor.id },
+        evidence: { actionPlanId: task.actionPlan!.id },
+        effects,
+      });
+    } else {
+      await tx.task.update({
+        where: { id: task.id },
+        data: { approvedOn: approvedAt, approvedById: actor.id },
+      });
+      await enqueueWorkflowEffects(tx, {
+        taskId: task.id,
+        projectId: task.projectId,
+        aggregateVersion: task.workflowVersion,
+        effects,
+      });
+    }
+    await tx.actionPlan.update({
+      where: { id: task.actionPlan!.id },
+      data: { status: "approved", approvedOn: approvedAt, approvedById: actor.id },
+    });
+    await tx.actionPlanRevision.updateMany({
+      where: { actionPlanId: task.actionPlan!.id, status: "draft" },
+      data: { status: "approved", approvedOn: approvedAt, approvedById: actor.id },
+    });
+    await createChecklistAndDelegatableTasksFromPlan({
+      taskId: task.id,
+      approvedAt,
+      approvedById: actor.id,
+      client: tx,
+    });
+    await tx.activityLog.create({
       data: {
         projectId: task.projectId,
         taskId: task.id,
@@ -758,75 +768,17 @@ async function approveTaskActionPlan(formData: FormData) {
           status: task.status === "Backlog" ? "To Do" : task.status,
         }),
       },
-    }),
-    ...(task.status === "Backlog"
-      ? [
-          db.activityLog.create({
-            data: {
-              projectId: task.projectId,
-              taskId: task.id,
-              userId: actor.id,
-              kind: "task.move",
-              payload: JSON.stringify({
-                from: "Backlog",
-                to: "To Do",
-                via: "action-plan-approval",
-              }),
-            },
-          }),
-        ]
-      : []),
-  ]);
-
-  await createActionPlanSubtasksForTask({
-    taskId: task.id,
-    approvedAt,
-    approvedById: actor.id,
+    });
   });
 
   if (task.assigneeId) {
-    const autoStart = await startApprovedTodoTaskIfIdle({
+    await startApprovedTodoTaskIfIdle({
       taskId: task.id,
       actor,
       via: "action-plan-approval",
     });
-    await sendTaskWorkflowNotification({
-      taskId: task.id,
-      targetUserId: task.assigneeId,
-      actor,
-      reason: "todo_start_required",
-      body: autoStart.started
-        ? [
-            `The Action Plan for "${task.title}" was approved.`,
-            "PM moved the task to In Progress because you have no other In Progress task.",
-            "Start implementing the approved plan now. Keep visible replies concise; use a comment only if a blocker or material plan change appears.",
-          ].join("\n")
-        : [
-            `The Action Plan for "${task.title}" was approved.`,
-            autoStart.reason === "busy"
-              ? "You already have another In Progress task in this project, so this task remains in To Do until you are idle."
-              : autoStart.reason === "worktree_unavailable"
-                ? `PM left the task in To Do because its linked worktree is unavailable: ${autoStart.worktreeError}`
-              : "You may now call the workflow endpoint with action=start, move the task to In Progress, and implement the approved plan.",
-            "Keep visible replies concise; use a comment only if a blocker or material plan change appears.",
-          ].join("\n"),
-    });
-  } else {
-    const reviewerId = resolveReviewOwnerId(task);
-    if (reviewerId) {
-      await sendTaskWorkflowNotification({
-        taskId: task.id,
-        targetUserId: reviewerId,
-        actor,
-        reason: "reviewer_assignment_requested",
-        body: [
-          `The Action Plan for "${task.title}" was approved, but the task has no assignee.`,
-          "If you are the assigned task reviewer, call the workflow endpoint with action=assign_after_plan_approval. PM will choose an eligible coding agent and move Backlog to To Do if needed.",
-          "Do not start implementation yourself.",
-        ].join("\n"),
-      });
-    }
   }
+  await drainWorkflowOutbox({ limit: effects.length }).catch(() => {});
 
   revalidateTaskShell(task.id);
   revalidatePath(`/projects/${slug}/tasks/${task.id}`);

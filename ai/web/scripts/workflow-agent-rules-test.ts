@@ -127,6 +127,7 @@ assert(reviewAutomation.includes("remainingOpenTasks === 0"), "the Epic Done rol
 
 const taskNotifications = readFileSync(join(root, "lib/agents/workflow/notifications/task.ts"), "utf8");
 const pmChannelReplyRoute = readFileSync(join(root, "app/api/openclaw/pm-channel/reply/route.ts"), "utf8");
+const persistTaskReply = readFileSync(join(root, "lib/agents/pm-channel/persist-task-reply.ts"), "utf8");
 const pmChannelStreamCallback = readFileSync(join(root, "lib/agents/pm-channel/stream-callback.ts"), "utf8");
 const executionContinuation = readFileSync(join(root, "lib/agents/workflow/execution-continuation.ts"), "utf8");
 const openClawInstaller = readFileSync(join(root, "../openclaw/install.sh"), "utf8");
@@ -157,9 +158,9 @@ assert(
   "blocker responses must reuse execution recovery and credential blockers must verify literal account details",
 );
 assert(
-  pmChannelReplyRoute.includes('originWorkflowReason === "blocker"') &&
-    pmChannelReplyRoute.includes('reason: "blocker_response"') &&
-    pmChannelReplyRoute.includes("targetUserId: blockedTask.assigneeId"),
+  persistTaskReply.includes('originWorkflowReason === "blocker"') &&
+    persistTaskReply.includes('reason: "blocker_response"') &&
+    persistTaskReply.includes("targetUserId: blockedTask.assigneeId"),
   "a decision-owner blocker response must immediately wake the visible assignee",
 );
 assert(
@@ -299,8 +300,10 @@ assert(
   "complete_subtask must instruct an immediate ready_for_review with the reusable token",
 );
 assert(
-  taskWorkflowRoute.includes('reason: "ready_for_review_available"'),
-  "complete_subtask must auto-dispatch a ready_for_review_available workflow turn",
+  taskWorkflowRoute.includes("do not dispatch a competing process") &&
+    taskWorkflowRoute.includes("the outbox owns") &&
+    !taskWorkflowRoute.includes('reason: "ready_for_review_available"'),
+  "complete_subtask must rely on its durable continuation instead of dispatching a competing turn",
 );
 
 // P4: the shared gate lives in auto-start and is per-project.

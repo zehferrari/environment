@@ -77,7 +77,12 @@ model User {
   workItemProposalsRejected      WorkItemProposal[]              @relation("WorkItemProposalRejectedBy")
   archivedWorkspaces             Workspace[]                     @relation("WorkspaceArchivedBy")
   actionPlans                    ActionPlan[]                     @relation("ActionPlanApprovedBy")
+  authoredActionPlans            ActionPlan[]                     @relation("ActionPlanAuthor")
+  authoredActionPlanRevisions    ActionPlanRevision[]             @relation("ActionPlanRevisionAuthor")
+  approvedActionPlanRevisions    ActionPlanRevision[]             @relation("ActionPlanRevisionApprovedBy")
   actionPlanStepAssignees        ActionPlanStep[]                 @relation("ActionPlanStepAssignee")
+  actionPlanRevisionAssignees    ActionPlanRevisionStep[]         @relation("ActionPlanRevisionStepAssignee")
+  workflowTransitions            WorkflowTransition[]             @relation("WorkflowTransitionActor")
 
   @@index([kind])
   @@index([status])
@@ -203,6 +208,8 @@ model Project {
   directChatProjectLinks DirectAgentChatMessageProject[]
   workItemProposals      WorkItemProposal[]
   deploymentPullRequests DeploymentPullRequest[]
+  validationProfile      ProjectValidationProfile?
+  validationCheckRuns    ValidationCheckRun[]
 
   @@index([deletedAt])
 }
@@ -426,6 +433,10 @@ model Task {
   // tasks after project.doneTtlDays so plain updates to title/description
   // don't reset the clock.
   statusChangedAt  DateTime?
+  // Monotonic compare-and-set revision for workflow transitions. Every
+  // authoritative board status mutation increments this value and writes the
+  // matching immutable WorkflowTransition row in the same transaction.
+  workflowVersion  Int       @default(0) @map("workflow_version")
   // Optional free-text override. Null inherits the Epic's effective branch
   // (explicit or human-key fallback), then uses this Task's human key.
   branchName       String?
@@ -454,10 +465,14 @@ model Task {
   // Lightweight sub-task checklist (ENV-60). NOT the legacy self-referential
   // child-Task hierarchy above (parentTaskId) — that is now dormant. See SubTask.
   actionPlan            ActionPlan?
+  actionPlanRevisions   ActionPlanRevision[]
   checklist              SubTask[]               @relation("TaskChecklist")
   repositoryRun          TaskRepositoryRun?
   executionEpisodes      TaskExecutionEpisode[]
   executionState         TaskExecutionState?
+  reviewRuns             ReviewRun[]
+  workflowTransitions    WorkflowTransition[]
+  workflowOutbox         WorkflowOutbox[]
 
   @@index([projectId])
   @@index([workItemKey])
@@ -502,6 +517,133 @@ model TaskRepositoryRun {
   @@index([phase])
   @@index([validationOutcome])
   @@map("task_repository_runs")
+}
+
+// One immutable review lease per validated repository candidate. Reviewers
+// approve this row's candidateSha, never a moving branch name. A new candidate
+// creates a new ReviewRun and invalidates any older awaiting-review row.
+model ReviewRun {
+  id                String   @id @default(cuid())
+  taskId            String   @map("task_id")
+  task              Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  candidateSha      String   @map("candidate_sha")
+  baseSha           String?  @map("base_sha")
+  repoTouched       Boolean  @map("repo_touched")
+  validationOutcome String   @map("validation_outcome")
+  status            String   @default("awaiting_review")
+  reviewerId        String?  @map("reviewer_id")
+  reviewedAt        DateTime? @map("reviewed_at")
+  invalidatedAt     DateTime? @map("invalidated_at")
+  invalidatedReason String?  @map("invalidated_reason")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+  validationChecks  ValidationCheckRun[]
+
+  @@unique([taskId, candidateSha])
+  @@index([taskId, status])
+  @@index([status, createdAt])
+  @@map("review_runs")
+}
+
+// Immutable ledger written by the task transition kernel. `idempotencyKey`
+// identifies the caller's intent; workflowVersion is the Task CAS revision
+// produced by that intent.
+model WorkflowTransition {
+  id               String   @id @default(cuid())
+  taskId           String   @map("task_id")
+  task             Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  workflowVersion  Int      @map("workflow_version")
+  intent           String
+  fromStatus       String   @map("from_status")
+  toStatus         String   @map("to_status")
+  actorUserId      String?  @map("actor_user_id")
+  actor            User?    @relation("WorkflowTransitionActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  source           String
+  idempotencyKey   String   @map("idempotency_key")
+  evidence         String?
+  createdAt        DateTime @default(now()) @map("created_at")
+  outbox           WorkflowOutbox[]
+
+  @@unique([taskId, workflowVersion])
+  @@unique([taskId, idempotencyKey])
+  @@index([intent, createdAt])
+  @@index([actorUserId])
+  @@map("workflow_transitions")
+}
+
+// Durable projection queue for every external consequence of a committed
+// workflow decision. Workers lease these rows and project them to PM-channel
+// jobs, repository spools, and board events. The database row—not a spool
+// filename—is the source of truth.
+model WorkflowOutbox {
+  id               String    @id @default(cuid())
+  taskId           String    @map("task_id")
+  task             Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  projectId        String    @map("project_id")
+  transitionId     String?   @map("transition_id")
+  transition       WorkflowTransition? @relation(fields: [transitionId], references: [id], onDelete: Cascade)
+  aggregateVersion Int       @map("aggregate_version")
+  effectType       String    @map("effect_type")
+  payload          String
+  dedupeKey        String    @unique @map("dedupe_key")
+  status           String    @default("queued")
+  attempts         Int       @default(0)
+  availableAt      DateTime  @default(now()) @map("available_at")
+  leaseOwner       String?   @map("lease_owner")
+  leaseExpiresAt   DateTime? @map("lease_expires_at")
+  completedAt      DateTime? @map("completed_at")
+  lastError        String?   @map("last_error")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  @@index([status, availableAt])
+  @@index([leaseExpiresAt])
+  @@index([taskId, aggregateVersion])
+  @@index([transitionId])
+  @@map("workflow_outbox")
+}
+
+model ProjectValidationProfile {
+  id             String   @id @default(cuid())
+  projectId      String   @unique @map("project_id")
+  project        Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  version        Int      @default(1)
+  enabled        Boolean  @default(true)
+  // JSON array of {name, executable, args[], timeoutSeconds, required}.
+  // Executed with execFile in the registered candidate worktree; never a shell.
+  commands       String
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@map("project_validation_profiles")
+}
+
+model ValidationCheckRun {
+  id             String    @id @default(cuid())
+  projectId      String    @map("project_id")
+  project        Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  taskId         String    @map("task_id")
+  reviewRunId    String?   @map("review_run_id")
+  reviewRun      ReviewRun? @relation(fields: [reviewRunId], references: [id], onDelete: Cascade)
+  candidateSha   String    @map("candidate_sha")
+  jobId          String    @map("job_id")
+  profileId      String?   @map("profile_id")
+  profileVersion Int       @default(0) @map("profile_version")
+  checkName      String    @map("check_name")
+  executable     String
+  arguments      String
+  required       Boolean   @default(true)
+  status         String    @default("running")
+  exitCode       Int?      @map("exit_code")
+  output         String?
+  startedAt      DateTime  @default(now()) @map("started_at")
+  finishedAt     DateTime? @map("finished_at")
+
+  @@unique([jobId, checkName])
+  @@index([taskId, candidateSha])
+  @@index([reviewRunId])
+  @@index([status, startedAt])
+  @@map("validation_check_runs")
 }
 
 // ENV-121 — one bounded execution episode for one (Task, agent).
@@ -646,6 +788,8 @@ model SubTask {
   id           String    @id @default(cuid())
   taskId       String
   task         Task      @relation("TaskChecklist", fields: [taskId], references: [id], onDelete: Cascade)
+  actionPlanStepId String? @unique @map("action_plan_step_id")
+  actionPlanStep   ActionPlanStep? @relation(fields: [actionPlanStepId], references: [id], onDelete: SetNull)
   text         String
   // Which phase this checklist item belongs to: "implementation" items are
   // the assignee's In Progress breakdown; "review" items are the reviewer's
@@ -665,6 +809,7 @@ model SubTask {
 
   @@index([taskId])
   @@index([taskId, kind])
+  @@unique([taskId, kind, text])
 }
 
 // ------------------------------------------------------------------
@@ -680,14 +825,69 @@ model ActionPlan {
   taskId       String           @unique
   task         Task             @relation(fields: [taskId], references: [id], onDelete: Cascade)
   summary      String
+  version      Int              @default(1)
+  status       String           @default("draft")
+  authorId     String?
+  author       User?            @relation("ActionPlanAuthor", fields: [authorId], references: [id])
+  sourceRunId  String?
+  sourceMessageId String?
+  contentHash  String           @default("")
   approvedOn   DateTime?
   approvedById String?
   approvedBy   User?            @relation("ActionPlanApprovedBy", fields: [approvedById], references: [id])
   steps        ActionPlanStep[]
+  revisions    ActionPlanRevision[]
   createdAt    DateTime         @default(now())
   updatedAt    DateTime         @updatedAt
 
   @@index([approvedById])
+  @@index([authorId])
+  @@index([sourceRunId])
+}
+
+model ActionPlanRevision {
+  id              String   @id @default(cuid())
+  actionPlanId    String
+  actionPlan      ActionPlan @relation(fields: [actionPlanId], references: [id], onDelete: Cascade)
+  taskId          String
+  task            Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  version         Int
+  summary         String
+  status          String   @default("draft")
+  authorId        String?
+  author          User?    @relation("ActionPlanRevisionAuthor", fields: [authorId], references: [id])
+  sourceRunId     String?
+  sourceMessageId String?
+  contentHash     String
+  approvedOn      DateTime?
+  approvedById    String?
+  approvedBy      User?    @relation("ActionPlanRevisionApprovedBy", fields: [approvedById], references: [id])
+  steps           ActionPlanRevisionStep[]
+  createdAt       DateTime @default(now())
+
+  @@unique([taskId, version])
+  @@unique([actionPlanId, version])
+  @@index([authorId])
+  @@index([approvedById])
+  @@index([sourceRunId])
+}
+
+model ActionPlanRevisionStep {
+  id                 String   @id @default(cuid())
+  revisionId         String
+  revision           ActionPlanRevision @relation(fields: [revisionId], references: [id], onDelete: Cascade)
+  stepId             String
+  title              String
+  acceptanceCriteria String
+  kind               StepKind @default(sequential)
+  assigneeId         String?
+  assignee           User?    @relation("ActionPlanRevisionStepAssignee", fields: [assigneeId], references: [id])
+  rank               Int      @default(0)
+  createdAt          DateTime @default(now())
+
+  @@unique([revisionId, stepId])
+  @@index([revisionId, rank])
+  @@index([assigneeId])
 }
 
 enum StepKind {
@@ -707,6 +907,7 @@ model ActionPlanStep {
   assignee           User?        @relation("ActionPlanStepAssignee", fields: [assigneeId], references: [id])
   rank               Int          @default(0)
   createdAt          DateTime     @default(now())
+  checklistItem      SubTask?
 
   @@unique([actionPlanId, stepId])
   @@index([actionPlanId, rank])
@@ -952,6 +1153,12 @@ model PmChannelRun {
   finishedAt         DateTime?
   finishedReason     String?
   supersededByRunId  String?
+  // Process-level execution fencing. A replacement run may reserve the lane,
+  // but it is not dispatched until every superseded gateway session records a
+  // cancellation acknowledgement (or is confirmed absent).
+  cancellationRequestedAt    DateTime? @map("cancellation_requested_at")
+  cancellationAcknowledgedAt DateTime? @map("cancellation_acknowledged_at")
+  cancellationError          String?   @map("cancellation_error")
   // Late error evidence on an already-settled run (PH-124): a workflow action
   // settles the run complete, then the gateway aborts the post-action phase.
   // The abort must not flip the legitimate settle, but it must not vanish
@@ -999,6 +1206,7 @@ model PmChannelRun {
   @@index([epicId])
   @@index([status])
   @@index([lastEventAt])
+  @@index([supersededByRunId])
 }
 
 // ENV-118 continuation outbox. A continuation-required workflow action (start,
@@ -1163,6 +1371,10 @@ model AgentChatMessage {
   // mirrored from a task comment so the reply should return to comments.
   originChannel           String                @default("chat")
   originCommentId         String?
+  // Stable key used by WorkflowOutbox notification effects. If a dispatcher
+  // dies after creating the message but before acknowledging the outbox row,
+  // its retry reuses this message and therefore the same PM-channel target.
+  workflowDedupeKey       String?               @unique @map("workflow_dedupe_key")
   createdAt               DateTime              @default(now())
   // Soft delete (HOMELAB-41 / item 2). See Comment.deletedAt for the
   // same convention. Active reads filter deletedAt: null; agent context

@@ -401,7 +401,7 @@ async function main() {
     // status now. A retrying turn leaves the run `failed` with failedAt null
     // (the distinction from an exhausted failure) while the job re-enters the
     // ladder. This expectation was stale on pm-workflow and failed there too.
-    assert.equal(retried.status, "failed", "notification no-reply run records the failed attempt");
+    assert.equal(retried.status, "queued", "notification no-reply run remains non-terminal while retry is pending");
     assert.equal(retried.error, NO_REPLY_ERROR, "the retrying run keeps the no-reply error");
     assert.equal(retried.failedAt, null, "a retrying run clears failedAt; only an exhausted one stamps it");
     assert.equal(retried.jobs[0]!.status, "retryable", "job re-enters the ladder");
@@ -500,8 +500,8 @@ async function main() {
     // run records a non-terminal `failed` attempt.
     assert.equal(
       heuristicRetried.status,
-      "failed",
-      "prefix heuristic must classify legacy notification jobs as retryable",
+      "queued",
+      "prefix heuristic must keep legacy notification jobs retryable",
     );
     assert.equal(
       heuristicRetried.jobs[0]!.status,

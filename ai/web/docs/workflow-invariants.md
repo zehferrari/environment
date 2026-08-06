@@ -34,7 +34,7 @@ the workflow endpoint accepts:
   `complete_subtask`, `remove_subtask`, `clear_blocker`, `publish_checkpoint`
 - *episode-terminal* (control handed back): `ready_for_review`, `submit_review`,
   `review_feedback`, `review_done`, `triage_to_todo`, `approve_plan`,
-  `assign_after_plan_approval`, `request_subtask`, `request_task`, `flag_blocker`,
+  `assign_task`, `request_subtask`, `request_task`, `flag_blocker`,
   `flag_extra_work_blocker`
 
 The classification table is asserted complete against the endpoint's own `ACTIONS`

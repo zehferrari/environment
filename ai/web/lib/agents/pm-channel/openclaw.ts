@@ -245,13 +245,30 @@ export function buildPmChannelIngressPayload(
 export async function sendOpenClawPmChannelTurn(
   args: SendPmChannelTurnArgs,
 ): Promise<SendPmChannelTurnResult> {
-  await recordPmChannelRunQueued({
+  const run = await recordPmChannelRunQueued({
     target: args.replyTarget,
     kind: args.kind,
     projectId: args.projectId ?? null,
     gatewayPort: args.gatewayPort,
     sessionKey: args.sessionKey,
   });
+  if (!run) {
+    return { ok: false, driver: "openclaw-pm-channel", error: "failed to reserve PM execution lane" };
+  }
+  const { fenceSupersededPmChannelRuns } = await import("@/lib/agents/pm-channel/supersession");
+  const fence = await fenceSupersededPmChannelRuns({
+    replacementRunId: run.id,
+    fetchImpl: args.fetchImpl,
+  });
+  if (!fence.ok) {
+    const result: SendPmChannelTurnResult = {
+      ok: false,
+      driver: "openclaw-pm-channel",
+      error: `replacement dispatch fenced: ${fence.error}`,
+    };
+    await recordPmChannelRunDispatch({ target: args.replyTarget, result });
+    return result;
+  }
   return dispatchOpenClawPmChannelTurn(args);
 }
 

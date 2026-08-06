@@ -10,9 +10,8 @@
 // rather than assumed:
 //
 //   Epic item 4 (WFI-008) — the steps must come from STRUCTURED DATA, never
-//     from scraping the rendered Markdown of the agent's reply. The scraper
-//     still exists (`extractActionPlanSteps`) and is still reachable as a
-//     legacy bridge, so "structured wins" is only provable by ARMING the prose
+//     from scraping the rendered Markdown of the agent's reply. The parser is
+//     retained only as a test oracle, so "structured wins" is proved by arming
 //     path: every plan posted below carries a Markdown body whose
 //     "Implementation Steps" section lists DECOY lines the scraper does pick
 //     up, while the structured payload carries the real ones. The checklist
@@ -40,16 +39,9 @@
 // suite never re-asserts those; it asserts the END-TO-END approval outcome and
 // the two Epic contracts above, which that suite does not cover.
 //
-// Two genuine gaps in current behaviour are recorded with `// FINDING:` and
-// pinned by current-behaviour assertions so they cannot drift silently. See
-// the comments at C6/WFI-008 and C7/delegation-key.
-//
 // Exit 0 on success, non-zero on the first failed assertion.
 
 import "./lib/next-als-polyfill";
-
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 
 import {
   bootScenarioDb,
@@ -61,8 +53,6 @@ import {
   type ScenarioCase,
   type ScenarioWorld,
 } from "./lib/workflow-scenario-harness";
-
-import type { InvariantBaseline } from "@/lib/workflow-invariants";
 
 const SUITE = "workflow-regression-plan-steps";
 const AGENT_SLUG = "planbot"; // the assignee: posts the plan, owns the checklist
@@ -86,10 +76,6 @@ async function main(): Promise<void> {
     const { persistTaskReply } = await import("@/lib/agents/pm-channel/persist-task-reply");
     const { loadWorkflowInvariantSnapshot } = await import("@/lib/workflow-invariants-db");
     const { workflowInvariantById } = await import("@/lib/workflow-invariants");
-    const BASELINE = JSON.parse(
-      await readFile(path.join(process.cwd(), "lib/workflow-invariants-baseline.json"), "utf8"),
-    ) as InvariantBaseline;
-
     const world = await seedWorld(db, {
       agentSlug: AGENT_SLUG,
       agentName: "Plan Bot",
@@ -405,44 +391,13 @@ async function main(): Promise<void> {
       // project holds.
       const scoped = wfi008!.predicate({ ...snapshot, tasks: [taskRecord!] });
 
-      // FINDING (gap, Epic item 4): the WRITER is structured — the checklist
-      // above provably came from ActionPlanStep rows and not from the decoy
-      // prose — but lib/workflow-invariants-db.ts:352 still hardcodes
-      //     planStepSource: task.checklist.length > 0 ? "markdown-prose" : "none"
-      // because no column records checklist PROVENANCE. So WFI-008 reports
-      // "checklist-parsed-from-prose" for a checklist that was not parsed from
-      // prose, and the invariant cannot go green even though the behaviour it
-      // describes already holds. Asserting the observed state (rather than the
-      // desired one) keeps this suite honest and makes the day the adapter
-      // learns provenance a visible, deliberate change here.
       c.assertEqual(
         taskRecord!.planStepSource,
-        "markdown-prose",
-        "FINDING: the adapter still reports prose provenance — it has no structured-provenance signal to read",
+        "structured",
+        "the adapter reads checklist provenance from the approved ActionPlanStep rows",
       );
-      c.assertEqual(scoped.ok, false, "so WFI-008 is still red for this task");
-      c.assertEqual(scoped.violations.length, 1, "with exactly one violation");
-      c.assertEqual(
-        scoped.violations[0].code,
-        "WFI-008/checklist-parsed-from-prose",
-        "and it is the code the Epic baseline already records, not a new one",
-      );
-      // The gap is the RECORDED one, so this case does not smuggle in a
-      // second, unowned expectation.
-      const wfi008Baseline = BASELINE.entries.find((entry) => entry.invariantId === "WFI-008");
-      c.assert(wfi008Baseline, "WFI-008 has a baseline entry");
-      c.assertEqual(wfi008Baseline!.epicItem, 4, "…mapped to Epic item 4");
-      c.assertEqual(
-        wfi008Baseline!.codes["WFI-008/checklist-parsed-from-prose"],
-        1,
-        "…recording exactly the code observed above",
-      );
-      // The OTHER WFI-008 code must NOT fire: an approved plan that produced no
-      // checklist at all is the failure this case exists to prevent.
-      c.assert(
-        !scoped.violations.some((v) => v.code === "WFI-008/plan-without-structured-steps"),
-        "the approved plan did produce a durable checklist, so the empty-checklist violation is absent",
-      );
+      c.assertEqual(scoped.ok, true, "WFI-008 holds for a structured approved plan");
+      c.assertEqual(scoped.violations.length, 0, "the structured checklist has no plan-provenance violation");
     }
 
     // ==================================================================
@@ -533,8 +488,8 @@ async function main(): Promise<void> {
 
       // ---- the delegatable subtask ----
       const children = await childTasksOf(task.id);
-      c.assertEqual(children.length, 1, "approval created a delegatable subtask for the delegated step");
-      const child = children[0];
+      c.assertEqual(children.length, 2, "approval created one delegatable Task for each parallel step");
+      const child = children.find((row) => row.title === PARALLEL_DELEGATED_TITLE)!;
       c.assertEqual(child.title, PARALLEL_DELEGATED_TITLE, "it is the parallel step that named a delegate");
       c.assertEqual(child.assigneeId, helper.userId, "…assigned to that delegate, so another worker can pick it up");
       c.assertEqual(child.status, "To Do", "…queued rather than silently in flight");
@@ -545,18 +500,15 @@ async function main(): Promise<void> {
         "the step's acceptance criteria are carried onto the delegated work",
       );
 
-      // FINDING (gap, Epic item 5): delegation is keyed off `assigneeId`, NOT
-      // off `kind === "parallel"`. lib/tasks/action-plan-store.ts:351 reads
-      // `if (step.assigneeId && !checklistExists)`, and nothing anywhere
-      // branches on StepKind — grep shows its only other reader is the context
-      // renderer (lib/agents/context/task.ts:920), which prints it. So a
-      // parallel step with no named delegate produces a checklist entry and
-      // nothing else: the plan says "this can run in parallel" and PM does not
-      // act on it. Recorded as current behaviour rather than asserted away.
       const childTitles = children.map((row) => row.title);
       c.assert(
-        !childTitles.includes(PARALLEL_UNOWNED_TITLE),
-        "FINDING: a parallel step with no assigneeId creates NO delegatable subtask — kind is stored but never drives delegation",
+        childTitles.includes(PARALLEL_UNOWNED_TITLE),
+        "a parallel step without a named delegate still creates unassigned delegatable work",
+      );
+      c.assertEqual(
+        children.find((row) => row.title === PARALLEL_UNOWNED_TITLE)?.assigneeId,
+        null,
+        "the unowned parallel child remains available for explicit assignment",
       );
       c.assert(
         !childTitles.includes(SEQ_TITLE),
@@ -661,7 +613,7 @@ async function main(): Promise<void> {
       );
       c.assertEqual(
         (await childTasksOf(task.id)).length,
-        1,
+        2,
         "no delegatable subtask appeared from a checklist add — the two paths stay separate",
       );
 

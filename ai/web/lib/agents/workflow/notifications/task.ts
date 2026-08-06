@@ -69,6 +69,7 @@ export type TaskWorkflowNotificationReason =
   | "review_feedback"
   | "review_done"
   | "action_plan_review_requested"
+  | "action_plan_feedback_received"
   | "reviewer_plan_requested"
   | "reviewer_assignment_requested"
   | "subtask_requested"
@@ -164,7 +165,7 @@ function workflowPrompt(args: {
     {
       messageId: args.messageId,
       token,
-      action: "<start | checkpoint | publish_checkpoint | approve_plan | ready_for_review | review_feedback | review_done | triage_to_todo | assign_after_plan_approval | add_subtask | complete_subtask | remove_subtask | request_subtask | request_task | flag_blocker | clear_blocker | flag_extra_work_blocker>",
+      action: "<start | checkpoint | publish_checkpoint | approve_plan | ready_for_review | review_feedback | review_done | triage_to_todo | assign_task | add_subtask | complete_subtask | remove_subtask | request_subtask | request_task | flag_blocker | clear_blocker | flag_extra_work_blocker>",
       comment: "<required for review_feedback, blocker/dependency actions, and scope requests; optional on ready_for_review>",
       authorizationCommentId: "<required only on publish_checkpoint: id of a fresh single-use owner comment explicitly naming the checkpoint Task and target Epic branch>",
       completedWork: "<optional on checkpoint: string[] of what this episode finished>",
@@ -245,12 +246,12 @@ function workflowPrompt(args: {
     "Workflow rules:",
     "- Backlog is for planning and opinions only. If you are the assignee and the task is in Backlog, reply in Action Plan with one concrete technical plan, structured as a checklist of INDEPENDENT, PARALLELIZABLE steps wherever possible so the work can be tackled on multiple fronts by parallel sub-agents. Do not split small tasks or strictly sequential/dependent work. Do not change task status and do not start work.",
     "- To Do means the task is actionable, but execution is still blocked until the Action Plan has approved_on set. If you are the assignee and approved_on is empty, reply in Action Plan with one concrete technical plan and wait.",
-    "- If you are the assigned task reviewer on an unassigned task, post one reviewer plan of action in Action Plan. Break it into the independent, parallelizable sub-tasks/topics/items to be addressed or watched, so the assignee can work multiple fronts at once. If an assignee's Action Plan could be safely split into independent sub-tasks, flag that in consolidated review feedback; do not demand splitting for small or strictly sequential/dependent work. Do not start implementation and do not assign anyone until the plan is approved.",
+    "- If you are the assigned task reviewer on an unassigned task, call action=assign_task to select or request an eligible coding agent. The assignee authors the implementation plan; reviewers never author that artifact. If the plan can be safely split into independent steps, flag that in consolidated feedback; do not demand splitting for small or strictly sequential/dependent work.",
     "- If you are the resolved reviewer or reporter and you accept the assignee's Action Plan, call action=approve_plan and include one concise `comment` explaining why the plan is acceptable or naming any constraints. If the task was in Backlog, PM will move it to To Do and wake the assignee.",
     args.onlyReportersCanApproveActionPlans
       ? "- Project policy: only the reporter can approve Action Plans. Reviewers and acting managers should comment with feedback or agreement, but must wait for reporter approval."
       : "- Project policy: the reporter or resolved reviewer may approve Action Plans.",
-    "- If you are the assigned task reviewer, the plan is approved, and the task still has no assignee, call action=assign_after_plan_approval. PM will choose an eligible coding agent and move the task from Backlog to To Do if needed.",
+    "- If you are the assigned task reviewer and the task has no assignee, call action=assign_task. PM will choose an eligible coding agent; that assignee then authors the Action Plan.",
     "- If you are the assignee and the task is in To Do with approved_on set, call the workflow endpoint with action=start, then begin work immediately. start works ONLY from To Do — there is no start/resume from Review.",
     "- If a reviewer leaves review_feedback, PM returns the task to the FRONT of To Do. Address the feedback by starting the task from To Do (action=start) — never expect to resume it in place from Review.",
     "- In Progress means active implementation. When implementation is complete, call the workflow endpoint with action=ready_for_review.",
@@ -306,6 +307,7 @@ export async function sendTaskWorkflowNotification(args: {
   actor: Actor;
   reason: TaskWorkflowNotificationReason;
   body: string;
+  dedupeKey?: string;
 }) {
   if (args.actor.kind === "human" && !(await isOwnerUserId(args.actor.id))) {
     return null;
@@ -385,12 +387,12 @@ export async function sendTaskWorkflowNotification(args: {
   const planChannelNotification =
     args.reason === "backlog_plan_requested" ||
     args.reason === "action_plan_review_requested" ||
+    args.reason === "action_plan_feedback_received" ||
     args.reason === "reviewer_plan_requested" ||
     args.reason === "reviewer_assignment_requested" ||
     (args.reason === "todo_start_required" && !task.approvedOn);
 
-  const msg = await db.agentChatMessage.create({
-    data: {
+  const messageData = {
       projectId: task.projectId,
       taskId: task.id,
       epicId: null,
@@ -403,9 +405,19 @@ export async function sendTaskWorkflowNotification(args: {
       targetType: planChannelNotification ? "agent" : null,
       targetValue: planChannelNotification ? `agent:${targetUser.agent.slug}` : null,
       targetLabel: planChannelNotification ? targetUser.username : null,
-    },
-    select: { id: true, createdAt: true },
-  });
+      workflowDedupeKey: args.dedupeKey ?? null,
+  };
+  const msg = args.dedupeKey
+    ? await db.agentChatMessage.upsert({
+        where: { workflowDedupeKey: args.dedupeKey },
+        create: messageData,
+        update: {},
+        select: { id: true, createdAt: true },
+      })
+    : await db.agentChatMessage.create({
+        data: messageData,
+        select: { id: true, createdAt: true },
+      });
 
   await db.activityLog.create({
     data: {
@@ -418,6 +430,7 @@ export async function sendTaskWorkflowNotification(args: {
         messageId: msg.id,
         agentSlug: targetUser.agent.slug,
         reason: args.reason,
+        workflowDedupeKey: args.dedupeKey ?? null,
       }),
     },
   });

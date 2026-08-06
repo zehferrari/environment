@@ -393,6 +393,19 @@ export async function recordPmChannelRunQueued(args: {
             runIds: priorActive.map((r) => r.id),
             reason: "a newer run took over the episode",
           });
+          await tx.pmChannelJob.updateMany({
+            where: {
+              runId: { in: priorActive.map((r) => r.id) },
+              status: { in: ["queued", "claimed", "accepted", "retryable"] },
+            },
+            data: {
+              status: "canceled",
+              claimedBy: null,
+              claimedAt: null,
+              completedAt: now,
+              lastError: "run superseded before replacement dispatch",
+            },
+          });
         }
 
         // If the current targetKey already exists as active, supersede it
@@ -414,6 +427,19 @@ export async function recordPmChannelRunQueued(args: {
           await supersedePmChannelContinuations(tx, {
             runIds: [currentActive.id],
             reason: "the run was replaced in its lane",
+          });
+          await tx.pmChannelJob.updateMany({
+            where: {
+              runId: currentActive.id,
+              status: { in: ["queued", "claimed", "accepted", "retryable"] },
+            },
+            data: {
+              status: "canceled",
+              claimedBy: null,
+              claimedAt: null,
+              completedAt: now,
+              lastError: "run replaced before replacement dispatch",
+            },
           });
         }
 
@@ -459,6 +485,9 @@ export async function recordPmChannelRunQueued(args: {
             finishedAt: null,
             finishedReason: null,
             supersededByRunId: null,
+            cancellationRequestedAt: null,
+            cancellationAcknowledgedAt: null,
+            cancellationError: null,
             lastEventAt: now,
           },
           select: {
@@ -510,6 +539,9 @@ export async function recordPmChannelRunQueued(args: {
         finishedAt: null,
         finishedReason: null,
         supersededByRunId: null,
+        cancellationRequestedAt: null,
+        cancellationAcknowledgedAt: null,
+        cancellationError: null,
         lastEventAt: now,
       },
       select: {

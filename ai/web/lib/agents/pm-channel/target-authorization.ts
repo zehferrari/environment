@@ -265,9 +265,16 @@ export async function isAuthorizedPmChannelCallbackTarget(
     select: { status: true },
   });
   // A gateway can report a retryable/failed delivery after the agent already
-  // received the turn. Preserve that late-final recovery path, but never
-  // accept a callback for a queued or explicitly canceled target.
-  if (!run || run.status === "queued" || run.status === "cancelled") return false;
+  // received the turn. Preserve a late-final recovery from a retryable failed
+  // delivery, but fence every superseded/timed-out/cancelled generation. A
+  // superseded process is never allowed to write a comment or mutate state.
+  if (
+    !run ||
+    run.status === "queued" ||
+    run.status === "cancelled" ||
+    run.status === "superseded" ||
+    run.status === "timed_out"
+  ) return false;
 
   if (target.kind === "direct") {
     const original = await db.directAgentChatMessage.findUnique({

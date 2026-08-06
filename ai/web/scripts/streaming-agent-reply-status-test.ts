@@ -58,8 +58,8 @@ assert.equal(
   "queued...",
 );
 assert.equal(
-  waitingCopy({ status: "streaming", runStatus: "retryable", error: null }),
-  "retrying...",
+  waitingCopy({ status: "streaming", runStatus: "timed_out", error: null }),
+  "timed out",
 );
 assert.equal(
   waitingCopy({ status: "streaming", runStatus: "streaming", error: null }),

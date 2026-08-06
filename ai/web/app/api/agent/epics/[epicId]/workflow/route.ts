@@ -1,7 +1,10 @@
 import { revalidatePath } from "next/cache";
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { recordPmChannelRunWorkflowAction } from "@/lib/agents/pm-channel/runs";
+import {
+  applyPmChannelRunWorkflowAction,
+  recordPmChannelRunWorkflowAction,
+} from "@/lib/agents/pm-channel/runs";
 import { verifyEpicWorkflowToken } from "@/lib/agents/workflow/token/epic";
 import { assignOpenEpicTasks, promoteEpicBacklogTasks } from "@/lib/epics/assignment";
 import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
@@ -9,6 +12,13 @@ import { hasAuthorizedEpicAgentOrigin } from "@/lib/agents/owner-origin";
 import { nextEpicTaskTitle } from "@/lib/tasks/epic-numbering";
 import { allocateWorkItemKey } from "@/lib/work-items/keys";
 import { publishBoardTouch } from "@/lib/pm/board-events";
+import {
+  applyTaskTransition,
+  enqueueWorkflowEffects,
+  isTaskWorkflowStatus,
+  type TaskTransitionIntent,
+  type TaskWorkflowStatus,
+} from "@/lib/tasks/transition-kernel";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -229,8 +239,13 @@ export async function POST(
             payload: JSON.stringify({ epicId: epic.id, from: "Ready to Deploy", to: "Deployment Approved" }),
           },
         });
+        await applyPmChannelRunWorkflowAction(tx, {
+          epicId: epic.id,
+          agentSlug: agent.slug,
+          messageId,
+          action,
+        });
       });
-      await recordPmChannelRunWorkflowAction({ epicId: epic.id, agentSlug: agent.slug, messageId, action });
       revalidatePath(`/projects/${epic.project.slug}`);
       revalidatePath(`/projects/${epic.project.slug}/epics/${epic.id}`);
       publishBoardTouch(epic.projectId);
@@ -243,11 +258,17 @@ export async function POST(
     if (!reason) {
       return NextResponse.json({ error: "reason is required for deploy_review_reject" }, { status: 400 });
     }
-    let flaggedTask: { id: string; title: string; status: string; assigneeId: string | null } | null = null;
+    let flaggedTask: {
+      id: string;
+      title: string;
+      status: string;
+      assigneeId: string | null;
+      workflowVersion: number;
+    } | null = null;
     if (flaggedTaskId) {
       flaggedTask = await db.task.findFirst({
         where: { id: flaggedTaskId, epicId: epic.id, deletedAt: null },
-        select: { id: true, title: true, status: true, assigneeId: true },
+        select: { id: true, title: true, status: true, assigneeId: true, workflowVersion: true },
       });
       if (!flaggedTask) {
         return NextResponse.json({ error: "taskId must reference a task of this Epic" }, { status: 400 });
@@ -255,11 +276,9 @@ export async function POST(
     }
 
     const now = new Date();
-    // Bounced work returns to the FRONT of this project's To Do column.
-    const minRank = await db.task.aggregate({
-      where: { projectId: epic.projectId, status: "To Do", deletedAt: null },
-      _min: { rank: true },
-    });
+    if (flaggedTask && !isTaskWorkflowStatus(flaggedTask.status)) {
+      return NextResponse.json({ error: "Flagged task has an unsupported workflow status" }, { status: 409 });
+    }
     await db.$transaction(async (tx) => {
       // The Epic drops out of the deploy gate and re-opens for work.
       await tx.epic.update({
@@ -286,28 +305,82 @@ export async function POST(
           },
           select: { id: true },
         });
-        await tx.task.update({
-          where: { id: flaggedTask.id },
-          data: {
-            status: "To Do",
-            statusChangedAt: now,
-            // The auto-Done rollup leaves child tasks live, but a human-closed
-            // Epic archives them — un-archive so the bounce is workable either way.
-            archivedAt: null,
-            archivedById: null,
-            rank: (minRank._min.rank ?? 0) - 1,
+        const effects = [
+          ...(flaggedTask.assigneeId ? [{
+            type: "task_notification" as const,
+            key: `deploy-review-reject-notify:${messageId}`,
+            payload: {
+              taskId: flaggedTask.id,
+              targetUserId: flaggedTask.assigneeId,
+              actor,
+              reason: "review_feedback",
+              body: [
+                `Deploy review flagged "${flaggedTask.title}" and moved it back to To Do (front of the queue).`,
+                "The whole-contribution deploy review found an issue with this task before merge. Read the reviewer's comment on the task for the technical reason.",
+                "Address it before starting or resuming any other task, then move it back through Review through the workflow endpoint.",
+                "Do not post an acknowledgement-only response.",
+              ].join("\n"),
+            },
+          }] : []),
+          {
+            type: "board_touch" as const,
+            key: `deploy-review-reject-board:${messageId}`,
+            payload: { projectId: epic.projectId },
           },
-        });
-        await tx.activityLog.create({
-          data: {
-            projectId: epic.projectId,
+        ];
+        if (flaggedTask.status === "To Do") {
+          const minRank = await tx.task.aggregate({
+            where: { projectId: epic.projectId, status: "To Do", deletedAt: null },
+            _min: { rank: true },
+          });
+          await tx.task.update({
+            where: { id: flaggedTask.id },
+            data: {
+              archivedAt: null,
+              archivedById: null,
+              rank: (minRank._min.rank ?? 0) - 1,
+            },
+          });
+          await enqueueWorkflowEffects(tx, {
             taskId: flaggedTask.id,
-            userId: agent.user!.id,
-            kind: "task.move",
-            targetAgent: agent.slug,
-            payload: JSON.stringify({ from: flaggedTask.status, to: "To Do", via: "deploy_review_reject", commentId: commentRow.id }),
-          },
-        });
+            projectId: epic.projectId,
+            aggregateVersion: flaggedTask.workflowVersion,
+            effects,
+          });
+          await tx.activityLog.create({
+            data: {
+              projectId: epic.projectId,
+              taskId: flaggedTask.id,
+              userId: agent.user!.id,
+              kind: "task.workflow.requeued",
+              targetAgent: agent.slug,
+              payload: JSON.stringify({ status: "To Do", via: "deploy_review_reject", commentId: commentRow.id }),
+            },
+          });
+        } else {
+          const intent: TaskTransitionIntent = flaggedTask.status === "Backlog"
+            ? "triage"
+            : flaggedTask.status === "In Progress"
+              ? "queue"
+              : flaggedTask.status === "Review"
+                ? "request_changes"
+                : "reopen";
+          await applyTaskTransition(tx, {
+            taskId: flaggedTask.id,
+            projectId: epic.projectId,
+            actorUserId: agent.user!.id,
+            intent,
+            from: flaggedTask.status as TaskWorkflowStatus,
+            to: "To Do",
+            source: "deploy_review_reject",
+            idempotencyKey: `deploy-review-reject:${messageId}:v${flaggedTask.workflowVersion}`,
+            expectedVersion: flaggedTask.workflowVersion,
+            rank: "front",
+            taskData: { archivedAt: null, archivedById: null },
+            evidence: { epicId: epic.id, commentId: commentRow.id },
+            effects,
+          });
+        }
       }
       await tx.agentChatMessage.create({
         data: {
@@ -336,23 +409,13 @@ export async function POST(
           payload: JSON.stringify({ epicId: epic.id, taskId: flaggedTask?.id ?? null, reason }),
         },
       });
-    });
-
-    if (flaggedTask?.assigneeId) {
-      await sendTaskWorkflowNotification({
-        taskId: flaggedTask.id,
-        targetUserId: flaggedTask.assigneeId,
-        actor,
-        reason: "review_feedback",
-        body: [
-          `Deploy review flagged "${flaggedTask.title}" and moved it back to To Do (front of the queue).`,
-          "The whole-contribution deploy review found an issue with this task before merge. Read the reviewer's comment on the task for the technical reason.",
-          "Address it before starting or resuming any other task, then move it back through Review through the workflow endpoint.",
-          "Do not post an acknowledgement-only response.",
-        ].join("\n"),
+      await applyPmChannelRunWorkflowAction(tx, {
+        epicId: epic.id,
+        agentSlug: agent.slug,
+        messageId,
+        action,
       });
-    }
-    await recordPmChannelRunWorkflowAction({ epicId: epic.id, agentSlug: agent.slug, messageId, action });
+    });
     revalidatePath(`/projects/${epic.project.slug}`);
     revalidatePath(`/projects/${epic.project.slug}/epics/${epic.id}`);
     if (flaggedTask) revalidatePath(`/projects/${epic.project.slug}/tasks/${flaggedTask.id}`);

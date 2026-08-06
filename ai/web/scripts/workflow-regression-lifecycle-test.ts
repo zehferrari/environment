@@ -237,7 +237,7 @@ async function main(): Promise<void> {
         run.status !== "completed",
         `an empty final response must not settle the run complete (got ${run.status})`,
       );
-      c.assertEqual(run.status, "failed", "it is settled as a turn failure instead");
+      c.assertEqual(run.status, "queued", "it remains non-terminal while the interrupted turn is retried");
       c.assertEqual(
         run.error,
         "Agent finished without posting a reply.",
@@ -265,34 +265,15 @@ async function main(): Promise<void> {
         "WFI-004: `start` did not settle the episode as a successful outcome",
       );
 
-      // FINDING (ENV-124): lib/workflow-invariants-baseline.json states that
-      // ENV-118 removed WFI-005 because "every terminal write records an
-      // explicit disposition on PmChannelRun". The turn-failure retry ladder
-      // does not. The eligible branch of
-      // `retryOrFailPmChannelJobForTurnFailure` (lib/agents/pm-channel/jobs.ts)
-      // writes `status: "failed"` with `disposition: null`, because the run is
-      // not actually over — the job is `retryable` and will be dispatched
-      // again. But `failed` is in TERMINAL_RUN_STATUSES, so the registry reads
-      // that row as a terminal run that recorded no disposition. The same shape
-      // is written by `requeueStaleClaimedPmChannelJobs` and by the
-      // non-exhausted branch of `runPmChannelJob`. Nothing in the codebase
-      // expresses "retry pending" on a run: ENV-117 deliberately moved
-      // `retryable` off the run status and onto PmChannelJob. Asserted below as
-      // CURRENT behaviour, not as the contract.
       c.assertEqual(
         run.disposition,
-        null,
-        "FINDING: a retry-pending run is `failed` with no disposition",
+        "continue",
+        "a retry-pending run remains an explicit continuation",
       );
       c.assertEqual(
         byInvariant["WFI-005"].length,
-        1,
-        "FINDING: so the registry reads it as a terminal run missing its disposition",
-      );
-      c.assertEqual(
-        byInvariant["WFI-005"][0].code,
-        "WFI-005/missing-disposition",
-        "FINDING: and it is the missing-disposition code, not an out-of-enum value",
+        0,
+        "WFI-005: queued retry state plus continue disposition is internally consistent",
       );
 
       // Interrupted means re-run, and exactly once: the turn's own job goes
@@ -637,8 +618,8 @@ async function main(): Promise<void> {
         retriedRun.status !== "completed",
         "the overflowed run is never reported as a completion",
       );
-      c.assertEqual(retriedRun.status, "failed", "it reads as failed while the retry is pending");
-      c.assertEqual(retriedRun.finishedAt, null, "but is not finished: the execution continues");
+      c.assertEqual(retriedRun.status, "queued", "it reads as queued while the retry is pending");
+      c.assertEqual(retriedRun.finishedAt, null, "the execution is explicitly not finished");
 
       const midRetry = await readRunState(db, { taskId: task.id });
       c.assertEqual(

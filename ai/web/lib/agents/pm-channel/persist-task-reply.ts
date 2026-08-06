@@ -21,7 +21,6 @@ import {
 import {
   validateActionPlanInput,
   persistActionPlan,
-  persistActionPlanFromMarkdown,
   type ActionPlanInput,
   type ActionPlanValidationError,
 } from "@/lib/tasks/action-plan-store";
@@ -123,8 +122,9 @@ export async function persistTaskReply(
     };
   }
 
-  // Fetch task approvedOn state before the transaction (needed for action plan persistence decision)
-  const taskForActionPlan = validatedActionPlan || (origin.channel === "chat" && !actionPlanPayload)
+  // Fetch task approval state only for an explicit structured payload. Plain
+  // chat text is never interpreted as executable plan state.
+  const taskForActionPlan = validatedActionPlan
     ? await db.task.findUnique({
         where: { id: target.taskId },
         select: { approvedOn: true },
@@ -222,16 +222,11 @@ export async function persistTaskReply(
       await persistActionPlan({
         taskId: target.taskId,
         input: validatedActionPlan,
+        authorId: agentUser.id,
+        sourceRunId: runId,
+        sourceMessageId: target.messageId,
         client: tx,
       });
-    } else if (!actionPlanPayload && taskForActionPlan && !taskForActionPlan.approvedOn) {
-      // Legacy Markdown fallback bridge — best-effort, don't fail the reply
-      // if Markdown parsing finds nothing or errors.
-      await persistActionPlanFromMarkdown({
-        taskId: target.taskId,
-        body: persistedBody,
-        client: tx,
-      }).catch(() => null);
     }
 
     return { id: created.id, channel: "chat" as const };
@@ -265,6 +260,7 @@ export async function persistTaskReply(
     if (
       task &&
       !task.approvedOn &&
+      validatedActionPlan !== null &&
       task.assigneeId === agentUser.id &&
       (task.status === "Backlog" || task.status === "To Do") &&
       reviewerId &&
@@ -278,6 +274,24 @@ export async function persistTaskReply(
         body: [
           `@${target.agentSlug} posted an Action Plan for "${task.title}".`,
           "Review the plan in Action Plan. If it is acceptable, call the workflow endpoint with action=approve_plan. If it needs changes, reply in Action Plan with concise feedback.",
+        ].join("\n"),
+      });
+    } else if (
+      task &&
+      !task.approvedOn &&
+      reviewerId === agentUser.id &&
+      task.assigneeId &&
+      task.assigneeId !== agentUser.id &&
+      (task.status === "Backlog" || task.status === "To Do")
+    ) {
+      await sendTaskWorkflowNotification({
+        taskId: task.id,
+        targetUserId: task.assigneeId,
+        actor: { id: agentUser.id, kind: "agent", username: target.agentSlug },
+        reason: "action_plan_feedback_received",
+        body: [
+          `@${target.agentSlug} reviewed your Action Plan for "${task.title}" and requested changes.`,
+          "Read the latest Action Plan feedback now, submit one revised structured implementation plan, and wait for approval. Do not start implementation.",
         ].join("\n"),
       });
     }

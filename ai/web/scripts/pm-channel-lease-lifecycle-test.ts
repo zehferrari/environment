@@ -63,6 +63,7 @@ async function main(): Promise<void> {
       getPmChannelRunSnapshot,
     } = await import("@/lib/agents/pm-channel/runs");
     const { pmChannelRunTargetKey } = await import("@/lib/agents/pm-channel/bus");
+    const { fenceSupersededPmChannelRuns } = await import("@/lib/agents/pm-channel/supersession");
 
     // Shared fixtures
     const project = await db.project.create({ data: { slug: "lease-proj", name: "Lease Project" } });
@@ -87,58 +88,58 @@ async function main(): Promise<void> {
       // Dispatch (accept) — sets leaseExpiresAt
       await recordPmChannelRunDispatch({
         target,
-        result: { ok: true, status: 202, transportMode: "http", error: null },
+        result: { ok: true, status: 202, driver: "openclaw-pm-channel", transportMode: "http" },
       });
 
-      let run = await db.pmChannelRun.findUniqueOrThrow({
+      const acceptedRun = await db.pmChannelRun.findUniqueOrThrow({
         where: { targetKey },
         select: { status: true, leaseExpiresAt: true, heartbeatAt: true, acceptedAt: true },
       });
-      assertEqual(run.status, "accepted", "run should be accepted after dispatch");
-      assert(run.leaseExpiresAt !== null, "leaseExpiresAt must be set on accept");
-      assert(run.heartbeatAt !== null, "heartbeatAt must be set on accept");
+      assertEqual(acceptedRun.status, "accepted", "run should be accepted after dispatch");
+      assert(acceptedRun.leaseExpiresAt !== null, "leaseExpiresAt must be set on accept");
+      assert(acceptedRun.heartbeatAt !== null, "heartbeatAt must be set on accept");
 
-      const leaseBefore = run.leaseExpiresAt!.getTime();
+      const leaseBefore = acceptedRun.leaseExpiresAt.getTime();
 
       // Streaming event renews the lease
-      await recordPmChannelRunEvent({ target, event: "token", error: null });
+      await recordPmChannelRunEvent({ target, event: "token" });
 
-      run = await db.pmChannelRun.findUniqueOrThrow({
+      const streamingRun = await db.pmChannelRun.findUniqueOrThrow({
         where: { targetKey },
         select: { status: true, leaseExpiresAt: true, heartbeatAt: true, streamingAt: true },
       });
-      assertEqual(run.status, "streaming", "run should be streaming after token event");
-      assert(run.leaseExpiresAt !== null, "leaseExpiresAt must be renewed on streaming");
+      assertEqual(streamingRun.status, "streaming", "run should be streaming after token event");
+      assert(streamingRun.leaseExpiresAt !== null, "leaseExpiresAt must be renewed on streaming");
       assert(
-        run.leaseExpiresAt!.getTime() >= leaseBefore,
+        streamingRun.leaseExpiresAt.getTime() >= leaseBefore,
         "renewed lease must be >= original lease",
       );
-      assert(run.heartbeatAt !== null, "heartbeatAt must be updated on streaming");
+      assert(streamingRun.heartbeatAt !== null, "heartbeatAt must be updated on streaming");
 
       // Tool event also renews the lease
-      const leaseBeforeTool = run.leaseExpiresAt!.getTime();
+      const leaseBeforeTool = streamingRun.leaseExpiresAt.getTime();
       await new Promise((r) => setTimeout(r, 10));
-      await recordPmChannelRunEvent({ target, event: "tool:call", error: null });
+      await recordPmChannelRunEvent({ target, event: "tool:call" });
 
-      run = await db.pmChannelRun.findUniqueOrThrow({
+      const toolRun = await db.pmChannelRun.findUniqueOrThrow({
         where: { targetKey },
         select: { leaseExpiresAt: true, heartbeatAt: true },
       });
       assert(
-        run.leaseExpiresAt!.getTime() > leaseBeforeTool,
+        toolRun.leaseExpiresAt!.getTime() > leaseBeforeTool,
         "tool event must renew lease beyond prior value",
       );
 
       // Final event completes the run
-      await recordPmChannelRunEvent({ target, event: "final", text: "done", error: null });
+      await recordPmChannelRunEvent({ target, event: "final" });
 
-      run = await db.pmChannelRun.findUniqueOrThrow({
+      const completedRun = await db.pmChannelRun.findUniqueOrThrow({
         where: { targetKey },
         select: { status: true, finishedAt: true, finishedReason: true },
       });
-      assertEqual(run.status, "completed", "run should be completed after final event");
-      assert(run.finishedAt !== null, "finishedAt must be set on completion");
-      assertEqual(run.finishedReason, "final", "finishedReason must be 'final'");
+      assertEqual(completedRun.status, "completed", "run should be completed after final event");
+      assert(completedRun.finishedAt !== null, "finishedAt must be set on completion");
+      assertEqual(completedRun.finishedReason, "final", "finishedReason must be 'final'");
 
       console.log("Section 1 passed: lease renewal via streaming events");
     }
@@ -166,7 +167,7 @@ async function main(): Promise<void> {
       await recordPmChannelRunQueued({ target: target1, kind: "task-comment" });
       await recordPmChannelRunDispatch({
         target: target1,
-        result: { ok: true, status: 202, transportMode: "http", error: null },
+        result: { ok: true, status: 202, driver: "openclaw-pm-channel", transportMode: "http" },
       });
 
       const run1 = await db.pmChannelRun.findUniqueOrThrow({
@@ -407,9 +408,9 @@ async function main(): Promise<void> {
       await recordPmChannelRunQueued({ target, kind: "task-comment" });
       await recordPmChannelRunDispatch({
         target,
-        result: { ok: true, status: 202, transportMode: "http", error: null },
+        result: { ok: true, status: 202, driver: "openclaw-pm-channel", transportMode: "http" },
       });
-      await recordPmChannelRunEvent({ target, event: "token", error: null });
+      await recordPmChannelRunEvent({ target, event: "token" });
 
       const beforeRetry = await db.pmChannelRun.findUniqueOrThrow({
         where: { targetKey },
@@ -539,6 +540,111 @@ async function main(): Promise<void> {
       assertEqual(activeCount, 1, "exactly one active run must exist after replacement");
 
       console.log("Section 7 passed: partial unique index enforced, replacement works with index");
+    }
+
+    // ---- Section 8: Process-level supersession fence ----
+    {
+      const makeTarget = (taskId: string) => ({
+        kind: "task-comment" as const,
+        agentSlug,
+        taskId,
+        messageId: randomUUID(),
+      });
+
+      // A never-delivered predecessor has no model process to stop. Retiring
+      // its durable job is itself a complete cancellation acknowledgement.
+      const queuedTask = await db.task.create({
+        data: { projectId: project.id, title: "Queued fence task", status: "In Progress" },
+      });
+      const queuedOld = makeTarget(queuedTask.id);
+      const queuedNew = makeTarget(queuedTask.id);
+      await recordPmChannelRunQueued({ target: queuedOld, kind: "task-comment" });
+      const queuedReplacement = await recordPmChannelRunQueued({ target: queuedNew, kind: "task-comment" });
+      let fetchCalls = 0;
+      const queuedFence = await fenceSupersededPmChannelRuns({
+        replacementRunId: queuedReplacement!.id,
+        fetchImpl: (async () => {
+          fetchCalls += 1;
+          return new Response("unexpected", { status: 500 });
+        }) as typeof fetch,
+      });
+      assert(queuedFence.ok, "a queued predecessor must fence without contacting the gateway");
+      assertEqual(fetchCalls, 0, "a queued predecessor must not call the gateway");
+
+      // A delivered predecessor must receive an explicit abort acknowledgement
+      // before the replacement can dispatch.
+      const liveTask = await db.task.create({
+        data: { projectId: project.id, title: "Live fence task", status: "In Progress" },
+      });
+      const liveOld = makeTarget(liveTask.id);
+      const liveNew = makeTarget(liveTask.id);
+      await recordPmChannelRunQueued({
+        target: liveOld,
+        kind: "task-comment",
+        gatewayPort: 18789,
+        sessionKey: "lane:test:live-old",
+      });
+      await recordPmChannelRunDispatch({
+        target: liveOld,
+        result: { ok: true, status: 202, driver: "openclaw-pm-channel", transportMode: "http" },
+      });
+      const liveReplacement = await recordPmChannelRunQueued({ target: liveNew, kind: "task-comment" });
+      const liveFence = await fenceSupersededPmChannelRuns({
+        replacementRunId: liveReplacement!.id,
+        fetchImpl: (async (_url, init) => {
+          assertEqual(init?.method, "POST", "the process fence must use the gateway cancel route");
+          return new Response(JSON.stringify({ ok: true, aborted: true }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }) as typeof fetch,
+      });
+      assert(liveFence.ok, "an acknowledged abort must open the replacement lane");
+      const liveOldRow = await db.pmChannelRun.findUniqueOrThrow({
+        where: { targetKey: pmChannelRunTargetKey(liveOld) },
+        select: { cancellationRequestedAt: true, cancellationAcknowledgedAt: true, cancellationError: true },
+      });
+      assert(liveOldRow.cancellationRequestedAt !== null, "the old run must record its cancellation request");
+      assert(liveOldRow.cancellationAcknowledgedAt !== null, "the old run must record the gateway acknowledgement");
+      assertEqual(liveOldRow.cancellationError, null, "an acknowledged abort must clear cancellation error");
+
+      // HTTP 200 is not enough: abort_unavailable means the old process may
+      // still write, so the replacement lane stays closed and retryable.
+      const unfencedTask = await db.task.create({
+        data: { projectId: project.id, title: "Unfenced task", status: "In Progress" },
+      });
+      const unfencedOld = makeTarget(unfencedTask.id);
+      const unfencedNew = makeTarget(unfencedTask.id);
+      await recordPmChannelRunQueued({
+        target: unfencedOld,
+        kind: "task-comment",
+        gatewayPort: 18789,
+        sessionKey: "lane:test:unfenced-old",
+      });
+      await recordPmChannelRunDispatch({
+        target: unfencedOld,
+        result: { ok: true, status: 202, driver: "openclaw-pm-channel", transportMode: "http" },
+      });
+      const unfencedReplacement = await recordPmChannelRunQueued({ target: unfencedNew, kind: "task-comment" });
+      const rejectedFence = await fenceSupersededPmChannelRuns({
+        replacementRunId: unfencedReplacement!.id,
+        fetchImpl: (async () => new Response(
+          JSON.stringify({ ok: true, aborted: false, reason: "abort_unavailable" }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        )) as typeof fetch,
+      });
+      assert(!rejectedFence.ok, "an unacknowledged abort must keep the replacement lane closed");
+      const unfencedOldRow = await db.pmChannelRun.findUniqueOrThrow({
+        where: { targetKey: pmChannelRunTargetKey(unfencedOld) },
+        select: { cancellationAcknowledgedAt: true, cancellationError: true },
+      });
+      assertEqual(unfencedOldRow.cancellationAcknowledgedAt, null, "an unacknowledged abort must not be marked safe");
+      assert(
+        unfencedOldRow.cancellationError?.includes("abort_unavailable"),
+        "the process-fence failure must remain visible for recovery",
+      );
+
+      console.log("Section 8 passed: replacement dispatch requires process-level cancellation acknowledgement");
     }
 
     await db.$disconnect();

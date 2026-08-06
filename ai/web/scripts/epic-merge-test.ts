@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   inspectOriginBranch,
+  inspectValidatedCandidateWorktree,
   mergeTaskBranchIntoEpic,
   publishEpicBranch,
   publishTaskCheckpointToEpic,
@@ -253,6 +254,46 @@ async function main() {
       checkpoint.ok ? checkpoint.epicSha : "",
       "later checkpoint must leave the child at its new repository baseline",
     );
+
+    // 13. Finalization is fenced to the exact clean candidate the reviewer
+    // approved. Dirty changes, a moved HEAD, and a branch switch all invalidate
+    // the candidate before any merge or push can occur.
+    const candidateWt = join(root, "candidate-wt");
+    git(cloneDir, "branch", "feat-candidate", "main");
+    git(cloneDir, "worktree", "add", candidateWt, "feat-candidate");
+    const candidateSha = git(candidateWt, "rev-parse", "HEAD");
+    let candidate = await inspectValidatedCandidateWorktree({
+      worktreePath: candidateWt,
+      taskBranch: "feat-candidate",
+      candidateSha,
+    });
+    assert(candidate.ok, "the exact clean reviewed candidate must pass the finalization fence");
+
+    writeFileSync(join(candidateWt, "unreviewed.txt"), "dirty\n");
+    candidate = await inspectValidatedCandidateWorktree({
+      worktreePath: candidateWt,
+      taskBranch: "feat-candidate",
+      candidateSha,
+    });
+    assert(!candidate.ok && /changed after review validation/i.test(candidate.reason), "dirty work must invalidate review");
+    git(candidateWt, "clean", "-f");
+
+    git(candidateWt, "commit", "--allow-empty", "-m", "unreviewed candidate");
+    candidate = await inspectValidatedCandidateWorktree({
+      worktreePath: candidateWt,
+      taskBranch: "feat-candidate",
+      candidateSha,
+    });
+    assert(!candidate.ok && /moved to/i.test(candidate.reason), "a new commit must invalidate the reviewed SHA");
+    git(candidateWt, "reset", "--hard", candidateSha);
+
+    git(candidateWt, "checkout", "--detach", candidateSha);
+    candidate = await inspectValidatedCandidateWorktree({
+      worktreePath: candidateWt,
+      taskBranch: "feat-candidate",
+      candidateSha,
+    });
+    assert(!candidate.ok && /detached HEAD/i.test(candidate.reason), "a branch change must invalidate the candidate lease");
 
     console.log("epic-merge-test passed");
   } finally {

@@ -3,12 +3,11 @@
 // This suite tests:
 // 1. validateActionPlanInput — payload validation
 // 2. persistActionPlan — structured plan persistence
-// 3. persistActionPlanFromMarkdown — legacy Markdown fallback bridge
-// 4. createChecklistAndDelegatableTasksFromPlan — idempotent approval/checklist
-// 5. createActionPlanSubtasksForTask — integration
-// 6. parseAcceptanceCriteria — helper
-// 7. Project-principal validation
-// 8. Invalid-payload atomicity
+// 3. createChecklistAndDelegatableTasksFromPlan — idempotent approval/checklist
+// 4. createActionPlanSubtasksForTask — integration
+// 5. parseAcceptanceCriteria — helper
+// 6. Project-principal validation
+// 7. Invalid-payload atomicity
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -40,7 +39,6 @@ async function main() {
   const {
     validateActionPlanInput,
     persistActionPlan,
-    persistActionPlanFromMarkdown,
     getActionPlanForTask,
     createChecklistAndDelegatableTasksFromPlan,
     parseAcceptanceCriteria,
@@ -331,41 +329,9 @@ async function main() {
       );
     });
 
-    // ── 3. persistActionPlanFromMarkdown (legacy fallback) ──────────
+    // ── 3. createChecklistAndDelegatableTasksFromPlan ───────────────
 
-    console.log("\n3. persistActionPlanFromMarkdown (legacy fallback)");
-
-    const task2 = await makeTestTask(project.id, agentUser.id);
-    taskIds.push(task2.id);
-
-    await okAsync("parses Markdown steps and persists as ActionPlanStep rows", async () => {
-      const markdownBody = `## Section A - Full Response
-
-### Implementation Steps
-- Add Prisma schema models for ActionPlan
-- Update PM reply route to accept actionPlan payload
-- Add context rendering for structured plan
-- Write tests for validation and persistence
-`;
-      const result = await persistActionPlanFromMarkdown({ taskId: task2.id, body: markdownBody });
-      assert.ok(result);
-      assert.ok(result!.steps.length > 0);
-      assert.equal(result!.steps[0].kind, "sequential");
-      assert.equal(result!.steps[0].acceptanceCriteria.length, 0);
-      assert.ok(result!.steps[0].stepId.startsWith("legacy-"));
-    });
-
-    await okAsync("returns null when no steps can be parsed", async () => {
-      const result = await persistActionPlanFromMarkdown({
-        taskId: task2.id,
-        body: "No steps here, just text.",
-      });
-      assert.equal(result, null);
-    });
-
-    // ── 4. createChecklistAndDelegatableTasksFromPlan ───────────────
-
-    console.log("\n4. createChecklistAndDelegatableTasksFromPlan (approval flow)");
+    console.log("\n3. createChecklistAndDelegatableTasksFromPlan (approval flow)");
 
     const task3 = await makeTestTask(project.id, agentUser.id);
     taskIds.push(task3.id);

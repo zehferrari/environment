@@ -12,7 +12,6 @@ import {
   requireViewer,
 } from "@/lib/auth/permissions";
 import { publishBoardTouch } from "@/lib/pm/board-events";
-import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
 import { refillEpicQueue } from "@/lib/epics/queue";
 import { runTaskReviewHandoff } from "@/lib/tasks/review-handoff";
 import { ensureTaskCodeWorktree, TaskWorktreeError } from "@/lib/tasks/worktree-claim";
@@ -20,6 +19,16 @@ import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation
 import { revalidateTaskShell } from "@/lib/tasks/cache";
 import { promoteEpicOnTaskInProgress } from "@/lib/epics/promote-on-start";
 import { syncEpicOnHumanTaskStatus } from "@/lib/epics/sync-on-human-task-move";
+import { findInProgressStartConflict } from "@/lib/tasks/auto-start";
+import { effectiveTaskBranchName } from "@/lib/work-items/branches";
+import { epicAllowsAgentAction } from "@/lib/tasks/workflow-actors";
+import {
+  transitionTask,
+  type TaskTransitionIntent,
+  type TaskWorkflowStatus,
+  type WorkflowEffect,
+} from "@/lib/tasks/transition-kernel";
+import { drainWorkflowOutbox } from "@/lib/tasks/workflow-outbox-drain";
 
 const TASK_STATUSES: readonly string[] = [
   "Backlog",
@@ -57,6 +66,7 @@ export async function moveTaskStatus(
       id: true,
       title: true,
       status: true,
+      workflowVersion: true,
       projectId: true,
       assigneeId: true,
       actingManagerId: true,
@@ -64,8 +74,12 @@ export async function moveTaskStatus(
       approvedOn: true,
       deletedAt: true,
       epicId: true,
+      blockedById: true,
+      blockedBy: { select: { status: true, workItemKey: true } },
+      branchName: true,
+      workItemKey: true,
       repositoryRun: { select: { phase: true } },
-      epic: { select: { status: true, actingManagerId: true } },
+      epic: { select: { status: true, actingManagerId: true, branchName: true, workItemKey: true } },
     },
   });
   if (!current || current.deletedAt) {
@@ -81,19 +95,18 @@ export async function moveTaskStatus(
     };
   }
 
-  // Browser-session human moves are authoritative. Agent/generic automation
-  // still follows the stricter workflow edge policy.
-  if (actor.kind !== "human") {
-    const check = checkStatusTransition({
-      from: current.status,
-      to: status,
-      actor,
-    });
-    if (!check.ok) {
-      return { ok: false, code: check.code, message: check.message };
-    }
+  const check = checkStatusTransition({
+    from: current.status,
+    to: status,
+    actor,
+  });
+  if (!check.ok && actor.kind !== "human") {
+    return { ok: false, code: check.code, message: check.message };
   }
-  if (actor.kind !== "human" && status === "In Progress" && !current.approvedOn) {
+  // A browser move is an adapter to the same workflow, not an implicit
+  // operator override. Unsafe shortcuts need a separate reason-bearing
+  // override action instead of silently bypassing plan/start gates.
+  if (status === "In Progress" && !current.approvedOn) {
     return {
       ok: false,
       code: "EXPLICIT_USER_ACTION_REQUIRED",
@@ -101,8 +114,44 @@ export async function moveTaskStatus(
     };
   }
   if (status === "In Progress") {
+    if (!current.assigneeId) {
+      return {
+        ok: false,
+        code: "EXPLICIT_USER_ACTION_REQUIRED",
+        message: "Assign an implementation owner before moving this task to In Progress.",
+      };
+    }
+    if (current.blockedById && current.blockedBy?.status !== "Done") {
+      return {
+        ok: false,
+        code: "EXPLICIT_USER_ACTION_REQUIRED",
+        message: `Task is blocked by ${current.blockedBy?.workItemKey ?? "another task"}, which must reach Done first.`,
+      };
+    }
+    if (!epicAllowsAgentAction(current)) {
+      return {
+        ok: false,
+        code: "EXPLICIT_USER_ACTION_REQUIRED",
+        message: "The parent Epic must be In Progress before this task can start.",
+      };
+    }
+    const conflict = await findInProgressStartConflict(db, {
+      taskId: current.id,
+      projectId: current.projectId,
+      assigneeId: current.assigneeId,
+      candidateBranch: effectiveTaskBranchName(current),
+    });
+    if (conflict) {
+      return {
+        ok: false,
+        code: "EXPLICIT_USER_ACTION_REQUIRED",
+        message: conflict.kind === "wip"
+          ? `The assignee already has an In Progress task in this project (${conflict.activeTask.workItemKey ?? conflict.activeTask.title}).`
+          : `Another In Progress task uses this effective branch (${conflict.activeTask.workItemKey ?? conflict.activeTask.title}).`,
+      };
+    }
     try {
-      await ensureTaskCodeWorktree(current.id, actor.id);
+      await ensureTaskCodeWorktree(current.id, current.assigneeId);
     } catch (err) {
       return {
         ok: false,
@@ -163,6 +212,13 @@ export async function moveTaskStatus(
       via: "human-board-move",
       movedFromStatus: current.status,
     });
+    if (handoff.error || handoff.status !== "Review" && handoff.repositoryPhase !== "validating") {
+      return {
+        ok: false,
+        code: "EXPLICIT_USER_ACTION_REQUIRED",
+        message: handoff.error ?? "Task did not pass the Review handoff gates.",
+      };
+    }
     for (const assigned of handoff.refillAssignments) {
       revalidatePath(`/projects/${slug}/tasks/${assigned.taskId}`);
     }
@@ -172,82 +228,85 @@ export async function moveTaskStatus(
     return { ok: true };
   }
 
-  // Review feedback returned to To Do takes priority; all other moves append.
-  const toTopOfTodo = current.status === "Review" && status === "To Do";
-  let nextRank: number;
-  if (toTopOfTodo) {
-    const minRank = await db.task.aggregate({
-      where: { status: "To Do", archivedAt: null, deletedAt: null },
-      _min: { rank: true },
-    });
-    nextRank = (minRank._min.rank ?? 0) - 1;
-  } else {
-    const maxRank = await db.task.aggregate({
-      where: { status, archivedAt: null, deletedAt: null },
-      _max: { rank: true },
-    });
-    nextRank = (maxRank._max.rank ?? 0) + 1;
+  const edge = `${current.status}->${status}`;
+  const intentByEdge: Record<string, TaskTransitionIntent> = {
+    "Backlog->To Do": "triage",
+    "To Do->In Progress": "start",
+    "In Progress->To Do": "queue",
+    "Review->To Do": "request_changes",
+    "Done->To Do": "reopen",
+    "To Do->Backlog": "cancel",
+    "In Progress->Backlog": "cancel",
+    "Review->Backlog": "cancel",
+  };
+  const intent = intentByEdge[edge];
+  if (!intent) {
+    return {
+      ok: false,
+      code: "EXPLICIT_USER_ACTION_REQUIRED",
+      message: `The ${edge} edge requires a dedicated workflow action; board drag cannot override it.`,
+    };
   }
-  await db.$transaction([
-    db.task.update({
-      where: { id: taskId },
-      data: {
-        status,
-        rank: nextRank,
-        statusChangedAt: new Date(),
-      },
-    }),
-    db.activityLog.create({
-      data: {
-        projectId: current.projectId,
-        taskId,
-        userId: actor.id,
-        kind: "task.move",
-        payload: JSON.stringify({
-          from: current.status,
-          to: status,
-          via: actor.kind === "human" ? "human-board-move" : "agent-board-move",
-        }),
-      },
-    }),
-  ]);
-  await syncEpicOnHumanTaskStatus(db, {
-    epicId: current.epicId,
-    projectId: current.projectId,
-    taskId,
-    actorId: actor.id,
-    actorKind: actor.kind,
-    targetStatus: status,
-    via: "human-board-move",
-  });
-  if (status === "In Progress" && current.epicId) {
-    await promoteEpicOnTaskInProgress(db, {
-      epicId: current.epicId,
-      projectId: current.projectId,
-      actorId: actor.id,
-      via: "board_move",
-    });
-  }
+  const effects: WorkflowEffect[] = [
+    { type: "board_touch", key: `board:${intent}`, payload: {} },
+  ];
   if (status === "To Do" && current.assigneeId) {
     const approved = Boolean(current.approvedOn);
-    await sendTaskWorkflowNotification({
-      taskId,
-      targetUserId: current.assigneeId,
-      actor,
-      reason: "todo_start_required",
-      body: approved
-        ? [
+    effects.push({
+      type: "task_notification",
+      key: `todo-start-required:${current.assigneeId}`,
+      payload: {
+        taskId,
+        targetUserId: current.assigneeId,
+        actor,
+        reason: "todo_start_required",
+        body: approved
+          ? [
             `Task "${current.title}" is now in To Do and assigned to you.`,
             "The Action Plan is approved. Move it to In Progress through the workflow endpoint and start work immediately.",
             "Do not post a visible acknowledgement unless you have new task information to add.",
           ].join("\n")
-        : [
+          : [
             `Task "${current.title}" is now in To Do and assigned to you.`,
             "Before starting work, post one concise technical implementation plan in Action Plan and wait for reviewer/reporter approval.",
             "Do not move it to In Progress until approved_on is set.",
           ].join("\n"),
+      },
     });
   }
+  await transitionTask({
+    taskId,
+    projectId: current.projectId,
+    actorUserId: actor.id,
+    intent,
+    from: current.status as TaskWorkflowStatus,
+    to: status as TaskWorkflowStatus,
+    source: actor.kind === "human" ? "human-board-move" : "agent-board-move",
+    idempotencyKey: `board:${actor.id}:v${current.workflowVersion + 1}:${status}`,
+    expectedVersion: current.workflowVersion,
+    rank: current.status === "Review" && status === "To Do" ? "front" : "back",
+    effects,
+    mutate: async ({ tx }) => {
+      await syncEpicOnHumanTaskStatus(tx, {
+        epicId: current.epicId,
+        projectId: current.projectId,
+        taskId,
+        actorId: actor.id,
+        actorKind: actor.kind,
+        targetStatus: status,
+        via: "human-board-move",
+      });
+      if (status === "In Progress" && current.epicId) {
+        await promoteEpicOnTaskInProgress(tx, {
+          epicId: current.epicId,
+          projectId: current.projectId,
+          actorId: actor.id,
+          via: "board_move",
+        });
+      }
+    },
+  });
+  await drainWorkflowOutbox({ limit: effects.length }).catch(() => {});
   if (
     current.epicId &&
     (status === "Done" || ((status === "To Do" || status === "Backlog") && !current.assigneeId))

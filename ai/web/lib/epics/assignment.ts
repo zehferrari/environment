@@ -1,4 +1,5 @@
 import type { Prisma } from "@prisma/client";
+import { applyTaskTransition } from "@/lib/tasks/transition-kernel";
 
 // "One active Task per project" (docs/agent-pm-api.md § Role permissions):
 // a worker holding a task in any of these statuses is not eligible for another
@@ -111,7 +112,7 @@ export async function promoteEpicBacklogTasks(
       status: "Backlog",
     },
     orderBy: [{ rank: "asc" }, { createdAt: "asc" }],
-    select: { id: true, title: true },
+    select: { id: true, title: true, workflowVersion: true },
   });
   if (tasks.length === 0) return [];
 
@@ -120,26 +121,18 @@ export async function promoteEpicBacklogTasks(
     _max: { rank: true },
   });
   let nextRank = (maxRank._max.rank ?? 0) + 1;
-  const now = new Date();
   for (const task of tasks) {
-    await tx.task.update({
-      where: { id: task.id },
-      data: { status: "To Do", rank: nextRank++, statusChangedAt: now },
-    });
-    await tx.activityLog.create({
-      data: {
-        projectId: args.projectId,
-        taskId: task.id,
-        userId: args.actorUserId,
-        kind: "task.move",
-        payload: JSON.stringify({
-          from: "Backlog",
-          to: "To Do",
-          via: args.via,
-          action: "advance_queue",
-          epicId: args.epicId,
-        }),
-      },
+    await applyTaskTransition(tx, {
+      taskId: task.id,
+      projectId: args.projectId,
+      actorUserId: args.actorUserId,
+      intent: "triage",
+      from: "Backlog",
+      to: "To Do",
+      source: args.via,
+      idempotencyKey: `advance-queue:${args.epicId}:v${task.workflowVersion + 1}`,
+      rank: nextRank++,
+      evidence: { action: "advance_queue", epicId: args.epicId },
     });
   }
   return tasks;

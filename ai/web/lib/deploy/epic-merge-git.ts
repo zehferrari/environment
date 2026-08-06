@@ -52,6 +52,51 @@ export type OriginBranchInspection =
   | { ok: true; sha: string | null }
   | { ok: false; sha: null; reason: string };
 
+export type ValidatedCandidateWorktreeInspection =
+  | { ok: true; sha: string }
+  | { ok: false; reason: string };
+
+// A review approves one exact commit in one registered task worktree. This
+// check belongs next to the Git primitives so every finalizer can apply the
+// same last-moment fence before it mutates an Epic or remote branch.
+export async function inspectValidatedCandidateWorktree(args: {
+  worktreePath: string;
+  taskBranch: string;
+  candidateSha: string;
+}): Promise<ValidatedCandidateWorktreeInspection> {
+  try {
+    const [dirty, head, branch] = await Promise.all([
+      git(args.worktreePath, ["status", "--porcelain"]),
+      git(args.worktreePath, ["rev-parse", "HEAD"]),
+      git(args.worktreePath, ["branch", "--show-current"]),
+    ]);
+    if (dirty) {
+      return {
+        ok: false,
+        reason: "The task worktree changed after review validation. Commit and validate the new candidate before finalization.",
+      };
+    }
+    if (branch !== args.taskBranch) {
+      return {
+        ok: false,
+        reason: `The registered worktree is on ${branch || "a detached HEAD"}; expected task branch ${args.taskBranch}.`,
+      };
+    }
+    if (head !== args.candidateSha) {
+      return {
+        ok: false,
+        reason: `The task worktree moved to ${head || "an unknown commit"} after ${args.candidateSha} was validated. Validate the new candidate before finalization.`,
+      };
+    }
+    return { ok: true, sha: head };
+  } catch (err) {
+    return {
+      ok: false,
+      reason: String(err instanceof Error ? err.message : err).trim().slice(0, 500),
+    };
+  }
+}
+
 // Read the remote itself rather than a potentially stale origin/* tracking
 // ref. The reviewer gate uses this to detect an Epic-child branch that was
 // published with --no-verify or before the local pre-push policy existed.

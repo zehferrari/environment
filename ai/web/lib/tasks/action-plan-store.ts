@@ -5,13 +5,10 @@
 // validated, and persisted as ActionPlan + ActionPlanStep rows. Markdown
 // body remains in AgentChatMessage as presentation only.
 //
-// The legacy Markdown fallback bridge (extractActionPlanSteps) is kept for
-// compatibility with older agent replies that have no structured payload.
-
 import type { Prisma } from "@prisma/client";
+import { createHash } from "node:crypto";
 
 import { db } from "@/lib/db";
-import { extractActionPlanSteps } from "@/lib/tasks/action-plan-subtasks";
 import { createSubTaskItem } from "@/lib/tasks/subtasks";
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -33,6 +30,12 @@ export interface PersistedActionPlan {
   id: string;
   taskId: string;
   summary: string;
+  version: number;
+  status: string;
+  authorId: string | null;
+  sourceRunId: string | null;
+  sourceMessageId: string | null;
+  contentHash: string;
   approvedOn: Date | null;
   steps: Array<{
     id: string;
@@ -78,6 +81,7 @@ export function validateActionPlanInput(
   }
 
   const seenStepIds = new Set<string>();
+  const seenStepTitles = new Set<string>();
   const validatedSteps: ActionPlanStepInput[] = [];
 
   for (let i = 0; i < (raw.steps as unknown[]).length; i++) {
@@ -110,6 +114,11 @@ export function validateActionPlanInput(
     if (step.title.length > 500) {
       errors.push({ field: `${prefix}.title`, message: "title must be <= 500 characters" });
     }
+    const normalizedTitle = step.title.trim().toLocaleLowerCase();
+    if (seenStepTitles.has(normalizedTitle)) {
+      errors.push({ field: `${prefix}.title`, message: `duplicate step title: "${step.title.trim()}"` });
+    }
+    seenStepTitles.add(normalizedTitle);
 
     if (!Array.isArray(step.acceptanceCriteria)) {
       errors.push({ field: `${prefix}.acceptanceCriteria`, message: "acceptanceCriteria must be an array of strings" });
@@ -154,6 +163,9 @@ type TxClient = Prisma.TransactionClient | typeof db;
 export async function persistActionPlan(args: {
   taskId: string;
   input: ActionPlanInput;
+  authorId?: string | null;
+  sourceRunId?: string | null;
+  sourceMessageId?: string | null;
   client?: TxClient;
 }): Promise<PersistedActionPlan> {
   const client = args.client ?? db;
@@ -162,7 +174,7 @@ export async function persistActionPlan(args: {
   // Check for existing plan (idempotent — replace if exists and unapproved)
   const existing = await client.actionPlan.findUnique({
     where: { taskId: args.taskId },
-    select: { id: true, approvedOn: true },
+    select: { id: true, approvedOn: true, version: true },
   });
   if (existing?.approvedOn) {
     throw new Error("Action plan already approved — cannot replace");
@@ -196,6 +208,17 @@ export async function persistActionPlan(args: {
     }
   }
 
+  const version = (existing?.version ?? 0) + 1;
+  const contentHash = createHash("sha256").update(JSON.stringify({ summary, steps })).digest("hex");
+  const stepRows = steps.map((step, index) => ({
+    stepId: step.id,
+    title: step.title,
+    acceptanceCriteria: JSON.stringify(step.acceptanceCriteria),
+    kind: step.kind,
+    assigneeId: step.assigneeId ?? null,
+    rank: index + 1,
+  }));
+
   // Perform writes directly on the supplied client. When a TransactionClient
   // is passed (from an outer $transaction), we must NOT call $transaction on
   // it — Prisma TransactionClient has no $transaction method. When no client
@@ -203,28 +226,68 @@ export async function persistActionPlan(args: {
   const writeTarget = args.client ?? db;
 
   async function doWrites(tx: Prisma.TransactionClient | typeof db) {
-    // Delete existing unapproved plan + steps if present (idempotent replace)
     if (existing) {
       await tx.actionPlanStep.deleteMany({ where: { actionPlanId: existing.id } });
-      await tx.actionPlan.delete({ where: { id: existing.id } });
+      const updated = await tx.actionPlan.update({
+        where: { id: existing.id },
+        data: {
+          summary,
+          version,
+          status: "draft",
+          authorId: args.authorId ?? null,
+          sourceRunId: args.sourceRunId ?? null,
+          sourceMessageId: args.sourceMessageId ?? null,
+          contentHash,
+          approvedOn: null,
+          approvedById: null,
+          steps: { create: stepRows },
+        },
+        include: { steps: { orderBy: { rank: "asc" } } },
+      });
+      await tx.actionPlanRevision.create({
+        data: {
+          actionPlanId: updated.id,
+          taskId: args.taskId,
+          version,
+          summary,
+          status: "draft",
+          authorId: args.authorId ?? null,
+          sourceRunId: args.sourceRunId ?? null,
+          sourceMessageId: args.sourceMessageId ?? null,
+          contentHash,
+          steps: { create: stepRows },
+        },
+      });
+      return updated;
     }
 
     const created = await tx.actionPlan.create({
       data: {
         taskId: args.taskId,
         summary,
-        steps: {
-          create: steps.map((step, index) => ({
-            stepId: step.id,
-            title: step.title,
-            acceptanceCriteria: JSON.stringify(step.acceptanceCriteria),
-            kind: step.kind,
-            assigneeId: step.assigneeId ?? null,
-            rank: index + 1,
-          })),
-        },
+        version,
+        status: "draft",
+        authorId: args.authorId ?? null,
+        sourceRunId: args.sourceRunId ?? null,
+        sourceMessageId: args.sourceMessageId ?? null,
+        contentHash,
+        steps: { create: stepRows },
       },
       include: { steps: { orderBy: { rank: "asc" } } },
+    });
+    await tx.actionPlanRevision.create({
+      data: {
+        actionPlanId: created.id,
+        taskId: args.taskId,
+        version,
+        summary,
+        status: "draft",
+        authorId: args.authorId ?? null,
+        sourceRunId: args.sourceRunId ?? null,
+        sourceMessageId: args.sourceMessageId ?? null,
+        contentHash,
+        steps: { create: stepRows },
+      },
     });
 
     return created;
@@ -238,6 +301,12 @@ export async function persistActionPlan(args: {
     id: plan.id,
     taskId: plan.taskId,
     summary: plan.summary,
+    version: plan.version,
+    status: plan.status,
+    authorId: plan.authorId,
+    sourceRunId: plan.sourceRunId,
+    sourceMessageId: plan.sourceMessageId,
+    contentHash: plan.contentHash,
     approvedOn: plan.approvedOn,
     steps: plan.steps.map((s) => ({
       id: s.id,
@@ -249,40 +318,6 @@ export async function persistActionPlan(args: {
       rank: s.rank,
     })),
   };
-}
-
-// ── Legacy Markdown fallback bridge ─────────────────────────────────────
-
-export async function persistActionPlanFromMarkdown(args: {
-  taskId: string;
-  body: string;
-  client?: TxClient;
-}): Promise<PersistedActionPlan | null> {
-  const client = args.client ?? db;
-  const steps = extractActionPlanSteps(args.body);
-  if (steps.length === 0) return null;
-
-  // Check for existing plan
-  const existing = await client.actionPlan.findUnique({
-    where: { taskId: args.taskId },
-    select: { id: true, approvedOn: true },
-  });
-  if (existing?.approvedOn) return null; // Don't replace approved plans
-
-  return persistActionPlan({
-    taskId: args.taskId,
-    input: {
-      summary: steps.slice(0, 2).join("; "),
-      steps: steps.map((title, index) => ({
-        id: `legacy-${index + 1}`,
-        title,
-        acceptanceCriteria: [],
-        kind: "sequential" as const,
-        assigneeId: null,
-      })),
-    },
-    client,
-  });
 }
 
 // ── Read ────────────────────────────────────────────────────────────────
@@ -297,6 +332,12 @@ export async function getActionPlanForTask(taskId: string): Promise<PersistedAct
     id: plan.id,
     taskId: plan.taskId,
     summary: plan.summary,
+    version: plan.version,
+    status: plan.status,
+    authorId: plan.authorId,
+    sourceRunId: plan.sourceRunId,
+    sourceMessageId: plan.sourceMessageId,
+    contentHash: plan.contentHash,
     approvedOn: plan.approvedOn,
     steps: plan.steps.map((s) => ({
       id: s.id,
@@ -325,30 +366,24 @@ export async function createChecklistAndDelegatableTasksFromPlan(args: {
   });
   if (!plan) return { checklistCreated: 0, delegatableCreated: 0, reason: "no_plan" };
 
-  // Idempotent: if checklist already exists, don't duplicate
-  const existingChecklist = await client.subTask.findFirst({
-    where: { taskId: args.taskId, kind: "implementation" },
-    select: { id: true },
-    take: 1,
-  });
-  const checklistExists = !!existingChecklist;
-
   let checklistCreated = 0;
   let delegatableCreated = 0;
 
   for (const step of plan.steps) {
-    if (!checklistExists) {
-      await createSubTaskItem({
-        taskId: args.taskId,
-        text: step.title,
-        actorUserId: args.approvedById,
-        client,
-      });
-      checklistCreated++;
-    }
+    const checklistItem = await createSubTaskItem({
+      taskId: args.taskId,
+      text: step.title,
+      actorUserId: args.approvedById,
+      actionPlanStepId: step.id,
+      client,
+    });
+    if (checklistItem?.created) checklistCreated++;
 
-    // Steps with assigneeId → create independently assignable child PM task
-    if (step.assigneeId && !checklistExists) {
+    // Parallel steps are independently delegatable. An optional assignee
+    // chooses the initial owner; a parallel step without one is still a real
+    // unassigned child task. Sequential steps never become child tasks merely
+    // because an assignee was accidentally supplied.
+    if (step.kind === "parallel") {
       // Check if a child task already exists for this step (idempotent)
       const existingChild = await client.task.findFirst({
         where: {
@@ -372,7 +407,7 @@ export async function createChecklistAndDelegatableTasksFromPlan(args: {
               parentTaskId: args.taskId,
               title: step.title,
               status: "To Do",
-              assigneeId: step.assigneeId,
+              assigneeId: step.assigneeId ?? null,
               description: `Delegated step from parent task.\n\nAcceptance criteria:\n${parseAcceptanceCriteria(step.acceptanceCriteria).map((c) => `- ${c}`).join("\n")}`,
             },
           });
@@ -385,7 +420,7 @@ export async function createChecklistAndDelegatableTasksFromPlan(args: {
   return {
     checklistCreated,
     delegatableCreated,
-    reason: checklistExists ? "already_exists" : "created",
+    reason: checklistCreated === 0 && delegatableCreated === 0 ? "already_exists" : "created",
   };
 }
 

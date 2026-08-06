@@ -18,6 +18,7 @@ import {
   rotateAgentSessionBinding,
 } from "@/lib/agents/auth/session-bindings";
 import { isPmTerminalFailureText } from "@/lib/agents/ops/pm-silence";
+import { fenceSupersededPmChannelRuns } from "@/lib/agents/pm-channel/supersession";
 
 // Idempotency discriminator for the turn-failure retry policy: only
 // PM-generated notification/nudge turns are safe to auto-replay. Stamped at
@@ -408,7 +409,7 @@ export async function requeueStaleClaimedPmChannelJobs(now = new Date()) {
   for (const job of stale) {
     const exhausted = job.attemptCount >= (Number.isFinite(MAX_ATTEMPTS) && MAX_ATTEMPTS > 0 ? MAX_ATTEMPTS : 3);
     const jobStatus = exhausted ? "failed" : "retryable";
-    const runStatus = exhausted ? "failed" : "failed";
+    const runStatus: "failed" | "queued" = exhausted ? "failed" : "queued";
     const error = exhausted
       ? `PM channel job ${job.status} lease expired after max attempts`
       : `PM channel job ${job.status} lease expired; requeued`;
@@ -428,12 +429,12 @@ export async function requeueStaleClaimedPmChannelJobs(now = new Date()) {
         data: {
           status: runStatus,
           error,
-          failedAt: now,
+          failedAt: exhausted ? now : null,
           finishedAt: exhausted ? now : null,
           finishedReason: exhausted ? "job_lease_expired" : null,
           lastEventAt: now,
           // ENV-118 (WFI-005): only a terminal write records a disposition.
-          disposition: exhausted ? "failed" : null,
+          disposition: exhausted ? "failed" : "continue",
         },
       }),
     ]);
@@ -441,7 +442,7 @@ export async function requeueStaleClaimedPmChannelJobs(now = new Date()) {
       const payload = parseJobPayload(job.payload);
       appendAndPublishStatus({
         payload,
-        runStatus: runStatus as "failed",
+        runStatus,
         error,
       }).catch((err) => {
         console.warn("[pm-channel] failed to publish stale claim recovery", {
@@ -497,6 +498,37 @@ export async function runPmChannelJob(job: NonNullable<Awaited<ReturnType<typeof
       error: "PM channel dispatch canceled: private or unavailable work cannot be delivered to agents",
     });
   }
+  const fence = await fenceSupersededPmChannelRuns({ replacementRunId: job.runId });
+  if (!fence.ok) {
+    const error = `replacement dispatch fenced until the superseded process stops: ${fence.error}`;
+    const now = new Date();
+    await db.$transaction([
+      db.pmChannelJob.update({
+        where: { id: job.id },
+        data: {
+          status: "retryable",
+          availableAt: new Date(now.getTime() + retryDelayMs(job.attemptCount)),
+          claimedBy: null,
+          claimedAt: null,
+          lastError: error,
+        },
+      }),
+      db.pmChannelRun.update({
+        where: { id: job.runId },
+        data: {
+          status: "queued",
+          error,
+          failedAt: null,
+          finishedAt: null,
+          finishedReason: null,
+          disposition: "continue",
+          lastEventAt: now,
+        },
+      }),
+    ]);
+    await appendAndPublishStatus({ payload, runStatus: "queued", error });
+    return { ok: false, driver: "openclaw-pm-channel", error } satisfies SendPmChannelTurnResult;
+  }
   // A job whose last failure was a retryable TURN failure (no-reply/abort) is
   // being re-run: warn the agent the previous attempt may have partially
   // completed. Dispatch-copy only; the stored payload stays pristine.
@@ -526,7 +558,7 @@ export async function runPmChannelJob(job: NonNullable<Awaited<ReturnType<typeof
   const attemptCount = job.attemptCount;
   const exhausted = attemptCount >= (Number.isFinite(MAX_ATTEMPTS) && MAX_ATTEMPTS > 0 ? MAX_ATTEMPTS : 3);
   const jobStatus = exhausted ? "failed" : "retryable";
-  const runStatus: "failed" = "failed";
+  const runStatus: "failed" | "queued" = exhausted ? "failed" : "queued";
   const error = clippedError(result.error ?? "PM channel dispatch failed");
   await db.$transaction([
     db.pmChannelJob.update({
@@ -544,11 +576,11 @@ export async function runPmChannelJob(job: NonNullable<Awaited<ReturnType<typeof
       data: {
         status: runStatus,
         error,
-        failedAt: now,
+        failedAt: exhausted ? now : null,
         finishedAt: exhausted ? now : null,
         finishedReason: exhausted ? "dispatch_exhausted" : null,
         lastEventAt: now,
-        disposition: exhausted ? "failed" : null,
+        disposition: exhausted ? "failed" : "continue",
       },
     }),
   ]);
@@ -651,16 +683,16 @@ export async function retryOrFailPmChannelJobForTurnFailure(args: {
       db.pmChannelRun.update({
         where: { id: run.id },
         data: {
-          status: "failed",
+          status: "queued",
           error,
           failedAt: null,
           lastEventAt: now,
-          disposition: null,
+          disposition: "continue",
           sessionKey: retryPayload.sessionKey,
         },
       }),
     ]);
-    await appendAndPublishStatus({ payload: retryPayload, runStatus: "failed", error });
+    await appendAndPublishStatus({ payload: retryPayload, runStatus: "queued", error });
     return "retried";
   }
 
@@ -772,6 +804,38 @@ export async function runPmChannelWorkerDrain(
     console.warn("[pm-channel] workflow watchdog failed", err);
   }
 
+  // Reconcile the durable transition/outbox ledger with repository runners
+  // and process fences before draining effects. Safe repairs only requeue an
+  // existing recorded effect or retry an existing cancellation request;
+  // missing evidence is escalated instead of reconstructed from comments.
+  let reconciliation = { findings: 0, repaired: 0, escalated: 0 };
+  try {
+    const { runWorkflowReconciliation } = await import("@/lib/tasks/workflow-reconciler");
+    const report = await runWorkflowReconciliation();
+    reconciliation = {
+      findings: report.findings.length,
+      repaired: report.repaired,
+      escalated: report.escalated,
+    };
+    for (const error of report.errors.slice(0, 3)) {
+      console.warn("[pm-channel] workflow reconciliation", error);
+    }
+  } catch (err) {
+    console.warn("[pm-channel] workflow reconciliation failed", err);
+  }
+
+  // Domain transitions commit their non-database consequences to the generic
+  // workflow outbox. Drain it before PM-channel continuations so a newly
+  // committed assignee/reviewer wake or repository job is projected in this
+  // same worker pass. Expired dispatcher leases are reclaimed here too.
+  let workflowEffects = { completed: 0, retried: 0, failed: 0 };
+  try {
+    const { drainWorkflowOutbox } = await import("@/lib/tasks/workflow-outbox-drain");
+    workflowEffects = await drainWorkflowOutbox({ workerId: `${workerId}:workflow-effects` });
+  } catch (err) {
+    console.warn("[pm-channel] workflow outbox drain failed", err);
+  }
+
   let continuations = { dispatched: 0, superseded: 0, failed: 0 };
   try {
     const { drainPmChannelContinuations } = await import(
@@ -799,6 +863,8 @@ export async function runPmChannelWorkerDrain(
     accepted,
     retryableOrFailed,
     errors,
+    workflowEffects,
+    reconciliation,
     continuations,
     episodeBarriers,
     episodeSuccessors,

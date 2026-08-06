@@ -51,12 +51,21 @@ export async function createSubTaskItem(args: {
   actorUserId: string;
   completedAt?: Date | null;
   kind?: SubTaskKind;
+  actionPlanStepId?: string | null;
   client?: TxClient;
-}): Promise<{ id: string } | null> {
+}): Promise<{ id: string; created: boolean } | null> {
   const client = args.client ?? db;
   const text = args.text.trim().slice(0, MAX_SUBTASK_TEXT);
   if (!text) return null;
   const kind = normalizeSubTaskKind(args.kind);
+
+  const existing = await client.subTask.findFirst({
+    where: args.actionPlanStepId
+      ? { actionPlanStepId: args.actionPlanStepId }
+      : { taskId: args.taskId, kind, text },
+    select: { id: true },
+  });
+  if (existing) return { id: existing.id, created: false };
 
   const agg = await client.subTask.aggregate({
     where: { taskId: args.taskId },
@@ -72,6 +81,7 @@ export async function createSubTaskItem(args: {
       taskId: args.taskId,
       text,
       kind,
+      actionPlanStepId: args.actionPlanStepId ?? null,
       rank: (agg._max.rank ?? 0) + 1,
       completedAt: args.completedAt ?? null,
     },
@@ -86,7 +96,7 @@ export async function createSubTaskItem(args: {
       payload: JSON.stringify({ subTaskId: item.id, text, kind }),
     },
   });
-  return { id: item.id };
+  return { id: item.id, created: true };
 }
 
 // Clamp a self-reported minutes value to a sane non-negative integer, or null.

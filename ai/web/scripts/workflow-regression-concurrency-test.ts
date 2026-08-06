@@ -145,13 +145,6 @@ async function duplicateCallbacks(
   const progress = await readTaskProgress(db, actionTask.id);
   c.assertEqual(progress.episodes, 1, "the replays folded into one execution episode, not three");
 
-  // FINDING (current behaviour, ENV-124): the checklist writer has no
-  // idempotency key. `createSubTaskItem` inserts unconditionally, SubTask has no
-  // unique index on (taskId, text, kind), and the route does not fingerprint the
-  // callback — so a duplicated delivery of the same add_subtask DOES duplicate
-  // the checklist row. The run and the outbox converge; the board-visible
-  // checklist does not. Asserted as observed rather than as desired, so the day
-  // a dedupe lands this line fails loudly instead of quietly passing.
   const checklist = await db.subTask.findMany({
     where: { taskId: actionTask.id },
     select: { text: true },
@@ -159,13 +152,13 @@ async function duplicateCallbacks(
   });
   c.assertEqual(
     checklist.length,
-    3,
-    "FINDING: three identical callbacks create three checklist rows — add_subtask is not idempotent",
+    1,
+    "three identical callbacks converge on one database-enforced checklist row",
   );
   c.assertEqual(
     checklist.every((item) => item.text === "step one"),
     true,
-    "and every duplicate carries the same text, so they are indistinguishable to a human",
+    "the surviving checklist row carries the requested text",
   );
 
   // ---- the constraint behind "one continuation" -------------------------
