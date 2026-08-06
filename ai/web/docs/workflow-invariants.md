@@ -18,13 +18,12 @@ Nothing here changes runtime behaviour. There is no migration, no edit to
 | `scripts/workflow-invariants-db-test.ts` | `pnpm test:workflow-invariants-db` — real rows on a throwaway sqlite, matched against the baseline. |
 | `scripts/workflow-invariants-monitor.ts` | `pnpm workflow-invariants-monitor` — read-only Monitor Agent surface. |
 
-## Two definitions the schema had no primitive for
+## Core definitions
 
-**Lease.** `PmChannelRun` has no lease column. A run's lease is derived: the most
-recent proof of life (`lastEventAt`, else `streamingAt`, else `acceptedAt`, else
-`createdAt`) plus `WORKFLOW_RUN_LEASE_TTL_MS` (30 minutes, aligned with
-`PM_CHANNEL_JOB_ACCEPTED_TIMEOUT_MS`). "Renew or become terminal" is expressed
-against that, so the invariants are testable without a migration.
+**Lease.** New `PmChannelRun` rows carry `leaseExpiresAt` and `heartbeatAt`.
+Renewal is explicit and terminal/superseded rows relinquish the lane. The
+invariant adapter conservatively derives a deadline from the most recent proof
+of life only for legacy rows that predate the lease columns.
 
 **Disposition.** A closed enum — `continue`, `waiting_external`,
 `ready_for_review`, `completed`, `failed` — plus a classification of every action
@@ -51,14 +50,15 @@ list, so adding an action without classifying it fails the suite.
 | WFI-005 | turn-disposition | 3 | Every terminal run must carry an explicit disposition from the closed enum. | **passes** (ENV-118) |
 | WFI-006 | turn-disposition | 3 | A run may not be complete with an empty final response and no workflow action standing in for it. | red |
 | WFI-007 | blocker | 6 | Every active formal blocker must name an external actor and a concrete actionable requirement, as structured data. | **passes** (ENV-120) |
-| WFI-008 | action-plan | 4 | An approved plan on an assigned task must yield a durable checklist from structured steps, never scraped Markdown. | red |
+| WFI-008 | action-plan | 4 | An approved plan on an assigned task must yield a durable checklist from structured steps, never scraped Markdown. | **passes** (workflow hardening) |
 
 WFI-001 already holds. WFI-004 and WFI-005 were closed by ENV-118, and WFI-007
-by ENV-120. Do not add baseline entries for any of the four.
+by ENV-120. WFI-008 is closed by structured ActionPlanStep provenance. Do not
+add baseline entries for any of these invariants.
 
 ## The expected-fail baseline
 
-Four of the eight invariants are still **red on purpose**. They describe the Epic's
+Three of the eight invariants are still **red on purpose**. They describe the Epic's
 target state, not today's. Rather than land a broken suite or water the
 invariants down, the known-violated set is recorded in
 `lib/workflow-invariants-baseline.json` and the suite is green while observed ==
@@ -151,25 +151,36 @@ The reply-time heuristic in `lib/agents/workflow/execution-continuation.ts` stan
 down whenever the outbox owns the turn, so the two paths cannot both enqueue and
 break WFI-001.
 
-## Known derivation gaps
+## Durable workflow sources
 
-`settledByAction` and `disposition` are real columns as of ENV-118 and are read
-directly; only rows written before that migration fall back to the old
-`ActivityLog` derivation. What is still guessed:
+The runtime no longer reconstructs current workflow state from a long comment
+thread:
 
-- **`finalResponseText`** is reconstructed from the reply/silent `ActivityLog`
-  row PM writes per turn, then the referenced chat message or comment body.
-  **Epic item 3** owns making the response itself durable.
-- **Checklist provenance** is not stored. The only automated producer today is
-  the Markdown scraper in `lib/tasks/action-plan-subtasks.ts`, so a populated
-  checklist is classified `markdown-prose`. **Epic item 4** should record
-  structured plan steps and their provenance.
+- `Task.workflowVersion` plus immutable `WorkflowTransition` rows are the task
+  status ledger. Every active browser, agent, proposal and Epic-cascade path
+  crosses `lib/tasks/transition-kernel.ts`.
+- `WorkflowOutbox` is the source of truth for repository jobs, reviewer and
+  assignee wake-ups, finalization, cleanup and board projection. A transition
+  and all effects commit together.
+- `ActionPlan`, `ActionPlanRevision` and `ActionPlanStep` are the approved-plan
+  source. Implementation `SubTask` rows point back to their plan step, so
+  checklist provenance is mechanical rather than parsed from Markdown.
+- `ReviewRun` locks one immutable candidate SHA. Reviewer acceptance and
+  finalization are valid only for that exact candidate.
+- `PmChannelRun.disposition`, `settledByAction`, completion evidence and
+  `PmChannelContinuation` carry execution state. Legacy rows may still use the
+  conservative ActivityLog adapter, but new writes do not.
 
-WFI-006 stays red, and ENV-118 gives it a second live shape to report: a run that
-ends with disposition `continue` and no durable reply. That is genuinely
-interrupted execution — the continuation makes it *recoverable*, not *complete* —
-so the invariant is right to flag it until **Epic item 3** requires a concrete
-completion response.
+WFI-006 still correctly reports a run that ends with disposition `continue`
+without a durable reply. That is interrupted execution; the continuation and
+watchdog make it recoverable, but do not mislabel it complete.
+
+## Boundary drift guard
+
+`pnpm test:workflow-boundary` parses every TypeScript source under `app/` and
+`lib/` and fails if a route writes `Task.status` directly. The only allowlisted
+owner is `lib/tasks/transition-kernel.ts`. This turns “remember to use the
+kernel” from review advice into a build-time constraint.
 
 ## Monitor usage
 

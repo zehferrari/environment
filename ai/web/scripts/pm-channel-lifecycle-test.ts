@@ -567,7 +567,11 @@ async function main() {
     const contextFailure = "⚠️ Context is too large and auto-compaction could not recover this turn. Try again.";
     await recordPmChannelRunEvent({ target: chatTarget(mH), event: "error", error: contextFailure });
     const contextRetried = await runRow(d6Key);
-    assert.equal(contextRetried.status, "failed", "a retrying run records a non-terminal failed attempt");
+    assert.equal(
+      contextRetried.status,
+      "queued",
+      "a retrying run returns to queued so no terminal-looking failed run owns the live lane",
+    );
     assert.equal(
       contextRetried.jobs[0]!.status,
       "retryable",

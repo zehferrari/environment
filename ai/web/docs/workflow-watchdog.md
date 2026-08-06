@@ -131,12 +131,49 @@ pnpm workflow-watchdog --strict         # exit 1 if anything is stalled
 `--dry-run` is the one to reach for first: it exercises the whole pass and prints
 exactly what would be repaired, without writing an outbox row or settling a run.
 
+## Cross-layer reconciliation and workflow doctor
+
+The execution watchdog covers model turns and continuations. A separate pass,
+`lib/tasks/workflow-reconciler.ts`, checks the boundary between the committed
+workflow ledger and asynchronous projections:
+
+- queued effects that stopped draining and expired dispatcher leases;
+- `validating` or `finalizing` repository phases whose recorded effect was
+  delivered but never advanced downstream state;
+- repository phases with no durable effect at all;
+- Review tasks missing an active immutable `ReviewRun` lease;
+- Done tasks whose repository lifecycle is not `completed`;
+- superseded gateway processes whose cancellation was never acknowledged.
+
+Safe repair means requeueing the **existing** effect payload or retrying the
+**existing** cancellation fence. The reconciler never guesses a transition,
+candidate SHA or command from comments. Missing evidence and exhausted effects
+raise `alertReporter`, write `TaskExecutionState=stalled`, and create one
+idempotent audit event. The PM worker runs reconciliation immediately before
+the generic outbox drain, so a repaired effect is dispatched in the same pass.
+
+The operator command is read-only unless `--apply` is explicit:
+
+```
+pnpm workflow-doctor                    # inspect, metrics + findings, no writes
+pnpm workflow-doctor --json             # machine-readable health snapshot
+pnpm workflow-doctor --project=<id>     # scope one project
+pnpm workflow-doctor --apply            # bounded safe repairs + escalation
+pnpm workflow-doctor --strict           # exit 1 when findings exist
+```
+
+Its metrics report outbox counts by status, repository counts by phase,
+execution-state counts and unacknowledged cancellation count. These are the
+same records the worker reconciles, not comment-derived estimates.
+
 ## Tests
 
 ```
 pnpm test:workflow-watchdog             # fixture: all seven detectors, no DB
 pnpm test:workflow-watchdog-db          # throwaway sqlite: repairs, breaker, idempotency
 pnpm test:workflow-watchdog-visibility  # the rendered surfaces
+pnpm test:workflow-reconciler           # stale projection repair + escalation idempotency
+pnpm test:workflow-boundary             # no direct Task.status route writes
 ```
 
 The db suite's load-bearing assertions are the boring ones: a second pass queues

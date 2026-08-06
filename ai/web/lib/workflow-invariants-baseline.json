@@ -27,32 +27,30 @@
     "WFI-007 was removed by ENV-120: flag_blocker now validates a structured",
     "FormalBlockerReport before a task may enter a human-blocked state, so every",
     "active blocker names its external actor and its actionable requirement.",
-    "Do not re-add it."
+    "Do not re-add it.",
+    "",
+    "WFI-008 was removed by the workflow hardening pass: approved ActionPlanStep",
+    "rows now materialize checklist rows with immutable provenance. Rendered",
+    "Markdown is presentation only. Do not re-add it."
   ],
   "entries": [
     {
       "invariantId": "WFI-002",
       "epicItem": 2,
       "codes": { "WFI-002/lease-not-renewed": 1 },
-      "note": "PmChannelRun has no lease column and nothing expires an accepted run; it sits accepted forever."
+      "note": "The canonical scenario deliberately seeds one expired active lease so the invariant/watchdog handoff remains covered."
     },
     {
       "invariantId": "WFI-003",
       "epicItem": 2,
       "codes": { "WFI-003/stale-active-run-without-successor": 1 },
-      "note": "An In Progress task still reads as 'being worked' off a stale accepted run that was never superseded."
+      "note": "The canonical scenario deliberately seeds an In Progress task whose only run lease expired and has not yet reached the watchdog pass."
     },
     {
       "invariantId": "WFI-006",
       "epicItem": 3,
       "codes": { "WFI-006/empty-final-response": 1 },
       "note": "A turn that produces no durable response and takes no workflow action still settles complete instead of interrupted."
-    },
-    {
-      "invariantId": "WFI-008",
-      "epicItem": 4,
-      "codes": { "WFI-008/checklist-parsed-from-prose": 1 },
-      "note": "createActionPlanSubtasksForTask scrapes Markdown headings and list items; approved plans carry no structured steps."
     }
   ]
 }

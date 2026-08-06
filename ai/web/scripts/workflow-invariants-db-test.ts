@@ -139,7 +139,8 @@ async function main(): Promise<void> {
       },
     });
 
-    // The approved plan, exactly as an assignee posts it today: Markdown prose.
+    // Presentation remains Markdown, but the approved workflow source is a
+    // structured ActionPlan with immutable steps.
     const planBody = [
       "## Action Plan",
       "",
@@ -162,7 +163,28 @@ async function main(): Promise<void> {
       },
     });
 
-    // Production writer: today's checklist seeding is Markdown scraping.
+    const stepTitles = extractActionPlanSteps(planBody);
+    await db.actionPlan.create({
+      data: {
+        taskId: t1.id,
+        summary: "Exercise the invariant registry and its validation suite.",
+        status: "approved",
+        authorId: agentUser.id,
+        approvedOn: new Date(now - 20 * MINUTE),
+        approvedById: reporter.id,
+        contentHash: "workflow-invariants-structured-plan",
+        steps: {
+          create: stepTitles.map((title, rank) => ({
+            stepId: `step-${rank + 1}`,
+            title,
+            acceptanceCriteria: JSON.stringify([`Complete: ${title}`]),
+            rank,
+          })),
+        },
+      },
+    });
+
+    // Production writer: checklist rows retain ActionPlanStep provenance.
     const seeded = await createActionPlanSubtasksForTask({
       taskId: t1.id,
       approvedAt: new Date(now - 20 * MINUTE),
@@ -170,11 +192,7 @@ async function main(): Promise<void> {
     });
     assertEqual(seeded.reason, "created", "the real seeder produced a checklist");
     assert(seeded.created > 0, "the real seeder produced at least one step");
-    assertEqual(
-      extractActionPlanSteps(planBody).length,
-      seeded.created,
-      "checklist size matches the prose scraper's output — provenance is prose, not structure",
-    );
+    assertEqual(stepTitles.length, seeded.created, "checklist size matches structured plan steps");
 
     // Production writer: queue a run, then settle it with `start`.
     const t1Target = {
@@ -398,8 +416,8 @@ async function main(): Promise<void> {
     assertEqual(t1Task.assigneeSlug, AGENT_SLUG, "assignee resolves to an agent slug");
     assertEqual(
       t1Task.planStepSource,
-      "markdown-prose",
-      "an approved plan's checklist has no structured provenance today",
+      "structured",
+      "an approved plan's checklist retains structured step provenance",
     );
     assert(t1Task.checklistCount > 0, "T1 carries the seeded checklist");
 

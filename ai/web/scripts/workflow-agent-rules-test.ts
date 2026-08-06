@@ -351,7 +351,6 @@ assert(
 assert(taskWorkflowRoute.includes("runTaskReviewHandoff"), "the agent workflow route must use the shared Review handoff");
 for (const pagePath of [
   "app/(app)/projects/[slug]/page.tsx",
-  "app/(app)/projects/[slug]/tasks/[taskId]/page.tsx",
   "app/(app)/workspaces/[slug]/page.tsx",
   "app/(app)/workspaces/(landing)/page.tsx",
 ]) {
@@ -367,6 +366,11 @@ for (const pagePath of [
     `${pagePath} must provision/validate the linked worktree before a human In Progress move`,
   );
 }
+assert(
+  taskPage.includes('moveTaskStatus as transitionTaskStatus') &&
+    taskPage.includes('transitionTaskStatus(taskId, statusChangedTo, slug)'),
+  "task editor status changes must delegate to the authoritative browser transition action",
+);
 
 assert(
   taskPage.includes("await reserveTaskRepositoryState(task.id)") &&
@@ -404,8 +408,9 @@ assert(
 // must go through runWorkflowActionAtomically so its domain mutation and its
 // continuation-outbox row commit together (the ENV-118 review finding).
 assert(
-  taskWorkflowRoute.split("recordPmChannelRunWorkflowAction(").length - 1 === 12,
-  "every episode-terminal and idempotent workflow path must settle the PM-channel run",
+  (taskWorkflowRoute.split("recordPmChannelRunWorkflowAction(").length - 1) +
+    (taskWorkflowRoute.split("runWorkflowActionAtomically(").length - 1) === 18,
+  "every workflow path with a durable outcome must use a standalone or atomic PM-run recorder",
 );
 {
   const CONTINUATION_REQUIRED_ROUTE_ACTIONS = [

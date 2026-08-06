@@ -26,6 +26,12 @@ async function main() {
       `[pm-workflow-doctor]${apply ? "" : " (read only)"} inspected ${report.inspectedTasks} task(s): ` +
       `${report.findings.length} finding(s), ${report.repaired} repaired, ${report.escalated} escalated`,
     );
+    console.log(
+      `  metrics: outbox=${JSON.stringify(report.metrics.outboxByStatus)} ` +
+      `repository=${JSON.stringify(report.metrics.repositoryByPhase)} ` +
+      `execution=${JSON.stringify(report.metrics.executionByState)} ` +
+      `cancellationPending=${report.metrics.cancellationPending}`,
+    );
     for (const finding of report.findings) {
       console.log(
         `  ${finding.kind} ${finding.taskId ?? finding.rowId}: ${finding.detail} ` +

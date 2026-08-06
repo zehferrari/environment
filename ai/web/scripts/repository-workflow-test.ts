@@ -122,9 +122,12 @@ assert(
   "review acceptance must remain in Review until repository finalization completes",
 );
 assert(
-  finalization.includes("task.repositoryRun && !args.repositoryFinalized") &&
-    repositoryRunner.includes('task.repositoryRun?.repoTouched === true') &&
-    repositoryRunner.includes("declared no repository changes"),
+  finalization.includes("task.project.repositoryPath && task.repositoryRun && !args.repositoryFinalized") &&
+    finalization.includes("? task.repositoryRun.candidateSha") &&
+    finalization.includes(": task.repositoryRun.baseSha") &&
+    finalization.includes('type: "review_finalize"') &&
+    repositoryRunner.includes("const repoTouched = task.repositoryRun?.repoTouched === true") &&
+    repositoryRunner.includes("const finalizedWorktreePath = task.repositoryRun?.worktreePath"),
   "no-change repository tasks must still finalize and clean up their worktree before Done",
 );
 assert(
@@ -147,7 +150,7 @@ assert(
   verifier.includes("recordedCheckpointReviewBaseline") &&
     verifier.includes("job.baseSha") &&
     verifier.includes("subjectHasCommitPrefix(checkpointBaseline.checkpoint.subject") &&
-    verifier.includes("repoTouched: !checkpointBaseline"),
+    verifier.includes("repoTouched: !noChangeCandidate && !checkpointBaseline"),
   "an already-published checkpoint baseline must satisfy prefix review and use the no-change cleanup path",
 );
 assert(

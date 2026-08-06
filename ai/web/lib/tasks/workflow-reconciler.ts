@@ -32,6 +32,12 @@ export type WorkflowReconciliationReport = {
   repaired: number;
   escalated: number;
   errors: string[];
+  metrics: {
+    outboxByStatus: Record<string, number>;
+    repositoryByPhase: Record<string, number>;
+    executionByState: Record<string, number>;
+    cancellationPending: number;
+  };
 };
 
 function staleMs() {
@@ -51,21 +57,29 @@ async function escalateTask(args: {
   rowId: string;
   now: Date;
 }) {
-  const written = await writeTaskExecutionState({
+  await writeTaskExecutionState({
     taskId: args.taskId,
     projectId: args.projectId,
     state: "stalled",
     reasonCode: args.kind,
     reasonDetail: args.detail,
     recoveryAction: "escalated to reporter",
-    recoveryAt: args.now,
+    recoveryAt: undefined,
     detectorId: `workflow_reconciler:${args.kind}`,
   });
   await db.task.updateMany({
     where: { id: args.taskId, deletedAt: null },
     data: { alertReporter: true },
   });
-  if (written) {
+  const alreadyLogged = await db.activityLog.findFirst({
+    where: {
+      taskId: args.taskId,
+      kind: "task.workflow.reconciliation_required",
+      payload: { contains: `\"rowId\":\"${args.rowId}\"` },
+    },
+    select: { id: true },
+  });
+  if (!alreadyLogged) {
     await db.activityLog.create({
       data: {
         projectId: args.projectId,
@@ -255,7 +269,33 @@ export async function runWorkflowReconciliation(options: {
     });
   }
 
+  const [outboxGroups, repositoryGroups, executionGroups, cancellationPending] = await Promise.all([
+    db.workflowOutbox.groupBy({
+      by: ["status"],
+      where: options.projectId ? { projectId: options.projectId } : undefined,
+      _count: { _all: true },
+    }),
+    db.taskRepositoryRun.groupBy({
+      by: ["phase"],
+      where: options.projectId ? { task: { projectId: options.projectId } } : undefined,
+      _count: { _all: true },
+    }),
+    db.taskExecutionState.groupBy({
+      by: ["state"],
+      where: options.projectId ? { projectId: options.projectId } : undefined,
+      _count: { _all: true },
+    }),
+    db.pmChannelRun.count({
+      where: {
+        cancellationRequestedAt: { not: null },
+        cancellationAcknowledgedAt: null,
+        ...(options.projectId ? { projectId: options.projectId } : {}),
+      },
+    }),
+  ]);
+
   if (!dryRun) {
+    const escalatedTasks = new Set<string>();
     for (const finding of findings) {
       try {
         if (finding.repair === "requeue") {
@@ -283,6 +323,10 @@ export async function runWorkflowReconciliation(options: {
           finding.repaired = result.ok;
           if (!result.ok) finding.error = result.error;
         } else if (finding.taskId) {
+          if (escalatedTasks.has(finding.taskId)) {
+            finding.repaired = true;
+            continue;
+          }
           const task = tasks.find((candidate) => candidate.id === finding.taskId);
           if (!task) continue;
           await escalateTask({
@@ -294,6 +338,7 @@ export async function runWorkflowReconciliation(options: {
             now,
           });
           finding.repaired = true;
+          escalatedTasks.add(finding.taskId);
           escalated += 1;
         }
         if (finding.repaired) repaired += 1;
@@ -312,5 +357,11 @@ export async function runWorkflowReconciliation(options: {
     repaired,
     escalated,
     errors,
+    metrics: {
+      outboxByStatus: Object.fromEntries(outboxGroups.map((row) => [row.status, row._count._all])),
+      repositoryByPhase: Object.fromEntries(repositoryGroups.map((row) => [row.phase, row._count._all])),
+      executionByState: Object.fromEntries(executionGroups.map((row) => [row.state, row._count._all])),
+      cancellationPending,
+    },
   };
 }
