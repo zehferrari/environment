@@ -29,6 +29,7 @@ import { attachmentMaxBytes } from "@/lib/attachments/storage";
 import Board from "../../projects/[slug]/board-client";
 import { COLUMNS, COLUMN_IDS } from "../../projects/[slug]/columns";
 import type { MoveTaskResult } from "../../projects/[slug]/page";
+import type { MoveTaskOptions } from "@/lib/tasks/move-status";
 import {
   accessibleProjectWhere,
   accessibleTaskWhere,
@@ -145,7 +146,12 @@ async function restoreWorkspaceAction(formData: FormData) {
 // Landing-board move: identical workflow rules to the per-workspace board,
 // but the membership proof accepts any accessible active workspace that
 // contains the task's project.
-async function moveTask(taskId: string, status: string, _scopeSlug: string): Promise<MoveTaskResult> {
+async function moveTask(
+  taskId: string,
+  status: string,
+  _scopeSlug: string,
+  options?: MoveTaskOptions,
+): Promise<MoveTaskResult> {
   "use server";
   const actor = await requireViewer();
   if (!COLUMN_IDS.includes(status)) {
@@ -181,6 +187,39 @@ async function moveTask(taskId: string, status: string, _scopeSlug: string): Pro
   });
   if (!workspaceProject) return { ok: false, code: "UNKNOWN_COLUMN", message: "Task not found" };
   if (current.status === status) return { ok: true };
+
+  // Operator override — same admin-only break-glass contract as the project
+  // board (lib/tasks/move-status.ts): kernel CAS + audited "operator_override"
+  // intent, skipping all gates and side effects beyond a board repaint.
+  if (options?.operatorOverride) {
+    if (actor.kind !== "human" || !actor.isOwner) {
+      return {
+        ok: false,
+        code: "EXPLICIT_USER_ACTION_REQUIRED",
+        message: "Operator override is restricted to the human operator (admin).",
+      };
+    }
+    await transitionTask({
+      taskId,
+      projectId: current.projectId,
+      actorUserId: actor.id,
+      intent: "operator_override",
+      from: current.status as TaskWorkflowStatus,
+      to: status as TaskWorkflowStatus,
+      source: "human-workspace-landing-move",
+      idempotencyKey: `workspace-landing-override:${actor.id}:v${current.workflowVersion + 1}:${status}`,
+      expectedVersion: current.workflowVersion,
+      evidence: { operatorOverride: true },
+      effects: [{ type: "board_touch", key: "board:operator_override", payload: {} }],
+    });
+    await drainWorkflowOutbox({ limit: 1 }).catch(() => {});
+    revalidateTaskShell(taskId);
+    revalidatePath(`/projects/${current.project.slug}`);
+    revalidatePath("/workspaces");
+    publishBoardTouch(current.projectId);
+    return { ok: true };
+  }
+
   if (current.repositoryRun?.phase === "finalizing") {
     return {
       ok: false,
@@ -563,6 +602,7 @@ export default async function WorkspacesLandingPage({ searchParams }: { searchPa
           moveTaskAction={moveTask}
           reorderTasksAction={reorderLandingTasks}
           deleteTaskAction={binTask}
+          canOperatorOverride={viewer.isOwner}
         />
       )}
     </div>

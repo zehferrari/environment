@@ -323,7 +323,7 @@ function settledAgentSlugsForMessage(
 ) {
   const slugs = new Set<string>();
   for (const run of runs) {
-    if (run.messageId === messageId && run.status === "complete") {
+    if (run.messageId === messageId && run.status === "completed") {
       slugs.add(run.agentSlug);
     }
   }
@@ -869,7 +869,7 @@ export default async function EpicDetailPage({
           kind: "epic-chat",
           epicId: epic.id,
           messageId: { in: humanChatMessageIds },
-          status: "complete",
+          status: "completed",
         },
         select: { messageId: true, agentSlug: true, status: true },
       })

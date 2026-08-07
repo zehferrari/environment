@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
+import { pmChannelRunTargetKey } from "@/lib/agents/pm-channel/bus";
 import { verifyTaskChatReplyToken } from "@/lib/agents/workflow/chat/task/token";
 import { sendTaskCommentNotifications } from "@/lib/agents/workflow/notifications/task";
 import { revalidateTaskReplyScope, revalidateTaskShell } from "@/lib/tasks/cache";
@@ -170,9 +171,22 @@ export async function POST(
     originCommentId: original.originCommentId,
   });
 
-  // ENV-122: Look up the active PmChannelRun to wire runId, provider, and model provenance.
+  // ENV-122: Look up the PmChannelRun that produced this reply to wire runId,
+  // provider, and model provenance. Resolve it by the same targetKey identity
+  // the pm-channel driver uses (see persist-task-reply): the dispatch kind is
+  // not recorded on the message, so try both task kinds (at most one row can
+  // exist per key — targetKey is unique), and use no status filter so a run
+  // that left the live set (timed out, superseded) still attributes the reply
+  // it produced.
   const runProvenance = await db.pmChannelRun.findFirst({
-    where: { messageId, agentSlug, status: { in: ["queued", "accepted", "streaming", "completed"] } },
+    where: {
+      targetKey: {
+        in: [
+          pmChannelRunTargetKey({ kind: "task-comment", agentSlug, taskId, messageId }),
+          pmChannelRunTargetKey({ kind: "task-chat", agentSlug, taskId, messageId }),
+        ],
+      },
+    },
     select: { id: true, provider: true, model: true },
     orderBy: { createdAt: "desc" },
   });
@@ -187,7 +201,9 @@ export async function POST(
           taskId,
           userId: agent.user!.id,
           body,
-          authorAgentSlug: original.agentSlug,
+          // ENV-122: stamp the resolved replying agent, not the message's
+          // agentSlug — for a room-addressed message that would be "room".
+          authorAgentSlug: agentSlug,
           commentKind: "agent_reply",
           isGenerated: false,
           runId,

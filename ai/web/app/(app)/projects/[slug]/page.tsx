@@ -523,6 +523,7 @@ export default async function ProjectBoardPage({
         moveTaskAction={moveTaskStatus}
         reorderTasksAction={reorderBoardTasks}
         deleteTaskAction={binTask}
+        canOperatorOverride={viewer.isOwner}
         canManageTaskRoles={viewer.isOwner}
         roleOptions={viewer.isOwner ? principals.map((principal) => ({
           value: principal.id,

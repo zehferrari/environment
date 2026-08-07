@@ -119,7 +119,7 @@ async function dispatchContinuation(row: ContinuationRow): Promise<"dispatched" 
       taskId: task.id,
       agentSlug: row.agentSlug,
       messageId: { not: row.messageId },
-      status: { in: ["queued", "accepted", "streaming", "retryable"] },
+      status: { in: ["queued", "accepted", "streaming"] },
     },
     select: { id: true },
   });

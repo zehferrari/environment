@@ -126,7 +126,7 @@ export async function continueActionableTaskAfterReply(args: {
         taskId: task.id,
         agentSlug: args.target.agentSlug,
         messageId: { not: args.target.messageId },
-        status: { in: ["queued", "accepted", "streaming", "retryable"] },
+        status: { in: ["queued", "accepted", "streaming"] },
       },
       select: { id: true },
     });

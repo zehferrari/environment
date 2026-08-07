@@ -2,8 +2,10 @@
 //
 // Scope split: scripts/task-execution-episode-test.ts drives the lifecycle
 // against real rows on a throwaway sqlite (episode rollover, the duplicate-
-// episodeNo guard, brief construction). This file stays pure — no DB, no
-// prisma push — and covers the encoding/clipping/rendering edges that are
+// episodeNo guard, brief construction). This file stays pure — no DB queries,
+// no prisma push (importing lib/agents/context/task transitively constructs
+// the PrismaClient, but no connection is opened and nothing is queried) — and
+// covers the encoding/clipping/rendering edges that are
 // cheapest to get wrong and most expensive to notice: partial vs cleared
 // checkpoint fields, oversized input, and a legacy row that is not JSON.
 //
@@ -28,6 +30,7 @@ import {
   MONITOR_CAPS,
 } from "../lib/agents/context/caps";
 import { renderBudgetedTimeline, type TimelineItemForBudget } from "../lib/agents/context/budget";
+import { episodeActionPlanLines } from "../lib/agents/context/task";
 import {
   checkpointUpdateData,
   EPISODE_CLOSE_REASON,
@@ -296,6 +299,100 @@ function comment(n: number, body: string): TimelineItemForBudget {
   // burned tool calls.
   assert.notEqual(EPISODE_CLOSE_REASON.toolBudgetExhausted, EPISODE_CLOSE_REASON.budgetExhausted);
   assert.notEqual(EPISODE_CLOSE_REASON.toolBudgetExhausted, EPISODE_CLOSE_REASON.terminalAction);
+}
+
+// ------------------------------------------------------------------
+// 7. The brief's plan of record: the ENV-119 structured plan is preferred,
+//    the message heuristic survives only for legacy tasks, and either shape
+//    stays flat in task size
+// ------------------------------------------------------------------
+{
+  const caps = episodeCaps();
+  // Newest first, exactly as the brief query fetches them. The newest
+  // agent-authored row is a workflow notification, which the heuristic must
+  // skip in favour of the real plan message underneath it.
+  const chats = [
+    { body: "PM workflow notification: task moved to In Progress", sender: { username: "barekbaal" } },
+    { body: "Action Plan (message heuristic): step A then step B", sender: { username: "barekbaal" } },
+    { body: "unrelated operator note", sender: { username: "zeh" } },
+  ];
+  const plan = {
+    summary: "Bound the episode brief to the structured plan.",
+    steps: [
+      { id: "row-1", stepId: "step-1", title: "Wire the store", acceptanceCriteria: JSON.stringify(["store preferred over heuristic"]), kind: "sequential", assigneeId: null, rank: 1 },
+      { id: "row-2", stepId: "step-2", title: "Keep the fallback", acceptanceCriteria: JSON.stringify([]), kind: "sequential", assigneeId: null, rank: 2 },
+    ],
+  };
+
+  // Structured plan preferred: the section is the plan, not the chat message.
+  const structured = episodeActionPlanLines({
+    plan,
+    checklist: [
+      { actionPlanStepId: "row-1", completedAt: new Date() },
+      { actionPlanStepId: null, completedAt: null },
+    ],
+    chats,
+    agentSlug: "barekbaal",
+    caps,
+  }).join("\n");
+  assert(structured.includes("Bound the episode brief to the structured plan."), "the structured summary is rendered");
+  assert(structured.includes("Step 1: [sequential] Wire the store (done)"), "a step whose linked checklist row is complete renders as done");
+  assert(structured.includes("Step 2: [sequential] Keep the fallback"), "an open step renders without a done marker");
+  assert(structured.includes("- store preferred over heuristic"), "acceptance criteria are rendered per step");
+  assert(!structured.includes("message heuristic"), "a structured plan suppresses the chat heuristic entirely");
+
+  // Heuristic fallback: no structured plan (legacy/pre-ENV-119 task) → the
+  // newest non-notification room message this agent authored.
+  const fallback = episodeActionPlanLines({ plan: null, checklist: [], chats, agentSlug: "barekbaal", caps }).join("\n");
+  assert(fallback.includes("message heuristic"), "a legacy task keeps the message heuristic");
+  assert(!fallback.includes("PM workflow notification"), "a workflow notification is never the plan of record");
+
+  // No plan anywhere → an explicit retrieval pointer, not silence.
+  const none = episodeActionPlanLines({
+    plan: null,
+    checklist: [],
+    chats: [{ body: "unrelated operator note", sender: { username: "zeh" } }],
+    agentSlug: "barekbaal",
+    caps,
+  }).join("\n");
+  assert(none.includes("no plan message found inline"), "a task with no plan at all points at retrieval");
+
+  // Flat, part 1: an oversized structured plan is clipped by the same clip
+  // machinery, and the section alone leaves room inside the brief budget.
+  const bloated = {
+    summary: "s".repeat(2_000),
+    steps: Array.from({ length: 20 }, (_, i) => ({
+      id: `row-${i}`,
+      stepId: `step-${i}`,
+      title: `Step ${i} ${"t".repeat(400)}`,
+      acceptanceCriteria: JSON.stringify(Array.from({ length: 10 }, (_, j) => `criterion ${j} ${"c".repeat(200)}`)),
+      kind: "sequential",
+      assigneeId: null,
+      rank: i + 1,
+    })),
+  };
+  const clipped = episodeActionPlanLines({ plan: bloated, checklist: [], chats: [], agentSlug: "barekbaal", caps }).join("\n");
+  assert(
+    clipped.length <= caps.taskDescriptionMax + 100,
+    `an oversized structured plan is clipped, not inlined (was ${clipped.length})`,
+  );
+  assert(clipped.includes("[truncated:"), "the clip is annotated, not silent");
+  assert(
+    clipped.length < episodeBriefCharBudget(),
+    "the plan section alone must leave room for the rest of the brief inside the brief budget",
+  );
+
+  // Flat, part 2: 500 chat rows change NOTHING about the structured section —
+  // the plan of record no longer varies with how chatty the task is.
+  const noisy = episodeActionPlanLines({
+    plan,
+    checklist: [],
+    chats: Array.from({ length: 500 }, (_, i) => ({ body: `chatter ${i}`, sender: { username: "barekbaal" } })),
+    agentSlug: "barekbaal",
+    caps,
+  }).join("\n");
+  const quiet = episodeActionPlanLines({ plan, checklist: [], chats: [], agentSlug: "barekbaal", caps }).join("\n");
+  assert.equal(noisy, quiet, "a chatty task cannot grow or change the structured plan section");
 }
 
 console.log("pm-execution-episode-test: ok");

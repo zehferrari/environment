@@ -1047,6 +1047,72 @@ const BLOCKER_ACTIVITY_KINDS = [
   "task.blocker.permission.granted",
 ];
 
+/** The structured-plan slice the episode-brief query loads (ENV-119). */
+export type EpisodeBriefActionPlan = {
+  summary: string;
+  steps: Array<{
+    id: string;
+    stepId: string;
+    title: string;
+    /** JSON-encoded string[], exactly as the action-plan store persists it. */
+    acceptanceCriteria: string;
+    kind: string;
+    assigneeId: string | null;
+    rank: number;
+  }>;
+};
+
+/**
+ * The brief's "APPROVED ACTION PLAN" section body. ENV-119's structured
+ * ActionPlan is the plan of record, so when one exists it is rendered the
+ * same way the first-contact packet renders it — summary + ordered steps
+ * with acceptance criteria — plus per-step completion derived from the
+ * actionPlanStepId-linked checklist rows the brief already loads. The
+ * pre-ENV-119 heuristic (newest non-notification room message authored by
+ * this agent) survives ONLY as the fallback for legacy tasks with no
+ * ActionPlan row. Either shape is clipped, so the section stays flat no
+ * matter how chatty the task is.
+ */
+export function episodeActionPlanLines(args: {
+  plan: EpisodeBriefActionPlan | null;
+  /** Checklist rows as loaded by the brief query; links steps to done state. */
+  checklist: Array<{ actionPlanStepId: string | null; completedAt: Date | null }>;
+  /** Live room messages, newest first, as loaded by the brief query. */
+  chats: Array<{ body: string; sender: { username: string | null } | null }>;
+  agentSlug: string;
+  caps: ContextCaps;
+}): string[] {
+  if (args.plan) {
+    const doneStepIds = new Set<string>();
+    for (const item of args.checklist) {
+      if (item.completedAt !== null && item.actionPlanStepId) doneStepIds.add(item.actionPlanStepId);
+    }
+    const planLines = [`Summary: ${args.plan.summary}`];
+    for (const step of args.plan.steps) {
+      const criteria = parseAcceptanceCriteria(step.acceptanceCriteria);
+      planLines.push(
+        `  Step ${step.rank}: [${step.kind}] ${step.title}${doneStepIds.has(step.id) ? " (done)" : ""}`,
+        `    ID: ${step.stepId}`,
+        ...(criteria.length > 0 ? ["    Acceptance criteria:", ...criteria.map((c) => `      - ${c}`)] : []),
+        ...(step.assigneeId ? [`    Assignee: ${step.assigneeId}`] : []),
+      );
+    }
+    // One clip bounds the whole structured block. The plan is description-
+    // grade context, so it shares the description's episode cap rather than
+    // the per-chat body cap the fallback message gets.
+    return clip(planLines.join("\n"), args.caps.taskDescriptionMax).split("\n");
+  }
+  const planMessage = [...args.chats]
+    .reverse()
+    .filter((chat) => chat.sender?.username === args.agentSlug && !chat.body.startsWith("PM workflow notification"))
+    .pop();
+  return [
+    planMessage
+      ? clip(planMessage.body, args.caps.maxTimelineBody)
+      : "(no plan message found inline — fetch the task grant and read the Action Plan discussion)",
+  ];
+}
+
 export async function buildTaskEpisodeBrief(args: {
   taskId: string;
   agentSlug: string;
@@ -1111,12 +1177,18 @@ export async function buildTaskEpisodeBrief(args: {
       checklist: {
         orderBy: { rank: "asc" },
         take: 50,
-        select: { id: true, text: true, completedAt: true, minutesSpent: true },
+        select: { id: true, text: true, completedAt: true, minutesSpent: true, actionPlanStepId: true },
       },
-      // The approved plan lives in the discussion room as the assignee's
-      // Action Plan message. ENV-119 will hand this over as structured steps;
-      // until then the newest room message from this agent is the plan of
-      // record, and it is inlined once rather than re-derived every turn.
+      // ENV-119 structured plan of record: summary + ordered steps, loaded the
+      // same way the first-contact packet loads them. Acceptance criteria stay
+      // JSON-encoded until render time.
+      actionPlan: {
+        include: {
+          steps: { orderBy: { rank: "asc" }, select: { id: true, stepId: true, title: true, acceptanceCriteria: true, kind: true, assigneeId: true, rank: true } },
+        },
+      },
+      // Live room messages back the RECENT EVIDENCE section and the legacy
+      // plan-of-record fallback for tasks that predate the structured store.
       chats: {
         where: { archiveId: null, deletedAt: null, originChannel: "chat" },
         orderBy: { createdAt: "desc" },
@@ -1229,17 +1301,18 @@ export async function buildTaskEpisodeBrief(args: {
   lines.push("");
   pushDescription(lines, "TASK DESCRIPTION", task.description, caps.taskDescriptionMax);
 
-  // Approved plan of record: the newest room message authored by this agent
-  // before approval. Structured plan steps replace this once ENV-119 lands.
-  const planMessage = [...task.chats]
-    .reverse()
-    .filter((chat) => chat.sender?.username === args.agentSlug && !chat.body.startsWith("PM workflow notification"))
-    .pop();
+  // Plan of record: the ENV-119 structured ActionPlan when one exists; only
+  // legacy tasks that predate the structured store fall back to the newest
+  // room message this agent authored.
   lines.push("", "APPROVED ACTION PLAN (your plan of record):");
   lines.push(
-    planMessage
-      ? clip(planMessage.body, caps.maxTimelineBody)
-      : "(no plan message found inline — fetch the task grant and read the Action Plan discussion)",
+    ...episodeActionPlanLines({
+      plan: task.actionPlan,
+      checklist: task.checklist,
+      chats: task.chats,
+      agentSlug: args.agentSlug,
+      caps,
+    }),
   );
 
   lines.push("", "OPEN CHECKLIST (tick each with action=complete_subtask as it lands):");

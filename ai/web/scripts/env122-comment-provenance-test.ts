@@ -6,6 +6,9 @@
 // 2. Comment creation sites copy provider/model/runId from the active run.
 // 3. Migration columns match Prisma schema @map attributes (snake_case).
 // 4. FK constraint exists: Comment.run_id → PmChannelRun.id ON DELETE SET NULL.
+// 5. (Section 6) The task chat reply route stamps the actual replying agent on
+//    a comment reply to a room-addressed message (not "room"), and attributes
+//    the run via the targetKey identity even after the run left live status.
 //
 // Hermetic sqlite via prisma migrate deploy.
 // Exit 0 on success, non-zero on first failure.
@@ -52,6 +55,7 @@ async function main(): Promise<void> {
   process.env[`PM_OPENCLAW_CHANNEL_TOKEN_${agentSlug.toUpperCase()}`] = "test-token";
   process.env.PM_ASYNC_DISPATCH = "1";
   process.env.PM_ASYNC_DISPATCH_INLINE_NUDGE = "0";
+  process.env.AUTH_SECRET = process.env.AUTH_SECRET ?? "env122-test-secret";
 
   try {
     await dbMigrateDeploy(dbUrl);
@@ -278,6 +282,119 @@ async function main(): Promise<void> {
       assertEqual(explicitComment.isGenerated, false, "isGenerated should default to false for human comments");
 
       console.log("[env122-provenance] Section 5 passed: commentKind/isGenerated persist correctly");
+    }
+
+    // ---- Section 6: Route comment reply to a room-addressed message stamps
+    // the actual replying agent and attributes the run by targetKey ----
+    {
+      const { createTaskChatReplyToken } = await import("@/lib/agents/workflow/chat/task/token");
+      const { NextRequest } = await import("next/server");
+      const { POST } = await import("../app/api/tasks/[id]/chat/reply/route");
+
+      const replierSlug = `replier-${randomUUID().slice(0, 8)}`;
+      const replierUser = await db.user.create({
+        data: {
+          email: `${replierSlug}@test.local`,
+          username: replierSlug,
+          kind: "agent",
+          status: "active",
+        },
+      });
+      await db.agent.create({
+        data: { slug: replierSlug, name: replierSlug, role: "coding", user: { connect: { id: replierUser.id } } },
+      });
+      const ownerUser = await db.user.create({
+        data: {
+          email: `owner-${randomUUID()}@test.local`,
+          username: `owner-${Date.now()}`,
+          kind: "human",
+          status: "active",
+          isOwner: true,
+        },
+      });
+
+      const roomTask = await db.task.create({
+        data: { projectId: project.id, title: "Room reply attribution task", status: "In Progress" },
+      });
+      // Room-addressed, comment-origin message: the message row does NOT
+      // identify the replying agent — only the per-agent reply token does.
+      const roomMsg = await db.agentChatMessage.create({
+        data: {
+          projectId: project.id,
+          taskId: roomTask.id,
+          agentSlug: "room",
+          senderUserId: ownerUser.id,
+          body: "Room-addressed message mirrored from a comment",
+          originChannel: "comment",
+          originCommentId: null,
+        },
+        select: { id: true },
+      });
+
+      const target = {
+        kind: "task-comment" as const,
+        agentSlug: replierSlug,
+        taskId: roomTask.id,
+        messageId: roomMsg.id,
+      };
+      await recordPmChannelRunQueued({ target, kind: "task-comment", projectId: project.id });
+      await recordPmChannelRunDispatch({
+        target,
+        result: {
+          ok: true,
+          status: 202,
+          driver: "openclaw-pm-channel",
+          transportMode: "http",
+          provider: "ollama",
+          model: "glm-5.2:cloud",
+        },
+      });
+      const run = await db.pmChannelRun.findUnique({
+        where: { targetKey: pmChannelRunTargetKey(target) },
+        select: { id: true },
+      });
+      assert(run !== null, "room-reply run should exist");
+      // The token route is the out-of-band fallback: the gateway session can
+      // finish after PM already timed the run out. Attribution must survive
+      // the run leaving live status (same semantics as persist-task-reply).
+      await db.pmChannelRun.update({ where: { id: run!.id }, data: { status: "timed_out" } });
+
+      const token = createTaskChatReplyToken(roomMsg.id, roomTask.id, replierSlug);
+      const req = new NextRequest(`http://localhost/api/tasks/${roomTask.id}/chat/reply`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ messageId: roomMsg.id, token, body: "Reply from the actual agent" }),
+      });
+      try {
+        const res = await POST(req, { params: Promise.resolve({ id: roomTask.id }) });
+        assertEqual(res.status, 200, "room reply route should return 200");
+      } catch (err) {
+        // Cache revalidation has no static-generation store outside a real
+        // Next.js request; the reply transaction has already committed then.
+        const message = err instanceof Error ? err.message : String(err);
+        if (!/static generation store missing/i.test(message)) throw err;
+      }
+
+      const comment = await db.comment.findFirst({
+        where: { taskId: roomTask.id, commentKind: "agent_reply" },
+        select: { authorAgentSlug: true, userId: true, runId: true, provider: true, model: true },
+      });
+      assert(comment !== null, "room reply should persist a comment");
+      assertEqual(
+        comment!.authorAgentSlug,
+        replierSlug,
+        'room reply comment should carry the real replying agent slug, not "room"',
+      );
+      assertEqual(comment!.userId, replierUser.id, "room reply comment should belong to the replying agent's user");
+      assertEqual(
+        comment!.runId,
+        run!.id,
+        "room reply comment should attribute the run that produced it (targetKey lookup)",
+      );
+      assertEqual(comment!.provider, "ollama", "room reply comment.provider should copy the run provider");
+      assertEqual(comment!.model, "glm-5.2:cloud", "room reply comment.model should copy the run model");
+
+      console.log("[env122-provenance] Section 6 passed: room-addressed reply stamps the real agent and run provenance");
     }
 
     console.log("\n[env122-provenance] All sections passed ✓");

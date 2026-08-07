@@ -42,6 +42,14 @@ export type MoveTaskResult =
   | { ok: true }
   | { ok: false; code: WorkflowErrorCode | "UNKNOWN_COLUMN"; message: string };
 
+export type MoveTaskOptions = {
+  /**
+   * Explicit break-glass repair for a wedged state machine. Admin-only and
+   * always an opt-in flag on the request — the server never falls back to it.
+   */
+  operatorOverride?: boolean;
+};
+
 /**
  * The one authoritative browser task-status action. Both drag-and-drop and
  * bulk editors call this so Review handoff, worktree provisioning, Epic
@@ -51,6 +59,7 @@ export async function moveTaskStatus(
   taskId: string,
   status: string,
   slug: string,
+  options?: MoveTaskOptions,
 ): Promise<MoveTaskResult> {
   const actor = await requireViewer();
   if (!TASK_STATUSES.includes(status)) {
@@ -87,6 +96,42 @@ export async function moveTaskStatus(
   }
   await requireProjectAccess(actor, { id: current.projectId });
   if (current.status === status) return { ok: true };
+
+  // Operator override: an explicit, admin-only escape hatch for a wedged
+  // state machine. It deliberately bypasses the finalizing fence, the
+  // plan/assignee/blocker/epic/WIP gates, worktree provisioning, Review
+  // handoff and Done automation — an override repairs board state, it does
+  // not perform the work those hooks automate. The kernel still enforces
+  // CAS (workflowVersion) + idempotency and writes a WorkflowTransition row
+  // with intent "operator_override", so every forced move stays auditable.
+  if (options?.operatorOverride) {
+    if (actor.kind !== "human" || !actor.isOwner) {
+      return {
+        ok: false,
+        code: "EXPLICIT_USER_ACTION_REQUIRED",
+        message: "Operator override is restricted to the human operator (admin).",
+      };
+    }
+    await transitionTask({
+      taskId,
+      projectId: current.projectId,
+      actorUserId: actor.id,
+      intent: "operator_override",
+      from: current.status as TaskWorkflowStatus,
+      to: status as TaskWorkflowStatus,
+      source: "human-board-move",
+      idempotencyKey: `board-override:${actor.id}:v${current.workflowVersion + 1}:${status}`,
+      expectedVersion: current.workflowVersion,
+      evidence: { operatorOverride: true },
+      effects: [{ type: "board_touch", key: "board:operator_override", payload: {} }],
+    });
+    await drainWorkflowOutbox({ limit: 1 }).catch(() => {});
+    revalidateTaskShell(taskId);
+    revalidatePath(`/projects/${slug}`);
+    publishBoardTouch(current.projectId);
+    return { ok: true };
+  }
+
   if (current.repositoryRun?.phase === "finalizing") {
     return {
       ok: false,
@@ -95,13 +140,9 @@ export async function moveTaskStatus(
     };
   }
 
-  const check = checkStatusTransition({
-    from: current.status,
-    to: status,
-    actor,
-  });
-  if (!check.ok && actor.kind !== "human") {
-    return { ok: false, code: check.code, message: check.message };
+  if (actor.kind !== "human") {
+    const check = checkStatusTransition({ from: current.status, to: status, actor });
+    if (!check.ok) return { ok: false, code: check.code, message: check.message };
   }
   // A browser move is an adapter to the same workflow, not an implicit
   // operator override. Unsafe shortcuts need a separate reason-bearing

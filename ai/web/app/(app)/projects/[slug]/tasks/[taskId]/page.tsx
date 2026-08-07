@@ -1333,7 +1333,7 @@ function shouldRenderPendingCommentMessage(args: {
   if (run?.status === "failed") {
     return isWorkflowNotification && isCurrentWorkflow;
   }
-  if (run?.status === "complete") return false;
+  if (run?.status === "completed") return false;
   if (settledMessageIds.has(message.id)) return false;
 
   return true;
@@ -1346,7 +1346,7 @@ function settledAgentSlugsForMessage(
 ) {
   const slugs = new Set<string>();
   for (const run of runs) {
-    if (run.messageId === messageId && run.status === "complete") {
+    if (run.messageId === messageId && run.status === "completed") {
       slugs.add(run.agentSlug);
     }
   }
@@ -1686,7 +1686,7 @@ export default async function TaskDetailPage({
           kind: "task-chat",
           taskId: task.id,
           messageId: { in: humanChatMessageIds },
-          status: "complete",
+          status: "completed",
         },
         select: { messageId: true, agentSlug: true, status: true },
       })

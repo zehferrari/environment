@@ -607,7 +607,7 @@ async function main() {
         projectId: project.id,
         taskId: task.id,
         sessionKey: rotatedBinding.openclawSessionKey,
-        status: "complete",
+        status: "completed",
       },
     });
     process.env.PM_TASK_SESSION_MAX_COMPLETED_TURNS = "1";

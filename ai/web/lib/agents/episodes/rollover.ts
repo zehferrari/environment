@@ -54,7 +54,7 @@ export const EPISODE_SEAL_REASON = {
 export const EPISODE_ROLLOVER_CONTINUATION_ACTION = "episode_rollover";
 
 /** Runs that are still capable of producing more events. */
-const LIVE_RUN_STATUSES = ["queued", "accepted", "streaming", "retryable"] as const;
+const LIVE_RUN_STATUSES = ["queued", "accepted", "streaming"] as const;
 
 /** How long a raised-but-unsealed barrier may sit before the sweeper seals it. */
 const SWEEP_GRACE_MS = 5 * 60_000;

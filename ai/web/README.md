@@ -401,8 +401,15 @@ pnpm build
 ```
 
 The package contains focused executable contract tests rather than one
-monolithic test command. Choose tests by the area changed. High-value workflow
-checks include:
+monolithic test command. Choose tests by the area changed.
+
+`pnpm test:workflow` is the aggregate pre-deploy gate: it serially runs every
+workflow-related suite (the boundary AST lint first, the twelve-case regression
+family last — see `scripts/workflow-test-all.ts` for the member list) and fails
+if any member fails. Run it before promoting a worktree with `pm-switch`;
+`--only=<name>` runs a subset.
+
+High-value workflow checks include:
 
 ```bash
 pnpm test:p0-kernel

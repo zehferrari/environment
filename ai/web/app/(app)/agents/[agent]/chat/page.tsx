@@ -378,7 +378,7 @@ export default async function DirectAgentChatPage({
       })
     : null;
   const showAgentProcessing = agentIsProcessing
-    && (!directRun || directRun.status !== "complete");
+    && (!directRun || directRun.status !== "completed");
   const avatarSrc = agent.avatar ? avatarUrl(agent.name) : null;
   const activeChildAlreadyOpen = viewingArchive
     && selectedArchive
