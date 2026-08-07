@@ -130,83 +130,77 @@ prove the plaintext is absent from the fixture would be self-defeating.
 
 ## Findings
 
-Building these scenarios surfaced six gaps in production. **None of them is
-fixed here** — this task builds regression scenarios, and silently changing
-behaviour under cover of a test task would be the wrong move. Each one is
-pinned in place by an assertion of the *current* behaviour plus a `// FINDING:`
-comment, so the day someone fixes it the assertion fails loudly and the fix
-gets recorded rather than drifting in unnoticed.
+Building these scenarios surfaced six gaps in production. The first three and
+the fifth were closed by later Epic items; the fourth is a real race that is
+fixed in this branch; the sixth is by-design and pinned in place by an
+assertion plus a `// FINDING:` comment, so the day someone changes it the
+assertion fails loudly and the change gets recorded rather than drifting in
+unnoticed.
 
-### 1. The invariant adapter is blind to two landed fixes
+### 1. The invariant adapter is blind to two landed fixes — CLOSED
 
-`pnpm test:workflow-invariants-db` is green, and `WFI-002`, `WFI-003` and
-`WFI-008` are all still listed in `lib/workflow-invariants-baseline.json`. Per
-the baseline's own rule an Epic item must delete its entry in the same commit
-that makes the invariant pass, so green-with-entries should mean those
-invariants are genuinely still violated.
+Earlier drafts of this doc reported the adapter could not see the ENV-117
+lease columns or the ENV-119 structured plan steps. Both are now wired through:
 
-They are not. The invariant layer cannot see the fixes:
+- `lib/workflow-invariants-db.ts` selects `leaseExpiresAt` and `heartbeatAt`
+  and the predicate's `runLeaseExpired` honours `leaseExpiresAt` directly,
+  falling back to the derived TTL only on pre-ENV-117 rows. The canonical
+  scenario's T2 seeds such a legacy row (no lease columns set), so WFI-002 and
+  WFI-003 still genuinely fire there — that is correct behaviour, not blindness.
+- `planStepSource` is classified as `"structured"` when an approved
+  `ActionPlan` with steps exists (`workflow-invariants-db.ts`), so WFI-008 was
+  removed from `lib/workflow-invariants-baseline.json`. The db test asserts
+  `planStepSource: "structured"` for T1.
 
-- **WFI-008** (Epic item 4). ENV-119 added `model ActionPlanStep` and
-  `model ActionPlan` to the schema, so approved-plan steps *are* structured data
-  now. But `lib/workflow-invariants-db.ts` still hardcodes
-  `planStepSource: task.checklist.length > 0 ? "markdown-prose" : "none"`, with
-  a comment stating that item 4 has not happened yet. The invariant classifies
-  any populated checklist as prose-derived and can never observe the fix.
-- **WFI-002 / WFI-003** (Epic item 2). ENV-117 added `leaseExpiresAt` and
-  `heartbeatAt` to `PmChannelRun`. Neither the adapter's `select` nor
-  `runLeaseAnchor()` reads them — the lease is still derived synthetically from
-  `lastEventAt ?? streamingAt ?? acceptedAt ?? createdAt`.
+### 2. WFI-005 fires again: the retry ladder writes no disposition — CLOSED
 
-So the baseline entries are stale in effect while being green in form, which is
-exactly the drift the same-commit rule was written to prevent. Fixing the
-adapter is a behaviour change to the invariant layer and needs its own ticket
-under Epic items 2 and 4. The baseline has deliberately not been edited here.
+Earlier drafts reported the turn-failure retry ladder writing
+`disposition: null` on a terminal run. Both branches now stamp an explicit
+disposition:
 
-### 2. WFI-005 fires again: the retry ladder writes no disposition
+- `retryOrFailPmChannelJobForTurnFailure` writes `disposition: "continue"` on
+  the retry-eligible branch (run stays `queued`, job stays `retryable`) and
+  `disposition: "failed"` on the exhausted branch. C1 asserts both: WFI-005
+  stays silent on the retry path and the terminal write carries `"failed"`.
+- `requeueStaleClaimedPmChannelJobs` writes `disposition: "continue"` on the
+  non-exhausted branch and `"failed"` on exhaustion.
 
-The baseline states WFI-005 was removed by ENV-118 because "every terminal write
-records an explicit disposition on `PmChannelRun`". The turn-failure retry
-ladder does not. The eligible branch of `retryOrFailPmChannelJobForTurnFailure`
-(`lib/agents/pm-channel/jobs.ts`) writes `status: "failed"` with
-`disposition: null`; `"failed"` is in `TERMINAL_RUN_STATUSES`, so a
-retry-pending run reads as terminal with no disposition and
-`WFI-005/missing-disposition` fires. The same shape is written by
-`requeueStaleClaimedPmChannelJobs` and by the non-exhausted branch of
-`runPmChannelJob`.
+### 3. `add_subtask` is not idempotent under duplicate delivery — CLOSED
 
-This is a modelling gap, not a naming one: ENV-117 deliberately moved
-`retryable` off the run status onto `PmChannelJob`, so nothing on a run can now
-express "retry pending". Either a run should not read as terminal while its job
-is retryable, or the ladder should stamp a disposition. Pinned in case C1.
+`createSubTaskItem` deduplicates via a `findFirst` lookup (by
+`actionPlanStepId` when present, else by `(taskId, kind, text)`) and the schema
+enforces `@@unique([taskId, kind, text])` on `SubTask`. C11 asserts three
+identical callbacks converge on one run, one continuation, and one checklist
+row, and that a second outbox row is rejected by the unique constraint.
 
-### 3. `add_subtask` is not idempotent under duplicate delivery
+### 4. The watchdog recovery budget is read-then-write with no guard — FIXED
 
-`createSubTaskItem` inserts unconditionally, `SubTask` has no unique index on
-`(taskId, text, kind)`, and the route does not fingerprint the callback. Three
-identical deliveries of one callback produce three indistinguishable checklist
-rows. The run and the continuation outbox converge under duplicate delivery —
-the board-visible checklist does not. Pinned in case C11.
+`consumeRecoveryBudget` was a read-then-upsert with no conditional update and no
+unique key, so two racing passes that both read the pre-repair count could each
+claim the same unit. SQLite serialises the statements so a single charge was
+observed, but the bound only held on that engine. C12 asserted the guaranteed
+range (`1 <= recoveryCount <= passes`) rather than a precise count.
 
-### 4. The watchdog recovery budget is read-then-write with no guard
+This branch replaces the read-then-upsert with a conditional update guarded by
+the current `recoveryCount` (or the window-reset sentinel), so the count
+advances atomically: a racing pass that read the same pre-value is rejected by
+the `where` clause and retries against the new state. C12 now asserts the
+precise count (`recoveryCount === passes.length`).
 
-`consumeRecoveryBudget` reads `recoveryCount` and then upserts, with no
-conditional update and no unique key, so two racing passes that both read the
-pre-repair count can each claim the same unit. SQLite serialises the statements
-so a single charge is what you observe today; C12 therefore asserts the
-guaranteed bound (`1 <= recoveryCount <= passes`) rather than a number that
-only holds on this engine.
+### 5. Delegation is keyed off `assigneeId`, not step kind — CLOSED
 
-### 5. Delegation is keyed off `assigneeId`, not step kind
+Earlier drafts reported `createChecklistAndDelegatableTasksFromPlan` branching
+on `step.assigneeId`. It now branches on `step.kind === "parallel"`:
 
-`lib/tasks/action-plan-store.ts` branches on `step.assigneeId`, never on
-`StepKind`. A `parallel` step that names no delegate yields a checklist entry
-and nothing else, while a `sequential` step that names one would be delegated.
-Epic item 5's separation is real — a checklist entry is a `SubTask` and a
-delegatable subtask is a child `Task` — but the trigger for it is the assignee,
-not the plan's own declared shape. Pinned in case C7.
+- a `parallel` step creates an unassigned child `Task` when no delegate is
+  named (`assigneeId: step.assigneeId ?? null`), and a child carrying the
+  delegate when one is;
+- a `sequential` step never becomes a child task regardless of assignee.
 
-### 6. A downgraded blocker spends no episode budget
+So the trigger is the plan's own declared shape, not the presence of an
+assignee.
+
+### 6. A downgraded blocker spends no episode budget — pinned, by-design
 
 The `incident` path returns 422 before `recordPmChannelRunWorkflowAction`, so an
 agent can call `flag_blocker` repeatedly within one turn without advancing the

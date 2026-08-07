@@ -65,6 +65,14 @@ export interface BreakerDecision {
  * needed three recoveries an hour ago and none since is healthy, and should not
  * inherit an open breaker. Called only when a repair is actually about to
  * happen, so a task the watchdog merely observed never burns budget.
+ *
+ * The count increment is atomic: the conditional `updateMany` is guarded by
+ * the expected prior `recoveryCount` (or by the window-reset boundary when the
+ * window is stale), so two racing passes that read the same pre-value cannot
+ * both claim the same unit. The loser's `updateMany` matches zero rows, so it
+ * re-reads and retries against the winner's state. On a DB engine that does
+ * not serialise writes (unlike SQLite), the count is exactly the number of
+ * passes that actually claimed a unit.
  */
 export async function consumeRecoveryBudget(args: {
   taskId: string;
@@ -72,52 +80,93 @@ export async function consumeRecoveryBudget(args: {
   budget?: number;
 }): Promise<BreakerDecision> {
   const budget = args.budget ?? watchdogRecoveryBudget();
-  const existing = await db.taskExecutionState.findUnique({
-    where: { taskId: args.taskId },
-    select: { recoveryCount: true, recoveryWindowAt: true, breakerOpenUntil: true },
-  });
+  const windowBoundary = new Date(args.now.getTime() - WATCHDOG_RECOVERY_WINDOW_MS);
 
-  const windowStale =
-    !existing?.recoveryWindowAt ||
-    args.now.getTime() - existing.recoveryWindowAt.getTime() > WATCHDOG_RECOVERY_WINDOW_MS;
+  for (let attempt = 0; ; attempt++) {
+    const existing = await db.taskExecutionState.findUnique({
+      where: { taskId: args.taskId },
+      select: { recoveryCount: true, recoveryWindowAt: true, breakerOpenUntil: true },
+    });
 
-  if (
-    !windowStale &&
-    existing?.breakerOpenUntil &&
-    existing.breakerOpenUntil.getTime() > args.now.getTime()
-  ) {
-    return {
-      allowed: false,
-      count: existing.recoveryCount,
-      windowAt: existing.recoveryWindowAt ?? args.now,
-      breakerOpenUntil: existing.breakerOpenUntil,
-    };
+    const windowStale =
+      !existing?.recoveryWindowAt ||
+      existing.recoveryWindowAt.getTime() <= windowBoundary.getTime();
+
+    if (
+      !windowStale &&
+      existing?.breakerOpenUntil &&
+      existing.breakerOpenUntil.getTime() > args.now.getTime()
+    ) {
+      return {
+        allowed: false,
+        count: existing.recoveryCount,
+        windowAt: existing.recoveryWindowAt ?? args.now,
+        breakerOpenUntil: existing.breakerOpenUntil,
+      };
+    }
+
+    const windowAt = windowStale ? args.now : (existing?.recoveryWindowAt ?? args.now);
+    const priorCount = windowStale ? 0 : (existing?.recoveryCount ?? 0);
+    const nextCount = priorCount + 1;
+    const tripped = nextCount > budget;
+    const breakerOpenUntil = tripped
+      ? new Date(windowAt.getTime() + WATCHDOG_RECOVERY_WINDOW_MS)
+      : null;
+
+    if (!existing) {
+      // No row yet: the create path's uniqueness on taskId makes two racing
+      // creates collide; the loser falls through to the update branch below.
+      try {
+        await db.taskExecutionState.create({
+          data: {
+            taskId: args.taskId,
+            state: "stalled",
+            recoveryCount: nextCount,
+            recoveryWindowAt: windowAt,
+            breakerOpenUntil,
+          },
+        });
+        return { allowed: !tripped, count: nextCount, windowAt, breakerOpenUntil };
+      } catch {
+        // A racing pass created the row first; re-read and retry the update.
+      }
+      continue;
+    }
+
+    // Conditional update: the `where` guard on the prior count (or the stale
+    // window) makes the increment atomic. A racing pass that already moved
+    // the count leaves this update matching zero rows.
+    const guard = windowStale
+      ? {
+          taskId: args.taskId,
+          OR: [
+            { recoveryWindowAt: null },
+            { recoveryWindowAt: { lte: windowBoundary } },
+          ],
+        }
+      : {
+          taskId: args.taskId,
+          recoveryCount: priorCount,
+          recoveryWindowAt: { gt: windowBoundary },
+        };
+
+    const updated = await db.taskExecutionState.updateMany({
+      where: guard,
+      data: {
+        recoveryCount: nextCount,
+        recoveryWindowAt: windowAt,
+        breakerOpenUntil,
+      },
+    });
+
+    if (updated.count > 0) {
+      return { allowed: !tripped, count: nextCount, windowAt, breakerOpenUntil };
+    }
+    // A racing pass moved the count under us; retry against the new state.
+    // The loop is bounded by the number of concurrent passes, which is small
+    // (the watchdog dedupes per task × repair × run), so this is not a busy
+    // loop in practice.
   }
-
-  const windowAt = windowStale ? args.now : (existing?.recoveryWindowAt ?? args.now);
-  const count = (windowStale ? 0 : (existing?.recoveryCount ?? 0)) + 1;
-  const tripped = count > budget;
-  const breakerOpenUntil = tripped
-    ? new Date(windowAt.getTime() + WATCHDOG_RECOVERY_WINDOW_MS)
-    : null;
-
-  await db.taskExecutionState.upsert({
-    where: { taskId: args.taskId },
-    create: {
-      taskId: args.taskId,
-      state: "stalled",
-      recoveryCount: count,
-      recoveryWindowAt: windowAt,
-      breakerOpenUntil,
-    },
-    update: {
-      recoveryCount: count,
-      recoveryWindowAt: windowAt,
-      breakerOpenUntil,
-    },
-  });
-
-  return { allowed: !tripped, count, windowAt, breakerOpenUntil };
 }
 
 // ------------------------------------------------------------------

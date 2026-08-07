@@ -326,21 +326,19 @@ async function racingMonitorRecovery(
   );
   c.assertEqual(executionState.breakerOpenUntil, null, "one repair does not trip the breaker");
 
-  // FINDING (current behaviour, ENV-124): `consumeRecoveryBudget` is a
-  // read-then-upsert with no conditional guard and no unique key to lean on, so
-  // the recovery budget is the one part of a watchdog repair that is NOT
-  // race-proof by construction — two passes that both read the pre-repair count
-  // can each claim the same unit. Observed here as a single charge (sqlite
-  // serialises the statements and both passes read `0`), but the bound is what
-  // is actually guaranteed: a pass can never claim more than one unit, so N
-  // racing passes can never spend more than N. The important half — that
-  // over-charging cannot manufacture an EXTRA turn — is covered by the outbox
-  // assertion above, and by the breaker/escalation assertions.
+  // The recovery budget is now race-proof: `consumeRecoveryBudget` advances
+  // `recoveryCount` via a conditional update guarded by the expected prior
+  // count, so two racing passes that read the same pre-value cannot both claim
+  // the same unit. The loser's update matches zero rows and it retries against
+  // the winner's state. So the count is exactly the number of passes that
+  // claimed a unit — not a range that only collapses to one on a serialising
+  // engine. The important half — that over-charging cannot manufacture an
+  // EXTRA turn — is covered by the outbox assertion above.
   const budget = watchdogRecoveryBudget();
-  c.assert(
-    executionState.recoveryCount >= 1 && executionState.recoveryCount <= passes.length,
-    `FINDING: recovery budget is read-then-write; ${passes.length} racing passes charged ` +
-      `${executionState.recoveryCount} unit(s), which must stay within [1, ${passes.length}]`,
+  c.assertEqual(
+    executionState.recoveryCount,
+    passes.length,
+    `two racing passes charged exactly ${passes.length} recovery unit(s) — one per pass that reached the repair (got ${executionState.recoveryCount})`,
   );
   c.assert(
     executionState.recoveryCount <= budget,
