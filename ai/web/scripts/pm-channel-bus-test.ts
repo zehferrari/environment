@@ -211,6 +211,104 @@ async function main() {
     assert.equal(memberOutcome.kind, "skipped-unauthorized", "non-owner direct messages cannot enter the native PM channel");
     assert.equal(delivered.length, 1, "non-owner native turns never dispatch to an agent");
 
+    // PM-generated Epic workflow turns use an active agent (normally the
+    // Monitor fallback) as their sender. The durable epic.workflow.notify row
+    // is the narrow authorization grant; requiring a human owner here would
+    // silently drop whole-Epic acceptance reviews at the consumer boundary.
+    const monitorAgent = await db.agent.create({
+      data: { slug: "karen", name: "Karen", role: "monitor" },
+    });
+    const monitor = await db.user.create({
+      data: {
+        username: "karen",
+        email: "karen@example.test",
+        kind: "agent",
+        agentId: monitorAgent.id,
+      },
+    });
+    const epicProject = await db.project.create({
+      data: { slug: `epic-bus-${Date.now()}`, name: "Epic Bus Test" },
+    });
+    const epic = await db.epic.create({
+      data: { projectId: epicProject.id, title: "Whole-Epic acceptance", status: "Review" },
+    });
+    const epicMessageId = `epic-workflow-${Date.now()}`;
+    const epicTarget = {
+      kind: "epic-chat" as const,
+      agentSlug: "karen",
+      epicId: epic.id,
+      messageId: epicMessageId,
+      projectSlug: epicProject.slug,
+    };
+    const epicArgs = {
+      gatewayPort: 45678,
+      agentSlug: "karen",
+      sessionKey: `test:${epicMessageId}:karen`,
+      kind: "epic-chat" as const,
+      text: "review the frozen Epic candidate",
+      actor: { id: monitor.id, kind: "agent" as const },
+      replyTarget: epicTarget,
+      projectId: epicProject.id,
+    };
+    await db.agentChatMessage.create({
+      data: {
+        id: epicMessageId,
+        projectId: epicProject.id,
+        epicId: epic.id,
+        agentSlug: "room",
+        senderUserId: monitor.id,
+        body: epicArgs.text,
+        targetType: "agent",
+        targetValue: "agent:karen",
+      },
+    });
+    await db.activityLog.create({
+      data: {
+        projectId: epicProject.id,
+        userId: monitor.id,
+        kind: "epic.workflow.notify",
+        targetAgent: "karen",
+        payload: JSON.stringify({ messageId: epicMessageId, epicId: epic.id, agentSlug: "karen" }),
+      },
+    });
+    const epicRun = await db.pmChannelRun.create({
+      data: {
+        targetKey: `epic-chat:karen:${epic.id}:${epicMessageId}`,
+        kind: epicArgs.kind,
+        agentSlug: epicArgs.agentSlug,
+        messageId: epicMessageId,
+        epicId: epic.id,
+        projectId: epicProject.id,
+        sessionKey: epicArgs.sessionKey,
+        gatewayPort: epicArgs.gatewayPort,
+        status: "queued",
+      },
+    });
+    await db.pmChannelJob.create({
+      data: {
+        runId: epicRun.id,
+        agentSlug: epicArgs.agentSlug,
+        kind: epicArgs.kind,
+        payload: JSON.stringify(epicArgs),
+        status: "claimed",
+      },
+    });
+    const epicPublished = await publishPmChannelTurnToBus(epicArgs);
+    assert.equal(epicPublished.ok, true);
+    const epicRaw = JSON.parse(await readFile((epicPublished.receipt as { path: string }).path, "utf8"));
+    const epicOutcome = await handler.handle(epicRaw);
+    assert.equal(epicOutcome.kind, "delivered", "audited Monitor-origin Epic workflow turn must reach the reviewer");
+    assert.equal(delivered.length, 2, "Epic workflow authorization must add exactly one delivery");
+    await db.pmChannelRun.update({ where: { id: epicRun.id }, data: { status: "accepted" } });
+    const { isAuthorizedPmChannelCallbackTarget } = await import(
+      "@/lib/agents/pm-channel/target-authorization"
+    );
+    assert.equal(
+      await isAuthorizedPmChannelCallbackTarget(epicTarget),
+      true,
+      "the same audited Epic workflow origin must authorize stream callbacks",
+    );
+
     // Broadcast case: the SAME room-chat message id fanned out to two agents
     // must produce two distinct envelopes, both delivered. The source remains
     // one owner-authored room message; each addressed agent gets its own

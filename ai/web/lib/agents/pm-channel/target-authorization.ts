@@ -6,6 +6,7 @@ import type {
 import { parsePmChannelReplyTarget } from "@/lib/agents/pm-channel/openclaw";
 import { pmChannelRunTargetKey } from "@/lib/agents/pm-channel/runs";
 import {
+  hasAuthorizedEpicAgentOrigin,
   hasActiveOwnerOrigin,
   hasAuthorizedTaskAgentOrigin,
 } from "@/lib/agents/owner-origin";
@@ -170,7 +171,7 @@ export async function isAuthorizedPmChannelDispatchTarget(
         projectId: true,
         senderUserId: true,
         deletedAt: true,
-        sender: { select: { id: true, kind: true } },
+        sender: { select: { id: true, kind: true, status: true } },
       },
     });
     return Boolean(
@@ -193,7 +194,7 @@ export async function isAuthorizedPmChannelDispatchTarget(
         epicId: true,
         senderUserId: true,
         deletedAt: true,
-        sender: { select: { id: true, kind: true } },
+        sender: { select: { id: true, kind: true, status: true } },
         epic: { select: { deletedAt: true, private: true } },
       },
     });
@@ -208,7 +209,13 @@ export async function isAuthorizedPmChannelDispatchTarget(
       && (original.agentSlug === "room" || original.agentSlug === args.replyTarget.agentSlug)
       && original.senderUserId === args.actor.id
       && senderMatchesDispatch(original.sender, args)
-      && await hasActiveOwnerOrigin(original.senderUserId),
+      && await hasAuthorizedEpicAgentOrigin({
+        epicId: args.replyTarget.epicId,
+        messageId: args.replyTarget.messageId,
+        targetAgentSlug: args.replyTarget.agentSlug,
+        senderUserId: original.senderUserId,
+        sender: original.sender,
+      }),
     );
   }
 
@@ -297,6 +304,7 @@ export async function isAuthorizedPmChannelCallbackTarget(
         epicId: true,
         senderUserId: true,
         deletedAt: true,
+        sender: { select: { kind: true, status: true } },
         epic: { select: { deletedAt: true, private: true } },
       },
     });
@@ -308,7 +316,13 @@ export async function isAuthorizedPmChannelCallbackTarget(
       !original.epic.deletedAt &&
       !original.epic.private &&
       (original.agentSlug === "room" || original.agentSlug === target.agentSlug) &&
-      await hasActiveOwnerOrigin(original.senderUserId),
+      await hasAuthorizedEpicAgentOrigin({
+        epicId: target.epicId,
+        messageId: target.messageId,
+        targetAgentSlug: target.agentSlug,
+        senderUserId: original.senderUserId,
+        sender: original.sender,
+      }),
     );
   }
 
