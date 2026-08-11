@@ -95,6 +95,23 @@ export type EpicMergeJob =
       authorizationCommentId: string;
       note: string;
       enqueuedAt: string;
+    }
+  | {
+      kind: "review";
+      jobId: string;
+      epicId: string;
+      projectId: string;
+      enqueuedAt: string;
+    }
+  | {
+      kind: "review-approval";
+      jobId: string;
+      epicId: string;
+      projectId: string;
+      requestedByUserId: string;
+      requestedByUsername: string;
+      expectedCandidateSha: string | null;
+      enqueuedAt: string;
     };
 
 // One deterministic spool filename per subject so a 60s poll tick can never
@@ -104,6 +121,8 @@ function jobFileName(job: EpicMergeJob) {
   if (job.kind === "merge") return `merge-${job.taskId}.json`;
   if (job.kind === "finalize") return `finalize-${job.taskId}.json`;
   if (job.kind === "checkpoint") return `checkpoint-${job.taskId}.json`;
+  if (job.kind === "review") return `review-${job.epicId}.json`;
+  if (job.kind === "review-approval") return `review-approval-${job.epicId}.json`;
   return `cleanup-${job.epicId}.json`;
 }
 
@@ -166,6 +185,50 @@ export async function enqueueTaskCheckpoint(args: {
     requestedByUsername: args.requestedByUsername,
     authorizationCommentId: args.authorizationCommentId,
     note: args.note,
+    enqueuedAt: new Date().toISOString(),
+  };
+  const target = path.join(EPIC_MERGE_DIR, jobFileName(job));
+  const blockedByFailedJob = existsSync(`${target}.failed`);
+  const spooledPath = await enqueueEpicMergeJob(job);
+  return { enqueued: Boolean(spooledPath), blockedByFailedJob, jobId: job.jobId };
+}
+
+export async function enqueueEpicCompletionReview(epicId: string) {
+  const epic = await db.epic.findUnique({
+    where: { id: epicId },
+    select: { id: true, projectId: true, status: true, completionReviewStatus: true },
+  });
+  if (!epic || epic.status !== "Review" || epic.completionReviewStatus !== "Preparing") {
+    return { enqueued: false, note: "Epic is not preparing for completion review" };
+  }
+  const job: Extract<EpicMergeJob, { kind: "review" }> = {
+    kind: "review",
+    jobId: `review-${epic.id}`,
+    epicId: epic.id,
+    projectId: epic.projectId,
+    enqueuedAt: new Date().toISOString(),
+  };
+  const target = path.join(EPIC_MERGE_DIR, jobFileName(job));
+  const blockedByFailedJob = existsSync(`${target}.failed`);
+  const spooledPath = await enqueueEpicMergeJob(job);
+  return { enqueued: Boolean(spooledPath), blockedByFailedJob, jobId: job.jobId };
+}
+
+export async function enqueueEpicCompletionReviewApproval(args: {
+  epicId: string;
+  projectId: string;
+  requestedByUserId: string;
+  requestedByUsername: string;
+  expectedCandidateSha: string | null;
+}) {
+  const job: Extract<EpicMergeJob, { kind: "review-approval" }> = {
+    kind: "review-approval",
+    jobId: `review-approval-${args.epicId}`,
+    epicId: args.epicId,
+    projectId: args.projectId,
+    requestedByUserId: args.requestedByUserId,
+    requestedByUsername: args.requestedByUsername,
+    expectedCandidateSha: args.expectedCandidateSha,
     enqueuedAt: new Date().toISOString(),
   };
   const target = path.join(EPIC_MERGE_DIR, jobFileName(job));
@@ -542,6 +605,353 @@ async function runGitOk(repo: string, args: string[], opts: { timeout?: number }
   } catch {
     return false;
   }
+}
+
+async function recordCompletionReviewOperationalError(args: {
+  epicId: string;
+  projectId: string;
+  reason: string;
+  via: string;
+}) {
+  const actor = await db.epic.findUnique({
+    where: { id: args.epicId },
+    select: { deployReviewerId: true },
+  }).then((epic) => resolveEpicMergeActor(epic?.deployReviewerId ?? null));
+  await db.$transaction(async (tx) => {
+    await tx.epic.updateMany({
+      where: { id: args.epicId, status: "Review" },
+      data: {
+        completionReviewStatus: "Operational Error",
+        completionReviewLastError: args.reason.slice(0, 4000),
+      },
+    });
+    if (actor) {
+      await tx.comment.create({
+        data: {
+          epicId: args.epicId,
+          userId: actor.id,
+          body: [
+            "🚫 Whole-Epic acceptance preparation stopped; the Epic remains in Review.",
+            "",
+            args.reason,
+            "",
+            "No completion or cleanup was performed. Resolve the repository/workflow condition, then retry the acceptance preparation.",
+          ].join("\n"),
+        },
+      });
+    }
+    await tx.activityLog.create({
+      data: {
+        projectId: args.projectId,
+        userId: actor?.id ?? null,
+        kind: "epic.completion_review.operational_error",
+        payload: JSON.stringify({ epicId: args.epicId, reason: args.reason, via: args.via }),
+      },
+    });
+  });
+  publishBoardTouch(args.projectId);
+}
+
+async function inspectEpicWorktree(args: {
+  repositoryPath: string;
+  epicBranch: string;
+  candidateSha: string;
+}) {
+  const localRef = `refs/heads/${args.epicBranch}`;
+  const localExists = await runGitOk(args.repositoryPath, ["show-ref", "--verify", "--quiet", localRef]);
+  if (localExists) {
+    const localSha = await runGit(args.repositoryPath, ["rev-parse", localRef]);
+    if (localSha !== args.candidateSha) {
+      return {
+        ok: false as const,
+        reason: `Local Epic branch ${args.epicBranch} is ${localSha}, but the frozen origin candidate is ${args.candidateSha}. Reconcile the local branch before acceptance review.`,
+      };
+    }
+  }
+
+  const records = (await runGit(args.repositoryPath, ["worktree", "list", "--porcelain"]))
+    .split(/\n\s*\n/)
+    .map((record) => record.split("\n"));
+  const record = records.find((lines) => lines.includes(`branch ${localRef}`));
+  const worktreePath = record?.find((line) => line.startsWith("worktree "))?.slice("worktree ".length) ?? null;
+  if (!worktreePath) return { ok: true as const };
+
+  const status = await runGit(worktreePath, ["status", "--porcelain=v1", "--untracked-files=all"]);
+  if (status) {
+    const firstRows = status.split("\n").slice(0, 8).join(", ");
+    return {
+      ok: false as const,
+      reason: `Epic worktree ${worktreePath} is not clean (${firstRows}). Preserve or reconcile those changes before acceptance review.`,
+    };
+  }
+  const worktreeSha = await runGit(worktreePath, ["rev-parse", "HEAD"]);
+  if (worktreeSha !== args.candidateSha) {
+    return {
+      ok: false as const,
+      reason: `Epic worktree ${worktreePath} is at ${worktreeSha}, not frozen candidate ${args.candidateSha}.`,
+    };
+  }
+  return { ok: true as const };
+}
+
+async function validateCompletionReviewCandidate(args: {
+  epicId: string;
+  expectedCandidateSha?: string | null;
+  publish: boolean;
+}) {
+  const epic = await db.epic.findUnique({
+    where: { id: args.epicId },
+    select: {
+      id: true,
+      status: true,
+      completionReviewStatus: true,
+      completionReviewCandidateSha: true,
+      projectId: true,
+      workItemKey: true,
+      branchName: true,
+      project: { select: { repositoryPath: true } },
+      tasks: {
+        where: { parentTaskId: null, archivedAt: null, deletedAt: null },
+        select: {
+          id: true,
+          workItemKey: true,
+          title: true,
+          status: true,
+          repositoryRun: {
+            select: { phase: true, repoTouched: true, reviewedSha: true },
+          },
+        },
+      },
+    },
+  });
+  if (!epic || epic.status !== "Review") {
+    return { ok: false as const, reason: "Epic is no longer in Review." };
+  }
+  const openTask = epic.tasks.find((task) => task.status !== "Done");
+  if (openTask) {
+    return { ok: false as const, reason: `Child task ${openTask.workItemKey ?? openTask.id} is ${openTask.status}, not Done.` };
+  }
+
+  const repositoryPath = epic.project.repositoryPath;
+  if (!repositoryPath) {
+    if (args.expectedCandidateSha) {
+      return { ok: false as const, reason: "A non-repository Epic cannot have a repository candidate SHA." };
+    }
+    return { ok: true as const, candidateSha: null, epicBranch: null };
+  }
+  const repositoryTasks = epic.tasks.filter((task) => task.repositoryRun?.repoTouched === true);
+  if (repositoryTasks.length === 0) {
+    if (args.expectedCandidateSha) {
+      return { ok: false as const, reason: "This Epic has no repository-touching child candidate, but a repository SHA was recorded." };
+    }
+    return { ok: true as const, candidateSha: null, epicBranch: null };
+  }
+  const epicBranch = effectiveEpicBranchName(epic);
+  if (!epicBranch) return { ok: false as const, reason: "The repository-backed Epic has no derivable integration branch." };
+
+  const incomplete = repositoryTasks.find((task) =>
+    task.repositoryRun?.phase !== "completed" || !task.repositoryRun.reviewedSha,
+  );
+  if (incomplete) {
+    return {
+      ok: false as const,
+      reason: `Child task ${incomplete.workItemKey ?? incomplete.id} has no completed reviewed repository candidate.`,
+    };
+  }
+
+  let candidateSha: string | null = null;
+  if (args.publish) {
+    const published = await publishEpicBranch({ repoPath: repositoryPath, epicBranch });
+    if (!published.ok) return { ok: false as const, reason: published.reason };
+    candidateSha = published.sha;
+  } else {
+    const remote = await inspectOriginBranch(repositoryPath, epicBranch);
+    if (!remote.ok || !remote.sha) {
+      return { ok: false as const, reason: remote.ok ? `Origin/${epicBranch} is missing.` : remote.reason };
+    }
+    candidateSha = remote.sha;
+  }
+  if (args.expectedCandidateSha !== undefined && candidateSha !== args.expectedCandidateSha) {
+    return {
+      ok: false as const,
+      reason: `Origin/${epicBranch} moved from frozen candidate ${args.expectedCandidateSha ?? "(none)"} to ${candidateSha ?? "(missing)"}. A new acceptance review is required.`,
+    };
+  }
+
+  await runGit(repositoryPath, [
+    "fetch",
+    "--quiet",
+    "origin",
+    `+refs/heads/${epicBranch}:refs/remotes/origin/${epicBranch}`,
+  ]);
+  for (const task of repositoryTasks) {
+    const reviewedSha = task.repositoryRun?.reviewedSha;
+    if (!reviewedSha) continue;
+    const contained = await runGitOk(repositoryPath, [
+      "merge-base",
+      "--is-ancestor",
+      reviewedSha,
+      `refs/remotes/origin/${epicBranch}`,
+    ]);
+    if (!contained) {
+      return {
+        ok: false as const,
+        reason: `Frozen Epic candidate does not contain reviewed child candidate ${reviewedSha} for ${task.workItemKey ?? task.id}.`,
+      };
+    }
+  }
+
+  const worktree = await inspectEpicWorktree({ repositoryPath, epicBranch, candidateSha });
+  if (!worktree.ok) return worktree;
+  return { ok: true as const, candidateSha, epicBranch };
+}
+
+async function executeCompletionReviewJob(job: Extract<EpicMergeJob, { kind: "review" }>) {
+  const epic = await db.epic.findUnique({
+    where: { id: job.epicId },
+    select: { status: true, completionReviewStatus: true, deployReviewerId: true },
+  });
+  if (!epic || epic.status !== "Review" || epic.completionReviewStatus !== "Preparing") {
+    return { epicId: job.epicId, outcome: "skipped" as const, note: "Epic is no longer preparing for review" };
+  }
+  let validated;
+  try {
+    validated = await validateCompletionReviewCandidate({ epicId: job.epicId, publish: true });
+  } catch (error) {
+    validated = { ok: false as const, reason: String(error instanceof Error ? error.message : error) };
+  }
+  if (!validated.ok) {
+    await recordCompletionReviewOperationalError({
+      epicId: job.epicId,
+      projectId: job.projectId,
+      reason: validated.reason,
+      via: "completion_review_prepare",
+    });
+    return { epicId: job.epicId, outcome: "operational-error" as const, reason: validated.reason };
+  }
+
+  const actor = await resolveEpicMergeActor(epic.deployReviewerId);
+  if (!actor) {
+    const reason = "No active Deploy Reviewer or unique Monitor Agent is available for the whole-Epic acceptance review.";
+    await recordCompletionReviewOperationalError({ epicId: job.epicId, projectId: job.projectId, reason, via: "completion_review_prepare" });
+    return { epicId: job.epicId, outcome: "operational-error" as const, reason };
+  }
+  const now = new Date();
+  await db.$transaction(async (tx) => {
+    await tx.epic.update({
+      where: { id: job.epicId },
+      data: {
+        completionReviewStatus: "Pending",
+        completionReviewCandidateSha: validated.candidateSha,
+        completionReviewRequestedAt: now,
+        completionReviewCompletedAt: null,
+        completionReviewLastError: null,
+      },
+    });
+    await tx.activityLog.create({
+      data: {
+        projectId: job.projectId,
+        userId: actor.id,
+        kind: "epic.completion_review.requested",
+        targetAgent: actor.username,
+        payload: JSON.stringify({
+          epicId: job.epicId,
+          candidateSha: validated.candidateSha,
+          epicBranch: validated.epicBranch,
+        }),
+      },
+    });
+  });
+  const { triggerCompletionReview } = await import("@/lib/epics/completion-review");
+  let dispatched = false;
+  try {
+    dispatched = await triggerCompletionReview({ epicId: job.epicId, actorId: actor.id });
+  } catch (error) {
+    const reason = `Reviewer dispatch failed: ${String(error instanceof Error ? error.message : error).slice(0, 3800)}`;
+    await recordCompletionReviewOperationalError({
+      epicId: job.epicId,
+      projectId: job.projectId,
+      reason,
+      via: "completion_review_dispatch",
+    });
+    return { epicId: job.epicId, outcome: "operational-error" as const, reason };
+  }
+  publishBoardTouch(job.projectId);
+  return { epicId: job.epicId, outcome: dispatched ? "pending" as const : "dispatch-failed" as const, candidateSha: validated.candidateSha };
+}
+
+async function executeCompletionReviewApprovalJob(job: Extract<EpicMergeJob, { kind: "review-approval" }>) {
+  const epic = await db.epic.findUnique({
+    where: { id: job.epicId },
+    select: { status: true, completionReviewStatus: true, completionReviewCandidateSha: true },
+  });
+  if (
+    !epic || epic.status !== "Review" || epic.completionReviewStatus !== "Approval Pending" ||
+    epic.completionReviewCandidateSha !== job.expectedCandidateSha
+  ) {
+    return { epicId: job.epicId, outcome: "skipped" as const, note: "Epic approval is no longer pending for this candidate" };
+  }
+  let validated;
+  try {
+    validated = await validateCompletionReviewCandidate({
+      epicId: job.epicId,
+      expectedCandidateSha: job.expectedCandidateSha,
+      publish: false,
+    });
+  } catch (error) {
+    validated = { ok: false as const, reason: String(error instanceof Error ? error.message : error) };
+  }
+  if (!validated.ok) {
+    await recordCompletionReviewOperationalError({
+      epicId: job.epicId,
+      projectId: job.projectId,
+      reason: validated.reason,
+      via: "completion_review_approval_verify",
+    });
+    return { epicId: job.epicId, outcome: "operational-error" as const, reason: validated.reason };
+  }
+
+  const now = new Date();
+  await db.$transaction(async (tx) => {
+    await tx.epic.update({
+      where: { id: job.epicId },
+      data: {
+        status: "Done",
+        statusChangedAt: now,
+        completionReviewStatus: "Approved",
+        completionReviewCompletedAt: now,
+        completionReviewLastError: null,
+      },
+    });
+    await tx.activityLog.create({
+      data: {
+        projectId: job.projectId,
+        userId: job.requestedByUserId,
+        kind: "epic.completion_review.approve",
+        targetAgent: job.requestedByUsername,
+        payload: JSON.stringify({ epicId: job.epicId, candidateSha: validated.candidateSha }),
+      },
+    });
+    await tx.activityLog.create({
+      data: {
+        projectId: job.projectId,
+        userId: job.requestedByUserId,
+        kind: "epic.status",
+        targetAgent: job.requestedByUsername,
+        payload: JSON.stringify({
+          epicId: job.epicId,
+          from: "Review",
+          to: "Done",
+          via: "completion_review_approval_verify",
+          action: "epic_review_done",
+          candidateSha: validated.candidateSha,
+        }),
+      },
+    });
+  });
+  await enqueueEpicDoneCleanup(job.epicId);
+  publishBoardTouch(job.projectId);
+  return { epicId: job.epicId, outcome: "done" as const, candidateSha: validated.candidateSha };
 }
 
 async function executeMergeJob(job: Extract<EpicMergeJob, { kind: "merge" }>) {
@@ -1349,7 +1759,12 @@ async function executeCleanupJob(job: Extract<EpicMergeJob, { kind: "cleanup" }>
     await db.$transaction(async (tx) => {
       await tx.epic.update({
         where: { id: job.epicId },
-        data: { status: "Review", statusChangedAt: now },
+        data: {
+          status: "Review",
+          statusChangedAt: now,
+          completionReviewStatus: "Operational Error",
+          completionReviewLastError: publish.reason.slice(0, 4000),
+        },
       });
       if (monitor) {
         await tx.comment.create({ data: { epicId: job.epicId, userId: monitor.id, body } });
@@ -1454,5 +1869,7 @@ export async function runEpicMergeSpoolJob(job: EpicMergeJob) {
   if (job.kind === "merge") return executeMergeJob(job);
   if (job.kind === "finalize") return executeFinalizeJob(job);
   if (job.kind === "checkpoint") return executeCheckpointJob(job);
+  if (job.kind === "review") return executeCompletionReviewJob(job);
+  if (job.kind === "review-approval") return executeCompletionReviewApprovalJob(job);
   return executeCleanupJob(job);
 }

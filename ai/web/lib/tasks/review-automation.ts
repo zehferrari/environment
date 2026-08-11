@@ -3,7 +3,7 @@ import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notification
 import { resolveDoneOwnerId, resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { assignOpenEpicTasks, type EpicTaskAssignment } from "@/lib/epics/assignment";
 import {
-  enqueueEpicDoneCleanup,
+  enqueueEpicCompletionReview,
   enqueueTaskReviewFinalization,
 } from "@/lib/deploy/epic-merge";
 import { updateTaskRepositoryState } from "@/lib/tasks/repository-state";
@@ -173,7 +173,7 @@ export async function completeReviewedTaskAndAssignNext(args: {
 
     let nextAssignments: EpicTaskAssignment[] = [];
     let skipReason: string | null = null;
-    let epicRolledToDone = false;
+    let epicRolledToReview = false;
 
     if (!task.epicId) {
       skipReason = "no_epic";
@@ -205,10 +205,11 @@ export async function completeReviewedTaskAndAssignNext(args: {
         },
       });
 
-      // When the last open child task of an epic reaches Done, the epic itself
-      // is Done. (Deployment is a separate, optional post-Done step expressed
-      // through the deploymentStatus field — see the epic deployment select —
-      // NOT a workflow status, so nothing deploy-related fires here.)
+      // The last accepted child does NOT complete the Epic. It freezes the
+      // implementation boundary by moving the Epic to Review; the repository
+      // runner must publish and validate the combined candidate before waking
+      // the configured Deploy Reviewer (or Monitor fallback). Done is reserved
+      // for a passing whole-Epic acceptance review.
       if (task.epicId && (task.epic?.status === "In Progress" || task.epic?.status === "To Do")) {
         const remainingOpenTasks = await tx.task.count({
           where: {
@@ -223,7 +224,15 @@ export async function completeReviewedTaskAndAssignNext(args: {
           const now = new Date();
           await tx.epic.update({
             where: { id: task.epicId },
-            data: { status: "Done", statusChangedAt: now },
+            data: {
+              status: "Review",
+              statusChangedAt: now,
+              completionReviewStatus: "Preparing",
+              completionReviewCandidateSha: null,
+              completionReviewRequestedAt: null,
+              completionReviewCompletedAt: null,
+              completionReviewLastError: null,
+            },
           });
           await tx.activityLog.create({
             data: {
@@ -233,29 +242,56 @@ export async function completeReviewedTaskAndAssignNext(args: {
               payload: JSON.stringify({
                 epicId: task.epicId,
                 from: task.epic.status,
-                to: "Done",
+                to: "Review",
                 via: args.via,
-                action: "last_task_done",
+                action: "completion_review_required",
               }),
             },
           });
-          epicRolledToDone = true;
+          epicRolledToReview = true;
         }
       }
     }
 
-    return { nextAssignments, epicRolledToDone };
+    return { nextAssignments, epicRolledToReview };
   });
 
-  // Epic auto-rolled to Done: queue local child-branch cleanup for the
-  // pm-epic-merge-runner (P6 — local-only branches + worktrees are removed
-  // once merged into the pushed Epic branch). Outside the transaction: the
-  // enqueue writes a spool file, and the runner re-checks the Epic is still
-  // Done before touching anything.
-  if (completion.epicRolledToDone && task.epicId) {
-    await enqueueEpicDoneCleanup(task.epicId).catch((err) =>
-      console.error("[pm] epic cleanup enqueue failed:", task.epicId, err),
-    );
+  // Candidate publication, containment/worktree validation, reviewer wake,
+  // final approval, and cleanup all run after this transaction through the
+  // privileged repository runner. Nothing is deleted while acceptance is open.
+  if (completion.epicRolledToReview && task.epicId) {
+    const queued = await enqueueEpicCompletionReview(task.epicId).catch((err) => {
+      console.error("[pm] epic completion-review enqueue failed:", task.epicId, err);
+      return {
+        enqueued: false,
+        blockedByFailedJob: false,
+        enqueueError: String(err instanceof Error ? err.message : err).slice(0, 4000),
+      };
+    });
+    if (!queued.enqueued && (queued.blockedByFailedJob || "enqueueError" in queued)) {
+      const reason = "enqueueError" in queued
+        ? queued.enqueueError
+        : "A failed completion-review runner job requires operator recovery.";
+      await db.epic.update({
+        where: { id: task.epicId },
+        data: {
+          completionReviewStatus: "Operational Error",
+          completionReviewLastError: reason,
+        },
+      });
+      await db.activityLog.create({
+        data: {
+          projectId: task.projectId,
+          userId: args.actor.id,
+          kind: "epic.completion_review.operational_error",
+          payload: JSON.stringify({
+            epicId: task.epicId,
+            reason,
+            via: args.via,
+          }),
+        },
+      });
+    }
   }
 
   const nextTasks = completion.nextAssignments.map((assigned) => ({

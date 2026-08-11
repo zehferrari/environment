@@ -40,7 +40,7 @@ import {
   type Viewer,
 } from "@/lib/auth/permissions";
 
-const EPIC_STATUSES = ["Backlog", "To Do", "In Progress", "Done"] as const;
+const EPIC_STATUSES = ["Backlog", "To Do", "In Progress", "Review", "Done"] as const;
 type EpicStatus = (typeof EPIC_STATUSES)[number];
 
 function isEpicStatus(value: unknown): value is EpicStatus {
@@ -510,6 +510,17 @@ export async function updateEpic(formData: FormData) {
     currentStatusChangedAt: epic.statusChangedAt,
   });
   const statusChanged = statusSubmissionIsCurrent && status !== "" && status !== epic.status;
+  if (statusChanged && status === "Review") {
+    throw new Error("Epic Review is entered automatically after every child Task is accepted.");
+  }
+  if (statusChanged && status === "Done" && epic.completionReviewStatus !== "Approved") {
+    const childCount = await db.task.count({
+      where: { epicId, parentTaskId: null, deletedAt: null },
+    });
+    if (childCount > 0) {
+      throw new Error("This Epic cannot enter Done until its whole-Epic acceptance review is approved.");
+    }
+  }
   // To Do and In Progress are both "activated" states: the epic is approved and
   // its child tasks should be To Do (approved to execute) and queued to workers.
   const epicActivated = status === "To Do" || status === "In Progress";
@@ -527,6 +538,11 @@ export async function updateEpic(formData: FormData) {
       kind: "epic.status",
       payload: JSON.stringify({ epicId, from: epic.status, to: status }),
     });
+    if (epic.status === "Review" && status !== "Done") {
+      data.completionReviewStatus = "Changes Requested";
+      data.completionReviewCompletedAt = statusChangedAt;
+      data.completionReviewLastError = null;
+    }
   }
 
   // Worker pool. Epics can list multiple workers; Task assignee remains single.
@@ -598,8 +614,8 @@ export async function updateEpic(formData: FormData) {
     });
   }
 
-  // Deploy reviewer (optional active coding agent; Ready-to-Deploy auto-trigger
-  // falls back to Monitor Agent when this is unset).
+  // One optional active coding agent owns both mandatory completion acceptance
+  // and optional deployment review; each falls back to Monitor when unset.
   if (hasDeployReviewerField && newDeployReviewerId !== epic.deployReviewerId) {
     await assertAgentAssignmentAllowed(actor, [epic.deployReviewerId]);
     const toUsername = await validateDeployReviewerId(actor, newDeployReviewerId);
@@ -972,6 +988,18 @@ export async function setEpicStatus(formData: FormData) {
   await requireProjectAccess(actor, { id: epic.project.id });
   if (epic.status === status) return;
 
+  if (status === "Review") {
+    throw new Error("Epic Review is entered automatically after every child Task is accepted.");
+  }
+  if (status === "Done" && epic.completionReviewStatus !== "Approved") {
+    const childCount = await db.task.count({
+      where: { epicId, parentTaskId: null, deletedAt: null },
+    });
+    if (childCount > 0) {
+      throw new Error("This Epic cannot enter Done until its whole-Epic acceptance review is approved.");
+    }
+  }
+
   const statusChangedAt = new Date();
   const epicActivated = status === "To Do" || status === "In Progress";
   const taskCascade =
@@ -1001,7 +1029,13 @@ export async function setEpicStatus(formData: FormData) {
   await db.$transaction(async (tx) => {
     await tx.epic.update({
       where: { id: epicId },
-      data: { status, statusChangedAt },
+      data: {
+        status,
+        statusChangedAt,
+        ...(epic.status === "Review" && status !== "Done"
+          ? { completionReviewStatus: "Changes Requested", completionReviewCompletedAt: statusChangedAt, completionReviewLastError: null }
+          : {}),
+      },
     });
     if (taskCascade) {
       await tx.task.updateMany({

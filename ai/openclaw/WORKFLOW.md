@@ -1061,6 +1061,36 @@ handoff is needed in another source channel, say no issues and mention
 remaining risk. Sign the review handoff when the destination calls for the
 signature rule.
 
+### Whole-Epic acceptance
+
+The last accepted child Task moves the Epic to `Review`, not `Done`. This is a
+combined-delivery gate, separate from every task review and from the optional
+later deployment review. The selected Epic Deploy Reviewer performs it; when
+that reviewer is unset or inactive, the unique Monitor Agent is the fallback.
+
+Work only from PM's frozen candidate SHA. Read the original Epic description
+and attachments, then inspect the material outcome/review feedback for every
+child Task and the combined diff. Confirm all reviewed child SHAs are present,
+the Epic worktree/ref state is clean and canonical, the complete repository
+regression gate passes, and required browser/end-to-end scenarios have current
+evidence. Do not infer combined acceptance from isolated task test results.
+
+Resolve the turn with one structured Epic workflow action:
+
+- `completion_review_approve` only when every original requirement and every
+  combined check is `Pass`;
+- `completion_review_reject` for any `Partial`/`Fail`, missing evidence, or
+  unresolved security/data-integrity risk. Include the responsible child
+  `taskId` when applicable; PM otherwise creates a focused repair Task;
+- `completion_review_retry` only after PM reports `Operational Error` and the
+  underlying repository/workflow condition has actually been fixed.
+
+The report must contain a concise summary, requirement/evidence matrix,
+combined-test/evidence matrix, and residual risks. Do not paste raw command
+streams or acknowledgement-only text. Approval remains `Approval Pending`
+until PM re-verifies that origin still equals the frozen SHA; only then does PM
+move the Epic to Done and enqueue cleanup.
+
 ---
 
 ## Email

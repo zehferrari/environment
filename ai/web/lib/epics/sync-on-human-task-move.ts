@@ -37,13 +37,20 @@ export async function syncEpicOnHumanTaskStatus(
 
   const shouldSync =
     epic.status === "Done" ||
+    epic.status === "Review" ||
     (epic.status === "To Do" && desiredEpicStatus === "In Progress");
   if (!shouldSync || epic.status === desiredEpicStatus) return false;
 
   const now = new Date();
   const updated = await client.epic.updateMany({
     where: { id: epic.id, status: epic.status },
-    data: { status: desiredEpicStatus, statusChangedAt: now },
+    data: {
+      status: desiredEpicStatus,
+      statusChangedAt: now,
+      ...(epic.status === "Review"
+        ? { completionReviewStatus: "Changes Requested", completionReviewCompletedAt: now, completionReviewLastError: null }
+        : {}),
+    },
   });
   if (updated.count !== 1) return false;
 
@@ -58,7 +65,7 @@ export async function syncEpicOnHumanTaskStatus(
         from: epic.status,
         to: desiredEpicStatus,
         via: args.via,
-        action: epic.status === "Done"
+        action: epic.status === "Done" || epic.status === "Review"
           ? "child_task_reopened"
           : "child_task_started",
         taskId: args.taskId,

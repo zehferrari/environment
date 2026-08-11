@@ -197,7 +197,7 @@ model Project {
   attachments            Attachment[]
   chatMessages           AgentChatMessage[]
   chatRoomArchives       AgentChatRoomArchive[]
-  directChatMessages     DirectAgentChatMessage[] @relation("DirectChatProject")
+  directChatMessages     DirectAgentChatMessage[]        @relation("DirectChatProject")
   directChatProjectLinks DirectAgentChatMessageProject[]
   workItemProposals      WorkItemProposal[]
   deploymentPullRequests DeploymentPullRequest[]
@@ -287,46 +287,56 @@ model ProjectMember {
 }
 
 model Epic {
-  id               String    @id @default(cuid())
-  projectId        String
-  project          Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  title            String
-  workItemKey      String?   @unique @map("work_item_key")
-  description      String?
-  private          Boolean   @default(false)
-  // "Backlog" | "To Do" | "In Progress" | "Done" — deployment readiness is
+  id                           String    @id @default(cuid())
+  projectId                    String
+  project                      Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title                        String
+  workItemKey                  String?   @unique @map("work_item_key")
+  description                  String?
+  private                      Boolean   @default(false)
+  // "Backlog" | "To Do" | "In Progress" | "Review" | "Done" — deployment readiness is
   // NOT a status: Ready-to-Deploy lives on the separate deploymentStatus lane.
-  status           String    @default("Backlog")
-  statusChangedAt  DateTime?
+  status                       String    @default("Backlog")
+  statusChangedAt              DateTime?
+  // Whole-Epic acceptance is distinct from both child-Task review and the
+  // optional post-Done deployment review. The last accepted child moves the
+  // Epic to Review while the repository runner freezes the combined candidate.
+  // "Not Required" | "Preparing" | "Pending" | "Approval Pending" |
+  // "Approved" | "Changes Requested" | "Operational Error"
+  completionReviewStatus       String    @default("Not Required") @map("completion_review_status")
+  completionReviewCandidateSha String?   @map("completion_review_candidate_sha")
+  completionReviewRequestedAt  DateTime? @map("completion_review_requested_at")
+  completionReviewCompletedAt  DateTime? @map("completion_review_completed_at")
+  completionReviewLastError    String?   @map("completion_review_last_error")
   // Epic-level acting manager plus a multi-agent worker pool. Task
   // assignee stays single; Epic workers define which coding agents the
   // manager may pick from for child Tasks.
-  actingManagerId  String?
-  actingManager    User?     @relation("EpicActingManager", fields: [actingManagerId], references: [id])
-  deployReviewerId String?
-  deployReviewer   User?     @relation("EpicDeployReviewer", fields: [deployReviewerId], references: [id])
-  reporterId       String?
-  reporter         User?     @relation("EpicReporter", fields: [reporterId], references: [id])
-  approvedOn       DateTime? @map("approved_on")
-  approvedById     String?   @map("approved_by")
-  approvedBy       User?     @relation("EpicApprovedBy", fields: [approvedById], references: [id])
-  archivedAt       DateTime? @map("archived_at")
-  archivedById     String?   @map("archived_by")
-  archivedBy       User?     @relation("EpicArchivedBy", fields: [archivedById], references: [id])
+  actingManagerId              String?
+  actingManager                User?     @relation("EpicActingManager", fields: [actingManagerId], references: [id])
+  deployReviewerId             String?
+  deployReviewer               User?     @relation("EpicDeployReviewer", fields: [deployReviewerId], references: [id])
+  reporterId                   String?
+  reporter                     User?     @relation("EpicReporter", fields: [reporterId], references: [id])
+  approvedOn                   DateTime? @map("approved_on")
+  approvedById                 String?   @map("approved_by")
+  approvedBy                   User?     @relation("EpicApprovedBy", fields: [approvedById], references: [id])
+  archivedAt                   DateTime? @map("archived_at")
+  archivedById                 String?   @map("archived_by")
+  archivedBy                   User?     @relation("EpicArchivedBy", fields: [archivedById], references: [id])
   // Epic-level git overrides inherited dynamically by child Tasks while their
   // own fields are null. A blank Epic falls back to its human work-item key.
-  branchName       String?
-  commitPrefix     String?
+  branchName                   String?
+  commitPrefix                 String?
   // Soft delete (HOMELAB-48). deletedAt != null means the row is in the
   // bin; active reads filter deletedAt: null. Hard purge happens after
   // 7 days via the instrumentation interval. deletedById captures the
   // actor (User row, kind tells human vs agent).
-  deploymentStatus String    @default("Not Required") @map("deployment_status")
-  deletedAt        DateTime?
-  deletedById      String?
-  deletedBy        User?     @relation("EpicDeletedBy", fields: [deletedById], references: [id])
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  deploymentStatus             String    @default("Not Required") @map("deployment_status")
+  deletedAt                    DateTime?
+  deletedById                  String?
+  deletedBy                    User?     @relation("EpicDeletedBy", fields: [deletedById], references: [id])
+  createdAt                    DateTime  @default(now())
+  updatedAt                    DateTime  @updatedAt
 
   tasks                  Task[]
   workers                EpicWorker[]
@@ -954,12 +964,12 @@ model AgentChatRoomArchive {
 // ------------------------------------------------------------------
 
 model DirectAgentChatMessage {
-  id                      String                  @id @default(cuid())
+  id                      String                          @id @default(cuid())
   agentSlug               String
   senderUserId            String
-  sender                  User                    @relation("DirectAgentChatSender", fields: [senderUserId], references: [id])
+  sender                  User                            @relation("DirectAgentChatSender", fields: [senderUserId], references: [id])
   archiveId               String?
-  archive                 DirectAgentChatArchive? @relation(fields: [archiveId], references: [id], onDelete: SetNull)
+  archive                 DirectAgentChatArchive?         @relation(fields: [archiveId], references: [id], onDelete: SetNull)
   // Active child continuations keep the parent archive immutable while
   // still using it as context for the new conversation.
   baseArchiveId           String?
@@ -970,11 +980,11 @@ model DirectAgentChatMessage {
   // grant — generalises AgentChatMessage.allowDescriptionEdit; workItemGrantUsedAt
   // stamps it single-use once a proposal is stored.
   projectId               String?
-  project                 Project?                @relation("DirectChatProject", fields: [projectId], references: [id], onDelete: SetNull)
+  project                 Project?                        @relation("DirectChatProject", fields: [projectId], references: [id], onDelete: SetNull)
   projects                DirectAgentChatMessageProject[]
-  allowWorkItemManagement Boolean                 @default(false)
+  allowWorkItemManagement Boolean                         @default(false)
   workItemGrantUsedAt     DateTime?
-  createdAt               DateTime                @default(now())
+  createdAt               DateTime                        @default(now())
   // Soft delete (HOMELAB-41 / item 2). See Comment.deletedAt for the
   // same convention. The archive-level deletedAt on
   // DirectAgentChatArchive remains separate — that one bins an entire
@@ -982,7 +992,7 @@ model DirectAgentChatMessage {
   // the active or archived chat.
   deletedAt               DateTime?
   deletedById             String?
-  deletedBy               User?                   @relation("DirectAgentChatMessageDeletedBy", fields: [deletedById], references: [id])
+  deletedBy               User?                           @relation("DirectAgentChatMessageDeletedBy", fields: [deletedById], references: [id])
 
   @@index([agentSlug, createdAt])
   @@index([agentSlug, archiveId, createdAt])

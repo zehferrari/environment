@@ -293,6 +293,7 @@ requires every service below to be installed and enabled.
 | `/srv/agents/openclaw/<monitor>/openclaw.json` | Rendered by `openclaw-manage-user` | Monitor agent's OpenClaw runtime config. |
 | `/etc/tlp.d/30-charge-thresholds.conf` | `ai/host/tlp/30-charge-thresholds.conf` | ThinkPad AMD power policy and charge thresholds. |
 | `/etc/logrotate.d/nginx` | `ai/host/logrotate/nginx` | Host-specific nginx log ownership policy. |
+| `/etc/systemd/system/nginx.service.d/10-runtime-paths.conf` | `ai/host/systemd/nginx.service.d/10-runtime-paths.conf` | Reconciles nginx request/proxy spool ownership before each service start. |
 | `/etc/systemd/system/zypper-dup.{service,timer}` | `ai/host/systemd/zypper-dup.{service,timer}` | Weekly Tumbleweed rolling update. |
 | `/etc/tmpfiles.d/fs-tmp.conf` | `ai/host/tmpfiles/fs-tmp.conf` | Three-day retention for RAM-backed `/tmp`. |
 | `/etc/systemd/user/openclaw-gateway.service.d/30-memory-policy.conf` | `ai/host/systemd/user/openclaw-gateway.service.d/30-memory-policy.conf` | Shared per-gateway memory limits (8G high / 10G max / no swap) + Node heap cap. |

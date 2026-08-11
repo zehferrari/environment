@@ -307,10 +307,18 @@ lanes distinct:
 | PM-channel run | queued, accepted, streaming, complete, failed, canceled | PM-channel queue, consumer, gateway callbacks |
 | Deployment | Not Required and project-defined deployment states | Deployment monitor/reviewer flow |
 | Epic | Backlog, To Do, In Progress, Review, Done | Epic workflow and child-task roll-up |
+| Epic acceptance | Not Required, Preparing, Pending, Approval Pending, Approved, Changes Requested, Operational Error | Deploy Reviewer or Monitor fallback plus repository runner |
 
 A repository-backed Task does not become `Done` at reviewer acceptance. It
 stays `Review`/`finalizing` until the trusted repository runner verifies or
 publishes the accepted candidate and removes the local task worktree.
+
+The final child Task does not move its Epic directly to `Done`. It moves the
+Epic to `Review`; the runner freezes and verifies the combined origin SHA, then
+the selected Deploy Reviewer (Monitor fallback) submits a structured whole-Epic
+requirement/test report. Only an all-Pass report plus a runner-side immutable
+candidate recheck unlocks Epic `Done` and child-branch cleanup. Deployment
+review remains a separate optional post-Done lane.
 
 ## Startup and background work
 

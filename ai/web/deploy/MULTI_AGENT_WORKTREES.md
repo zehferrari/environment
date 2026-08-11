@@ -258,7 +258,7 @@ Versioned under `ai/web/deploy/` (PM-specific) and `ai/openclaw/` (generic):
 | `ai/web/deploy/worktree-switch-runner` · `systemd/worktree-switch-runner@.service` | generic per-project spool runner (`switch`/`on`/`off`/`remove`) |
 | `ai/web/deploy/worktree-remove` | monitor-run clean local worktree/branch cleanup helper (`--branch` mode serves the Epic-Done cleanup); never deletes remote refs |
 | `ai/web/deploy/pm-epic-merge-runner` · `systemd/pm-epic-merge-runner.service` | repo-push-user spool runner for Epic merges + Epic-Done cleanup (`/var/lib/pm/epic-merge`); installed by `install-pm-verify.sh` |
-| `ai/web/scripts/pm-epic-merge-job.ts` · `lib/deploy/epic-merge{,-git}.ts` | the merge/cleanup executor + poll/enqueue/bookkeeping library |
+| `ai/web/scripts/pm-epic-merge-job.ts` · `lib/deploy/epic-merge{,-git}.ts` | the claim/merge/checkpoint/whole-Epic candidate-review/cleanup executor + poll/enqueue/bookkeeping library |
 | `ai/web/deploy/worktree-preview-apply` · `worktree-docroot-apply` | **root** apply helpers for the `node-service` / `nginx-docroot` drivers |
 | `ai/web/deploy/worktree-preview-serve` · `systemd/worktree-preview@.service` | templated preview service for `node-service` projects |
 | `ai/web/deploy/sudoers.d/worktree-preview` · `worktree-preview-install.sh` · `worktree-preview.env.example` | generic-stack sudoers, installer, and per-project env contract |

@@ -61,9 +61,10 @@ if [ "$DRY_RUN" -eq 0 ] && [ ! -x "$OPENCLAW_BIN" ]; then
     exit 1
 fi
 
-# Reject malformed units or a logrotate stanza that cannot traverse the live
-# nginx log directory before replacing any host configuration. Dry-run remains
-# usable without root/systemd access and describes these checks instead.
+# Reject malformed units and logrotate configuration before replacing any host
+# configuration. Runtime directory access is checked after the installer has
+# had a chance to repair package-owned nginx paths below. Dry-run remains usable
+# without root/systemd access and describes these checks instead.
 if [ "$DRY_RUN" -eq 0 ]; then
     systemd-analyze verify \
         "$HOST_ROOT/systemd/zypper-dup.service" \
@@ -78,20 +79,6 @@ if [ "$DRY_RUN" -eq 0 ]; then
     rm -f "$logrotate_check"
     trap - EXIT
 
-    # logrotate --debug parses and plans the rotation but does not perform the
-    # target-user filesystem operations. Verify the configured `su zeh zeh`
-    # identity can traverse and modify the directory and read every live log.
-    if [ -d /var/log/nginx ]; then
-        runuser -u zeh -- test -x /var/log/nginx
-        runuser -u zeh -- test -w /var/log/nginx
-        for nginx_log in /var/log/nginx/*.log; do
-            [ -e "$nginx_log" ] || continue
-            runuser -u zeh -- test -r "$nginx_log"
-        done
-    else
-        printf 'error: live nginx log directory is missing: /var/log/nginx\n' >&2
-        exit 1
-    fi
 fi
 
 install_managed_file() {
@@ -106,6 +93,44 @@ install_managed_file() {
     printf 'installed %s\n' "$destination"
 }
 
+reconcile_nginx_runtime_paths() {
+    local runtime_paths=(
+        /var/lib/nginx
+        /var/lib/nginx/fastcgi
+        /var/lib/nginx/proxy
+        /var/lib/nginx/scgi
+        /var/lib/nginx/tmp
+        /var/lib/nginx/uwsgi
+    )
+    if [ "$DRY_RUN" -eq 1 ]; then
+        printf 'would reconcile nginx worker runtime paths for zeh:code-agents\n'
+        printf 'would reconcile nginx log path for zeh:zeh\n'
+        return
+    fi
+
+    # The openSUSE package owns /var/lib/nginx as nginx:nginx, while this host's
+    # nginx.conf deliberately runs workers as zeh:code-agents. A package upgrade
+    # can therefore restore a 0750 parent that the workers cannot traverse. Any
+    # request large enough to spill to client_body_temp_path then fails with 500
+    # before it reaches the PM application. Repair it now; the service drop-in
+    # installed below repeats this immediately before every nginx start.
+    install -d -o zeh -g code-agents -m 0750 "${runtime_paths[@]}"
+    install -d -o zeh -g zeh -m 0750 /var/log/nginx
+
+    # logrotate --debug does not perform target-user filesystem operations.
+    # Verify the configured `su zeh zeh` identity can traverse and modify the
+    # directory and read every live log after reconciliation.
+    runuser -u zeh -- test -x /var/log/nginx
+    runuser -u zeh -- test -w /var/log/nginx
+    local nginx_log
+    for nginx_log in /var/log/nginx/*.log; do
+        [ -e "$nginx_log" ] || continue
+        runuser -u zeh -- test -r "$nginx_log"
+    done
+}
+
+reconcile_nginx_runtime_paths
+
 install_managed_file 0644 \
     "$HOST_ROOT/tlp/30-charge-thresholds.conf" \
     /etc/tlp.d/30-charge-thresholds.conf
@@ -118,6 +143,9 @@ install_managed_file 0644 \
 install_managed_file 0644 \
     "$HOST_ROOT/systemd/zypper-dup.timer" \
     /etc/systemd/system/zypper-dup.timer
+install_managed_file 0644 \
+    "$HOST_ROOT/systemd/nginx.service.d/10-runtime-paths.conf" \
+    /etc/systemd/system/nginx.service.d/10-runtime-paths.conf
 install_managed_file 0644 \
     "$HOST_ROOT/tmpfiles/fs-tmp.conf" \
     /etc/tmpfiles.d/fs-tmp.conf
@@ -347,6 +375,7 @@ reconcile_gateway_config_links
 if [ "$DRY_RUN" -eq 1 ]; then
     printf '%s\n' \
         'would validate the systemd units and nginx logrotate permissions' \
+        'would keep nginx runtime paths writable across package upgrades' \
         'would reload systemd' \
         'would idempotently refresh all systemd-boot entries' \
         'would daemon-reload systemd for each enabled agent (gateway restart remains explicit)' \

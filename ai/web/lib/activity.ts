@@ -25,6 +25,14 @@ export type ActivityKind =
   | "epic.assign"
   | "epic.acting_manager"
   | "epic.status"
+  | "epic.completion_review.requested"
+  | "epic.completion_review.dispatch"
+  | "epic.completion_review.dispatch_skipped"
+  | "epic.completion_review.approval_requested"
+  | "epic.completion_review.approve"
+  | "epic.completion_review.reject"
+  | "epic.completion_review.retry"
+  | "epic.completion_review.operational_error"
   | "epic.attachment.add"
   | "epic.attachment.delete"
   | "project.attachment.add"
@@ -312,6 +320,22 @@ export function describeActivity(row: ActivityRow): string {
       if (p?.from && p?.to) return `${actor(row.actorName)} moved an epic from ${p.from} to ${p.to}`;
       return `${actor(row.actorName)} updated epic status`;
     }
+    case "epic.completion_review.requested":
+      return `${actor(row.actorName)} froze an epic candidate for whole-Epic acceptance`;
+    case "epic.completion_review.dispatch":
+      return `${actor(row.actorName)} dispatched whole-Epic acceptance review`;
+    case "epic.completion_review.dispatch_skipped":
+      return `${actor(row.actorName)} could not dispatch whole-Epic acceptance review`;
+    case "epic.completion_review.approval_requested":
+      return `${actor(row.actorName)} submitted an all-Pass whole-Epic review for final verification`;
+    case "epic.completion_review.approve":
+      return `${actor(row.actorName)} approved the verified whole-Epic candidate`;
+    case "epic.completion_review.reject":
+      return `${actor(row.actorName)} requested repairs from whole-Epic acceptance review`;
+    case "epic.completion_review.retry":
+      return `${actor(row.actorName)} retried whole-Epic acceptance preparation`;
+    case "epic.completion_review.operational_error":
+      return `${actor(row.actorName)} recorded a whole-Epic acceptance operational error`;
     case "epic.attachment.add": {
       const p = parsePayload<{ filename?: string }>(row.payload);
       return `${actor(row.actorName)} attached ${p?.filename ?? "a file"} to an epic`;

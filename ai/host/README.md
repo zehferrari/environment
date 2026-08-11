@@ -10,6 +10,7 @@ operating system itself, not the portable OpenClaw runtime.
 |---|---|---|
 | `tlp/30-charge-thresholds.conf` | `/etc/tlp.d/30-charge-thresholds.conf` | Battery thresholds and AMD `amd-pstate-epp` policy |
 | `logrotate/nginx` | `/etc/logrotate.d/nginx` | Rotate nginx logs as the owner of the host's nginx log directory |
+| `systemd/nginx.service.d/10-runtime-paths.conf` | `/etc/systemd/system/nginx.service.d/10-runtime-paths.conf` | Keeps nginx request/proxy spool paths writable by the configured worker identity after package upgrades |
 | `systemd/zypper-dup.service` | `/etc/systemd/system/zypper-dup.service` | Weekly Tumbleweed distribution upgrade |
 | `systemd/zypper-dup.timer` | `/etc/systemd/system/zypper-dup.timer` | Schedule for the distribution upgrade |
 | `kernel/required-cmdline` | merged into `/etc/kernel/cmdline` | Enables PSI telemetry on the next boot |
@@ -31,14 +32,17 @@ ai/host/install.sh --dry-run
 ```
 
 The installer enables `tlp.service`, applies its policy immediately, enables
-the zypper timer without starting an upgrade, validates the nginx logrotate
-stanza in debug mode, enables redacted OpenClaw pre-OOM snapshots in every
-active agent config, reconciles each identical home config back to its
-canonical symlink, and clears the old failed state for the repaired units.
+the zypper timer without starting an upgrade, reconciles nginx runtime paths,
+validates the nginx logrotate stanza in debug mode, enables redacted OpenClaw
+pre-OOM snapshots in every active agent config, reconciles each identical home
+config back to its canonical symlink, and clears the old failed state for the
+repaired units.
 It fails rather than overwrite a divergent home config.
 It deliberately does not start `zypper-dup.service`, force a log rotation,
-delete old `/tmp` entries immediately, restart agent user managers/gateways,
-or reboot the host.
+delete old `/tmp` entries immediately, restart nginx or agent user
+managers/gateways, or reboot the host. The nginx runtime-path repair takes
+effect immediately without a restart; its service drop-in prevents package
+ownership resets from breaking buffered requests on later starts.
 
 The gateway policy starts cgroup reclaim at 8 GiB, caps one gateway at
 10 GiB, and allows no swap. The earlier 6 GiB high / 8 GiB max / 2 GiB swap

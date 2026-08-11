@@ -332,6 +332,17 @@ Review-comment auto-complete responds to exactly one unmistakable
 keyword: `looks good, ship it`. No other phrasing closes a task from a
 comment — use the `review_done` workflow action.
 
+The last accepted child Task moves its Epic to `Review`, not Done. PM freezes
+the combined origin candidate and wakes the selected Deploy Reviewer (or unique
+Monitor fallback) with an Epic workflow grant. That reviewer resolves the gate
+with `completion_review_approve`, `completion_review_reject`, or (after an
+operational failure is repaired) `completion_review_retry`. Approve/reject
+requires `report.summary`, a requirement matrix with `Pass | Partial | Fail`
+plus evidence, a combined-test matrix with `Pass | Fail` plus evidence, and
+`report.residualRisks`. Approval is accepted only for an all-Pass report and is
+re-verified against the frozen SHA by the repository runner before Done and
+cleanup. This is independent of the optional deployment-review lane.
+
 Proposals are not a side door: a proposed jump to `In Progress` is
 downgraded to `To Do` when the task's blocker is uncleared or its Action
 Plan is unapproved, and every proposal-applied assignment/status change
@@ -413,7 +424,7 @@ Shape:
     "readmePath": null,
     "repositoryPath": "/srv/Code/environment.worktrees/…"
   },
-  "epic": null,                // or { id, workItemKey, title, status, description, branchName, commitPrefix, workers, actingManager, deployReviewer } — Epics have no assignee
+  "epic": null,                // or { id, workItemKey, title, status, description, branchName, commitPrefix, completionReviewStatus, completionReviewCandidateSha, workers, actingManager, deployReviewer } — Epics have no assignee
   "checklist": [               // lightweight sub-tasks (progress only; not child Tasks)
     { "id": "…", "text": "…", "done": false, "minutes": null }  // minutes = self-reported effort
   ],
@@ -491,7 +502,9 @@ task is missing or soft-deleted.
 
 Same shape minus the task `checklist` and the `activity` array (epic
 context carries no activity log), plus `epic.actingManager`,
-`epic.deployReviewer`, `epic.workers`, and a `tasks` array of every live
+`epic.deployReviewer`, `epic.completionReviewStatus`,
+`epic.completionReviewCandidateSha`, `epic.completionReviewLastError`,
+`epic.workers`, and a `tasks` array of every live
 task under the epic. Use when the agent's turn is on an epic discussion,
 or when you need to enumerate the epic's tasks without per-task detail.
 
@@ -511,7 +524,7 @@ task / epic endpoint instead.
   "project":            { "id", "slug", "name", "description", "readmePath", "repositoryPath" },
   "defaultGitIdentity": { "name", "email" },
   "principals": [ { "id", "username", "kind" }, … ],
-  "epics":      [ { "id", "workItemKey", "title", "status", "description", "branchName", "commitPrefix", "workers", "actingManager", "deployReviewer" }, … ],
+  "epics":      [ { "id", "workItemKey", "title", "status", "description", "branchName", "commitPrefix", "workers", "actingManager", "deployReviewer", "completionReviewStatus", "completionReviewCandidateSha" }, … ],
   "openTasks":  [ { "id", "workItemKey", "title", "status", "epicId", "parentTaskId", "assignee", "actingManager", "branchName", "commitPrefix" }, … ],
   "meta":       { "fetchedAt", "note" }
 }

@@ -8,7 +8,7 @@ import { db } from "@/lib/db";
 import { getOrCreateAgentSessionBinding } from "@/lib/agents/auth/session-bindings";
 import { sendOrQueueOpenClawPmChannelTurn } from "@/lib/agents/pm-channel/jobs";
 import { buildUnifiedPmTurnSystemPrompt, nullPmContextText } from "@/lib/agents/pm-channel/context";
-import { createContextGrantUrlMap } from "@/lib/agents/context/grants";
+import { createContextGrantUrl, createContextGrantUrlMap } from "@/lib/agents/context/grants";
 import { DISCUSSION_REPLY_FORMAT_PROMPT } from "@/lib/agents/chat/discussion-reply-format";
 import { resolveDirectedFromDiscussionRow } from "@/lib/agents/ops/directed-targets";
 import {
@@ -33,6 +33,7 @@ export async function sendEpicWorkflowNotification(args: {
   actor: { id: string; username?: string | null; kind: "human" | "agent" };
   reason: string;
   body: string;
+  linkedTasks?: Array<{ id: string; label: string }>;
 }) {
   const agentSlug = args.targetAgentSlug;
   const [epic, agentUser, activeAgents] = await Promise.all([
@@ -130,6 +131,34 @@ export async function sendEpicWorkflowNotification(args: {
     epicId: epic.id,
     turnId: msg.id,
   });
+  const requestedLinkedTasks = (args.linkedTasks ?? []).slice(0, 50);
+  const allowedLinkedTasks = requestedLinkedTasks.length > 0
+    ? await db.task.findMany({
+        where: {
+          id: { in: requestedLinkedTasks.map((task) => task.id) },
+          epicId: epic.id,
+          parentTaskId: null,
+          deletedAt: null,
+          private: false,
+        },
+        select: { id: true },
+      })
+    : [];
+  const allowedLinkedTaskIds = new Set(allowedLinkedTasks.map((task) => task.id));
+  const linkedTaskGrants = await Promise.all(
+    requestedLinkedTasks
+      .filter((task) => allowedLinkedTaskIds.has(task.id))
+      .map(async (task) => ({
+        ...task,
+        url: await createContextGrantUrl({
+          baseUrl: fetchBaseUrl,
+          agentSlug,
+          scopeType: "task",
+          scopeId: task.id,
+          turnId: msg.id,
+        }),
+      })),
+  );
 
   const sessionBinding = await getOrCreateAgentSessionBinding({
     scopeType: "epic",
@@ -159,9 +188,17 @@ export async function sendEpicWorkflowNotification(args: {
       )
     : buildEpicNativeChannelPrompt(epic.title, agentSlug, directedDescriptor, promptOpts);
 
+  const linkedTaskPrompt = linkedTaskGrants.length > 0
+    ? [
+        "WHOLE-EPIC CHILD TASK CONTEXT GRANTS:",
+        "These short-lived URLs are trusted capabilities for this turn. Fetch each relevant child Task to inspect its implementation outcome, comments, review feedback, activity, and exact repository candidate without injecting every long Task thread into the initial context.",
+        ...linkedTaskGrants.map((task) => `- ${task.label} (${task.id}): ${task.url}`),
+      ].join("\n")
+    : "";
+
   const systemPrompt = buildUnifiedPmTurnSystemPrompt({
     kind: "epic-chat",
-    trustedPrompt: [baseSystemPrompt, DISCUSSION_REPLY_FORMAT_PROMPT].join("\n\n"),
+    trustedPrompt: [baseSystemPrompt, linkedTaskPrompt, DISCUSSION_REPLY_FORMAT_PROMPT].filter(Boolean).join("\n\n"),
     primaryBlocks: [{
       title: "CURRENT CHAT MESSAGE (untrustedContext)",
       body,

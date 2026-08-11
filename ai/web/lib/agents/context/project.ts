@@ -85,6 +85,8 @@ export async function buildProjectEnvContext(
         status: true,
         description: true,
         approvedOn: true,
+        completionReviewStatus: true,
+        completionReviewCandidateSha: true,
         actingManager: { select: { username: true } },
         deployReviewer: { select: { username: true } },
       },
@@ -167,7 +169,7 @@ export async function buildProjectEnvContext(
   if (epics.length === 0) lines.push("- Epics: (none)");
   else for (const e of epics) {
     const childTasks = tasksByEpic.get(e.id) ?? [];
-    lines.push(`- Epic [${e.status}] ${e.title} (key: ${e.workItemKey || "not assigned"}; id: ${e.id}; approved_on: ${e.approvedOn ? e.approvedOn.toISOString() : "not approved"}; acting manager: ${e.actingManager?.username ? `@${e.actingManager.username}` : "none"}; deploy reviewer: ${e.deployReviewer?.username ? `@${e.deployReviewer.username}` : "Monitor Agent fallback"}; open tasks fetched: ${childTasks.length})`);
+    lines.push(`- Epic [${e.status}] ${e.title} (key: ${e.workItemKey || "not assigned"}; id: ${e.id}; approved_on: ${e.approvedOn ? e.approvedOn.toISOString() : "not approved"}; acting manager: ${e.actingManager?.username ? `@${e.actingManager.username}` : "none"}; deploy reviewer: ${e.deployReviewer?.username ? `@${e.deployReviewer.username}` : "Monitor Agent fallback"}; acceptance: ${e.completionReviewStatus}${e.completionReviewCandidateSha ? ` at ${e.completionReviewCandidateSha}` : ""}; open tasks fetched: ${childTasks.length})`);
     for (const t of childTasks) {
       lines.push(`  - Task [${t.status}] ${t.title} (key: ${t.workItemKey || "not assigned"}; id: ${t.id}${t.parentTaskId ? `; parent: ${t.parentTaskId}` : ""})`);
     }
@@ -189,7 +191,7 @@ export async function buildProjectEnvContext(
   lines.push("", `EXISTING EPICS (${epics.length}; per-item descriptions capped):`);
   if (epics.length === 0) lines.push("(none)");
   else for (const e of epics) {
-    lines.push(`- [${e.status}] ${e.title} (key: ${e.workItemKey || "not assigned"}; id: ${e.id}; approved_on: ${e.approvedOn ? e.approvedOn.toISOString() : "not approved"}; acting manager: ${e.actingManager?.username ? `@${e.actingManager.username}` : "none"}; deploy reviewer: ${e.deployReviewer?.username ? `@${e.deployReviewer.username}` : "Monitor Agent fallback"})`);
+    lines.push(`- [${e.status}] ${e.title} (key: ${e.workItemKey || "not assigned"}; id: ${e.id}; approved_on: ${e.approvedOn ? e.approvedOn.toISOString() : "not approved"}; acting manager: ${e.actingManager?.username ? `@${e.actingManager.username}` : "none"}; deploy reviewer: ${e.deployReviewer?.username ? `@${e.deployReviewer.username}` : "Monitor Agent fallback"}; acceptance: ${e.completionReviewStatus}${e.completionReviewCandidateSha ? ` at ${e.completionReviewCandidateSha}` : ""})`);
     if (e.description?.trim()) {
       const clipped = clipWithMeta(e.description, MAX_EPIC_DESCRIPTION);
       if (clipped.truncated) truncatedEpicDescriptions += 1;

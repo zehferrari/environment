@@ -109,6 +109,9 @@ export interface TaskContextResponse {
     description: string | null;
     branchName: string | null;
     commitPrefix: string | null;
+    completionReviewStatus: string;
+    completionReviewCandidateSha: string | null;
+    completionReviewLastError: string | null;
     workers: Array<ReturnType<typeof actor>>;
     actingManager: ReturnType<typeof actor>;
     deployReviewer: ReturnType<typeof actor>;
@@ -215,6 +218,7 @@ export async function buildTaskContextJson(
         select: {
           id: true, workItemKey: true, title: true, status: true, description: true,
           branchName: true, commitPrefix: true,
+          completionReviewStatus: true, completionReviewCandidateSha: true, completionReviewLastError: true,
           workers: {
             orderBy: { createdAt: "asc" },
             select: { user: { select: { username: true, kind: true, isOwner: true } } },
@@ -383,6 +387,9 @@ export async function buildTaskContextJson(
             commitPrefix: task.epic.commitPrefix,
             workItemKey: task.epic.workItemKey,
           }),
+          completionReviewStatus: task.epic.completionReviewStatus,
+          completionReviewCandidateSha: task.epic.completionReviewCandidateSha,
+          completionReviewLastError: task.epic.completionReviewLastError,
           workers: task.epic.workers.map((worker) => actor(worker.user)),
           actingManager: actor(task.epic.actingManager),
           deployReviewer: actor(task.epic.deployReviewer),
@@ -493,6 +500,9 @@ export interface EpicContextResponse {
     description: string | null;
     branchName: string | null;
     commitPrefix: string | null;
+    completionReviewStatus: string;
+    completionReviewCandidateSha: string | null;
+    completionReviewLastError: string | null;
     createdAt: string;
     updatedAt: string;
     workers: Array<ReturnType<typeof actor>>;
@@ -525,6 +535,7 @@ export async function buildEpicContextJson(
     select: {
       id: true, title: true, status: true, description: true, branchName: true,
       commitPrefix: true, workItemKey: true, createdAt: true, updatedAt: true,
+      completionReviewStatus: true, completionReviewCandidateSha: true, completionReviewLastError: true,
       project: {
         select: {
           id: true, slug: true, name: true, description: true,
@@ -651,6 +662,9 @@ export async function buildEpicContextJson(
         commitPrefix: epic.commitPrefix,
         workItemKey: epic.workItemKey,
       }),
+      completionReviewStatus: epic.completionReviewStatus,
+      completionReviewCandidateSha: epic.completionReviewCandidateSha,
+      completionReviewLastError: epic.completionReviewLastError,
       createdAt: epic.createdAt.toISOString(),
       updatedAt: epic.updatedAt.toISOString(),
       workers: epic.workers.map((worker) => actor(worker.user)),
@@ -752,6 +766,8 @@ export interface ProjectContextResponse {
     description: string | null;
     branchName: string | null;
     commitPrefix: string | null;
+    completionReviewStatus: string;
+    completionReviewCandidateSha: string | null;
     workers: Array<ReturnType<typeof actor>>;
     actingManager: ReturnType<typeof actor>;
     deployReviewer: ReturnType<typeof actor>;
@@ -790,6 +806,7 @@ export async function buildProjectContextJson(projectId: string): Promise<Projec
       select: {
         id: true, workItemKey: true, title: true, status: true, description: true,
         branchName: true, commitPrefix: true,
+        completionReviewStatus: true, completionReviewCandidateSha: true,
         workers: {
           orderBy: { createdAt: "asc" },
           select: { user: { select: { username: true, kind: true, isOwner: true } } },
@@ -846,6 +863,8 @@ export async function buildProjectContextJson(projectId: string): Promise<Projec
       description: clipApi(e.description, API_DESCRIPTION_MAX),
       branchName: effectiveEpicBranchName(e),
       commitPrefix: effectiveCommitPrefix({ commitPrefix: e.commitPrefix, workItemKey: e.workItemKey }),
+      completionReviewStatus: e.completionReviewStatus,
+      completionReviewCandidateSha: e.completionReviewCandidateSha,
       workers: e.workers.map((worker) => actor(worker.user)),
       actingManager: actor(e.actingManager),
       deployReviewer: actor(e.deployReviewer),

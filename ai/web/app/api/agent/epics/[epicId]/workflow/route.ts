@@ -9,6 +9,15 @@ import { hasAuthorizedEpicAgentOrigin } from "@/lib/agents/owner-origin";
 import { nextEpicTaskTitle } from "@/lib/tasks/epic-numbering";
 import { allocateWorkItemKey } from "@/lib/work-items/keys";
 import { publishBoardTouch } from "@/lib/pm/board-events";
+import {
+  completionReviewReportCanApprove,
+  parseCompletionReviewReport,
+  renderCompletionReviewReport,
+} from "@/lib/epics/completion-review";
+import {
+  enqueueEpicCompletionReview,
+  enqueueEpicCompletionReviewApproval,
+} from "@/lib/deploy/epic-merge";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,6 +26,9 @@ const ACTIONS = [
   "advance_queue",
   "assign_next",
   "create_tasks",
+  "completion_review_approve",
+  "completion_review_reject",
+  "completion_review_retry",
   // Deploy-review actions — authorized for the epic's Deploy Reviewer (or the
   // monitor agent when none is set), NOT the acting manager.
   "deploy_review_approve",
@@ -87,6 +99,7 @@ export async function POST(
     tasks?: unknown;
     reason?: unknown;
     taskId?: unknown;
+    report?: unknown;
   };
   try {
     payload = (await req.json()) as typeof payload;
@@ -158,12 +171,17 @@ export async function POST(
         actingManagerId: true,
         reporterId: true,
         deployReviewerId: true,
+        deployReviewer: {
+          select: { status: true, agent: { select: { deactivatedAt: true } } },
+        },
         deploymentStatus: true,
+        completionReviewStatus: true,
+        completionReviewCandidateSha: true,
         approvedOn: true,
         branchName: true,
         commitPrefix: true,
         deletedAt: true,
-        project: { select: { slug: true } },
+        project: { select: { slug: true, repositoryPath: true } },
       },
     }),
   ]);
@@ -181,11 +199,330 @@ export async function POST(
     username: agent.user.username,
   };
 
+  // Whole-Epic acceptance is the mandatory gate between the last accepted
+  // child Task and Done. It deliberately reuses the selected Deploy Reviewer
+  // identity (Monitor fallback) without coupling acceptance to deployment.
+  if (
+    action === "completion_review_approve" ||
+    action === "completion_review_reject" ||
+    action === "completion_review_retry"
+  ) {
+    const hasActiveExplicitReviewer = Boolean(
+      epic.deployReviewerId && epic.deployReviewer?.status === "active" && epic.deployReviewer.agent && !epic.deployReviewer.agent.deactivatedAt,
+    );
+    const isCompletionReviewer = hasActiveExplicitReviewer
+      ? epic.deployReviewerId === agent.user.id
+      : agent.role === "monitor";
+    if (!isCompletionReviewer) {
+      return NextResponse.json({ error: "Only the Epic's Deploy Reviewer (or Monitor fallback) can resolve whole-Epic acceptance" }, { status: 403 });
+    }
+    if (epic.status !== "Review") {
+      return NextResponse.json({ error: "Epic must be in Review for whole-Epic acceptance", epicStatus: epic.status }, { status: 409 });
+    }
+
+    if (action === "completion_review_retry") {
+      if (epic.completionReviewStatus !== "Operational Error") {
+        return NextResponse.json({ error: "Only an operationally failed acceptance preparation can be retried" }, { status: 409 });
+      }
+      await db.epic.update({
+        where: { id: epic.id },
+        data: {
+          completionReviewStatus: "Preparing",
+          completionReviewCandidateSha: null,
+          completionReviewRequestedAt: null,
+          completionReviewCompletedAt: null,
+          completionReviewLastError: null,
+        },
+      });
+      const queued = await enqueueEpicCompletionReview(epic.id).catch((error) => ({
+        enqueued: false,
+        blockedByFailedJob: false,
+        enqueueError: String(error instanceof Error ? error.message : error).slice(0, 4000),
+      }));
+      if (queued.blockedByFailedJob || "enqueueError" in queued) {
+        const reason = "enqueueError" in queued
+          ? queued.enqueueError
+          : "The failed repository-runner job requires operator recovery before retry.";
+        await db.epic.update({
+          where: { id: epic.id },
+          data: {
+            completionReviewStatus: "Operational Error",
+            completionReviewLastError: reason,
+          },
+        });
+        return NextResponse.json({ error: reason }, { status: 409 });
+      }
+      await db.activityLog.create({
+        data: {
+          projectId: epic.projectId,
+          userId: agent.user.id,
+          kind: "epic.completion_review.retry",
+          targetAgent: agent.slug,
+          payload: JSON.stringify({ epicId: epic.id, enqueued: queued.enqueued }),
+        },
+      });
+      await recordPmChannelRunWorkflowAction({ epicId: epic.id, agentSlug: agent.slug, messageId, action });
+      revalidatePath(`/projects/${epic.project.slug}/epics/${epic.id}`);
+      publishBoardTouch(epic.projectId);
+      return NextResponse.json({ ok: true, epicId: epic.id, completionReviewStatus: "Preparing" });
+    }
+
+    if (epic.completionReviewStatus !== "Pending") {
+      return NextResponse.json({
+        error: "Epic is not awaiting a whole-Epic acceptance decision",
+        completionReviewStatus: epic.completionReviewStatus,
+      }, { status: 409 });
+    }
+    const report = parseCompletionReviewReport(payload.report);
+    if (!report) {
+      return NextResponse.json({
+        error: "report requires summary, 1-50 requirement rows, 1-30 validation rows, and residualRisks; every row requires evidence and Pass/Partial/Fail status",
+      }, { status: 400 });
+    }
+
+    if (action === "completion_review_approve") {
+      if (!completionReviewReportCanApprove(report)) {
+        return NextResponse.json({ error: "Approval requires every requirement and combined validation check to be Pass; use completion_review_reject" }, { status: 400 });
+      }
+      const reportBody = renderCompletionReviewReport(report, "APPROVED");
+      await db.$transaction(async (tx) => {
+        await tx.epic.update({
+          where: { id: epic.id },
+          data: { completionReviewStatus: "Approval Pending", completionReviewLastError: null },
+        });
+        await tx.agentChatMessage.create({
+          data: {
+            projectId: epic.projectId,
+            taskId: null,
+            epicId: epic.id,
+            agentSlug: "room",
+            senderUserId: agent.user!.id,
+            body: reportBody,
+            allowDescriptionEdit: false,
+            originChannel: "chat",
+          },
+        });
+        await tx.activityLog.create({
+          data: {
+            projectId: epic.projectId,
+            userId: agent.user!.id,
+            kind: "epic.completion_review.approval_requested",
+            targetAgent: agent.slug,
+            payload: JSON.stringify({
+              epicId: epic.id,
+              candidateSha: epic.completionReviewCandidateSha,
+              report,
+            }),
+          },
+        });
+      });
+      const queued = await enqueueEpicCompletionReviewApproval({
+        epicId: epic.id,
+        projectId: epic.projectId,
+        requestedByUserId: agent.user.id,
+        requestedByUsername: agent.slug,
+        expectedCandidateSha: epic.completionReviewCandidateSha,
+      }).catch((error) => ({
+        enqueued: false,
+        blockedByFailedJob: false,
+        enqueueError: String(error instanceof Error ? error.message : error).slice(0, 4000),
+      }));
+      if (queued.blockedByFailedJob || "enqueueError" in queued) {
+        const reason = "enqueueError" in queued
+          ? queued.enqueueError
+          : "A failed approval-verification job requires operator recovery.";
+        await db.epic.update({
+          where: { id: epic.id },
+          data: {
+            completionReviewStatus: "Operational Error",
+            completionReviewLastError: reason,
+          },
+        });
+        return NextResponse.json({ error: `${reason} The Epic remains in Review.` }, { status: 409 });
+      }
+      await recordPmChannelRunWorkflowAction({ epicId: epic.id, agentSlug: agent.slug, messageId, action });
+      revalidatePath(`/projects/${epic.project.slug}/epics/${epic.id}`);
+      publishBoardTouch(epic.projectId);
+      return NextResponse.json({
+        ok: true,
+        epicId: epic.id,
+        epicStatus: "Review",
+        completionReviewStatus: "Approval Pending",
+        candidateSha: epic.completionReviewCandidateSha,
+      });
+    }
+
+    // completion_review_reject: reopen one implicated task, or create one
+    // narrowly-scoped repair task when the issue belongs to the combined Epic.
+    const requestedTaskId = cleanText(payload.taskId, 100);
+    const flaggedTask = requestedTaskId
+      ? await db.task.findFirst({
+          where: { id: requestedTaskId, epicId: epic.id, parentTaskId: null, deletedAt: null },
+          select: { id: true, title: true, status: true, assigneeId: true },
+        })
+      : null;
+    if (requestedTaskId && !flaggedTask) {
+      return NextResponse.json({ error: "taskId must reference a live top-level child task of this Epic" }, { status: 400 });
+    }
+    const reportBody = renderCompletionReviewReport(report, "CHANGES REQUESTED");
+    const minRank = await db.task.aggregate({
+      where: { projectId: epic.projectId, status: "To Do", deletedAt: null },
+      _min: { rank: true },
+    });
+    const now = new Date();
+    const repair = await db.$transaction(async (tx) => {
+      await tx.epic.update({
+        where: { id: epic.id },
+        data: {
+          status: "In Progress",
+          statusChangedAt: now,
+          completionReviewStatus: "Changes Requested",
+          completionReviewCompletedAt: now,
+          completionReviewLastError: null,
+        },
+      });
+      let task: { id: string; title: string; assigneeId: string | null; created: boolean };
+      if (flaggedTask) {
+        await tx.comment.create({
+          data: { taskId: flaggedTask.id, userId: agent.user!.id, body: `Whole-Epic acceptance review returned this task for repair:\n\n${reportBody}` },
+        });
+        await tx.task.update({
+          where: { id: flaggedTask.id },
+          data: {
+            status: "To Do",
+            statusChangedAt: now,
+            archivedAt: null,
+            archivedById: null,
+            rank: (minRank._min.rank ?? 0) - 1,
+          },
+        });
+        await tx.activityLog.create({
+          data: {
+            projectId: epic.projectId,
+            taskId: flaggedTask.id,
+            userId: agent.user!.id,
+            kind: "task.move",
+            targetAgent: agent.slug,
+            payload: JSON.stringify({ from: flaggedTask.status, to: "To Do", via: "completion_review_reject" }),
+          },
+        });
+        task = { id: flaggedTask.id, title: flaggedTask.title, assigneeId: flaggedTask.assigneeId, created: false };
+      } else {
+        const created = await tx.task.create({
+          data: {
+            projectId: epic.projectId,
+            epicId: epic.id,
+            parentTaskId: null,
+            workItemKey: await allocateWorkItemKey(epic.projectId, tx),
+            title: "Address whole-Epic acceptance review findings",
+            description: reportBody.slice(0, 8000),
+            status: "To Do",
+            statusChangedAt: now,
+            rank: (minRank._min.rank ?? 0) - 1,
+            reporterId: epic.reporterId,
+            actingManagerId: null,
+            branchName: null,
+            commitPrefix: null,
+          },
+          select: { id: true, title: true, assigneeId: true },
+        });
+        await tx.activityLog.create({
+          data: {
+            projectId: epic.projectId,
+            taskId: created.id,
+            userId: agent.user!.id,
+            kind: "task.create",
+            targetAgent: agent.slug,
+            payload: JSON.stringify({ epicId: epic.id, via: "completion_review_reject" }),
+          },
+        });
+        task = { ...created, created: true };
+        const assignment = await assignOpenEpicTasks(tx, {
+          epicId: epic.id,
+          projectId: epic.projectId,
+          actorUserId: agent.user!.id,
+          excludeUserIds: [agent.user!.id, epic.reporterId, epic.actingManagerId],
+          via: "completion_review_reject",
+        });
+        const assignedRepair = assignment.assignments.find((row) => row.task.id === created.id);
+        if (assignedRepair) task.assigneeId = assignedRepair.worker.id;
+      }
+      await tx.agentChatMessage.create({
+        data: {
+          projectId: epic.projectId,
+          taskId: null,
+          epicId: epic.id,
+          agentSlug: "room",
+          senderUserId: agent.user!.id,
+          body: `${reportBody}\n\nRepair task: ${task.title} (${task.id})`,
+          allowDescriptionEdit: false,
+          originChannel: "chat",
+        },
+      });
+      await tx.activityLog.create({
+        data: {
+          projectId: epic.projectId,
+          userId: agent.user!.id,
+          kind: "epic.completion_review.reject",
+          targetAgent: agent.slug,
+          payload: JSON.stringify({ epicId: epic.id, taskId: task.id, candidateSha: epic.completionReviewCandidateSha, report }),
+        },
+      });
+      await tx.activityLog.create({
+        data: {
+          projectId: epic.projectId,
+          userId: agent.user!.id,
+          kind: "epic.status",
+          targetAgent: agent.slug,
+          payload: JSON.stringify({ epicId: epic.id, from: "Review", to: "In Progress", via: "completion_review_reject" }),
+        },
+      });
+      return task;
+    });
+
+    if (repair.assigneeId) {
+      await sendTaskWorkflowNotification({
+        taskId: repair.id,
+        targetUserId: repair.assigneeId,
+        actor,
+        reason: "review_feedback",
+        body: repair.created
+          ? [
+              `Whole-Epic acceptance created and assigned repair task "${repair.title}" in To Do.`,
+              "Read the structured acceptance report in the task, post one concise technical Action Plan, and wait for reviewer approval before starting.",
+              "Completing the repair will produce a new frozen combined candidate and a fresh whole-Epic review.",
+              "Do not post an acknowledgement-only response.",
+            ].join("\n")
+          : [
+              `Whole-Epic acceptance returned "${repair.title}" to To Do at the front of the queue.`,
+              "Read the structured acceptance report on the task, add checklist items for every finding, and address it before other work.",
+              "Move the task through its normal Action Plan/start/review lifecycle. A new combined candidate review will run after all Epic tasks are Done again.",
+              "Do not post an acknowledgement-only response.",
+            ].join("\n"),
+      });
+    }
+    await recordPmChannelRunWorkflowAction({ epicId: epic.id, agentSlug: agent.slug, messageId, action });
+    revalidatePath(`/projects/${epic.project.slug}/epics/${epic.id}`);
+    revalidatePath(`/projects/${epic.project.slug}/tasks/${repair.id}`);
+    publishBoardTouch(epic.projectId);
+    return NextResponse.json({
+      ok: true,
+      epicId: epic.id,
+      epicStatus: "In Progress",
+      completionReviewStatus: "Changes Requested",
+      repairTaskId: repair.id,
+      repairTaskCreated: repair.created,
+    });
+  }
+
   // Deploy-review actions belong to the epic's Deploy Reviewer (or the monitor
   // agent when none is set) — a distinct role from the acting manager who runs
   // the queue actions below.
   if (action === "deploy_review_approve" || action === "deploy_review_reject") {
-    const isDeployReviewer = epic.deployReviewerId
+    const hasActiveExplicitReviewer = Boolean(
+      epic.deployReviewerId && epic.deployReviewer?.status === "active" && epic.deployReviewer.agent && !epic.deployReviewer.agent.deactivatedAt,
+    );
+    const isDeployReviewer = hasActiveExplicitReviewer
       ? epic.deployReviewerId === agent.user.id
       : agent.role === "monitor";
     if (!isDeployReviewer) {
@@ -213,7 +550,7 @@ export async function POST(
             senderUserId: agent.user!.id,
             body: [
               `Deploy reviewer @${agent.slug} APPROVED this Epic's contribution for merge.`,
-              "The whole-contribution review found no unaddressed requests and no security/data-integrity risk.",
+              "The post-acceptance deployment review found no unresolved rollout, migration, configuration, security, or data-integrity risk.",
               "Awaiting the merge to the production branch; the deployment will resolve automatically once the work lands there.",
             ].join("\n"),
             allowDescriptionEdit: false,

@@ -939,17 +939,51 @@ assignment. If no assignment occurs, it counts remaining child Tasks with:
 
 If the count is zero and the Epic is `To Do` or `In Progress`:
 
-1. Epic becomes `Done`;
-2. `statusChangedAt` is updated;
-3. `epic.status` records action `last_task_done`;
-4. Epic-Done cleanup is enqueued.
+1. Epic becomes `Review`, never `Done`;
+2. `completionReviewStatus` becomes `Preparing`;
+3. `epic.status` records action `completion_review_required`;
+4. the privileged repository runner publishes/freezes the combined candidate;
+5. the selected Deploy Reviewer, or the Monitor fallback, receives the
+   mandatory whole-Epic acceptance review.
 
 Lightweight `SubTask` rows do not affect this count. One blocked, unassigned,
-Backlog, To Do, In Progress, or Review Task prevents automatic Epic completion.
+Backlog, To Do, In Progress, or Review Task prevents acceptance preparation.
+
+### Whole-Epic acceptance review
+
+Before reviewer dispatch, the runner requires the published candidate to:
+
+- contain every repository-touching child's exact `reviewedSha`;
+- have every repository run in `completed` phase;
+- match the local Epic branch when that ref exists;
+- have a clean Epic worktree at that exact SHA when one is registered.
+
+The candidate SHA is stored on the Epic and is immutable for the review. The
+reviewer receives the Epic request/attachments, a child-task evidence manifest,
+the combined branch/SHA, one-shot workflow grant, and short-lived per-child
+context grants. Task histories stay out of the initial prompt and are fetched
+individually, preventing a long Epic from consuming the review turn before the
+combined code/tests are inspected. The reviewer must submit
+one structured report containing:
+
+- a `Pass | Partial | Fail` row for every original Epic requirement;
+- a `Pass | Fail` row for every combined regression/end-to-end check;
+- a concise combined assessment and residual-risk statement.
+
+`completion_review_approve` is rejected unless every row is `Pass`. Approval
+first becomes `Approval Pending`; the runner then re-checks origin SHA,
+reviewed-child containment, and worktree hygiene. Only that verified approval
+moves `Review → Done` with action `epic_review_done`.
+
+`completion_review_reject` moves the Epic back to `In Progress` and either
+reopens the implicated child at the front of To Do or creates a focused repair
+Task for a cross-task gap. Completing the repair produces a new candidate and a
+new review. `Operational Error` leaves the Epic in Review and permits an
+explicit `completion_review_retry` after the condition is fixed.
 
 ### Epic-Done cleanup
 
-The cleanup runner:
+Cleanup begins only after verified whole-Epic approval. The cleanup runner:
 
 1. confirms the Epic is still Done;
 2. waits for any legacy pending child merge evidence;
@@ -962,17 +996,18 @@ The cleanup runner:
 9. records `pm.epic.cleanup` and `pm.epic.publish.ok`.
 
 The Epic integration branch remains as the published record. If the Epic branch
-cannot be published, the runner moves the Epic from Done back to `Review` and
-records `pm.epic.publish.fail`.
+cannot be published, the runner moves the Epic from Done back to `Review`, marks
+the acceptance state `Operational Error`, and records `pm.epic.publish.fail`.
 
 ### Deployment remains separate
 
-Last-Task completion does not:
+Last-Task completion or acceptance review does not:
 
 - create or merge a pull request;
 - mark deployment approved;
 - run an application deployment merely because delivery is Done;
-- wake the deploy reviewer solely for the Done transition;
+- approve deployment (the same selected agent identity may perform both
+  distinct reviews at different times);
 - remove the Epic integration branch.
 
 Deployment proceeds only through its own configured provider, approval, merge
@@ -990,6 +1025,9 @@ detection, and deployment-status workflow.
 | Finalize | Concrete Git/cleanup failure | front of To Do | `action_required` | assignee; not Reviewer |
 | Finalize | Operational | remains Review | retry then `operational_error` | operator/reporter evidence |
 | Reviewer dispatch | Missing/inactive/human target or delivery failure | remains Review | `review_ready` | none; audit exposes failure |
+| Epic acceptance preparation | Missing/divergent candidate, missing child SHA, dirty/stale Epic worktree | Epic remains Review | `Operational Error` | reviewer/Monitor evidence; no cleanup |
+| Epic acceptance | Partial/Fail requirement or failed/missing combined evidence | Epic returns In Progress | repair task reopened/created | assignee or acting manager |
+| Epic acceptance approval verify | Origin SHA moved or containment/worktree check changed | Epic remains Review | `Operational Error` | reviewer/Monitor evidence; no cleanup |
 | Epic cleanup | Publish failure | Epic back to Review | child state preserved where unsafe | operator-visible comment/audit |
 
 ## Audit vocabulary
@@ -1009,7 +1047,10 @@ Useful activity kinds include:
   `pm.repo.verify.enqueue`, `pm.repo.verify.ok`,
   `pm.repo.verify.warning`, `pm.repo.verify.fail`,
   `pm.repo.verify.operational_error`, `task.review.accepted`,
-  `pm.epic.merge.ok`, `pm.epic.cleanup`, `pm.epic.publish.ok`,
+  `pm.epic.merge.ok`, `epic.completion_review.requested`,
+  `epic.completion_review.approval_requested`,
+  `epic.completion_review.approve`, `epic.completion_review.reject`,
+  `epic.completion_review.operational_error`, `pm.epic.cleanup`, `pm.epic.publish.ok`,
   `pm.epic.publish.fail`;
 - queue: `task.workflow.next_assignment_skipped`.
 

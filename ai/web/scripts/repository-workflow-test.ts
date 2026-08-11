@@ -103,6 +103,8 @@ const verifier = readFileSync(join(root, "scripts/pm-verify-branch-pushed.ts"), 
 const finalization = readFileSync(join(root, "lib/tasks/review-automation.ts"), "utf8");
 const repositoryRunner = readFileSync(join(root, "lib/deploy/epic-merge.ts"), "utf8");
 const workflowRoute = readFileSync(join(root, "app/api/agent/tasks/[taskId]/workflow/route.ts"), "utf8");
+const epicWorkflowRoute = readFileSync(join(root, "app/api/agent/epics/[epicId]/workflow/route.ts"), "utf8");
+const epicNotifications = readFileSync(join(root, "lib/agents/workflow/notifications/epic.ts"), "utf8");
 
 assert(
   handoff.includes('status: "To Do"') &&
@@ -120,6 +122,33 @@ assert(
     repositoryRunner.includes('kind: "finalize"') &&
     repositoryRunner.includes('phase: "completed"'),
   "review acceptance must remain in Review until repository finalization completes",
+);
+assert(
+  finalization.includes('completionReviewStatus: "Preparing"') &&
+    finalization.includes("enqueueEpicCompletionReview") &&
+    !finalization.includes("enqueueEpicDoneCleanup"),
+  "the final child must start whole-Epic review without completing or cleaning the Epic",
+);
+assert(
+  repositoryRunner.includes('kind: "review"') &&
+    repositoryRunner.includes('kind: "review-approval"') &&
+    repositoryRunner.includes("validateCompletionReviewCandidate") &&
+    repositoryRunner.includes("inspectEpicWorktree") &&
+    repositoryRunner.includes('action: "epic_review_done"'),
+  "the repository runner must freeze and re-verify the combined candidate before Epic Done",
+);
+assert(
+  epicWorkflowRoute.includes('"completion_review_approve"') &&
+    epicWorkflowRoute.includes("parseCompletionReviewReport") &&
+    epicWorkflowRoute.includes("completionReviewReportCanApprove") &&
+    epicWorkflowRoute.includes("enqueueEpicCompletionReviewApproval"),
+  "whole-Epic approval must require a structured all-Pass report and privileged final verification",
+);
+assert(
+  epicNotifications.includes("linkedTasks") &&
+    epicNotifications.includes("createContextGrantUrl") &&
+    epicNotifications.includes("WHOLE-EPIC CHILD TASK CONTEXT GRANTS"),
+  "the reviewer turn must expose bounded per-child context grants instead of injecting every Task thread",
 );
 assert(
   finalization.includes("task.repositoryRun && !args.repositoryFinalized") &&

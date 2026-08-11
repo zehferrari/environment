@@ -45,7 +45,7 @@ Backlog | To Do | In Progress | Review | Done
 Epic:
 
 ```text
-Backlog | To Do | In Progress | Done
+Backlog | To Do | In Progress | Review | Done
 ```
 
 Tasks under an Epic are agent-actionable only while that Epic is
@@ -54,7 +54,8 @@ Tasks under an Epic are agent-actionable only while that Epic is
 Approved | Successfully Deployed | Deployment Error` — and setting it to
 `Ready to Deploy` starts the deployment flow (see
 [Deployment](#deployment) below). Agents cannot set or change Epic
-status — humans (and the deploy flow) move Epics.
+status — humans move planning states, while the completion/deploy workflows own
+the Review/Done acceptance transitions.
 
 See [`../WORKFLOW.md`](../WORKFLOW.md) § *Picking your next task* and
 § *Working a Mission Control task* for what each status authorises.
@@ -158,12 +159,18 @@ workspace group.
   assignee**; they carry a worker pool instead.
 - `Epic.workers` — the coding-agent pool the acting manager assigns
   child tasks from (ordered queue, one active task per pool worker).
-- `Epic.deployReviewerId` — the reviewer for the deploy-review pass when
-  the Epic's `deploymentStatus` reaches `Ready to Deploy`.
-- `Epic.status` — `Backlog` | `To Do` | `In Progress` | `Done`.
+- `Epic.deployReviewerId` — the reviewer for both the mandatory whole-Epic
+  acceptance pass and the later optional deploy-review pass. When unset or
+  inactive, each pass falls back to the unique active Monitor Agent.
+- `Epic.status` — `Backlog` | `To Do` | `In Progress` | `Review` | `Done`.
   Tasks under an Epic are agent-actionable only while the Epic is
   **To Do** or **In Progress**; agents cannot change Epic status.
   Deployment state lives on `deploymentStatus`, never on `status`.
+- `Epic.completionReviewStatus` — mandatory combined-delivery gate after the
+  last child Task: `Not Required | Preparing | Pending | Approval Pending |
+  Approved | Changes Requested | Operational Error`. The frozen origin SHA is
+  stored in `completionReviewCandidateSha`; an operational reason is retained
+  in `completionReviewLastError` and shown on the Epic.
 - `Task.deploymentStatus` / `Epic.deploymentStatus` — deployment state
   (default `Not Required`). Humans are authoritative; only the monitor
   agent writes result statuses. See [Deployment](#deployment).
@@ -175,6 +182,15 @@ workspace group.
 Standalone Tasks (no Epic, no parent task) and Epics carry the
 deployment pipeline; Epic-child tasks deploy through their Epic, so
 their own `deploymentStatus` is never set.
+
+Before this optional deployment lane, the last accepted child moves its Epic
+to `Review`. The repository runner freezes the combined origin candidate,
+checks reviewed-child containment and Epic-worktree hygiene, and wakes the
+selected reviewer/Monitor. The reviewer must submit a structured requirement
+matrix and combined test evidence. Only an all-Pass report followed by the
+runner's immutable-SHA recheck moves the Epic to `Done`; rejection reopens or
+creates a repair Task. This acceptance pass is required even when deployment is
+`Not Required`.
 
 1. Setting an Epic's `deploymentStatus` to **Ready to Deploy** starts
    the deploy review: PM prompts the Epic's deploy reviewer with the

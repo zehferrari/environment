@@ -1152,6 +1152,7 @@ export default async function EpicDetailPage({
                           <option value="Backlog">Backlog</option>
                           <option value="To Do">To Do</option>
                           <option value="In Progress">In Progress</option>
+                          <option value="Review" disabled={epic.status !== "Review"}>Review</option>
                           <option value="Done">Done</option>
                         </select>
                       </label>
@@ -1180,7 +1181,7 @@ export default async function EpicDetailPage({
                           <AvatarCombobox formId="epicMain" name="actingManagerId" defaultValue={epic.actingManagerId ?? ""} options={principalOptions} emptyLabel="No acting manager" ariaLabel="Acting manager" />
                         </div>
                         <div className="min-w-0">
-                          <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Deploy reviewer</span>
+                          <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Acceptance / deploy reviewer</span>
                           <AvatarCombobox formId="epicMain" name="deployReviewerId" defaultValue={epic.deployReviewerId ?? ""} options={workerOptions} emptyLabel="Use Monitor Agent" ariaLabel="Deploy reviewer" />
                         </div>
                       </div>
@@ -1231,6 +1232,24 @@ export default async function EpicDetailPage({
                         </div>
                       </div>
                     </div>
+
+                    {epic.status === "Review" || epic.completionReviewStatus !== "Not Required" ? (
+                      <div className="space-y-1 rounded-card border border-amber-500/40 bg-amber-500/[0.08] p-card text-caption">
+                        <div className="text-micro font-semibold uppercase tracking-wider text-text-muted">Whole-Epic acceptance</div>
+                        <div className="font-semibold text-text">{epic.completionReviewStatus}</div>
+                        {epic.completionReviewCandidateSha ? (
+                          <div className="break-all font-mono text-micro text-text-muted" title={epic.completionReviewCandidateSha}>
+                            Candidate {epic.completionReviewCandidateSha}
+                          </div>
+                        ) : null}
+                        {epic.completionReviewLastError ? (
+                          <p className="whitespace-pre-wrap text-crit">{epic.completionReviewLastError}</p>
+                        ) : null}
+                        {epic.status === "Review" ? (
+                          <p className="text-text-muted">Done and branch cleanup remain locked until the selected reviewer or Monitor fallback approves the combined implementation.</p>
+                        ) : null}
+                      </div>
+                    ) : null}
 
                     <div className="grid grid-cols-2 gap-3">
                       <form

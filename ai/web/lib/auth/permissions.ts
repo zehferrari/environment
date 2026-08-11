@@ -1,5 +1,7 @@
 import type { Prisma } from "@prisma/client";
+import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
+import { SESSION_RECOVERY_PATH } from "@/lib/auth/session-recovery";
 import { db } from "@/lib/db";
 
 export type Viewer = {
@@ -30,7 +32,12 @@ export async function getViewer(): Promise<Viewer | null> {
 
 export async function requireViewer(): Promise<Viewer> {
   const viewer = await getViewer();
-  if (!viewer) throw new Error("Unauthenticated");
+  // Middleware can verify the JWT signature without a database lookup, while
+  // Auth.js intentionally re-checks account status and passwordSetAt here. A
+  // stale but correctly signed browser token can therefore pass middleware
+  // and fail here. Recover it as an expired session instead of throwing a 500
+  // from every concurrently rendered layout/page.
+  if (!viewer) redirect(SESSION_RECOVERY_PATH);
   return viewer;
 }
 

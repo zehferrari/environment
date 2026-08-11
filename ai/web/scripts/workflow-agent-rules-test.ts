@@ -110,6 +110,11 @@ const epicActions = readFileSync(join(root, "lib/epics/actions.ts"), "utf8");
 assert(!epicActions.includes("effectiveEpicBranchName(epic)"), "UI-created Epic Tasks must not persist a generated Epic branch");
 assert(epicActions.includes("branchName: null"), "UI-created Epic Tasks must retain a null branch override");
 assert(epicActions.includes("commitPrefix: null"), "UI-created Epic Tasks must retain a null prefix override");
+assert(
+  epicActions.includes('completionReviewStatus !== "Approved"') &&
+    epicActions.includes("cannot enter Done until its whole-Epic acceptance review is approved"),
+  "human Epic edits must not bypass mandatory whole-Epic acceptance",
+);
 
 const projectPage = readFileSync(join(root, "app/(app)/projects/[slug]/page.tsx"), "utf8");
 assert(projectPage.includes("branchName: null"), "board-created Tasks must retain a null branch override");
@@ -122,7 +127,12 @@ assert(taskPage.includes('defaultValue={task.branchName ?? ""}'), "the Task form
 assert(taskPage.includes('defaultValue={task.commitPrefix ?? ""}'), "the Task form must not submit an inherited prefix as an override");
 
 const reviewAutomation = readFileSync(join(root, "lib/tasks/review-automation.ts"), "utf8");
-assert(reviewAutomation.includes('status: "Done"'), "last Epic task completion must move the Epic to Done");
+assert(
+  reviewAutomation.includes('status: "Review"') &&
+    reviewAutomation.includes('completionReviewStatus: "Preparing"') &&
+    reviewAutomation.includes("enqueueEpicCompletionReview"),
+  "last Epic task completion must enter and enqueue mandatory whole-Epic acceptance review",
+);
 assert(reviewAutomation.includes("remainingOpenTasks === 0"), "the Epic Done rollup must only happen on the last open Epic task");
 
 const taskNotifications = readFileSync(join(root, "lib/agents/workflow/notifications/task.ts"), "utf8");

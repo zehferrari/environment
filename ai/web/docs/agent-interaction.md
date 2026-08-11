@@ -615,14 +615,16 @@ task; In Progress: verify every sub-task is ticked, then
 `ready_for_review`; Review: a re-send of the current state. Each request
 is logged as a `task.workflow.turn_requested` activity row.
 
-### Epic workflow endpoint (acting managers)
+### Epic workflow endpoint
 
 ```text
 POST /api/agent/epics/<epicId>/workflow
 ```
 
-Same one-shot-token semantics as the task endpoint, restricted to the
-Epic's acting manager. Allowed actions:
+Same one-shot-token semantics as the task endpoint. Queue actions are
+restricted to the Epic's acting manager; acceptance/deployment actions are
+restricted to the selected Deploy Reviewer or unique Monitor fallback.
+Acting-manager actions:
 
 - `create_tasks` — create the Epic's implementation tasks from the
   approved Epic Action Plan (only when the Epic has no child tasks yet).
@@ -637,6 +639,48 @@ Epic's acting manager. Allowed actions:
   task, and they become assignable once the blocker reaches Done.
 - `advance_queue` — promote the Epic's Backlog tasks to To Do, then
   assign like `assign_next` (same per-worker availability rules).
+
+When the last child Task is accepted, PM moves the Epic to `Review` and the
+repository runner freezes a combined candidate SHA. It verifies that every
+repository-touching child's `reviewedSha` is contained by origin, the local
+Epic branch matches origin, and any registered Epic worktree is clean at that
+SHA. It then wakes the completion reviewer with the original Epic context and
+child-task evidence manifest. The trusted turn also contains one short-lived
+context URL per child Task: fetch those histories individually for outcomes and
+material review feedback instead of injecting every long Task thread into the
+initial prompt.
+
+Completion-review actions:
+
+- `completion_review_approve` — requires a structured `report` whose original
+  requirement rows and combined validation rows are all `Pass`. PM re-verifies
+  the immutable candidate before moving the Epic to Done and enqueuing cleanup.
+- `completion_review_reject` — use when any requirement is Partial/Fail, a
+  combined check fails, or evidence/risk is unresolved. Include `taskId` when
+  one existing child owns the repair; otherwise PM creates a focused repair
+  Task. The Epic returns to In Progress.
+- `completion_review_retry` — only after `Operational Error`, and only after the
+  repository/workflow condition has been fixed.
+
+The required report shape is:
+
+```json
+{
+  "summary": "Combined assessment",
+  "requirements": [
+    { "requirement": "Original Epic request", "status": "Pass | Partial | Fail", "evidence": "Specific evidence" }
+  ],
+  "tests": [
+    { "command": "Regression or E2E check", "status": "Pass | Fail", "evidence": "Result evidence" }
+  ],
+  "residualRisks": "None identified, or the remaining risk"
+}
+```
+
+Do not use task-level approvals as a substitute, paste raw tool output into the
+report, or approve from a moving branch. This gate applies even when deployment
+is `Not Required`; the existing deploy-review actions remain a separate
+post-Done lane.
 
 ### PM-owned commit + Review verification
 

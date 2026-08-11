@@ -24,7 +24,7 @@ import { getActorVisibility, visibleActivityRows, visibleActivityWhere } from "@
 export const dynamic = "force-dynamic";
 
 const TASK_STATUSES = ["Backlog", "To Do", "In Progress", "Review", "Done"] as const;
-const EPIC_STATUSES = ["Backlog", "To Do", "In Progress", "Done"] as const;
+const EPIC_STATUSES = ["Backlog", "To Do", "In Progress", "Review", "Done"] as const;
 const ACTIVE_TASK_STATUSES = new Set(["Backlog", "To Do", "In Progress", "Review"]);
 const ACTIVITY_FEED_LIMIT = 20;
 
@@ -161,7 +161,7 @@ async function createProject(
 function emptyStats(): ProjectDashboardStats {
   return {
     task: { Backlog: 0, "To Do": 0, "In Progress": 0, Review: 0, Done: 0 },
-    epic: { Backlog: 0, "To Do": 0, "In Progress": 0, Done: 0 },
+    epic: { Backlog: 0, "To Do": 0, "In Progress": 0, Review: 0, Done: 0 },
     blocked: 0,
     recentActivityAt: null,
     deployment: emptyDeploymentRollup(),

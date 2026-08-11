@@ -9,6 +9,11 @@
 //                    leaked remote child refs only after ancestry verification.
 //   kind "checkpoint" — create a PM-owned mid-task commit, merge/push only the
 //                    Epic branch, and keep the task/worktree In Progress.
+//   kind "review"  — publish and freeze the combined Epic candidate, verify
+//                    reviewed child containment/worktree hygiene, then wake
+//                    the whole-Epic reviewer.
+//   kind "review-approval" — re-verify the immutable candidate after reviewer
+//                    approval, move the Epic to Done, and enqueue cleanup.
 //   kind "claim"   — provision and validate a task's linked worktree at the
 //                    In Progress boundary.
 //
@@ -38,7 +43,7 @@ async function main() {
   const job = JSON.parse(readFileSync(jobFile, "utf8")) as
     | EpicMergeJob
     | WorktreeClaimJob;
-  if (job.kind !== "merge" && job.kind !== "cleanup" && job.kind !== "finalize" && job.kind !== "checkpoint" && job.kind !== "claim") {
+  if (job.kind !== "merge" && job.kind !== "cleanup" && job.kind !== "finalize" && job.kind !== "checkpoint" && job.kind !== "review" && job.kind !== "review-approval" && job.kind !== "claim") {
     throw new Error(`Unknown repository job kind: ${(job as { kind?: string }).kind}`);
   }
 

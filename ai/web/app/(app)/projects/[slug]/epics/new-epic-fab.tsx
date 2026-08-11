@@ -176,7 +176,7 @@ export default function NewEpicFab({
               ) : null}
               {canManageAssignments ? (
                 <label className="text-caption">
-                  <span className="mb-1 block text-text-muted">Deploy reviewer</span>
+                  <span className="mb-1 block text-text-muted">Acceptance / deploy reviewer</span>
                   <AvatarCombobox
                     formId="newEpicForm"
                     name="deployReviewerId"

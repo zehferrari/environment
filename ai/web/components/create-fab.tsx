@@ -845,7 +845,7 @@ function FabForm(props: {
                 <Field label="Acting manager">
                   <AvatarCombobox formId={formId} name="actingManagerId" options={principals} emptyLabel="None" ariaLabel="Acting manager" />
                 </Field>
-                <Field label="Deploy reviewer">
+                <Field label="Acceptance / deploy reviewer">
                   <AvatarCombobox formId={formId} name="deployReviewerId" options={principals} emptyLabel="Use Monitor" ariaLabel="Deploy reviewer" />
                 </Field>
               </div>

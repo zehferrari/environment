@@ -4,7 +4,7 @@ import { generateClientMessageId } from "@/lib/agents/ops/client-message-id";
 import { effectiveEpicBranchName } from "@/lib/work-items/branches";
 import { effectiveCommitPrefix } from "@/lib/work-items/keys";
 
-export const DEFAULT_DEPLOY_REVIEW_PROMPT = "Give me a summary of the changes done in the source code (including details of the local and origin branches) plus a report confirming each request of the Epic has been properly addressed and the changes pose no harm to the system in terms of security and data integrity.";
+export const DEFAULT_DEPLOY_REVIEW_PROMPT = "Review the already-accepted frozen Epic contribution for deployment readiness: confirm the approved candidate is the source being proposed, assess deployment/configuration/migration/security/data-integrity risk, and report any required rollout or rollback precautions.";
 
 export function cleanDeployReviewPrompt(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -184,7 +184,7 @@ export async function triggerDeployReview(args: {
     "Deploy-review prompt:",
     prompt,
     "",
-    "This is the pre-merge review of the WHOLE contribution. The individual tasks were already reviewed and accepted — do NOT re-review each task line by line. Assess only (1) security/data-integrity risk across the combined change, and (2) whether the original Epic request is fully delivered.",
+    "This is the optional post-acceptance deployment review. Whole-Epic delivery was already accepted before Done — do not repeat task or requirement review. Confirm the accepted candidate is the contribution being proposed and assess only deployment, migration, configuration, rollout/rollback, security, and data-integrity risk.",
     "Inspect the local worktree/branch and origin branch state, then RESOLVE the review through the Epic workflow endpoint:",
     "- call `deploy_review_approve` if it is safe and complete, or",
     "- call `deploy_review_reject` with a `reason` (and the offending `taskId` when one task is at fault) if you find a genuine gap or risk.",

@@ -60,6 +60,9 @@ export type EpicAgentContextPacket = {
       status: string;
       description: string | null;
       approvedOn: string | null;
+      completionReviewStatus: string;
+      completionReviewCandidateSha: string | null;
+      completionReviewLastError: string | null;
       workers: string[];
       actingManager: string;
       deployReviewer: string;
@@ -312,7 +315,7 @@ function buildEpicWorkflowPrompt(args: {
     {
       messageId: args.messageId,
       token,
-      action: "<advance_queue | assign_next | create_tasks | deploy_review_approve | deploy_review_reject>",
+      action: "<advance_queue | assign_next | create_tasks | completion_review_approve | completion_review_reject | completion_review_retry | deploy_review_approve | deploy_review_reject>",
       summary: "<required for create_tasks: why the new tasks are needed to achieve the existing Epic goal>",
       tasks: [
         {
@@ -321,7 +324,13 @@ function buildEpicWorkflowPrompt(args: {
         },
       ],
       reason: "<required for deploy_review_reject: the technical reason the contribution is not safe to merge>",
-      taskId: "<optional for deploy_review_reject: the child task to send back to To Do>",
+      taskId: "<optional for completion/deploy review rejection: the child task to send back to To Do>",
+      report: {
+        summary: "<required concise combined assessment>",
+        requirements: [{ requirement: "<original Epic request>", status: "<Pass | Partial | Fail>", evidence: "<specific code/runtime evidence>" }],
+        tests: [{ command: "<combined regression or end-to-end check>", status: "<Pass | Fail>", evidence: "<result evidence>" }],
+        residualRisks: "<required; use 'None identified' when appropriate>",
+      },
     },
     null,
     2,
@@ -337,8 +346,15 @@ function buildEpicWorkflowPrompt(args: {
     "- Human approval remains required before queue advancement: only call `advance_queue` or `assign_next` after the Epic is In Progress and approved.",
     "- You must never change Epic status. If the Epic is not In Progress/approved, create or discuss planning artifacts only.",
     "",
+    "WHOLE-EPIC ACCEPTANCE CAPABILITY (only if you are the selected Deploy Reviewer, or Monitor fallback, and the Epic is in Review):",
+    "This is mandatory after the final child Task. Inspect the frozen combined candidate against every original Epic requirement, material child-task review feedback, the complete repository regression gate, integration worktree/ref hygiene, security/data integrity, and required end-to-end scenarios.",
+    "- `completion_review_approve`: submit one structured report only when every requirement and every validation row is Pass. PM re-verifies the immutable origin candidate before moving the Epic to Done and starting cleanup.",
+    "- `completion_review_reject`: submit the structured report when anything is Partial/Fail or evidence is missing. Include taskId when one existing child owns the repair; otherwise PM creates a focused repair task. The Epic reopens to In Progress.",
+    "- `completion_review_retry`: retry candidate preparation only after PM reports an Operational Error and the repository/workflow condition has been resolved.",
+    "- Do not paste raw tool output or post an acknowledgement-only response. The structured report is the visible review record.",
+    "",
     "DEPLOY-REVIEW CAPABILITY (only if you are this Epic's Deploy Reviewer, or the monitor agent when none is set, and the Epic's deployment status is \"Ready to Deploy\"):",
-    "You are performing the pre-merge review of the WHOLE contribution. The individual tasks were already reviewed and accepted — do NOT re-review each task line by line. Assess only (1) whether the combined contribution introduces any security or data-integrity risk, and (2) whether the original Epic request has been fully delivered.",
+    "You are performing an optional post-acceptance deployment review. Whole-Epic delivery was already accepted before Done — do not repeat task or requirement review. Confirm the accepted candidate is the contribution being proposed and assess deployment, migration, configuration, rollout/rollback, security, and data-integrity risk.",
     "- `deploy_review_approve`: the contribution is safe and complete — clear it for merge. It then waits for the merge to the production branch, which resolves the deployment automatically.",
     "- `deploy_review_reject`: you found a genuine gap or risk. Provide `reason` (the technical detail) and, when a single child task is at fault, its `taskId`. PM returns that task AND the Epic to To Do with your reason recorded on the task.",
     "- If a workflow action fully handles the turn and you have nothing substantive to add, reply exactly with the silent reply token from the PM channel prompt.",
@@ -435,6 +451,9 @@ export async function buildEpicAgentContextPacket(args: {
       status: true,
       description: true,
       approvedOn: true,
+      completionReviewStatus: true,
+      completionReviewCandidateSha: true,
+      completionReviewLastError: true,
       createdAt: true,
       updatedAt: true,
       project: {
@@ -534,6 +553,9 @@ export async function buildEpicAgentContextPacket(args: {
             status: epic.status,
             description: epic.description,
             approvedOn: formatDate(epic.approvedOn),
+            completionReviewStatus: epic.completionReviewStatus,
+            completionReviewCandidateSha: epic.completionReviewCandidateSha,
+            completionReviewLastError: epic.completionReviewLastError,
             workers: epic.workers.map((worker) => actorLabel(worker.user)),
             actingManager: actorLabel(epic.actingManager),
             deployReviewer: actorLabel(epic.deployReviewer),
@@ -801,6 +823,8 @@ export function renderEpicAgentContextPacket(packet: EpicAgentContextPacket): st
     `Worker pool: ${epic.workers.length ? epic.workers.join(", ") : "(none)"}`,
     `Acting manager: ${epic.actingManager}`,
     `Deploy reviewer: ${epic.deployReviewer || "(Monitor Agent fallback)"}`,
+    `Whole-Epic acceptance: ${epic.completionReviewStatus}; frozen candidate: ${epic.completionReviewCandidateSha || "(none)"}`,
+    ...(epic.completionReviewLastError ? [`Acceptance operational error: ${epic.completionReviewLastError}`] : []),
   );
   pushDescription(lines, "EPIC DESCRIPTION", epic.description, packet.caps.epicDescriptionMax);
 

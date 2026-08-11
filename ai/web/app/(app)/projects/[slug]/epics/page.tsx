@@ -290,10 +290,11 @@ function relativeUpdated(iso: string): string {
 }
 
 // Status colours match the Tasks grid one-for-one (To Do = sky, In Progress =
-// emerald, Done = lime, Backlog/default = slate).
+// emerald, Review = amber, Done = lime, Backlog/default = slate).
 function statusRowClass(status: string) {
   if (status === "To Do") return "border-l-4 border-l-sky-400 bg-sky-500/[0.10]";
   if (status === "In Progress") return "border-l-4 border-l-emerald-400 bg-emerald-500/[0.11]";
+  if (status === "Review") return "border-l-4 border-l-amber-400 bg-amber-500/[0.13]";
   if (status === "Done") return "border-l-4 border-l-lime-400 bg-lime-500/[0.10]";
   return "border-l-4 border-l-slate-400 bg-panel-soft";
 }
@@ -301,6 +302,7 @@ function statusRowClass(status: string) {
 function statusPillClass(status: string) {
   if (status === "To Do") return "border-sky-500/70 bg-sky-100 text-sky-950 shadow-[inset_0_0_0_1px_rgba(2,132,199,0.18)]";
   if (status === "In Progress") return "border-emerald-500/70 bg-emerald-100 text-emerald-950 shadow-[inset_0_0_0_1px_rgba(5,150,105,0.18)]";
+  if (status === "Review") return "border-amber-500/80 bg-amber-100 text-amber-950 shadow-[inset_0_0_0_1px_rgba(217,119,6,0.22)]";
   if (status === "Done") return "border-lime-600/70 bg-lime-100 text-lime-950 shadow-[inset_0_0_0_1px_rgba(101,163,13,0.18)]";
   return "border-slate-500/60 bg-slate-100 text-slate-950 shadow-[inset_0_0_0_1px_rgba(71,85,105,0.16)]";
 }
