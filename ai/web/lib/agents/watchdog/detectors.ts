@@ -483,22 +483,47 @@ const SESSION_CHURN: WatchdogDetector = {
     "A (task, agent) lane burning sessions or failing runs faster than the window allows is escalated, never auto-repaired.",
   detect: (snapshot) => {
     const since = snapshot.now - WATCHDOG_CHURN_WINDOW_MS;
-    const repairableTaskIds = new Set(
-      snapshot.tasks.filter(isRepairableEpisode).map((task) => task.id),
+    const repairableTasks = new Map(
+      snapshot.tasks
+        .filter(isRepairableEpisode)
+        .map((task) => [task.id, task] as const),
     );
     const sessions = new Map<string, Set<string>>();
     const failures = new Map<string, number>();
+    const latestLaneActivity = new Map<string, number>();
+    const liveLanes = new Set<string>();
+    const scheduledLanes = new Set<string>();
     const laneTask = new Map<string, { taskId: string; agentSlug: string }>();
+
+    for (const continuation of snapshot.continuations) {
+      if (!continuation.taskId) continue;
+      if (!(OPEN_CONTINUATION_STATUSES as readonly string[]).includes(continuation.status)) continue;
+      scheduledLanes.add(`${continuation.taskId}|${continuation.agentSlug}`);
+    }
 
     for (const run of snapshot.runs) {
       if (!run.taskId) continue;
       // Churn is actionable only while the assignee owns an active execution
       // episode. Historical runs on Review/Done/Backlog tasks are evidence,
       // not a reason to page the reporter or pull the implementer back in.
-      if (!repairableTaskIds.has(run.taskId)) continue;
-      if (run.createdAt < since) continue;
+      const task = repairableTasks.get(run.taskId);
+      if (!task || run.agentSlug !== task.assigneeSlug) continue;
+      // A plan/review turn may legitimately use a different session minutes
+      // before approval auto-starts the task. Session churn is an execution
+      // detector, so evidence from the previous board state must not leak into
+      // the new In Progress episode.
+      const executionSince = Math.max(since, task.statusChangedAt ?? 0);
+      if (run.createdAt < executionSince) continue;
       const lane = `${run.taskId}|${run.agentSlug}`;
       laneTask.set(lane, { taskId: run.taskId, agentSlug: run.agentSlug });
+      latestLaneActivity.set(
+        lane,
+        Math.max(
+          latestLaneActivity.get(lane) ?? 0,
+          run.lastEventAt ?? run.streamingAt ?? run.acceptedAt ?? run.createdAt,
+        ),
+      );
+      if (runIsLive(run, snapshot)) liveLanes.add(lane);
       if (run.sessionKey) {
         const bucket = sessions.get(lane) ?? new Set<string>();
         bucket.add(run.sessionKey);
@@ -511,6 +536,13 @@ const SESSION_CHURN: WatchdogDetector = {
 
     const findings: WatchdogFinding[] = [];
     for (const [lane, subject] of laneTask) {
+      // Rotation is diagnostic history, not proof that the task is currently
+      // stalled. Do not page the reporter while an assignee run is live, a
+      // continuation is already armed, or the lane has made recent progress.
+      if (liveLanes.has(lane) || scheduledLanes.has(lane)) continue;
+      if (snapshot.now - (latestLaneActivity.get(lane) ?? snapshot.now) < stallGrace(snapshot)) {
+        continue;
+      }
       const distinctSessions = sessions.get(lane)?.size ?? 0;
       const failed = failures.get(lane) ?? 0;
       const churning = distinctSessions >= WATCHDOG_SESSION_CHURN_THRESHOLD;

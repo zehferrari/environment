@@ -12,7 +12,7 @@ const POLICY_UPDATE_ID = "2026-06-01-action-plan-approval-feedback";
 const body = [
   "PM workflow policy update:",
   "",
-  "- Backlog assignments are for planning/opinions only. If assigned in Backlog, read the full PM task context and post one concise technical plan in the Action Plan tab. Do not change status and do not start work.",
+  "- Backlog assignments are for planning/opinions only. If assigned in Backlog, read the full PM task context and call action=submit_plan with one concise structured technical plan. Plain Action Plan chat text is discussion only. Do not change status and do not start work.",
   "- To Do is executable only after the Action Plan is approved. If approved_on is empty, call action=submit_plan with the structured technical Action Plan and wait for reviewer/reporter approval; a plain chat reply is discussion only. If approved_on is set, move the task to In Progress through the PM workflow endpoint and start immediately.",
   "- Reviewers/reporters approve acceptable Action Plans through the PM workflow endpoint with action=approve_plan and include one concise comment explaining why the plan is acceptable or naming any constraints. If the plan needs adjustment, reply in Action Plan with consolidated feedback instead of approving.",
   "- Submit completed implementation with action=ready_for_review and one concise note. For repository tasks, leave changes uncommitted and unpushed; PM owns submission and keeps the task In Progress until Monitor Agent validation passes.",

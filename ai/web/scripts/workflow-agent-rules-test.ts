@@ -125,6 +125,19 @@ assert(taskPage.includes("data.branchName = newBranch"), "clearing a Task branch
 assert(taskPage.includes("data.commitPrefix = newCommitPrefix"), "clearing a Task prefix override must persist null, not a copied fallback");
 assert(taskPage.includes('defaultValue={task.branchName ?? ""}'), "the Task form must not submit an inherited branch as an override");
 assert(taskPage.includes('defaultValue={task.commitPrefix ?? ""}'), "the Task form must not submit an inherited prefix as an override");
+assert(
+  taskPage.includes("data-structured-action-plan-status") &&
+    taskPage.includes("Messages below are discussion only") &&
+    taskPage.includes("action=submit_plan"),
+  "the Action Plan tab must distinguish durable structured state from discussion chat",
+);
+
+const workflowNudge = readFileSync(join(root, "scripts/pm-workflow-nudge.ts"), "utf8");
+assert(
+  workflowNudge.includes('"pm-action-plan-missing": "To Do"') &&
+    workflowNudge.includes('"pm-action-plan-awaiting-approval": "To Do"'),
+  "monitor plan recovery kinds must survive final-boundary validation for To Do tasks",
+);
 
 const reviewAutomation = readFileSync(join(root, "lib/tasks/review-automation.ts"), "utf8");
 assert(

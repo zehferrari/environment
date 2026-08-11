@@ -240,7 +240,7 @@ Task assignee submits it through the granted workflow endpoint with
 `action=submit_plan` and a structured `actionPlan` object (`summary` plus
 validated `steps`). Free-form text in the Action Plan chat is discussion only;
 it is never executable plan state and does not notify the approver.
-approver chain, in order:
+The approver chain, in order:
 
 1. **Task reviewer** — the first approver. If the task has a reviewer set,
    they review and approve the plan.
@@ -546,14 +546,13 @@ Latency / PM queue/status names:
    twenty minutes) to prevent pathological reply loops. Agents must still work
    through to `ready_for_review` or one precise `flag_blocker`; do not rely on
    progress comments as pause points.
-9. **Action Plan.** The Action Plan message is mandatory for every new
-   assignment before implementation. The approver chain is defined in
-   [Action Plan approval](#action-plan-approval). When a Task Action Plan
-   has an explicit `Deliverables`, `Implementation steps`, `Checklist`,
-   `Subtasks`, or `Milestones` section and the Task has no subtasks yet,
-   PM creates those entries as ordered task-local subtasks for progress
-   tracking. Bullets under `Inputs`, `Rule logic`, context, risks, or
-   open questions are not subtasks.
+9. **Action Plan.** A durable structured Action Plan submitted with
+   `action=submit_plan` is mandatory for every new Task assignment before
+   implementation. The approver chain is defined in
+   [Action Plan approval](#action-plan-approval). When the plan is approved,
+   PM creates its structured steps as ordered task-local checklist entries for
+   progress tracking. Free-form Action Plan messages are discussion only and
+   are never parsed into steps or treated as a submitted plan.
 10. If your task is in `Review` and the reviewer needs changes — or the
     response you were waiting for arrives — the reviewer records it with
     `review_feedback`, which returns the task to the **front** of To Do

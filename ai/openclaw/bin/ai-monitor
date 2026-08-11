@@ -1648,11 +1648,9 @@ def _pm_has_action_plan_since(conn, task_id, user_id, since_s):
         rows = conn.execute(
             """
             SELECT createdAt
-            FROM AgentChatMessage
+            FROM ActionPlanRevision
             WHERE taskId = ?
-              AND senderUserId = ?
-              AND originChannel = 'chat'
-              AND deletedAt IS NULL
+              AND authorId = ?
             ORDER BY createdAt DESC
             LIMIT 20
             """,
@@ -1665,6 +1663,65 @@ def _pm_has_action_plan_since(conn, task_id, user_id, since_s):
         if ts is not None and ts >= since_s:
             return True
     return False
+
+
+def _pm_has_action_plan_feedback_since(conn, task_id, reviewer_id, since_s):
+    """Return true only for reviewer discussion newer than the plan revision.
+
+    Task Action Plans are durable ActionPlanRevision rows. Reviewer feedback is
+    intentionally free-form Action Plan chat, so it remains an
+    AgentChatMessage. Once feedback exists for the latest revision, the worker
+    owns the next turn; repeatedly waking the reviewer would create a feedback
+    loop around an unchanged plan.
+    """
+    if not reviewer_id or since_s is None:
+        return False
+    try:
+        rows = conn.execute(
+            """
+            SELECT createdAt
+            FROM AgentChatMessage
+            WHERE taskId = ?
+              AND senderUserId = ?
+              AND originChannel = 'chat'
+              AND deletedAt IS NULL
+            ORDER BY createdAt DESC
+            LIMIT 20
+            """,
+            (task_id, reviewer_id),
+        ).fetchall()
+    except Exception:
+        return False
+    for row in rows:
+        ts = _parse_pm_ts(row["createdAt"])
+        if ts is not None and ts >= since_s:
+            return True
+    return False
+
+
+def _pm_latest_action_plan_revision_s(conn, task_id, user_id, since_s):
+    """Return the latest durable plan revision timestamp for this assignee."""
+    if since_s is None:
+        since_s = 0
+    try:
+        rows = conn.execute(
+            """
+            SELECT createdAt
+            FROM ActionPlanRevision
+            WHERE taskId = ?
+              AND authorId = ?
+            ORDER BY createdAt DESC
+            LIMIT 20
+            """,
+            (task_id, user_id),
+        ).fetchall()
+    except Exception:
+        return None
+    for row in rows:
+        ts = _parse_pm_ts(row["createdAt"])
+        if ts is not None and ts >= since_s:
+            return ts
+    return None
 
 
 def _pm_active_in_progress_task(conn, assignee_id, task_id):
@@ -2272,19 +2329,18 @@ def probe_pm_workflow(cfg, registry):
             assignee_slug = row["assigneeAgentSlug"] or row["assigneeUsername"]
             # Reviewer fallback mirrors the webapp's resolveReviewOwnerId:
             # epic manager throughout To Do/In Progress, else reporter.
-            reviewer_id = row["actingManagerId"] or (
-                row["epicManagerId"] if row["epicStatus"] in ("To Do", "In Progress") else None
-            ) or row["reporterId"]
-            reviewer_slug = (
-                row["reviewerAgentSlug"]
-                or (row["epicManagerAgentSlug"] if row["epicStatus"] in ("To Do", "In Progress") else None)
-                or row["reporterUsername"]
-            )
-            reviewer_username = (
-                row["reviewerUsername"]
-                or (row["epicManagerUsername"] if row["epicStatus"] in ("To Do", "In Progress") else None)
-                or row["reporterUsername"]
-            )
+            if row["actingManagerId"]:
+                reviewer_id = row["actingManagerId"]
+                reviewer_slug = row["reviewerAgentSlug"] or row["reviewerUsername"]
+                reviewer_username = row["reviewerUsername"]
+            elif row["epicManagerId"] and row["epicStatus"] in ("To Do", "In Progress"):
+                reviewer_id = row["epicManagerId"]
+                reviewer_slug = row["epicManagerAgentSlug"] or row["epicManagerUsername"]
+                reviewer_username = row["epicManagerUsername"]
+            else:
+                reviewer_id = row["reporterId"]
+                reviewer_slug = row["reporterUsername"]
+                reviewer_username = row["reporterUsername"]
 
             # Epic actionability mirrors the webapp's epicAllowsAgentAction:
             # tasks under an epic are workable only while the epic is
@@ -2308,11 +2364,18 @@ def probe_pm_workflow(cfg, registry):
                     row["assigneeUsername"],
                     row["createdAt"],
                 )
-                action_plan_posted = _pm_has_action_plan_since(
+                action_plan_revision_s = _pm_latest_action_plan_revision_s(
                     conn,
                     row["id"],
                     row["assigneeId"],
                     assigned_s,
+                )
+                action_plan_posted = action_plan_revision_s is not None
+                reviewer_responded = _pm_has_action_plan_feedback_since(
+                    conn,
+                    row["id"],
+                    reviewer_id,
+                    action_plan_revision_s,
                 )
                 if not row["approvedOn"]:
                     if changed_age >= warn_todo_s and not action_plan_posted:
@@ -2321,9 +2384,13 @@ def probe_pm_workflow(cfg, registry):
                             "pm-action-plan-missing",
                             assignee_slug,
                             changed_age,
-                            "Post one concise technical Action Plan message and wait for reviewer/reporter approval before starting.",
+                            "Call action=submit_plan with one concise structured Action Plan. Plain Action Plan chat text is discussion only. Wait for reviewer/reporter approval before starting.",
                         )
-                    elif changed_age >= warn_todo_s and action_plan_posted:
+                    elif (
+                        changed_age >= warn_todo_s
+                        and action_plan_posted
+                        and not reviewer_responded
+                    ):
                         add(
                             row,
                             "pm-action-plan-awaiting-approval",

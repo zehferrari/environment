@@ -295,29 +295,20 @@ Approval performs the following:
 Approval itself does **not** create a worktree unless the subsequent auto-start
 also succeeds.
 
-### Automatic checklist extraction
+### Structured plan checklist creation
 
-When approval lands, PM examines the latest live Action Plan message authored
-by the current assignee. Auto-seeding occurs only when:
+When approval lands, PM reads the current assignee's durable `ActionPlan` and
+ordered `ActionPlanStep` rows. Free-form Action Plan chat is discussion only
+and is never parsed as workflow state. Checklist creation occurs only when:
 
 - an assignee exists;
 - approval exists;
 - the Task currently has no checklist rows;
-- the plan contains a recognized step section.
+- the structured plan contains one or more validated steps.
 
-The parser:
-
-- ignores fenced code;
-- accepts bullet, numbered, and checkbox lines;
-- trims Markdown decoration and leading numbering;
-- accepts step text from 8 through 180 characters;
-- removes duplicates case-insensitively;
-- ignores `none`, `n/a`, no-change, blocker, waiting, out-of-scope, and
-  commit-policy lines;
-- creates at most eight implementation sub-tasks.
-
-No parseable steps is currently a no-op, not an approval error. This means a
-Task can have an approved plan and an empty checklist.
+Plan submission validates non-empty, uniquely identified steps before writing
+the plan. Approval creates or adopts matching implementation checklist rows;
+parallel steps may also create independently assignable child tasks.
 
 ## To Do and entry into In Progress
 

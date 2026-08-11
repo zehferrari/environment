@@ -400,15 +400,77 @@ for (const detector of WATCHDOG_DETECTORS) {
       id: `run-${index}`,
       sessionKey: `session-${index}`,
       status: "completed",
-      createdAt: NOW - (index + 1) * MINUTE,
-      lastEventAt: NOW - (index + 1) * MINUTE,
+      createdAt: NOW - (index + 15) * MINUTE,
+      lastEventAt: NOW - (index + 15) * MINUTE,
     }),
   );
-  const findings = detectWatchdogFindings(snapshot({ tasks: [task()], runs }));
+  const findings = detectWatchdogFindings(snapshot({
+    tasks: [task({ statusChangedAt: NOW - 45 * MINUTE })],
+    runs,
+  }));
   const hits = byDetector(findings, "session_churn");
   assertEqual(hits.length, 1, "excessive session rotation is detected");
   assertEqual(hits[0].repair, "escalate", "churn is escalated, never auto-repaired");
   assertEqual(hits[0].reasonCode, "session_rotation", "the reason code names the rotation");
+}
+
+{
+  const activeRuns = Array.from({ length: WATCHDOG_SESSION_CHURN_THRESHOLD }, (_, index) =>
+    run({
+      id: `active-churn-run-${index}`,
+      sessionKey: `active-churn-session-${index}`,
+      status: index === WATCHDOG_SESSION_CHURN_THRESHOLD - 1 ? "streaming" : "completed",
+      createdAt: NOW - (index + 1) * MINUTE,
+      lastEventAt: NOW - MINUTE,
+    }),
+  );
+  const findings = detectWatchdogFindings(snapshot({ tasks: [task()], runs: activeRuns }));
+  assertEqual(
+    byDetector(findings, "session_churn").length,
+    0,
+    "session history never labels a task stalled while the assignee has a live run",
+  );
+}
+
+{
+  const currentStateStarted = NOW - 2 * MINUTE;
+  const planningRuns = Array.from({ length: WATCHDOG_SESSION_CHURN_THRESHOLD }, (_, index) =>
+    run({
+      id: `planning-run-${index}`,
+      sessionKey: `planning-session-${index}`,
+      status: "completed",
+      createdAt: NOW - (index + 10) * MINUTE,
+      lastEventAt: NOW - (index + 10) * MINUTE,
+    }),
+  );
+  const findings = detectWatchdogFindings(snapshot({
+    tasks: [task({ statusChangedAt: currentStateStarted })],
+    runs: planningRuns,
+  }));
+  assertEqual(
+    byDetector(findings, "session_churn").length,
+    0,
+    "planning and approval sessions from before In Progress do not count as execution churn",
+  );
+}
+
+{
+  const managerRuns = Array.from({ length: WATCHDOG_SESSION_CHURN_THRESHOLD }, (_, index) =>
+    run({
+      id: `manager-run-${index}`,
+      agentSlug: "manager",
+      sessionKey: `manager-session-${index}`,
+      status: "completed",
+      createdAt: NOW - (index + 15) * MINUTE,
+      lastEventAt: NOW - (index + 15) * MINUTE,
+    }),
+  );
+  const findings = detectWatchdogFindings(snapshot({ tasks: [task()], runs: managerRuns }));
+  assertEqual(
+    byDetector(findings, "session_churn").length,
+    0,
+    "reviewer sessions never count against the assignee's execution lane",
+  );
 }
 
 {
@@ -417,11 +479,14 @@ for (const detector of WATCHDOG_DETECTORS) {
       id: `run-${index}`,
       sessionKey: "session-1",
       status: "failed",
-      createdAt: NOW - (index + 1) * MINUTE,
-      lastEventAt: NOW - (index + 1) * MINUTE,
+      createdAt: NOW - (index + 15) * MINUTE,
+      lastEventAt: NOW - (index + 15) * MINUTE,
     }),
   );
-  const findings = detectWatchdogFindings(snapshot({ tasks: [task()], runs }));
+  const findings = detectWatchdogFindings(snapshot({
+    tasks: [task({ statusChangedAt: NOW - 45 * MINUTE })],
+    runs,
+  }));
   const hits = byDetector(findings, "session_churn");
   assertEqual(hits.length, 1, "repeated run failures are detected");
   assertEqual(hits[0].reasonCode, "repeated_run_failure", "the reason code names the failures");

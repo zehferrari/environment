@@ -28,21 +28,25 @@ reason: predicates that take plain record shapes are testable from a fixture wit
 no database at all (`scripts/workflow-watchdog-test.ts`), while the live binding
 is proved separately against real rows (`scripts/workflow-watchdog-db-test.ts`).
 
-## The seven failure modes
+## The eight failure modes
 
 | Detector | Fires when | Repair | Priority |
 | --- | --- | --- | --- |
+| `assigned_todo_plan_missing` | assigned To Do task has no durable structured Action Plan after the grace window | request `submit_plan` once | 65 |
 | `expired_lease` | a run is `queued`/`accepted`/`streaming` but its lease is dead | settle it `timed_out` | 80 |
 | `in_progress_no_active_run` | In Progress + assigned, nothing live, nothing scheduled | queue one continuation | 60 |
 | `started_no_work` | last durable action is continuation-required, nothing followed | queue one continuation | 55 |
 | `open_checklist_no_continuation` | open implementation checklist, nothing scheduled | queue one continuation | 50 |
 | `blocker_permission_already_granted` | blocker still parked, its grant already landed | wake the assignee | 70 |
 | `blocker_clear_loop` | ≥3 flag→clear cycles in 6h | **escalate only** | 100 |
-| `session_churn` | ≥4 distinct sessions, or ≥3 failed/timed-out runs, in 1h | **escalate only** | 95 |
+| `session_churn` | current In Progress assignee lane is idle beyond the grace window after ≥4 distinct sessions or ≥3 failed/timed-out runs in 1h | **escalate only** | 95 |
 
 The last two deliberately have **no automated repair**. A task that keeps
 re-raising a blocker, or keeps burning sessions, is one where more automated
-recovery *is* the problem. Those set the reporter flag and stop.
+recovery *is* the problem. Those set the reporter flag and stop. Session churn
+is scoped to runs created after the current In Progress state began; planning
+and reviewer sessions do not count, and a live assignee run or armed
+continuation is progress rather than a stall.
 
 Priority resolves the common case where one task trips several detectors: every
 finding's repair still runs (deduped per `task × repair × run`, so one pass can
@@ -169,7 +173,7 @@ same records the worker reconciles, not comment-derived estimates.
 ## Tests
 
 ```
-pnpm test:workflow-watchdog             # fixture: all seven detectors, no DB
+pnpm test:workflow-watchdog             # fixture: all eight detectors, no DB
 pnpm test:workflow-watchdog-db          # throwaway sqlite: repairs, breaker, idempotency
 pnpm test:workflow-watchdog-visibility  # the rendered surfaces
 pnpm test:workflow-reconciler           # stale projection repair + escalation idempotency

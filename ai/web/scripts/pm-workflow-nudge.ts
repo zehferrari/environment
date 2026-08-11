@@ -40,8 +40,8 @@ function parseArgs(argv: string[]): Args {
 
 const EXPECTED_STATUS_BY_KIND: Readonly<Record<string, string>> = {
   "pm-backlog-plan-missing": "Backlog",
-  "pm-action-plan-missing": "Backlog",
-  "pm-action-plan-awaiting-approval": "Backlog",
+  "pm-action-plan-missing": "To Do",
+  "pm-action-plan-awaiting-approval": "To Do",
   "pm-todo-not-started": "To Do",
   "pm-in-progress-stale": "In Progress",
   "pm-blocker-response-awaiting-assignee": "In Progress",
@@ -64,8 +64,9 @@ function skip(args: {
 function reasonForKind(kind: string | undefined): TaskWorkflowNotificationReason {
   switch (kind) {
     case "pm-backlog-plan-missing":
-    case "pm-action-plan-missing":
       return "backlog_plan_requested";
+    case "pm-action-plan-missing":
+      return "todo_start_required";
     case "pm-action-plan-awaiting-approval":
       return "action_plan_review_requested";
     case "pm-todo-not-started":

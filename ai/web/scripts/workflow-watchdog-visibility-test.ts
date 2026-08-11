@@ -72,6 +72,12 @@ assert(
   cache.includes("executionState: {"),
   "getCachedTaskDetailShell selects the executionState relation",
 );
+assert(
+  cache.includes("actionPlan: {") &&
+    cache.includes("version: true") &&
+    cache.includes("approvedOn: true"),
+  "getCachedTaskDetailShell selects durable Action Plan status for the task banner",
+);
 for (const column of [
   "state: true",
   "reasonDetail: true",

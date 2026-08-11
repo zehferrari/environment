@@ -602,12 +602,12 @@ async function updateTask(formData: FormData) {
       body: finalStatus === "Backlog"
         ? [
             `You have been assigned to "${titleRaw}" while it is in Backlog.`,
-            "Read the full task context and existing comments. Post one concise technical implementation plan in Action Plan.",
+            "Read the full task context and existing comments. Call action=submit_plan with one concise structured technical Action Plan; plain chat text is discussion only.",
             "Do not change task status and do not start work until the task is moved to To Do.",
           ].join("\n")
         : [
             `Task "${titleRaw}" is now in To Do and assigned to you.`,
-            "Before starting work, post one concise technical implementation plan in Action Plan and wait for reviewer/reporter approval.",
+            "Before starting work, call action=submit_plan with one structured technical Action Plan and wait for reviewer/reporter approval. Plain chat text is discussion only.",
             "Do not move it to In Progress until approved_on is set.",
           ].join("\n"),
     });
@@ -2384,6 +2384,18 @@ export default async function TaskDetailPage({
 
               {viewer.isOwner ? <TabPanel name="Action Plan">
                 <div className="space-y-3 pt-2">
+                  <div
+                    data-structured-action-plan-status
+                    className={`rounded-card border p-card text-caption ${
+                      task.actionPlan
+                        ? "border-line bg-panel-soft text-text-muted"
+                        : "border-warn/50 bg-warn/10 text-warn"
+                    }`}
+                  >
+                    {task.actionPlan
+                      ? `Structured plan v${task.actionPlan.version} is ${task.actionPlan.status}. The messages below are its discussion and review history.`
+                      : "No structured Action Plan has been submitted. Messages below are discussion only and cannot be approved until the assignee calls action=submit_plan."}
+                  </div>
                   {canApproveActionPlan ? (
                     <form action={approveTaskActionPlan} className="flex justify-end">
                       <input type="hidden" name="taskId" value={task.id} />

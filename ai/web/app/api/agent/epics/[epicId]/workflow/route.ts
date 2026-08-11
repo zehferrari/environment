@@ -445,7 +445,7 @@ export async function POST(
               body: [
                 `Whole-Epic acceptance returned "${flaggedTask.title}" to To Do at the front of the queue.`,
                 "Read the structured acceptance report on the task, add checklist items for every finding, and address it before other work.",
-                "Post a revised Action Plan and move the task through its normal start/review lifecycle. A new combined candidate review will run after every Epic task is Done again.",
+                "Call action=submit_plan with a revised structured Action Plan and move the task through its normal start/review lifecycle. A new combined candidate review will run after every Epic task is Done again.",
                 "Do not post an acknowledgement-only response.",
               ].join("\n"),
             },

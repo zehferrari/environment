@@ -245,6 +245,82 @@ class PmRecoveryTest(unittest.TestCase):
         )
         return conn
 
+    def action_plan_conn(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.executescript(
+            """
+            CREATE TABLE ActionPlanRevision (
+                id TEXT PRIMARY KEY,
+                taskId TEXT,
+                authorId TEXT,
+                createdAt INTEGER
+            );
+            CREATE TABLE AgentChatMessage (
+                id TEXT PRIMARY KEY,
+                taskId TEXT,
+                senderUserId TEXT,
+                originChannel TEXT,
+                createdAt INTEGER,
+                deletedAt INTEGER
+            );
+            """
+        )
+        return conn
+
+    def test_action_plan_probe_requires_a_structured_revision(self):
+        conn = self.action_plan_conn()
+        self.addCleanup(conn.close)
+        conn.execute(
+            "INSERT INTO AgentChatMessage VALUES (?, ?, ?, 'chat', ?, NULL)",
+            ("chat-plan", "task-1", "worker-1", 2000),
+        )
+        self.assertFalse(
+            self.monitor._pm_has_action_plan_since(
+                conn, "task-1", "worker-1", 1000
+            )
+        )
+        conn.execute(
+            "INSERT INTO ActionPlanRevision VALUES (?, ?, ?, ?)",
+            ("plan-v1", "task-1", "worker-1", 2100),
+        )
+        self.assertTrue(
+            self.monitor._pm_has_action_plan_since(
+                conn, "task-1", "worker-1", 1000
+            )
+        )
+        self.assertEqual(
+            self.monitor._pm_latest_action_plan_revision_s(
+                conn, "task-1", "worker-1", 1000
+            ),
+            2100,
+        )
+
+    def test_reviewer_feedback_suppresses_re_review_of_unchanged_plan(self):
+        conn = self.action_plan_conn()
+        self.addCleanup(conn.close)
+        conn.execute(
+            "INSERT INTO ActionPlanRevision VALUES (?, ?, ?, ?)",
+            ("plan-v1", "task-1", "worker-1", 2000000),
+        )
+        plan_s = self.monitor._pm_latest_action_plan_revision_s(
+            conn, "task-1", "worker-1", 0
+        )
+        self.assertFalse(
+            self.monitor._pm_has_action_plan_feedback_since(
+                conn, "task-1", "manager-1", plan_s
+            )
+        )
+        conn.execute(
+            "INSERT INTO AgentChatMessage VALUES (?, ?, ?, 'chat', ?, NULL)",
+            ("feedback-v1", "task-1", "manager-1", 2100000),
+        )
+        self.assertTrue(
+            self.monitor._pm_has_action_plan_feedback_since(
+                conn, "task-1", "manager-1", plan_s
+            )
+        )
+
     def test_gateway_readiness_uses_registered_readyz(self):
         with mock.patch.object(
             self.monitor.urllib.request,

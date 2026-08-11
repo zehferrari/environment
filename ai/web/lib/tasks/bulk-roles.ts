@@ -156,7 +156,7 @@ export async function bulkUpdateTaskRole(
         body: task.status === "Backlog"
           ? [
               `You have been assigned to "${task.title}" while it is in Backlog.`,
-              "Read the full task context and existing comments. Post one concise technical implementation plan in Action Plan.",
+              "Read the full task context and existing comments. Call action=submit_plan with one concise structured technical Action Plan; plain chat text is discussion only.",
               "Do not change task status and do not start work until the task is moved to To Do.",
             ].join("\n")
           : [
