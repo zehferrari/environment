@@ -240,6 +240,17 @@ async function main(): Promise<void> {
       "escalation is recorded exactly once per episode of trouble",
     );
 
+    // Once the task leaves active execution, both halves of the watchdog's
+    // reporter alert clear. The state stamp and board flag must not diverge.
+    await db.task.update({ where: { id: tC.id }, data: { status: "Review" } });
+    await runWorkflowWatchdog();
+    const recoveredStateC = await db.taskExecutionState.findUniqueOrThrow({
+      where: { taskId: tC.id },
+    });
+    const recoveredTaskC = await db.task.findUniqueOrThrow({ where: { id: tC.id } });
+    assertEqual(recoveredStateC.escalatedAt, null, "healthy state clears the escalation stamp");
+    assertEqual(recoveredTaskC.alertReporter, false, "healthy state clears the board alert flag");
+
     // tA is now visibly running again: its continuation owns the next turn.
     const stateA2 = await db.taskExecutionState.findUniqueOrThrow({ where: { taskId: tA.id } });
     assertEqual(stateA2.state, "running", "a task with a scheduled continuation reads as running");

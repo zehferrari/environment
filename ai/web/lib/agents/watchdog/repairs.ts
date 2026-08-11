@@ -384,8 +384,19 @@ export async function escalateToReporter(args: {
 
 /** A task that is healthy again drops its escalation flag so the next one fires. */
 export async function clearWatchdogEscalation(taskId: string): Promise<void> {
-  await db.taskExecutionState.updateMany({
-    where: { taskId, escalatedAt: { not: null } },
-    data: { escalatedAt: null },
+  await db.$transaction(async (tx) => {
+    const cleared = await tx.taskExecutionState.updateMany({
+      where: { taskId, escalatedAt: { not: null } },
+      data: { escalatedAt: null },
+    });
+    if (cleared.count === 0) return;
+
+    // escalateToReporter raises both the execution-state stamp and the board
+    // flag. Clear them symmetrically; clearing only escalatedAt left a healthy
+    // Review task displaying a permanent blocker/report alert.
+    await tx.task.updateMany({
+      where: { id: taskId, alertReporter: true },
+      data: { alertReporter: false },
+    });
   });
 }
