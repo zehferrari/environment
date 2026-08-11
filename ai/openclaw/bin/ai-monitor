@@ -3064,6 +3064,7 @@ def needs_ai_interpretation(probes):
 
 def make_verdict(deterministic, ai_verdict_or_none):
     issues = list(deterministic)
+    dropped_ungrounded_pm_issues = 0
     ai_succeeded = bool(
         ai_verdict_or_none and ai_verdict_or_none.get("_model") not in (None, "none")
     )
@@ -3071,6 +3072,14 @@ def make_verdict(deterministic, ai_verdict_or_none):
         ai_issues = ai_verdict_or_none.get("issues", []) or []
         seen = {event_key(i) for i in issues}
         for ai_issue in ai_issues:
+            # PM workflow state is structured and probed deterministically.
+            # The model receives previously-open incidents as context, but it
+            # must never turn that history back into a current PM action after
+            # the live probe has cleared. Only deterministic_issues() may
+            # introduce pm-* findings into the action ladder.
+            if str(ai_issue.get("kind") or "").startswith("pm-"):
+                dropped_ungrounded_pm_issues += 1
+                continue
             if event_key(ai_issue) not in seen:
                 issues.append(ai_issue)
         model = ai_verdict_or_none.get("_model")
@@ -3084,7 +3093,7 @@ def make_verdict(deterministic, ai_verdict_or_none):
             "healthy": True,
             "summary": (
                 ai_verdict_or_none.get("summary") or "all signals nominal"
-            )[:180] if ai_succeeded else "all signals nominal",
+            )[:180] if ai_succeeded and not dropped_ungrounded_pm_issues else "all signals nominal",
             "issues": [],
             "_model": model if ai_succeeded else "bypass",
             "_ai_error": (ai_verdict_or_none or {}).get("_ai_error"),
@@ -3093,7 +3102,11 @@ def make_verdict(deterministic, ai_verdict_or_none):
     warn = sum(1 for i in issues if i.get("severity") == "warn")
     summary = (
         ai_verdict_or_none["summary"][:180]
-        if ai_succeeded and ai_verdict_or_none.get("summary")
+        if (
+            ai_succeeded
+            and not dropped_ungrounded_pm_issues
+            and ai_verdict_or_none.get("summary")
+        )
         else f"{crit} crit, {warn} warn — {issues[0].get('unit','?')}: {issues[0].get('kind','?')}"
     )
     return {

@@ -174,6 +174,42 @@ class PmRecoveryTest(unittest.TestCase):
         self.assertEqual(issue["message_id"], "message-1")
         self.assertEqual(issue["run_status"], "failed")
 
+    def test_ai_history_cannot_resurrect_cleared_pm_incidents(self):
+        verdict = self.monitor.make_verdict([], {
+            "_model": "test-model",
+            "summary": "old PM failures are still critical",
+            "issues": [{
+                "unit": "asdrubal/old-task",
+                "kind": "pm-channel-no-start",
+                "severity": "crit",
+                "reason": "copied from previously_open",
+            }],
+        })
+        self.assertTrue(verdict["healthy"])
+        self.assertEqual(verdict["issues"], [])
+        self.assertEqual(verdict["summary"], "all signals nominal")
+
+    def test_deterministic_pm_incident_remains_authoritative(self):
+        current = {
+            "unit": "pm:asdrubal/current-task",
+            "kind": "pm-in-progress-stale",
+            "severity": "warn",
+            "reason": "current structured probe evidence",
+        }
+        verdict = self.monitor.make_verdict([current], {
+            "_model": "test-model",
+            "summary": "invented old PM summary",
+            "issues": [{
+                "unit": "asdrubal/old-task",
+                "kind": "pm-channel-no-start",
+                "severity": "crit",
+                "reason": "copied from previously_open",
+            }],
+        })
+        self.assertFalse(verdict["healthy"])
+        self.assertEqual(verdict["issues"], [current])
+        self.assertNotIn("invented", verdict["summary"])
+
     def comment_conn(self):
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row
