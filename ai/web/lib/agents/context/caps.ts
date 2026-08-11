@@ -98,6 +98,63 @@ export const MONITOR_CAPS: ContextCaps = {
   recentTimelineVerbatimItems: 10,
 };
 
+// ENV-121 — the continuation-episode profile.
+//
+// A continuation turn is NOT first contact. The agent already has an approved
+// plan, a checklist, and a structured checkpoint from its previous episode;
+// what it needs inline is the delta, not the archive. So this profile is an
+// order of magnitude smaller than CODE_CAPS across the board, and full history
+// stays reachable through the scoped loopback grants the brief still carries.
+//
+// Every field is env-overridable through `episodeCaps()` because the right
+// size depends on the provider a host is actually running.
+export const EPISODE_CAPS: ContextCaps = {
+  maxComments: 8,
+  maxLiveChats: 8,
+  maxActivity: 10,
+  maxArchivedChats: 0,
+  maxTimelineBody: 900,
+  maxActivityBody: 200,
+  taskDescriptionMax: 3000,
+  epicDescriptionMax: 1200,
+  projectDescriptionMax: 600,
+  attachmentInlineBudget: 0,
+  attachmentPerExcerpt: 0,
+  maxRenderedTimelineChars: 6000,
+  recentTimelineVerbatimItems: 6,
+};
+
+/**
+ * EPISODE_CAPS with per-field env overrides applied. Bounds are deliberately
+ * tight: an operator may tune the brief, but "tune" must not become "restore
+ * the unbounded packet under a different name".
+ */
+export function episodeCaps(): ContextCaps {
+  return {
+    ...EPISODE_CAPS,
+    maxComments: intEnv("PM_EPISODE_MAX_COMMENTS", EPISODE_CAPS.maxComments, 0, 30),
+    maxLiveChats: intEnv("PM_EPISODE_MAX_CHATS", EPISODE_CAPS.maxLiveChats, 0, 30),
+    maxActivity: intEnv("PM_EPISODE_MAX_ACTIVITY", EPISODE_CAPS.maxActivity, 0, 40),
+    maxTimelineBody: intEnv("PM_EPISODE_MAX_TIMELINE_BODY", EPISODE_CAPS.maxTimelineBody, 200, 4000),
+    taskDescriptionMax: intEnv("PM_EPISODE_TASK_DESCRIPTION_MAX", EPISODE_CAPS.taskDescriptionMax, 500, 12000),
+    maxRenderedTimelineChars: intEnv(
+      "PM_EPISODE_MAX_RENDERED_TIMELINE_CHARS",
+      EPISODE_CAPS.maxRenderedTimelineChars,
+      1000,
+      20000,
+    ),
+  };
+}
+
+/**
+ * The ceiling a rendered continuation brief must stay under. This is the
+ * property the episode contract test asserts: brief size must be FLAT in the
+ * number of comments on the task, not merely "smaller than the full packet".
+ */
+export function episodeBriefCharBudget() {
+  return intEnv("PM_EPISODE_BRIEF_MAX_CHARS", 24_000, 4_000, 80_000);
+}
+
 export function capsForRole(role: string | null | undefined): ContextCaps {
   // Only "coding" gets the 1M profile. monitor, room, or any unknown
   // role falls back to the smaller 256k profile.

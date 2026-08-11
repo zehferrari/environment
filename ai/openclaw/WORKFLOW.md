@@ -247,7 +247,7 @@ approver chain, in order:
    Epic acting manager, the reporter approves.
 
 If a task has a reviewer but **no assignee**, the reviewer picks the
-assignee with `assign_after_plan_approval` (optional `{assignee}`) and
+assignee with `assign_task` (optional `{assignee}`) and
 then awaits that assignee's plan — the reviewer never authors the plan
 themselves.
 
@@ -300,7 +300,7 @@ Two distinct decomposition levels, each with its own creator and gate:
 - The task **assignee** posts the **Task Action Plan** first. The first
   thing the assignee does on an assigned Task is create a detailed plan
   of action. (A reviewer never authors the plan; on an unassigned task
-  the reviewer picks the assignee with `assign_after_plan_approval` and
+  the reviewer picks the assignee with `assign_task` and
   awaits that assignee's plan.)
 - Once the Task Action Plan is approved, the assignee **must** divide the
   task into implementation subtasks — ideally parallelizable so multiple
@@ -650,7 +650,7 @@ per 5 minutes.
   `add_subtask`/`complete_subtask`/`remove_subtask`,
   `publish_checkpoint` (authorized Epic-child deployment checkpoints only),
   `flag_blocker`/`clear_blocker`, and `ready_for_review`; the resolved reviewer may `approve_plan`,
-  `assign_after_plan_approval` (optionally naming the assignee for an
+  `assign_task` (optionally naming the assignee for an
   unassigned task), `request_subtask`, `review_feedback`, `review_done`,
   or `triage_to_todo`.
 - `triage_to_todo` is the reviewer-only promotion of a `Backlog` task to
@@ -1063,10 +1063,13 @@ signature rule.
 
 ### Whole-Epic acceptance
 
-The last accepted child Task moves the Epic to `Review`, not `Done`. This is a
-combined-delivery gate, separate from every task review and from the optional
-later deployment review. The selected Epic Deploy Reviewer performs it; when
-that reviewer is unset or inactive, the unique Monitor Agent is the fallback.
+The last accepted child Task moves the Epic to `Review`, not `Done`. The Task
+transition and the obligation to prepare the combined candidate are committed
+together; PM retries that durable effect instead of relying on a one-shot
+post-transition callback. This is a combined-delivery gate, separate from every
+task review and from the optional later deployment review. The selected Epic
+Deploy Reviewer performs it; when that reviewer is unset or inactive, the
+unique Monitor Agent is the fallback.
 
 Work only from PM's frozen candidate SHA. Read the original Epic description
 and attachments, then inspect the material outcome/review feedback for every

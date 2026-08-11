@@ -19,6 +19,11 @@ deployment-watcher poll (lib/deploy/epic-merge.ts):
   * kind "checkpoint" — after explicit owner authorization, create a PM-owned
     mid-task commit, merge/push only the Epic branch, and keep the Task and
     local child worktree In Progress for deployment-dependent verification.
+  * kind "review" — wait for all child integrations, publish/freeze the Epic
+    candidate, verify containment/worktree hygiene, and wake the whole-Epic
+    acceptance reviewer;
+  * kind "review-approval" — re-verify the immutable accepted candidate, move
+    the Epic to Done, and project its durable cleanup effect.
 
 For each job it finds the active PM web worktree by reading pm.service's
 WorkingDirectory and runs the TS executor (scripts/pm-epic-merge-job.ts)

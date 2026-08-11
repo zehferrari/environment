@@ -5,10 +5,10 @@
 // the task to Review and wakes its related reviewer. Concrete validation
 // failures return the task to the front of To Do without a reviewer wake.
 
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
+import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
-import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
-import { enqueueBranchVerifyJob, type BranchVerifyJob } from "@/lib/deploy/branch-verify";
+import type { BranchVerifyJob } from "@/lib/deploy/branch-verify";
 import { refillEpicQueue } from "@/lib/epics/queue";
 import { syncEpicOnHumanTaskStatus } from "@/lib/epics/sync-on-human-task-move";
 import { resolveEffectiveProjectSettings } from "@/lib/settings/effective";
@@ -17,7 +17,17 @@ import { effectiveEpicBranchName, effectiveTaskBranchName } from "@/lib/work-ite
 import { isProtectedBranch } from "@/lib/projects/protected-branches";
 import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { revalidateTaskShellIfAvailable } from "@/lib/tasks/cache";
-import { publishBoardTouch } from "@/lib/pm/board-events";
+import { resolveValidationProfileSnapshot } from "@/lib/tasks/validation-profile";
+import {
+  applyTaskTransition,
+  enqueueWorkflowEffects,
+  type WorkflowEffect,
+} from "@/lib/tasks/transition-kernel";
+import { drainWorkflowOutbox } from "@/lib/tasks/workflow-outbox-drain";
+import {
+  applyPmChannelRunWorkflowAction,
+  type PmChannelWorkflowActionArgs,
+} from "@/lib/agents/pm-channel/runs";
 import {
   resolveActiveMonitorAgent,
   updateTaskRepositoryState,
@@ -52,6 +62,7 @@ async function loadHandoffTask(taskId: string) {
       title: true,
       description: true,
       status: true,
+      workflowVersion: true,
       projectId: true,
       epicId: true,
       assigneeId: true,
@@ -70,6 +81,14 @@ async function loadHandoffTask(taskId: string) {
           phase: true,
           validationOutcome: true,
         },
+      },
+      checklist: {
+        where: { kind: { not: "review" } },
+        select: { id: true, text: true, completedAt: true },
+        orderBy: { rank: "asc" },
+      },
+      actionPlan: {
+        select: { id: true, status: true, steps: { select: { id: true } } },
       },
       project: {
         select: {
@@ -106,83 +125,135 @@ async function moveToReviewAndDispatch(args: {
   repoTouched: boolean;
   assigneeNote?: string | null;
   validationSummary?: string | null;
+  workflowAction?: PmChannelWorkflowActionArgs;
 }) {
   const task = await loadHandoffTask(args.taskId);
   if (!task) return { status: "In Progress" as const, refillAssignments: [] };
 
-  if (task.status !== "Review") {
-    if (task.status !== "In Progress") {
-      return { status: task.status as "In Progress", refillAssignments: [] };
-    }
-    const maxRank = await db.task.aggregate({
-      where: {
-        projectId: task.projectId,
-        status: "Review",
-        archivedAt: null,
-        deletedAt: null,
-      },
-      _max: { rank: true },
-    });
-    const now = new Date();
-    await db.$transaction([
-      db.task.update({
-        where: { id: task.id },
-        data: {
-          status: "Review",
-          rank: (maxRank._max.rank ?? 0) + 1,
-          statusChangedAt: now,
-          alertReporter: false,
-        },
-      }),
-      db.activityLog.create({
-        data: {
-          projectId: task.projectId,
-          taskId: task.id,
-          userId: args.actor.id,
-          kind: "task.move",
-          payload: JSON.stringify({
-            from: "In Progress",
-            to: "Review",
-            via: args.via,
-            validationOutcome: args.validationOutcome,
-          }),
-        },
-      }),
-    ]);
-    await syncEpicOnHumanTaskStatus(db, {
-      epicId: task.epicId,
-      projectId: task.projectId,
-      taskId: task.id,
-      actorId: args.actor.id,
-      actorKind: args.actor.kind,
-      targetStatus: "Review",
-      via: args.via,
-    });
-  }
-
-  await updateTaskRepositoryState(task.id, {
-    phase: "review_ready",
-    candidateSha: args.candidateSha ?? task.repositoryRun?.candidateSha ?? null,
-    validationOutcome: args.validationOutcome,
-    repoTouched: args.repoTouched,
-    lastError: null,
-  });
-
+  const reviewCandidateSha = args.candidateSha ?? task.repositoryRun?.candidateSha ?? null;
   const reviewerId = resolveReviewOwnerId(task);
+  const effects: WorkflowEffect[] = [
+    { type: "board_touch", key: "board-review-ready", payload: {} },
+  ];
   if (reviewerId) {
-    await sendTaskWorkflowNotification({
-      taskId: task.id,
-      targetUserId: reviewerId,
-      actor: args.actor,
-      reason: "review_requested",
-      body: [
-        `Repository validation ${args.validationOutcome === "valid_with_warning" ? "passed with an advisory warning" : "passed"} for "${task.title}".`,
-        args.validationSummary || null,
-        args.assigneeNote ? `Assignee note:\n${args.assigneeNote}` : null,
-        "Review the exact validated candidate. If satisfied, use action=review_done. If changes remain, use action=review_feedback with one consolidated comment.",
-      ].filter(Boolean).join("\n"),
+    effects.push({
+      type: "task_notification",
+      key: `review-requested:${reviewerId}`,
+      payload: {
+        taskId: task.id,
+        targetUserId: reviewerId,
+        actor: args.actor,
+        reason: "review_requested",
+        body: [
+          `Repository validation ${args.validationOutcome === "valid_with_warning" ? "passed with an advisory warning" : "passed"} for "${task.title}".`,
+          args.validationSummary || null,
+          args.assigneeNote ? `Assignee note:\n${args.assigneeNote}` : null,
+          "Review the exact validated candidate. If satisfied, use action=review_done. If changes remain, use action=review_feedback with one consolidated comment.",
+        ].filter(Boolean).join("\n"),
+      },
     });
   }
+  const persistReviewState = async (tx: Prisma.TransactionClient) => {
+    await updateTaskRepositoryState(task.id, {
+      phase: "review_ready",
+      candidateSha: reviewCandidateSha,
+      validationOutcome: args.validationOutcome,
+      repoTouched: args.repoTouched,
+      lastError: null,
+    }, tx);
+    if (reviewCandidateSha) {
+      const now = new Date();
+      await tx.reviewRun.updateMany({
+        where: {
+          taskId: task.id,
+          candidateSha: { not: reviewCandidateSha },
+          status: { in: ["validating", "awaiting_review"] },
+        },
+        data: {
+          status: "invalidated",
+          invalidatedAt: now,
+          invalidatedReason: `superseded by validated candidate ${reviewCandidateSha}`,
+        },
+      });
+      await tx.reviewRun.upsert({
+        where: { taskId_candidateSha: { taskId: task.id, candidateSha: reviewCandidateSha } },
+        create: {
+          taskId: task.id,
+          candidateSha: reviewCandidateSha,
+          baseSha: task.repositoryRun?.baseSha ?? null,
+          repoTouched: args.repoTouched,
+          validationOutcome: args.validationOutcome,
+          status: "awaiting_review",
+        },
+        update: {
+          baseSha: task.repositoryRun?.baseSha ?? null,
+          repoTouched: args.repoTouched,
+          validationOutcome: args.validationOutcome,
+          status: "awaiting_review",
+          reviewerId: null,
+          reviewedAt: null,
+          invalidatedAt: null,
+          invalidatedReason: null,
+        },
+      });
+    }
+  };
+  if (task.status === "In Progress") {
+    await db.$transaction(async (tx) => {
+      await applyTaskTransition(tx, {
+        taskId: task.id,
+        projectId: task.projectId,
+        actorUserId: args.actor.id,
+        intent: args.via === "monitor-repository-validation" ? "repository_validated" : "submit_review",
+        from: "In Progress",
+        to: "Review",
+        source: args.via,
+        idempotencyKey: `review-ready:${reviewCandidateSha ?? `nonrepo-v${task.workflowVersion + 1}`}`,
+        evidence: { validationOutcome: args.validationOutcome, candidateSha: reviewCandidateSha },
+        taskData: { alertReporter: false },
+        effects,
+        mutate: async ({ tx: inner }) => {
+          await persistReviewState(inner);
+          await syncEpicOnHumanTaskStatus(inner, {
+            epicId: task.epicId,
+            projectId: task.projectId,
+            taskId: task.id,
+            actorId: args.actor.id,
+            actorKind: args.actor.kind,
+            targetStatus: "Review",
+            via: args.via,
+          });
+        },
+      });
+      if (args.workflowAction) {
+        await applyPmChannelRunWorkflowAction(tx, {
+          ...args.workflowAction,
+          taskState: "Review",
+        });
+      }
+    });
+  } else if (task.status === "Review") {
+    await db.$transaction(async (tx) => {
+      await persistReviewState(tx);
+      await enqueueWorkflowEffects(tx, {
+        taskId: task.id,
+        projectId: task.projectId,
+        aggregateVersion: task.workflowVersion,
+        effects,
+      });
+      if (args.workflowAction) {
+        await applyPmChannelRunWorkflowAction(tx, {
+          ...args.workflowAction,
+          taskState: "Review",
+        });
+      }
+    });
+  } else {
+    return { status: task.status as "In Progress", refillAssignments: [] };
+  }
+  await drainWorkflowOutbox({ limit: effects.length }).catch((error) =>
+    console.error("[pm] review-ready workflow outbox drain deferred:", task.id, error),
+  );
 
   const refillAssignments: Array<{ taskId: string }> = [];
   if (task.epicId) {
@@ -199,7 +270,6 @@ async function moveToReviewAndDispatch(args: {
     }
   }
   revalidateTaskShellIfAvailable(task.id);
-  publishBoardTouch(task.projectId);
   return { status: "Review" as const, refillAssignments };
 }
 
@@ -227,64 +297,75 @@ export async function failTaskReviewValidation(args: {
   const task = await loadHandoffTask(args.taskId);
   if (!task) return { status: "To Do" as const };
 
-  if (task.status === "In Progress" || task.status === "Review") {
-    const minRank = await db.task.aggregate({
-      where: {
-        projectId: task.projectId,
-        status: "To Do",
-        archivedAt: null,
-        deletedAt: null,
-      },
-      _min: { rank: true },
-    });
-    await db.$transaction([
-      db.task.update({
-        where: { id: task.id },
-        data: {
-          status: "To Do",
-          rank: (minRank._min.rank ?? 0) - 1,
-          statusChangedAt: new Date(),
-        },
-      }),
-      db.activityLog.create({
-        data: {
-          projectId: task.projectId,
-          taskId: task.id,
-          userId: args.actor.id,
-          kind: "task.move",
-          payload: JSON.stringify({
-            from: task.status,
-            to: "To Do",
-            via: "monitor-repository-validation",
-            validationOutcome: "invalid",
-          }),
-        },
-      }),
-    ]);
-  }
-  await updateTaskRepositoryState(task.id, {
-    phase: "action_required",
-    candidateSha: args.candidateSha ?? null,
-    validationOutcome: "invalid",
-    lastError: args.error,
-  });
+  const effects: WorkflowEffect[] = [{ type: "board_touch", key: "board-validation-failed", payload: {} }];
   if (task.assigneeId) {
-    await sendTaskWorkflowNotification({
-      taskId: task.id,
-      targetUserId: task.assigneeId,
-      actor: args.actor,
-      reason: "review_feedback",
-      body: [
+    effects.push({
+      type: "task_notification",
+      key: `validation-feedback:${task.assigneeId}`,
+      payload: {
+        taskId: task.id,
+        targetUserId: task.assigneeId,
+        actor: args.actor,
+        reason: "review_feedback",
+        body: [
         `Repository validation failed for "${task.title}", so PM returned it to the front of To Do.`,
         args.error,
         "Correct the reported problem, start the task again, and resubmit it. The reviewer was not notified.",
       ].join("\n"),
-    }).catch((error) =>
-      console.error("[pm] repository validation feedback notification failed:", task.id, error),
-    );
+      },
+    });
   }
+  const persistFailure = async (tx: Prisma.TransactionClient) => {
+    await updateTaskRepositoryState(task.id, {
+      phase: "action_required",
+      candidateSha: args.candidateSha ?? null,
+      validationOutcome: "invalid",
+      lastError: args.error,
+    }, tx);
+    await tx.reviewRun.updateMany({
+      where: { taskId: task.id, status: { in: ["validating", "awaiting_review", "accepted"] } },
+      data: {
+        status: "invalidated",
+        validationOutcome: "invalid",
+        invalidatedAt: new Date(),
+        invalidatedReason: args.error.slice(0, 1000),
+      },
+    });
+  };
+  const failureKey = createHash("sha256")
+    .update(`${args.candidateSha ?? "none"}\0${args.error}`)
+    .digest("hex")
+    .slice(0, 24);
+  await db.$transaction(async (tx) => {
+    if (task.status === "In Progress" || task.status === "Review") {
+      await applyTaskTransition(tx, {
+        taskId: task.id,
+        projectId: task.projectId,
+        actorUserId: args.actor.id,
+        intent: "repository_validation_failed",
+        from: task.status,
+        to: "To Do",
+        source: "monitor-repository-validation",
+        idempotencyKey: `repository-validation-failed:${failureKey}`,
+        rank: "front",
+        evidence: { validationOutcome: "invalid", candidateSha: args.candidateSha ?? null },
+        effects,
+        mutate: async ({ tx: inner }) => persistFailure(inner),
+      });
+    } else {
+      await persistFailure(tx);
+      await enqueueWorkflowEffects(tx, {
+        taskId: task.id,
+        projectId: task.projectId,
+        aggregateVersion: task.workflowVersion,
+        effects,
+      });
+    }
+  });
+  await drainWorkflowOutbox({ limit: effects.length }).catch((error) =>
+    console.error("[pm] validation-failure workflow outbox drain deferred:", task.id, error),
+  );
   revalidateTaskShellIfAvailable(task.id);
-  publishBoardTouch(task.projectId);
   return { status: "To Do" as const };
 }
 
@@ -295,12 +376,12 @@ export async function recordTaskReviewOperationalError(args: {
 }) {
   const task = await loadHandoffTask(args.taskId);
   if (!task) return;
-  await db.$transaction([
-    db.task.update({
+  await db.$transaction(async (tx) => {
+    await tx.task.update({
       where: { id: task.id },
       data: { alertReporter: true },
-    }),
-    db.activityLog.create({
+    });
+    await tx.activityLog.create({
       data: {
         projectId: task.projectId,
         taskId: task.id,
@@ -308,14 +389,20 @@ export async function recordTaskReviewOperationalError(args: {
         kind: "pm.repo.verify.operational_error",
         payload: JSON.stringify({ error: args.error }),
       },
-    }),
-  ]);
-  await updateTaskRepositoryState(task.id, {
-    phase: "operational_error",
-    validationOutcome: "operational_error",
-    lastError: args.error,
+    });
+    await updateTaskRepositoryState(task.id, {
+      phase: "operational_error",
+      validationOutcome: "operational_error",
+      lastError: args.error,
+    }, tx);
+    await enqueueWorkflowEffects(tx, {
+      taskId: task.id,
+      projectId: task.projectId,
+      aggregateVersion: task.workflowVersion,
+      effects: [{ type: "board_touch", key: `board-operational-error:${task.repositoryRun?.phase ?? "unknown"}`, payload: {} }],
+    });
   });
-  publishBoardTouch(task.projectId);
+  await drainWorkflowOutbox({ limit: 1 }).catch(() => {});
 }
 
 export async function runTaskReviewHandoff(args: {
@@ -325,6 +412,7 @@ export async function runTaskReviewHandoff(args: {
   movedFromStatus: string;
   repoTouched?: boolean;
   assigneeNote?: string | null;
+  workflowAction?: PmChannelWorkflowActionArgs;
 }): Promise<ReviewHandoffResult> {
   const task = await loadHandoffTask(args.taskId);
   if (!task) {
@@ -339,11 +427,39 @@ export async function runTaskReviewHandoff(args: {
     };
   }
 
+  if (!task.actionPlan || task.actionPlan.status !== "approved" || task.actionPlan.steps.length === 0) {
+    return {
+      verifyJobId: null,
+      repoTouched: Boolean(task.project.repositoryPath),
+      branchName: effectiveTaskBranchName(task),
+      status: "In Progress",
+      repositoryPhase: "action_required",
+      refillAssignments: [],
+      error: "Review handoff requires an approved structured Action Plan with at least one step.",
+    };
+  }
+  const openImplementation = task.checklist.filter((item) => !item.completedAt);
+  if (task.checklist.length === 0 || openImplementation.length > 0) {
+    return {
+      verifyJobId: null,
+      repoTouched: Boolean(task.project.repositoryPath),
+      branchName: effectiveTaskBranchName(task),
+      status: "In Progress",
+      repositoryPhase: "action_required",
+      refillAssignments: [],
+      error: task.checklist.length === 0
+        ? "Review handoff requires a materialized implementation checklist."
+        : `Review handoff rejected: ${openImplementation.length} implementation checklist item(s) remain open.`,
+    };
+  }
+
   const branchName = effectiveTaskBranchName(task);
   const codeTouching = Boolean(branchName && task.project.repositoryPath);
-  const repoTouched = typeof args.repoTouched === "boolean" ? args.repoTouched : codeTouching;
 
-  if (!repoTouched) {
+  // Repository classification is mechanical. An assignee cannot bypass Git
+  // inspection by declaring repoTouched=false; the repository runner decides
+  // whether the clean candidate differs from its recorded base SHA.
+  if (!codeTouching) {
     const completed = await moveToReviewAndDispatch({
       taskId: task.id,
       actor: args.actor,
@@ -352,6 +468,7 @@ export async function runTaskReviewHandoff(args: {
       repoTouched: false,
       assigneeNote: args.assigneeNote,
       validationSummary: "This submission declared no repository changes.",
+      workflowAction: args.workflowAction,
     });
     return {
       verifyJobId: null,
@@ -364,6 +481,13 @@ export async function runTaskReviewHandoff(args: {
   }
 
   if (task.repositoryRun?.phase === "validating") {
+    const workflowAction = args.workflowAction;
+    if (workflowAction) {
+      await db.$transaction((tx) => applyPmChannelRunWorkflowAction(tx, {
+        ...workflowAction,
+        taskState: "In Progress",
+      }));
+    }
     return {
       verifyJobId: null,
       repoTouched: true,
@@ -428,6 +552,7 @@ export async function runTaskReviewHandoff(args: {
     deploymentPrTargetBranch: task.project.deploymentPrTargetBranch,
   });
   const jobId = randomUUID();
+  const validationProfile = await resolveValidationProfileSnapshot(task.projectId);
   const job: BranchVerifyJob = {
     jobId,
     taskId: task.id,
@@ -451,37 +576,61 @@ export async function runTaskReviewHandoff(args: {
     requestedByAgentSlug: task.assignee?.agent?.slug ?? args.actor.username ?? "human",
     requestedByUserId: args.actor.id,
     requestedAt: new Date().toISOString(),
+    validationProfile,
   };
   try {
-    await enqueueBranchVerifyJob(job);
-    await updateTaskRepositoryState(task.id, {
-      phase: "validating",
-      repositoryPath: task.project.repositoryPath,
-      branchName,
-      epicBranch: job.epicBranch,
-      repoTouched: true,
-      validationOutcome: null,
-      lastError: null,
-      incrementAttempt: true,
-    });
-    await db.activityLog.create({
-      data: {
-        projectId: task.projectId,
+    await db.$transaction(async (tx) => {
+      await updateTaskRepositoryState(task.id, {
+        phase: "validating",
+        repositoryPath: task.project.repositoryPath,
+        branchName,
+        epicBranch: job.epicBranch,
+        repoTouched: true,
+        validationOutcome: null,
+        lastError: null,
+        incrementAttempt: true,
+      }, tx);
+      await tx.activityLog.create({
+        data: {
+          projectId: task.projectId,
+          taskId: task.id,
+          userId: args.actor.id,
+          kind: "pm.repo.verify.enqueue",
+          targetAgent: monitor.agentSlug,
+          payload: JSON.stringify({
+            jobId,
+            branchName,
+            baseBranch: job.baseBranch,
+            epicChild: job.epicChild,
+            epicBranch: job.epicBranch,
+            commitPrefix: job.commitPrefix,
+            via: args.via,
+          }),
+        },
+      });
+      await enqueueWorkflowEffects(tx, {
         taskId: task.id,
-        userId: args.actor.id,
-        kind: "pm.repo.verify.enqueue",
-        targetAgent: monitor.agentSlug,
-        payload: JSON.stringify({
-          jobId,
-          branchName,
-          baseBranch: job.baseBranch,
-          epicChild: job.epicChild,
-          epicBranch: job.epicBranch,
-          commitPrefix: job.commitPrefix,
-          via: args.via,
-        }),
-      },
+        projectId: task.projectId,
+        aggregateVersion: task.workflowVersion,
+        effects: [
+          {
+            type: "branch_verify",
+            key: `branch-verify:${jobId}`,
+            payload: { job: job as unknown as Record<string, unknown> },
+          },
+          { type: "board_touch", key: `board-validating:${jobId}`, payload: {} },
+        ],
+      });
+      if (args.workflowAction) {
+        await applyPmChannelRunWorkflowAction(tx, {
+          ...args.workflowAction,
+          taskState: "In Progress",
+        });
+      }
     });
+    await drainWorkflowOutbox({ limit: 2 }).catch((error) =>
+      console.error("[pm] branch-verification workflow outbox drain deferred:", task.id, error),
+    );
     return {
       verifyJobId: jobId,
       repoTouched: true,

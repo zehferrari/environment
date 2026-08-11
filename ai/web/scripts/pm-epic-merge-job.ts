@@ -58,7 +58,8 @@ async function main() {
   const result = await runEpicMergeSpoolJob(job);
   console.log(JSON.stringify({ jobId: job.jobId, kind: job.kind, ...result }, null, 2));
   if ("outcome" in result && result.outcome === "deferred" && jobFile.endsWith(".running")) {
-    // Cleanup ran before all child merges landed — put the job back in the
+    // A dependency is still in flight (currently cleanup or whole-Epic
+    // candidate preparation waiting on child merges). Put the job back in the
     // spool so the runner retries it on a later tick.
     renameSync(jobFile, jobFile.slice(0, -".running".length));
     return;

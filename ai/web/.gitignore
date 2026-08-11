@@ -1,5 +1,7 @@
 # dependencies
-node_modules/
+# no trailing slash: PM worktrees link node_modules to the primary checkout, and
+# a symlink is not a directory, so `node_modules/` would not match it.
+node_modules
 .pnp
 .pnp.*
 .yarn/*

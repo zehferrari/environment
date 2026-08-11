@@ -1,12 +1,16 @@
 import { db } from "@/lib/db";
-import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
 import { resolveDoneOwnerId, resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { assignOpenEpicTasks, type EpicTaskAssignment } from "@/lib/epics/assignment";
 import {
-  enqueueEpicCompletionReview,
-  enqueueTaskReviewFinalization,
-} from "@/lib/deploy/epic-merge";
-import { updateTaskRepositoryState } from "@/lib/tasks/repository-state";
+  applyTaskTransition,
+  enqueueWorkflowEffects,
+  type WorkflowEffect,
+} from "@/lib/tasks/transition-kernel";
+import { drainWorkflowOutbox } from "@/lib/tasks/workflow-outbox-drain";
+import {
+  applyPmChannelRunWorkflowAction,
+  type PmChannelWorkflowActionArgs,
+} from "@/lib/agents/pm-channel/runs";
 
 type Actor = {
   id: string;
@@ -36,6 +40,7 @@ export async function completeReviewedTaskAndAssignNext(args: {
   requireReviewerUserId?: string | null;
   commentId?: string | null;
   repositoryFinalized?: boolean;
+  workflowAction?: PmChannelWorkflowActionArgs;
 }) {
   const task = await db.task.findUnique({
     where: { id: args.taskId },
@@ -43,6 +48,7 @@ export async function completeReviewedTaskAndAssignNext(args: {
       id: true,
       title: true,
       status: true,
+      workflowVersion: true,
       projectId: true,
       epicId: true,
       assigneeId: true,
@@ -57,7 +63,15 @@ export async function completeReviewedTaskAndAssignNext(args: {
         },
       },
       epic: { select: { status: true, actingManagerId: true } },
-      repositoryRun: { select: { phase: true, repoTouched: true } },
+      repositoryRun: {
+        select: {
+          phase: true,
+          repoTouched: true,
+          baseSha: true,
+          candidateSha: true,
+          reviewedSha: true,
+        },
+      },
     },
   });
   if (!task || task.deletedAt) return { completed: false as const, reason: "not_found" as const };
@@ -78,58 +92,92 @@ export async function completeReviewedTaskAndAssignNext(args: {
       return { completed: false as const, reason: "repository_not_ready" as const };
     }
     if (task.repositoryRun.phase !== "finalizing") {
-      const finalization = await enqueueTaskReviewFinalization({
-        taskId: task.id,
-        projectId: task.projectId,
-        requestedByUserId: args.actor.id,
-        requestedByUsername: args.actor.username,
-      });
-      if (finalization.blockedByFailedJob) {
-        await db.$transaction([
-          db.task.update({
-            where: { id: task.id },
-            data: { alertReporter: true },
-          }),
-          db.activityLog.create({
-            data: {
-              projectId: task.projectId,
-              taskId: task.id,
-              userId: args.actor.id,
-              kind: "pm.repo.verify.operational_error",
-              payload: JSON.stringify({
-                via: args.via,
-                error: "A failed repository finalization spool job requires operator recovery.",
-              }),
-            },
-          }),
-        ]);
-        await updateTaskRepositoryState(task.id, {
-          phase: "operational_error",
-          validationOutcome: "operational_error",
-          lastError: "A failed repository finalization spool job requires operator recovery.",
-        });
-        return {
-          completed: false as const,
-          reason: "repository_finalization_job_failed" as const,
-        };
+      const candidateSha = task.repositoryRun.repoTouched
+        ? task.repositoryRun.candidateSha
+        : task.repositoryRun.baseSha;
+      if (!candidateSha) {
+        return { completed: false as const, reason: "repository_candidate_missing" as const };
       }
-      await updateTaskRepositoryState(task.id, {
-        phase: "finalizing",
-        lastError: null,
+      const reviewRun = await db.reviewRun.findUnique({
+        where: { taskId_candidateSha: { taskId: task.id, candidateSha } },
+        select: { id: true, status: true },
       });
-      await db.activityLog.create({
-        data: {
-          projectId: task.projectId,
+      if (!reviewRun || reviewRun.status !== "awaiting_review") {
+        return { completed: false as const, reason: "candidate_not_awaiting_review" as const };
+      }
+      const acceptedAt = new Date();
+      const accepted = await db.$transaction(async (tx) => {
+        const claimed = await tx.reviewRun.updateMany({
+          where: { id: reviewRun.id, status: "awaiting_review" },
+          data: { status: "accepted", reviewerId: args.actor.id, reviewedAt: acceptedAt },
+        });
+        if (claimed.count !== 1) return false;
+        await tx.taskRepositoryRun.update({
+          where: { taskId: task.id },
+          data: {
+            phase: "finalizing",
+            reviewedSha: candidateSha,
+            lastError: null,
+            version: { increment: 1 },
+          },
+        });
+        await tx.activityLog.create({
+          data: {
+            projectId: task.projectId,
+            taskId: task.id,
+            userId: args.actor.id,
+            kind: "task.review.accepted",
+            payload: JSON.stringify({
+              via: args.via,
+              commentId: args.commentId ?? null,
+              repositoryFinalization: true,
+              reviewRunId: reviewRun.id,
+              candidateSha,
+            }),
+          },
+        });
+        await enqueueWorkflowEffects(tx, {
           taskId: task.id,
-          userId: args.actor.id,
-          kind: "task.review.accepted",
-          payload: JSON.stringify({
-            via: args.via,
-            commentId: args.commentId ?? null,
-            repositoryFinalization: true,
-          }),
-        },
+          projectId: task.projectId,
+          aggregateVersion: task.workflowVersion,
+          effects: [
+            {
+              type: "review_finalize",
+              key: `review-finalize:${candidateSha}`,
+              payload: {
+                taskId: task.id,
+                projectId: task.projectId,
+                requestedByUserId: args.actor.id,
+                requestedByUsername: args.actor.username,
+                candidateSha,
+              },
+            },
+            { type: "board_touch", key: `board-finalizing:${candidateSha}`, payload: {} },
+          ],
+        });
+        if (args.workflowAction) {
+          await applyPmChannelRunWorkflowAction(tx, {
+            ...args.workflowAction,
+            taskState: "Review",
+          });
+        }
+        return true;
       });
+      if (!accepted) {
+        return { completed: false as const, reason: "candidate_already_reviewed" as const };
+      }
+      await drainWorkflowOutbox({ limit: 2 }).catch((error) =>
+        console.error("[pm] finalization workflow outbox drain deferred:", task.id, error),
+      );
+    } else if (args.workflowAction) {
+      // Exact replay after the acceptance transaction: the durable ReviewRun,
+      // repository phase, and finalization outbox already own the work. Settle
+      // any still-live copy of the same reviewer turn without enqueueing a
+      // second finalization effect.
+      await db.$transaction((tx) => applyPmChannelRunWorkflowAction(tx, {
+        ...args.workflowAction!,
+        taskState: "Review",
+      }));
     }
     return {
       completed: true as const,
@@ -143,31 +191,19 @@ export async function completeReviewedTaskAndAssignNext(args: {
   }
 
   const completion = await db.$transaction(async (tx) => {
-    const maxRank = await tx.task.aggregate({
-      where: { status: "Done", archivedAt: null, deletedAt: null },
-      _max: { rank: true },
-    });
-    await tx.task.update({
-      where: { id: task.id },
-      data: {
-        status: "Done",
-        rank: (maxRank._max.rank ?? 0) + 1,
-        statusChangedAt: new Date(),
-      },
-    });
-    await tx.activityLog.create({
-      data: {
-        projectId: task.projectId,
-        taskId: task.id,
-        userId: args.actor.id,
-        kind: "task.move",
-        payload: JSON.stringify({
-          from: "Review",
-          to: "Done",
-          via: args.via,
-          action: "review_done",
-          commentId: args.commentId ?? null,
-        }),
+    const transition = await applyTaskTransition(tx, {
+      taskId: task.id,
+      projectId: task.projectId,
+      actorUserId: args.actor.id,
+      intent: "accept_review",
+      from: "Review",
+      to: "Done",
+      source: args.via,
+      idempotencyKey: `review-done:${args.workflowAction?.messageId ?? args.commentId ?? `${args.via}:v${task.workflowVersion + 1}`}`,
+      evidence: {
+        commentId: args.commentId ?? null,
+        repositoryFinalized: args.repositoryFinalized ?? false,
+        reviewedSha: task.repositoryRun?.reviewedSha ?? null,
       },
     });
 
@@ -253,46 +289,76 @@ export async function completeReviewedTaskAndAssignNext(args: {
       }
     }
 
-    return { nextAssignments, epicRolledToReview };
-  });
-
-  // Candidate publication, containment/worktree validation, reviewer wake,
-  // final approval, and cleanup all run after this transaction through the
-  // privileged repository runner. Nothing is deleted while acceptance is open.
-  if (completion.epicRolledToReview && task.epicId) {
-    const queued = await enqueueEpicCompletionReview(task.epicId).catch((err) => {
-      console.error("[pm] epic completion-review enqueue failed:", task.epicId, err);
-      return {
-        enqueued: false,
-        blockedByFailedJob: false,
-        enqueueError: String(err instanceof Error ? err.message : err).slice(0, 4000),
-      };
-    });
-    if (!queued.enqueued && (queued.blockedByFailedJob || "enqueueError" in queued)) {
-      const reason = "enqueueError" in queued
-        ? queued.enqueueError
-        : "A failed completion-review runner job requires operator recovery.";
-      await db.epic.update({
-        where: { id: task.epicId },
-        data: {
-          completionReviewStatus: "Operational Error",
-          completionReviewLastError: reason,
-        },
+    const effects: WorkflowEffect[] = [
+      { type: "board_touch", key: "board-done", payload: {} },
+    ];
+    // Whole-Epic candidate preparation is an external repository effect. Keep
+    // it in ENV-118's durable outbox so the Task Done transition and the
+    // obligation to prepare acceptance either commit together or not at all.
+    if (epicRolledToReview && task.epicId) {
+      effects.push({
+        type: "epic_completion_review",
+        key: `epic-completion-review:${task.epicId}`,
+        payload: { epicId: task.epicId },
       });
-      await db.activityLog.create({
-        data: {
-          projectId: task.projectId,
-          userId: args.actor.id,
-          kind: "epic.completion_review.operational_error",
-          payload: JSON.stringify({
-            epicId: task.epicId,
-            reason,
-            via: args.via,
-          }),
+    }
+    for (const assigned of nextAssignments) {
+      effects.push({
+        type: "task_notification",
+        key: `next-task:${assigned.task.id}:${assigned.worker.id}`,
+        payload: {
+          taskId: assigned.task.id,
+          targetUserId: assigned.worker.id,
+          actor: args.actor,
+          reason: "todo_start_required",
+          body: [
+            `Previous epic task "${task.title}" was accepted by @${args.actor.username}.`,
+            `Next task "${assigned.task.title}" is now assigned to you in To Do.`,
+            assigned.approvedPlan
+              ? "Its Action Plan is already approved: move the task to In Progress through the workflow endpoint and start immediately."
+              : "Before starting work, post one concise technical implementation plan in Action Plan and wait for reviewer/reporter approval.",
+            "If you have unresolved review feedback on another Review-stage task, address that feedback first; otherwise begin this task now.",
+          ].join("\n"),
         },
       });
     }
-  }
+    const previousAssigneeGotNext = nextAssignments.some(
+      (assigned) => assigned.worker.id === task.assigneeId,
+    );
+    if (!previousAssigneeGotNext && task.assigneeId) {
+      effects.push({
+        type: "task_notification",
+        key: `review-done:${task.assigneeId}`,
+        payload: {
+          taskId: task.id,
+          targetUserId: task.assigneeId,
+          actor: args.actor,
+          reason: "review_done",
+          body: [
+            `Task "${task.title}" was reviewed and moved to Done by @${args.actor.username}.`,
+            "No further action is required unless the task is reopened.",
+          ].join("\n"),
+        },
+      });
+    }
+    await enqueueWorkflowEffects(tx, {
+      taskId: task.id,
+      projectId: task.projectId,
+      aggregateVersion: transition.transition.workflowVersion,
+      transitionId: transition.transition.id,
+      effects,
+    });
+    if (args.workflowAction) {
+      await applyPmChannelRunWorkflowAction(tx, {
+        ...args.workflowAction,
+        taskState: "Done",
+      });
+    }
+    return { nextAssignments, epicRolledToReview, effectCount: effects.length };
+  });
+  await drainWorkflowOutbox({ limit: completion.effectCount }).catch((error) =>
+    console.error("[pm] completion workflow outbox drain deferred:", task.id, error),
+  );
 
   const nextTasks = completion.nextAssignments.map((assigned) => ({
     id: assigned.task.id,
@@ -300,39 +366,6 @@ export async function completeReviewedTaskAndAssignNext(args: {
     projectSlug: assigned.task.project.slug,
   }));
   const nextTask = nextTasks[0] ?? null;
-
-  for (const assigned of completion.nextAssignments) {
-    await sendTaskWorkflowNotification({
-      taskId: assigned.task.id,
-      targetUserId: assigned.worker.id,
-      actor: args.actor,
-      reason: "todo_start_required",
-      body: [
-        `Previous epic task "${task.title}" was accepted by @${args.actor.username}.`,
-        `Next task "${assigned.task.title}" is now assigned to you in To Do.`,
-        assigned.approvedPlan
-          ? "Its Action Plan is already approved: move the task to In Progress through the workflow endpoint and start immediately."
-          : "Before starting work, post one concise technical implementation plan in Action Plan and wait for reviewer/reporter approval.",
-        "If you have unresolved review feedback on another Review-stage task, address that feedback first; otherwise begin this task now.",
-      ].join("\n"),
-    });
-  }
-
-  const previousAssigneeGotNext = completion.nextAssignments.some(
-    (assigned) => assigned.worker.id === task.assigneeId,
-  );
-  if (!previousAssigneeGotNext && task.assigneeId) {
-    await sendTaskWorkflowNotification({
-      taskId: task.id,
-      targetUserId: task.assigneeId,
-      actor: args.actor,
-      reason: "review_done",
-      body: [
-        `Task "${task.title}" was reviewed and moved to Done by @${args.actor.username}.`,
-        "No further action is required unless the task is reopened.",
-      ].join("\n"),
-    });
-  }
 
   return {
     completed: true as const,

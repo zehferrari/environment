@@ -50,14 +50,21 @@ async function databaseSlice() {
     via: "epic-completion-review-test",
   });
   assert.equal(completion.completed, true);
-  const [storedEpic, storedTask] = await Promise.all([
+  const [storedEpic, storedTask, transition, reviewEffect] = await Promise.all([
     db.epic.findUniqueOrThrow({ where: { id: epic.id } }),
     db.task.findUniqueOrThrow({ where: { id: task.id } }),
+    db.workflowTransition.findFirst({ where: { taskId: task.id, intent: "accept_review" } }),
+    db.workflowOutbox.findFirst({
+      where: { taskId: task.id, effectType: "epic_completion_review" },
+    }),
   ]);
   assert.equal(storedTask.status, "Done", "the accepted child must complete");
+  assert.equal(storedTask.workflowVersion, 1, "the accepted child must advance through the transition kernel");
+  assert(transition, "the accepted child must have an immutable workflow transition");
   assert.equal(storedEpic.status, "Review", "the final child must not complete the Epic");
   assert.equal(storedEpic.completionReviewStatus, "Preparing");
   assert.equal(storedEpic.completionReviewCandidateSha, null);
+  assert.equal(reviewEffect?.status, "completed", "candidate preparation must be projected from the durable outbox");
 
   const spoolDir = process.env.PM_EPIC_MERGE_DIR!;
   const reviewJob = join(spoolDir, `review-${epic.id}.json`);

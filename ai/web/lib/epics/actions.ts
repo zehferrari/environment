@@ -31,6 +31,12 @@ import { assignOpenEpicTasks } from "@/lib/epics/assignment";
 import { resetEpicActionPlanForDeployReview, triggerDeployReview } from "@/lib/epics/deploy-review";
 import { canApplySubmittedEpicStatus } from "@/lib/epics/status-concurrency";
 import {
+  applyTaskTransition,
+  isTaskWorkflowStatus,
+  type TaskTransitionIntent,
+  type TaskWorkflowStatus,
+} from "@/lib/tasks/transition-kernel";
+import {
   accessibleEpicWhere,
   accessibleTaskWhere,
   assertAgentAssignmentAllowed,
@@ -48,6 +54,66 @@ function isEpicStatus(value: unknown): value is EpicStatus {
     typeof value === "string" &&
     (EPIC_STATUSES as readonly string[]).includes(value)
   );
+}
+
+function epicCascadeIntent(
+  from: TaskWorkflowStatus,
+  to: "Backlog" | "To Do",
+): TaskTransitionIntent | null {
+  if (from === to || from === "Done") return null;
+  if (to === "Backlog") return "cancel";
+  if (from === "Backlog") return "triage";
+  if (from === "In Progress") return "queue";
+  if (from === "Review") return "request_changes";
+  return null;
+}
+
+async function cascadeEpicTasks(
+  tx: Prisma.TransactionClient,
+  args: {
+    actor: Viewer;
+    epicId: string;
+    projectId: string;
+    target: "Backlog" | "To Do";
+    source: "epic_update" | "epic_status";
+    clearAssignee: boolean;
+  },
+) {
+  const tasks = await tx.task.findMany({
+    where: accessibleTaskWhere(args.actor, {
+      epicId: args.epicId,
+      archivedAt: null,
+      deletedAt: null,
+      status: { not: "Done" },
+    }),
+    select: { id: true, status: true, workflowVersion: true },
+    orderBy: { id: "asc" },
+  });
+  for (const task of tasks) {
+    if (!isTaskWorkflowStatus(task.status)) {
+      throw new Error(`Task ${task.id} has unsupported workflow status ${task.status}.`);
+    }
+    const intent = epicCascadeIntent(task.status, args.target);
+    if (!intent) continue;
+    await applyTaskTransition(tx, {
+      taskId: task.id,
+      projectId: args.projectId,
+      actorUserId: args.actor.id,
+      intent,
+      from: task.status,
+      to: args.target,
+      source: args.source,
+      idempotencyKey: `${args.source}:${args.epicId}:${args.target}:v${task.workflowVersion}`,
+      expectedVersion: task.workflowVersion,
+      taskData: args.clearAssignee ? { assigneeId: null } : undefined,
+      evidence: { epicId: args.epicId },
+      effects: [{
+        type: "board_touch",
+        key: "epic-cascade-board-touch",
+        payload: { projectId: args.projectId },
+      }],
+    });
+  }
 }
 
 async function assertEpicTaskCascadeAllowed(
@@ -752,18 +818,13 @@ export async function updateEpic(formData: FormData) {
       }
     }
     if (taskCascade) {
-      await tx.task.updateMany({
-        where: accessibleTaskWhere(actor, {
-          epicId,
-          archivedAt: null,
-          deletedAt: null,
-          status: { not: "Done" },
-        }),
-        data: {
-          status: taskCascade,
-          statusChangedAt,
-          ...(epicActivated && canTriggerAgents ? { assigneeId: null } : {}),
-        },
+      await cascadeEpicTasks(tx, {
+        actor,
+        epicId,
+        projectId: epic.project.id,
+        target: taskCascade,
+        source: "epic_update",
+        clearAssignee: epicActivated && canTriggerAgents,
       });
       if (epicActivated && canTriggerAgents) {
         openAssignment = await assignOpenEpicTasks(tx, {
@@ -1038,20 +1099,13 @@ export async function setEpicStatus(formData: FormData) {
       },
     });
     if (taskCascade) {
-      await tx.task.updateMany({
-        where: accessibleTaskWhere(actor, {
-          epicId,
-          archivedAt: null,
-          deletedAt: null,
-          status: { not: "Done" },
-        }),
-        data: {
-          status: taskCascade,
-          statusChangedAt,
-          ...(epicActivated && (actor.isOwner || actor.kind === "agent")
-            ? { assigneeId: null }
-            : {}),
-        },
+      await cascadeEpicTasks(tx, {
+        actor,
+        epicId,
+        projectId: epic.project.id,
+        target: taskCascade,
+        source: "epic_status",
+        clearAssignee: epicActivated && (actor.isOwner || actor.kind === "agent"),
       });
       if (epicActivated && (actor.isOwner || actor.kind === "agent")) {
         openAssignment = await assignOpenEpicTasks(tx, {
@@ -1133,7 +1187,7 @@ export async function createEpicComment(formData: FormData) {
   await requireProjectAccess(actor, { id: epic.projectId });
 
   await db.$transaction([
-    db.comment.create({ data: { epicId, userId: actor.id, body } }),
+    db.comment.create({ data: { epicId, userId: actor.id, body, commentKind: "human", isGenerated: false, ...(actor.kind === "agent" ? { authorAgentSlug: actor.username } : {}) } }),
     db.activityLog.create({
       data: {
         projectId: epic.projectId,

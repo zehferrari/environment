@@ -128,11 +128,12 @@ function trimError(err: unknown, max = 800) {
 async function run(
   command: string,
   args: string[],
-  opts: { timeout?: number; maxBuffer?: number } = {},
+  opts: { timeout?: number; maxBuffer?: number; cwd?: string } = {},
 ) {
   const { stdout } = await exec(command, args, {
     timeout: opts.timeout ?? 60_000,
     maxBuffer: opts.maxBuffer ?? 1024 * 1024,
+    cwd: opts.cwd,
   });
   return stdout.trim();
 }
@@ -156,6 +157,96 @@ function real(p: string | null | undefined) {
   } catch {
     return null;
   }
+}
+
+type ValidationExecutionResult = {
+  ok: boolean;
+  summary: string | null;
+  checks: Array<{ name: string; status: "passed" | "failed"; required: boolean; exitCode: number | null }>;
+};
+
+async function runCandidateValidationChecks(args: {
+  job: BranchVerifyJob;
+  reviewRunId: string;
+  candidateSha: string;
+  worktreePath: string;
+}): Promise<ValidationExecutionResult> {
+  const profile = args.job.validationProfile ?? { id: null, version: 0, commands: [] };
+  if (profile.commands.length === 0) return { ok: true, summary: null, checks: [] };
+  const checks: ValidationExecutionResult["checks"] = [];
+  for (const command of profile.commands) {
+    const startedAt = new Date();
+    const row = await db.validationCheckRun.upsert({
+      where: { jobId_checkName: { jobId: args.job.jobId, checkName: command.name } },
+      create: {
+        projectId: args.job.projectId,
+        taskId: args.job.taskId,
+        reviewRunId: args.reviewRunId,
+        candidateSha: args.candidateSha,
+        jobId: args.job.jobId,
+        profileId: profile.id,
+        profileVersion: profile.version,
+        checkName: command.name,
+        executable: command.executable,
+        arguments: JSON.stringify(command.args),
+        required: command.required,
+        status: "running",
+        startedAt,
+      },
+      update: {
+        reviewRunId: args.reviewRunId,
+        candidateSha: args.candidateSha,
+        profileId: profile.id,
+        profileVersion: profile.version,
+        executable: command.executable,
+        arguments: JSON.stringify(command.args),
+        required: command.required,
+        status: "running",
+        exitCode: null,
+        output: null,
+        startedAt,
+        finishedAt: null,
+      },
+      select: { id: true },
+    });
+    try {
+      const result = await exec(command.executable, command.args, {
+        cwd: args.worktreePath,
+        timeout: command.timeoutSeconds * 1000,
+        maxBuffer: 8 * 1024 * 1024,
+      });
+      const output = `${String(result.stdout ?? "")}\n${String(result.stderr ?? "")}`.trim().slice(-16_000);
+      await db.validationCheckRun.update({
+        where: { id: row.id },
+        data: { status: "passed", exitCode: 0, output: output || null, finishedAt: new Date() },
+      });
+      checks.push({ name: command.name, status: "passed", required: command.required, exitCode: 0 });
+    } catch (error) {
+      const failed = error as { code?: unknown; stdout?: unknown; stderr?: unknown; message?: unknown };
+      const exitCode = typeof failed.code === "number" ? failed.code : null;
+      const output = [failed.stdout, failed.stderr, failed.message]
+        .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        .join("\n")
+        .trim()
+        .slice(-16_000);
+      await db.validationCheckRun.update({
+        where: { id: row.id },
+        data: { status: "failed", exitCode, output: output || null, finishedAt: new Date() },
+      });
+      checks.push({ name: command.name, status: "failed", required: command.required, exitCode });
+    }
+  }
+  const requiredFailures = checks.filter((check) => check.required && check.status === "failed");
+  return {
+    ok: requiredFailures.length === 0,
+    summary: [
+      `Validation profile v${profile.version}: ${checks.filter((check) => check.status === "passed").length}/${checks.length} checks passed.`,
+      requiredFailures.length > 0
+        ? `Required failures: ${requiredFailures.map((check) => check.name).join(", ")}.`
+        : null,
+    ].filter(Boolean).join(" "),
+    checks,
+  };
 }
 
 function parseWorktrees(out: string): WorktreeRecord[] {
@@ -537,6 +628,29 @@ function renderOkBody(args: {
   return lines.join("\n");
 }
 
+function renderNoChangeBody(args: {
+  branchName: string;
+  branchRefLabel: string;
+  epicMode: boolean;
+  candidateSha: string;
+  baseValidation: BranchBaseValidation;
+  state: LocalState;
+}): string {
+  return [
+    `${args.branchRefLabel} verified by the monitor agent.`,
+    "",
+    `- Candidate: \`${args.candidateSha.slice(0, 10)}\` exactly matches the task's recorded repository base.`,
+    "- Classification: no repository changes. This was derived from the clean registered worktree and exact SHA comparison; it was not supplied by the assignee.",
+    args.epicMode
+      ? `- Epic-child branch remains local-only and is based on \`${args.baseValidation.baseBranch}\`.`
+      : `- Standalone branch is synchronized with origin and based on \`${args.baseValidation.baseBranch}\`.`,
+    args.state.checkPath
+      ? `- Registered worktree checked clean: \`${args.state.checkPath}\`.`
+      : null,
+    "- Reviewer acceptance will use the no-change cleanup path for this exact candidate.",
+  ].filter(Boolean).join("\n");
+}
+
 function renderProtectedBranchBody(args: { branchName: string; epicMode: boolean; protectedBranches: string[] }) {
   return [
     `Branch \`${args.branchName}\` is blocked from reviewer hand-off.`,
@@ -856,7 +970,14 @@ async function main() {
   const branchSynced = epicMode
     ? !state.remoteSha
     : !state.localSha || !state.remoteSha || state.localSha === state.remoteSha;
-  const repoVerifiedOk =
+  const noChangeCandidate = Boolean(
+    !commitResult.created &&
+    job.baseSha &&
+    state.localSha === job.baseSha &&
+    !state.dirtyStatus &&
+    !state.dirtyError,
+  );
+  const gitVerifiedOk =
     !fetchError &&
     !logError &&
     !state.dirtyStatus &&
@@ -864,28 +985,106 @@ async function main() {
     !state.pushError &&
     baseValidation.ok &&
     branchSynced &&
-    head !== null &&
-    match !== null &&
-    !mismatch;
-  const candidateSha = checkpointBaseline?.candidateSha ?? head?.sha ?? null;
+    (noChangeCandidate || (head !== null && match !== null && !mismatch));
+  const candidateSha = noChangeCandidate
+    ? state.localSha
+    : checkpointBaseline?.candidateSha ?? head?.sha ?? null;
 
+  let validationChecks: ValidationExecutionResult = { ok: true, summary: null, checks: [] };
+  let postValidationDirty: string | null = null;
+  let postValidationHead: string | null = null;
+  if (gitVerifiedOk && candidateSha) {
+    const reviewRun = await db.reviewRun.upsert({
+      where: { taskId_candidateSha: { taskId: job.taskId, candidateSha } },
+      create: {
+        taskId: job.taskId,
+        candidateSha,
+        baseSha: job.baseSha ?? null,
+        repoTouched: !noChangeCandidate && !checkpointBaseline,
+        validationOutcome: "pending",
+        status: "validating",
+      },
+      update: {
+        baseSha: job.baseSha ?? null,
+        repoTouched: !noChangeCandidate && !checkpointBaseline,
+        validationOutcome: "pending",
+        status: "validating",
+        reviewerId: null,
+        reviewedAt: null,
+        invalidatedAt: null,
+        invalidatedReason: null,
+      },
+      select: { id: true },
+    });
+    if ((job.validationProfile?.commands.length ?? 0) > 0) {
+      if (!state.checkPath) {
+        validationChecks = {
+          ok: false,
+          summary: "The project validation profile could not run because the task has no registered worktree.",
+          checks: [],
+        };
+      } else {
+        validationChecks = await runCandidateValidationChecks({
+          job,
+          reviewRunId: reviewRun.id,
+          candidateSha,
+          worktreePath: state.checkPath,
+        });
+        [postValidationDirty, postValidationHead] = await Promise.all([
+          gitOrNull(state.checkPath, ["status", "--porcelain"]),
+          gitOrNull(state.checkPath, ["rev-parse", "HEAD"]),
+        ]);
+        if (postValidationDirty) {
+          validationChecks.ok = false;
+          validationChecks.summary = [
+            validationChecks.summary,
+            "Validation commands modified the registered worktree; candidate review was refused.",
+          ].filter(Boolean).join(" ");
+        }
+        if (postValidationHead !== candidateSha) {
+          validationChecks.ok = false;
+          validationChecks.summary = [
+            validationChecks.summary,
+            `The candidate moved during validation (expected ${candidateSha}, found ${postValidationHead ?? "unreadable"}).`,
+          ].filter(Boolean).join(" ");
+        }
+      }
+    }
+  }
+  const repoVerifiedOk = gitVerifiedOk && validationChecks.ok;
   const rebuild = repoVerifiedOk
     ? await rebuildLiveWorktreeIfNeeded(job, state)
     : null;
   const reviewReady = repoVerifiedOk && (!rebuild?.attempted || rebuild.ok);
-  const semanticWarning = reviewReady ? semanticDescriptionWarning(job, head) : null;
-  const successfulOutcome = semanticWarning ? "valid_with_warning" as const : "valid" as const;
+  const semanticWarning = reviewReady && !noChangeCandidate ? semanticDescriptionWarning(job, head) : null;
+  const advisoryValidationFailures = validationChecks.checks.filter(
+    (check) => !check.required && check.status === "failed",
+  );
+  const validationWarning = advisoryValidationFailures.length > 0
+    ? `Optional validation failures: ${advisoryValidationFailures.map((check) => check.name).join(", ")}.`
+    : null;
+  const successfulOutcome = semanticWarning || validationWarning
+    ? "valid_with_warning" as const
+    : "valid" as const;
   const validationOutcome = reviewReady ? successfulOutcome : "invalid" as const;
   const kind = reviewReady
     ? semanticWarning ? "pm.repo.verify.warning" : "pm.repo.verify.ok"
     : "pm.repo.verify.fail";
 
   const baseBody = reviewReady
-    ? renderOkBody({ branchName: job.branchName, branchRefLabel, epicMode, head: head!, match: match!, commitPrefix: job.commitPrefix, expectedIdentity: requiredIdentity, baseValidation, state, rebuild: rebuild!, candidateSha: candidateSha!, checkpointBaseline: Boolean(checkpointBaseline) })
+    ? noChangeCandidate
+      ? renderNoChangeBody({ branchName: job.branchName, branchRefLabel, epicMode, candidateSha: candidateSha!, baseValidation, state })
+      : renderOkBody({ branchName: job.branchName, branchRefLabel, epicMode, head: head!, match: match!, commitPrefix: job.commitPrefix, expectedIdentity: requiredIdentity, baseValidation, state, rebuild: rebuild!, candidateSha: candidateSha!, checkpointBaseline: Boolean(checkpointBaseline) })
     : renderFailBody({ branchName: job.branchName, branchRefLabel, epicMode, head, match, commitPrefix: job.commitPrefix, fetchError, logError, identityMismatch: mismatch, baseValidation, state, rebuild });
-  const body = semanticWarning
-    ? `${baseBody}\n\n⚠️ Advisory validation warning\n\n${semanticWarning}`
-    : baseBody;
+  const validationSection = validationChecks.summary
+    ? `Validation profile\n\n${validationChecks.summary}`
+    : null;
+  const warningSection = [semanticWarning, validationWarning].filter(Boolean).join("\n");
+  const body = [
+    baseBody,
+    validationSection,
+    warningSection ? `⚠️ Advisory validation warning\n\n${warningSection}` : null,
+  ].filter(Boolean).join("\n\n");
   const operationalError =
     (isOperationalRepositoryFailure(fetchError) ? fetchError : null) ||
     (isOperationalRepositoryFailure(state.pushError) ? state.pushError : null) ||
@@ -936,6 +1135,7 @@ async function main() {
                 checkpointSha: checkpointBaseline.checkpoint.sha,
               }
             : null,
+          noChangeCandidate,
           matchSha: match?.sha ?? null,
           expectedGitUserName: job.expectedGitUserName,
           expectedGitUserEmail: job.expectedGitUserEmail,
@@ -954,6 +1154,10 @@ async function main() {
           rebuild,
           validationOutcome,
           semanticWarning,
+          validationWarning,
+          validationChecks,
+          postValidationDirty,
+          postValidationHead,
           pmCreatedCommitSha: commitResult.created ? commitResult.sha : null,
           requestedByAgentSlug: job.requestedByAgentSlug,
         }),
@@ -972,8 +1176,10 @@ async function main() {
       actor,
       candidateSha,
       validationOutcome: successfulOutcome,
-      validationSummary: semanticWarning ?? baseBody,
-      repoTouched: !checkpointBaseline,
+      validationSummary: [validationChecks.summary, semanticWarning, validationWarning]
+        .filter(Boolean)
+        .join(" ") || baseBody,
+      repoTouched: !noChangeCandidate && !checkpointBaseline,
     });
   } else {
     await failTaskReviewValidation({
@@ -1005,6 +1211,11 @@ async function main() {
         rebuild,
         validationOutcome,
         semanticWarning,
+        validationWarning,
+        validationChecks,
+        postValidationDirty,
+        postValidationHead,
+        noChangeCandidate,
         pmCreatedCommitSha: commitResult.created ? commitResult.sha : null,
       },
       null,

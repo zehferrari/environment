@@ -3,9 +3,16 @@ import { isOwnerUserId } from "@/lib/auth/permissions";
 import { extractMentions } from "@/lib/markdown";
 import {
   buildTaskAgentUserMessage,
+  buildTaskEpisodeBrief,
   buildTaskNativeChannelPrompt,
   buildTaskNativeIncrementalChannelPrompt,
 } from "@/lib/agents/workflow/chat/task/context";
+import {
+  latestTaskExecutionCheckpoint,
+  openTaskExecutionEpisode,
+  renderEpisodeCheckpoint,
+  taskExecutionEpisodeHistory,
+} from "@/lib/agents/episodes/lifecycle";
 import { getOrCreateAgentSessionBinding } from "@/lib/agents/auth/session-bindings";
 import {
   buildPmChannelDispatchMetrics,
@@ -62,6 +69,7 @@ export type TaskWorkflowNotificationReason =
   | "review_feedback"
   | "review_done"
   | "action_plan_review_requested"
+  | "action_plan_feedback_received"
   | "reviewer_plan_requested"
   | "reviewer_assignment_requested"
   | "subtask_requested"
@@ -157,9 +165,15 @@ function workflowPrompt(args: {
     {
       messageId: args.messageId,
       token,
-      action: "<start | publish_checkpoint | approve_plan | ready_for_review | review_feedback | review_done | triage_to_todo | assign_after_plan_approval | add_subtask | complete_subtask | remove_subtask | request_subtask | request_task | flag_blocker | clear_blocker | flag_extra_work_blocker>",
+      action: "<start | checkpoint | publish_checkpoint | approve_plan | ready_for_review | review_feedback | review_done | triage_to_todo | assign_task | add_subtask | complete_subtask | remove_subtask | request_subtask | request_task | flag_blocker | clear_blocker | flag_extra_work_blocker>",
       comment: "<required for review_feedback, blocker/dependency actions, and scope requests; optional on ready_for_review>",
       authorizationCommentId: "<required only on publish_checkpoint: id of a fresh single-use owner comment explicitly naming the checkpoint Task and target Epic branch>",
+      completedWork: "<optional on checkpoint: string[] of what this episode finished>",
+      evidence: "<optional on checkpoint: string[] of artifacts, paths, command output, URLs>",
+      openChecklist: "<optional on checkpoint: string[] of what is still open>",
+      nextAction: "<optional on checkpoint: the single next exact action for the next episode>",
+      risks: "<optional on checkpoint: string[] of current risks>",
+      blockerReport: "<required on flag_blocker unless permissionKind is set: { blockedOn: person|permission|external_service|decision|dependency, requestedActor (never you), requestedAction, evidence, diagnosticsAttempted: [...], resumeCondition, reporterCanResolve }>",
       permissionKind: "<optional only on flag_blocker when reporter permission is the sole remaining dependency: reporter_approval | publish_checkpoint>",
       permissionScope: "<required with permissionKind=reporter_approval; <=500 chars naming the exact action to authorize; optional checkpoint reason with publish_checkpoint>",
       repoTouched: "<true | false, only on ready_for_review; default true when branchName is set>",
@@ -232,23 +246,24 @@ function workflowPrompt(args: {
     "Workflow rules:",
     "- Backlog is for planning and opinions only. If you are the assignee and the task is in Backlog, reply in Action Plan with one concrete technical plan, structured as a checklist of INDEPENDENT, PARALLELIZABLE steps wherever possible so the work can be tackled on multiple fronts by parallel sub-agents. Do not split small tasks or strictly sequential/dependent work. Do not change task status and do not start work.",
     "- To Do means the task is actionable, but execution is still blocked until the Action Plan has approved_on set. If you are the assignee and approved_on is empty, reply in Action Plan with one concrete technical plan and wait.",
-    "- If you are the assigned task reviewer on an unassigned task, post one reviewer plan of action in Action Plan. Break it into the independent, parallelizable sub-tasks/topics/items to be addressed or watched, so the assignee can work multiple fronts at once. If an assignee's Action Plan could be safely split into independent sub-tasks, flag that in consolidated review feedback; do not demand splitting for small or strictly sequential/dependent work. Do not start implementation and do not assign anyone until the plan is approved.",
+    "- If you are the assigned task reviewer on an unassigned task, call action=assign_task to select or request an eligible coding agent. The assignee authors the implementation plan; reviewers never author that artifact. If the plan can be safely split into independent steps, flag that in consolidated feedback; do not demand splitting for small or strictly sequential/dependent work.",
     "- If you are the resolved reviewer or reporter and you accept the assignee's Action Plan, call action=approve_plan and include one concise `comment` explaining why the plan is acceptable or naming any constraints. If the task was in Backlog, PM will move it to To Do and wake the assignee.",
     args.onlyReportersCanApproveActionPlans
       ? "- Project policy: only the reporter can approve Action Plans. Reviewers and acting managers should comment with feedback or agreement, but must wait for reporter approval."
       : "- Project policy: the reporter or resolved reviewer may approve Action Plans.",
-    "- If you are the assigned task reviewer, the plan is approved, and the task still has no assignee, call action=assign_after_plan_approval. PM will choose an eligible coding agent and move the task from Backlog to To Do if needed.",
+    "- If you are the assigned task reviewer and the task has no assignee, call action=assign_task. PM will choose an eligible coding agent; that assignee then authors the Action Plan.",
     "- If you are the assignee and the task is in To Do with approved_on set, call the workflow endpoint with action=start, then begin work immediately. start works ONLY from To Do — there is no start/resume from Review.",
     "- If a reviewer leaves review_feedback, PM returns the task to the FRONT of To Do. Address the feedback by starting the task from To Do (action=start) — never expect to resume it in place from Review.",
     "- In Progress means active implementation. When implementation is complete, call the workflow endpoint with action=ready_for_review.",
     "- If an Epic-child task cannot complete its remaining checklist until the current work is deployed, do not misuse ready_for_review and do not commit/push manually. When owner authorization is the sole missing dependency, use flag_blocker with permissionKind=publish_checkpoint so PM can render the scoped grant action. After the reporter/owner grants it, use publish_checkpoint and cite the resulting exact single-use authorization comment id. The permission round is now agent-actionable; success or failure consumes the grant and PM closes that exact round. Diagnose an agent-actionable failure and raise a fresh publish_checkpoint blocker for any retry. Then wait for and verify the configured project deployment automation for the successful SHA. If verification exposes another code fix requiring publication, complete the fix and raise another fresh round; a consumed authorization is never reusable. Never SSH to the target, run Git there, or substitute another OS identity as a manual fallback. Use a general blocker only when the deployment integration or external dependency genuinely needs human intervention. Then continue verification and finish through ready_for_review normally; PM recognizes an unchanged published checkpoint baseline.",
+    "- EXECUTION EPISODES: your work on a task runs in bounded episodes. Every workflow action you record spends one episode cycle, and each successful action answers with an `episode` block giving episodeNo, cycleCount, cycleBudget and cyclesRemaining. When cyclesRemaining is low, call action=checkpoint with completedWork / evidence / openChecklist / nextAction / risks — it costs no cycle — so the next episode resumes from your own words. When PM answers rolledOver=true the episode ended: stop, and PM dispatches the next episode in a fresh session briefed from that checkpoint. Full task history stays retrievable through the scoped grant URLs; a small brief is not missing context.",
     "- Tick each implementation sub-task Done (action=complete_subtask) the MOMENT it completes — not in batches later. ready_for_review is REJECTED while open implementation sub-tasks exist; use remove_subtask only for a genuinely obsolete or duplicate checklist item, never to hide unfinished scope.",
     "- If you complete work and no workflow turn is live (your token-bearing turn already ended), POST /api/agent/tasks/<taskId>/request-workflow-turn with your PM bearer token to receive a fresh workflow turn. It is rate-limited to once per task per 5 minutes and only works for the task's current assignee.",
     "- After Action Plan approval, do not keep discussing straightforward implementation. Start it, complete it, then use one concise ready_for_review note when the work is ready.",
     "- Sub-tasks are a lightweight progress checklist (text + done + minutes), NOT child tasks. Break the work into INDEPENDENT, PARALLELIZABLE steps and dispatch parallel sub-agents to tackle the independent ones at once whenever the work allows — don't serialize work that could run on multiple fronts. Keep the checklist current so the board shows how close the task is to done: action=add_subtask {subtaskText} to add a step, action=complete_subtask {subtaskId, completed, minutesSpent} as each lands (include the minutes it took for the task cost roll-up). Ids are in the SUB-TASKS list in your context. Do not create child Tasks for steps inside one task.",
     "- Questions and blockers may be discussed in comments at any status, but ready_for_review is only for completed implementation. Do not use Review as a waiting room.",
     "- Task execution belongs to the visible assignee. Never transfer work through comments or hidden workflow state. If another agent must perform independent work, create and explicitly assign a separate PM task with the dependency represented on the board.",
-    "- If active implementation is blocked by infrastructure, credentials, access, an external service, or a human decision you cannot resolve, call action=flag_blocker once with one concise comment naming the failure, evidence, and required intervention. Before flagging a credential or login blocker, re-read the exact account identifier and endpoint from the latest trusted task context and retry the literal values; a guessed shorthand username is not blocker evidence. If reporter permission is the ONLY remaining dependency, also set permissionKind=reporter_approval and permissionScope to the exact action being authorized; use permissionKind=publish_checkpoint for the validated Epic-checkpoint exception. Never mark a mixed/uncertain blocker as permission-only. PM keeps the task In Progress, links the board blocker control to that exact comment, notifies the decision owners, and suppresses ordinary stale-work nudges only while external input is missing. A valid permission grant wakes you and makes the round agent-actionable immediately. Do not repeat the blocker comment. Non-checkpoint blockers still require clear_blocker after verified resolution; checkpoint outcomes close their consumed round automatically.",
+    "- If active implementation is blocked by infrastructure, credentials, access, an external service, or a human decision you cannot resolve, call action=flag_blocker once with one concise comment naming the failure, evidence, and required intervention, plus a structured blockerReport. PM validates that report before the task can enter a human-blocked state and answers 422 with the rule that fired if requestedActor resolves to you, diagnosticsAttempted is empty, or resumeCondition is not concrete; a refused blocker records no workflow action, so keep working. A recoverable external_service/dependency failure is recorded as an internal incident instead: the task stays In Progress, nobody is woken, and you retry. Escalating one needs distinct diagnostic evidence across rounds, never elapsed time or repeated retries. Before flagging a credential or login blocker, re-read the exact account identifier and endpoint from the latest trusted task context and retry the literal values; a guessed shorthand username is not blocker evidence. If reporter permission is the ONLY remaining dependency, also set permissionKind=reporter_approval and permissionScope to the exact action being authorized; use permissionKind=publish_checkpoint for the validated Epic-checkpoint exception. Never mark a mixed/uncertain blocker as permission-only. PM keeps the task In Progress, links the board blocker control to that exact comment, notifies the decision owners, and suppresses ordinary stale-work nudges only while external input is missing. A valid permission grant wakes you and makes the round agent-actionable immediately. Do not repeat the blocker comment. Non-checkpoint blockers still require clear_blocker after verified resolution; checkpoint outcomes close their consumed round automatically.",
     "- Review means completed work is waiting for reviewer judgment. If you are allowed by project policy to accept it and are satisfied, call action=review_done; do not write an approval-only comment. Repository tasks remain in Review while PM publishes/merges, verifies, and removes the local worktree; only successful finalization moves them to Done. If changes or blockers remain, call action=review_feedback with a clear comment — PM returns the task to the FRONT of To Do for the assignee.",
     args.onlyReportersCanSetTasksDone
       ? "- Project policy: only the reporter can set Tasks to Done. Reviewers should leave concise review feedback or agreement, then wait for the reporter to complete it."
@@ -292,6 +307,7 @@ export async function sendTaskWorkflowNotification(args: {
   actor: Actor;
   reason: TaskWorkflowNotificationReason;
   body: string;
+  dedupeKey?: string;
 }) {
   if (args.actor.kind === "human" && !(await isOwnerUserId(args.actor.id))) {
     return null;
@@ -371,12 +387,12 @@ export async function sendTaskWorkflowNotification(args: {
   const planChannelNotification =
     args.reason === "backlog_plan_requested" ||
     args.reason === "action_plan_review_requested" ||
+    args.reason === "action_plan_feedback_received" ||
     args.reason === "reviewer_plan_requested" ||
     args.reason === "reviewer_assignment_requested" ||
     (args.reason === "todo_start_required" && !task.approvedOn);
 
-  const msg = await db.agentChatMessage.create({
-    data: {
+  const messageData = {
       projectId: task.projectId,
       taskId: task.id,
       epicId: null,
@@ -389,9 +405,19 @@ export async function sendTaskWorkflowNotification(args: {
       targetType: planChannelNotification ? "agent" : null,
       targetValue: planChannelNotification ? `agent:${targetUser.agent.slug}` : null,
       targetLabel: planChannelNotification ? targetUser.username : null,
-    },
-    select: { id: true, createdAt: true },
-  });
+      workflowDedupeKey: args.dedupeKey ?? null,
+  };
+  const msg = args.dedupeKey
+    ? await db.agentChatMessage.upsert({
+        where: { workflowDedupeKey: args.dedupeKey },
+        create: messageData,
+        update: {},
+        select: { id: true, createdAt: true },
+      })
+    : await db.agentChatMessage.create({
+        data: messageData,
+        select: { id: true, createdAt: true },
+      });
 
   await db.activityLog.create({
     data: {
@@ -404,23 +430,81 @@ export async function sendTaskWorkflowNotification(args: {
         messageId: msg.id,
         agentSlug: targetUser.agent.slug,
         reason: args.reason,
+        workflowDedupeKey: args.dedupeKey ?? null,
       }),
     },
   });
 
-  const userMessage = await buildTaskAgentUserMessage({
-    taskId: task.id,
+  const sessionBinding = await getOrCreateAgentSessionBinding({
+    scopeType: "task",
+    scopeId: task.id,
     agentSlug: targetUser.agent.slug,
-    currentTurn: {
-      id: msg.id,
-      agentChatMessageId: msg.id,
-      source: planChannelNotification ? "task chat" : "task comment",
-      actorUsername: args.actor.username ?? actorUser?.username ?? null,
-      actorKind: args.actor.kind,
-      body: args.body,
-      createdAt: msg.createdAt,
-    },
   });
+
+  // ENV-121. An execution turn on an In-Progress task the recipient owns is an
+  // EPISODE, not just a notification. The dispatcher opens it, because the
+  // dispatcher is the boundary: this is the moment a fresh model session is
+  // handed a brief, and the episode number is what names that session.
+  //
+  // An episode that is still open belongs to this turn (a mid-episode recovery
+  // turn resumes it). Otherwise the previous one closed and this turn opens
+  // its successor. Opening here rather than lazily also means an agent that
+  // records no workflow action at all still consumes an episode instead of
+  // silently re-entering the same ever-growing session.
+  const executionEpisodeTurn =
+    !planChannelNotification &&
+    task.status === "In Progress" &&
+    Boolean(task.assigneeId) &&
+    targetUser.id === task.assigneeId;
+  const [previousEpisode] = executionEpisodeTurn
+    ? await taskExecutionEpisodeHistory({ taskId: task.id, agentSlug: targetUser.agent.slug, take: 1 })
+    : [];
+  const newestEpisode =
+    executionEpisodeTurn && (!previousEpisode || previousEpisode.status !== "open")
+      ? await db.$transaction((tx) =>
+          openTaskExecutionEpisode(tx, {
+            taskId: task.id,
+            projectId: task.projectId,
+            agentSlug: targetUser.agent!.slug,
+            messageId: msg.id,
+          }),
+        )
+      : previousEpisode ?? null;
+  const episodeNo = newestEpisode?.episodeNo ?? null;
+  // First contact gets the full bounded packet: the agent has never seen this
+  // task. A CONTINUATION — anything with a prior checkpoint to resume from —
+  // gets the brief instead.
+  const priorCheckpoint = executionEpisodeTurn
+    ? await latestTaskExecutionCheckpoint({ taskId: task.id, agentSlug: targetUser.agent.slug })
+    : null;
+  const useEpisodeBrief = Boolean(priorCheckpoint);
+  const currentTurnForContext = {
+    id: msg.id,
+    agentChatMessageId: msg.id,
+    source: planChannelNotification ? ("task chat" as const) : ("task comment" as const),
+    actorUsername: args.actor.username ?? actorUser?.username ?? null,
+    actorKind: args.actor.kind,
+    body: args.body,
+    createdAt: msg.createdAt,
+  };
+  const userMessage =
+    useEpisodeBrief && priorCheckpoint
+      ? (
+          await buildTaskEpisodeBrief({
+            taskId: task.id,
+            agentSlug: targetUser.agent.slug,
+            currentTurn: currentTurnForContext,
+            episode: {
+              episodeNo: episodeNo ?? priorCheckpoint.episodeNo + 1,
+              checkpointLines: renderEpisodeCheckpoint(priorCheckpoint),
+            },
+          })
+        ).renderedPrompt
+      : await buildTaskAgentUserMessage({
+          taskId: task.id,
+          agentSlug: targetUser.agent.slug,
+          currentTurn: currentTurnForContext,
+        });
   const scopeForRecent = { taskId: task.id };
   const [recentDisc, recentCmts] = await Promise.all([
     recentDiscussion(scopeForRecent),
@@ -441,11 +525,6 @@ export async function sendTaskWorkflowNotification(args: {
     epicId: task.epic?.id ?? null,
     turnId: msg.id,
   });
-  const sessionBinding = await getOrCreateAgentSessionBinding({
-    scopeType: "task",
-    scopeId: task.id,
-    agentSlug: targetUser.agent.slug,
-  });
   const gitIdentity = await resolveGitIdentity(task.project);
   const commitPrefix = effectiveTaskCommitPrefix(task);
   const branchName = effectiveTaskBranchName(task);
@@ -456,9 +535,31 @@ export async function sendTaskWorkflowNotification(args: {
     targetUserId: targetUser.id,
     assigneeId: task.assigneeId,
   });
-  const previousExecutionMessageId = stableExecutionSession
-    ? sessionBinding.lastDispatchedMessageId
+  // ENV-121. The session key is now EPISODE-scoped, not task-scoped: a fresh
+  // episode gets a fresh model session briefed from the checkpoint, which is
+  // exactly what stops one conversation carrying the whole task. Within an
+  // episode the key is stable, so a mid-episode recovery turn still resumes
+  // the same session incrementally.
+  const episodeSessionKey = episodeNo
+    ? buildPmTurnSessionKey(sessionBinding.openclawSessionKey, `ep${episodeNo}`)
     : null;
+  // Only a turn that RESUMES an already-open episode may use the incremental
+  // prompt: a new episode runs in a session that has never seen the previous
+  // turn, so claiming continuity with it would be a lie.
+  //
+  // ENV-121 (review): "open" alone is not enough. A rollover opens the
+  // successor immediately, so the newest episode is open the instant the
+  // previous one is exhausted — and dispatching it as a resume pointed a
+  // brand-new session at a message it had never seen. An episode has only
+  // really been carried once a dispatch recorded the session that carried it,
+  // which is exactly what `sessionKey` means here.
+  const resumesOpenEpisode = Boolean(
+    previousEpisode && previousEpisode.status === "open" && previousEpisode.sessionKey,
+  );
+  const previousExecutionMessageId =
+    stableExecutionSession && (!executionEpisodeTurn || resumesOpenEpisode)
+      ? sessionBinding.lastDispatchedMessageId
+      : null;
   const nativeTaskPrompt = previousExecutionMessageId
     ? buildTaskNativeIncrementalChannelPrompt(
         task.title,
@@ -493,9 +594,11 @@ export async function sendTaskWorkflowNotification(args: {
   const dispatchArgs = {
     gatewayPort: targetUser.agent.gatewayPort,
     agentSlug: targetUser.agent.slug,
-    sessionKey: stableExecutionSession
-      ? sessionBinding.openclawSessionKey
-      : buildPmTurnSessionKey(sessionBinding.openclawSessionKey, msg.id),
+    sessionKey:
+      episodeSessionKey
+      ?? (stableExecutionSession
+        ? sessionBinding.openclawSessionKey
+        : buildPmTurnSessionKey(sessionBinding.openclawSessionKey, msg.id)),
     kind,
     // PM-generated notification turn: safe for the turn-failure auto-retry
     // ladder (see retryOrFailPmChannelJobForTurnFailure).
@@ -546,7 +649,7 @@ export async function sendTaskWorkflowNotification(args: {
   );
   const delivery = await sendOrQueueOpenClawPmChannelTurn(dispatchArgs);
 
-  if (delivery.ok && stableExecutionSession) {
+  if (delivery.ok && (stableExecutionSession || episodeSessionKey)) {
     await db.agentSessionBinding.update({
       where: { id: sessionBinding.id },
       data: {
@@ -554,6 +657,16 @@ export async function sendTaskWorkflowNotification(args: {
         lastDispatchedAt: new Date(),
       },
     });
+  }
+  if (delivery.ok && episodeSessionKey && newestEpisode) {
+    // Record which OpenClaw session actually carried the episode, so a later
+    // audit can tell an episode boundary from a session reuse.
+    await db.taskExecutionEpisode
+      .update({
+        where: { id: newestEpisode.id },
+        data: { sessionKey: episodeSessionKey, messageId: msg.id },
+      })
+      .catch(() => {});
   }
 
   await db.activityLog.create({

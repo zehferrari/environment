@@ -76,6 +76,13 @@ model User {
   workItemProposalsApplied       WorkItemProposal[]              @relation("WorkItemProposalAppliedBy")
   workItemProposalsRejected      WorkItemProposal[]              @relation("WorkItemProposalRejectedBy")
   archivedWorkspaces             Workspace[]                     @relation("WorkspaceArchivedBy")
+  actionPlans                    ActionPlan[]                     @relation("ActionPlanApprovedBy")
+  authoredActionPlans            ActionPlan[]                     @relation("ActionPlanAuthor")
+  authoredActionPlanRevisions    ActionPlanRevision[]             @relation("ActionPlanRevisionAuthor")
+  approvedActionPlanRevisions    ActionPlanRevision[]             @relation("ActionPlanRevisionApprovedBy")
+  actionPlanStepAssignees        ActionPlanStep[]                 @relation("ActionPlanStepAssignee")
+  actionPlanRevisionAssignees    ActionPlanRevisionStep[]         @relation("ActionPlanRevisionStepAssignee")
+  workflowTransitions            WorkflowTransition[]             @relation("WorkflowTransitionActor")
 
   @@index([kind])
   @@index([status])
@@ -201,6 +208,8 @@ model Project {
   directChatProjectLinks DirectAgentChatMessageProject[]
   workItemProposals      WorkItemProposal[]
   deploymentPullRequests DeploymentPullRequest[]
+  validationProfile      ProjectValidationProfile?
+  validationCheckRuns    ValidationCheckRun[]
 
   @@index([deletedAt])
 }
@@ -434,6 +443,10 @@ model Task {
   // tasks after project.doneTtlDays so plain updates to title/description
   // don't reset the clock.
   statusChangedAt  DateTime?
+  // Monotonic compare-and-set revision for workflow transitions. Every
+  // authoritative board status mutation increments this value and writes the
+  // matching immutable WorkflowTransition row in the same transaction.
+  workflowVersion  Int       @default(0) @map("workflow_version")
   // Optional free-text override. Null inherits the Epic's effective branch
   // (explicit or human-key fallback), then uses this Task's human key.
   branchName       String?
@@ -461,8 +474,15 @@ model Task {
   chatRoomArchives       AgentChatRoomArchive[]  @relation("TaskChatRoomArchive")
   // Lightweight sub-task checklist (ENV-60). NOT the legacy self-referential
   // child-Task hierarchy above (parentTaskId) — that is now dormant. See SubTask.
+  actionPlan            ActionPlan?
+  actionPlanRevisions   ActionPlanRevision[]
   checklist              SubTask[]               @relation("TaskChecklist")
   repositoryRun          TaskRepositoryRun?
+  executionEpisodes      TaskExecutionEpisode[]
+  executionState         TaskExecutionState?
+  reviewRuns             ReviewRun[]
+  workflowTransitions    WorkflowTransition[]
+  workflowOutbox         WorkflowOutbox[]
 
   @@index([projectId])
   @@index([workItemKey])
@@ -509,6 +529,263 @@ model TaskRepositoryRun {
   @@map("task_repository_runs")
 }
 
+// One immutable review lease per validated repository candidate. Reviewers
+// approve this row's candidateSha, never a moving branch name. A new candidate
+// creates a new ReviewRun and invalidates any older awaiting-review row.
+model ReviewRun {
+  id                String   @id @default(cuid())
+  taskId            String   @map("task_id")
+  task              Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  candidateSha      String   @map("candidate_sha")
+  baseSha           String?  @map("base_sha")
+  repoTouched       Boolean  @map("repo_touched")
+  validationOutcome String   @map("validation_outcome")
+  status            String   @default("awaiting_review")
+  reviewerId        String?  @map("reviewer_id")
+  reviewedAt        DateTime? @map("reviewed_at")
+  invalidatedAt     DateTime? @map("invalidated_at")
+  invalidatedReason String?  @map("invalidated_reason")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+  validationChecks  ValidationCheckRun[]
+
+  @@unique([taskId, candidateSha])
+  @@index([taskId, status])
+  @@index([status, createdAt])
+  @@map("review_runs")
+}
+
+// Immutable ledger written by the task transition kernel. `idempotencyKey`
+// identifies the caller's intent; workflowVersion is the Task CAS revision
+// produced by that intent.
+model WorkflowTransition {
+  id               String   @id @default(cuid())
+  taskId           String   @map("task_id")
+  task             Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  workflowVersion  Int      @map("workflow_version")
+  intent           String
+  fromStatus       String   @map("from_status")
+  toStatus         String   @map("to_status")
+  actorUserId      String?  @map("actor_user_id")
+  actor            User?    @relation("WorkflowTransitionActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  source           String
+  idempotencyKey   String   @map("idempotency_key")
+  evidence         String?
+  createdAt        DateTime @default(now()) @map("created_at")
+  outbox           WorkflowOutbox[]
+
+  @@unique([taskId, workflowVersion])
+  @@unique([taskId, idempotencyKey])
+  @@index([intent, createdAt])
+  @@index([actorUserId])
+  @@map("workflow_transitions")
+}
+
+// Durable projection queue for every external consequence of a committed
+// workflow decision. Workers lease these rows and project them to PM-channel
+// jobs, repository spools, and board events. The database row—not a spool
+// filename—is the source of truth.
+model WorkflowOutbox {
+  id               String    @id @default(cuid())
+  taskId           String    @map("task_id")
+  task             Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  projectId        String    @map("project_id")
+  transitionId     String?   @map("transition_id")
+  transition       WorkflowTransition? @relation(fields: [transitionId], references: [id], onDelete: Cascade)
+  aggregateVersion Int       @map("aggregate_version")
+  effectType       String    @map("effect_type")
+  payload          String
+  dedupeKey        String    @unique @map("dedupe_key")
+  status           String    @default("queued")
+  attempts         Int       @default(0)
+  availableAt      DateTime  @default(now()) @map("available_at")
+  leaseOwner       String?   @map("lease_owner")
+  leaseExpiresAt   DateTime? @map("lease_expires_at")
+  completedAt      DateTime? @map("completed_at")
+  lastError        String?   @map("last_error")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  @@index([status, availableAt])
+  @@index([leaseExpiresAt])
+  @@index([taskId, aggregateVersion])
+  @@index([transitionId])
+  @@map("workflow_outbox")
+}
+
+model ProjectValidationProfile {
+  id             String   @id @default(cuid())
+  projectId      String   @unique @map("project_id")
+  project        Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  version        Int      @default(1)
+  enabled        Boolean  @default(true)
+  // JSON array of {name, executable, args[], timeoutSeconds, required}.
+  // Executed with execFile in the registered candidate worktree; never a shell.
+  commands       String
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@map("project_validation_profiles")
+}
+
+model ValidationCheckRun {
+  id             String    @id @default(cuid())
+  projectId      String    @map("project_id")
+  project        Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  taskId         String    @map("task_id")
+  reviewRunId    String?   @map("review_run_id")
+  reviewRun      ReviewRun? @relation(fields: [reviewRunId], references: [id], onDelete: Cascade)
+  candidateSha   String    @map("candidate_sha")
+  jobId          String    @map("job_id")
+  profileId      String?   @map("profile_id")
+  profileVersion Int       @default(0) @map("profile_version")
+  checkName      String    @map("check_name")
+  executable     String
+  arguments      String
+  required       Boolean   @default(true)
+  status         String    @default("running")
+  exitCode       Int?      @map("exit_code")
+  output         String?
+  startedAt      DateTime  @default(now()) @map("started_at")
+  finishedAt     DateTime? @map("finished_at")
+
+  @@unique([jobId, checkName])
+  @@index([taskId, candidateSha])
+  @@index([reviewRunId])
+  @@index([status, startedAt])
+  @@map("validation_check_runs")
+}
+
+// ENV-121 — one bounded execution episode for one (Task, agent).
+//
+// The problem this replaces: a single OpenClaw session carried the whole task
+// — description, every comment, every browser trace, every continuation — and
+// grew until compaction was the only memory strategy left. Compaction is lossy
+// and unobservable; a structured checkpoint is neither.
+//
+// An episode is opened when PM dispatches an execution turn, accrues one
+// `cycleCount` per continuation-required workflow action, and is CLOSED with a
+// structured checkpoint when the budget is spent or the turn reaches an
+// episode-terminal action. The next episode starts from that checkpoint in a
+// fresh model session instead of inheriting the transcript.
+//
+// Duplicate-episode safety (the property the reviewer asked for): `episodeNo`
+// is allocated inside the same transaction that closes the previous episode,
+// and @@unique([taskId, agentSlug, episodeNo]) makes a retried or concurrent
+// rollover fail loudly instead of minting a second episode 3.
+model TaskExecutionEpisode {
+  id           String   @id @default(cuid())
+  taskId       String   @map("task_id")
+  task         Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  projectId    String?  @map("project_id")
+  agentSlug    String   @map("agent_slug")
+  // Monotonic per (task, agent). Allocated as max+1 under the unique index.
+  episodeNo    Int      @map("episode_no")
+  // The OpenClaw session this episode ran in, and the PM turn that opened it.
+  sessionKey   String?  @map("session_key")
+  messageId    String?  @map("message_id")
+  runId        String?  @map("run_id")
+  // Observable server-side cycle accounting. `cycleBudget` is snapshotted at
+  // open time so changing the env default mid-flight cannot retroactively
+  // exhaust (or revive) an episode that is already running.
+  cycleCount   Int      @default(0) @map("cycle_count")
+  cycleBudget  Int      @map("cycle_budget")
+  // Finer-grained observable budget: PM-visible `tool:call` stream events seen
+  // while this episode was open. Workflow actions are the coarse unit; tool
+  // calls are the unit that actually grows a turn's context.
+  toolCycleCount  Int   @default(0) @map("tool_cycle_count")
+  toolCycleBudget Int   @default(0) @map("tool_cycle_budget")
+  // The rollover barrier. When a budget is exhausted PM records WHICH PM turn
+  // spent it; that message is then fenced out of the successor episode and may
+  // only write one final checkpoint, which sets `barrierReleasedAt`.
+  exhaustedByMessageId String?   @map("exhausted_by_message_id")
+  barrierReleasedAt    DateTime? @map("barrier_released_at")
+  // The successor half of the seal, kept as durable outbox state. Consuming
+  // the barrier and arming the successor's continuation happen in one
+  // transaction, so `barrier_released_at IS NOT NULL AND
+  // successor_scheduled_at IS NULL` means the seal committed but the
+  // continuation could not be armed (no run row to hang it on yet). That is a
+  // recoverable state, not a stall: the sweeper retries the scheduling half
+  // without ever touching the stored checkpoint.
+  successorScheduledAt      DateTime? @map("successor_scheduled_at")
+  successorScheduleAttempts Int       @default(0) @map("successor_schedule_attempts")
+  // open | closed
+  status       String   @default("open")
+  // Structured checkpoint. JSON-encoded string arrays, kept as TEXT because
+  // the deployment target is SQLite. Written on every cycle (derived) and
+  // overwritable verbatim by the agent through action=checkpoint.
+  completedWork String? @map("completed_work")
+  evidence      String?
+  openChecklist String? @map("open_checklist")
+  nextAction    String? @map("next_action")
+  risks         String?
+  checkpointAt  DateTime? @map("checkpoint_at")
+  closeReason   String?   @map("close_reason")
+  startedAt    DateTime @default(now()) @map("started_at")
+  closedAt     DateTime? @map("closed_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@unique([taskId, agentSlug, episodeNo])
+  @@index([taskId, status])
+  @@index([agentSlug])
+  @@index([runId])
+  @@index([exhaustedByMessageId])
+  @@index([successorScheduledAt])
+  @@map("task_execution_episodes")
+}
+
+// ENV-123 — the operator-visible execution state of a task.
+//
+// One row per Task. Everything an operator previously had to infer by reading
+// comments ("is this agent actually working, or did its turn die twenty
+// minutes ago?") is a column here, written by the watchdog pass and by ordinary
+// workflow transitions. The task detail page renders it verbatim:
+//
+//   Execution: stalled
+//   Reason: no active run
+//   Last durable action: started at 09:24
+//   Recovery: new run queued
+//
+// `recoveryCount` and `breakerOpenUntil` are the circuit breaker. A detector
+// whose repair does not stick would otherwise re-fire forever, so the watchdog
+// stops repairing a task after a bounded number of auto-recoveries per window
+// and escalates instead. That is what keeps the watchdog from becoming the
+// runaway loop it exists to catch.
+model TaskExecutionState {
+  id        String @id @default(cuid())
+  taskId    String @unique @map("task_id")
+  task      Task   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  projectId String? @map("project_id")
+  // running | idle | stalled | blocked | waiting_review
+  state     String
+  // Stable machine identity for the reason, e.g. "no_active_run".
+  reasonCode   String?  @map("reason_code")
+  // One human sentence rendered under "Reason:".
+  reasonDetail String?  @map("reason_detail")
+  // The last workflow action PM durably recorded for this task, and when.
+  lastDurableAction   String?   @map("last_durable_action")
+  lastDurableActionAt DateTime? @map("last_durable_action_at")
+  // What the watchdog did about it, and when. Null = nothing was needed.
+  recoveryAction String?   @map("recovery_action")
+  recoveryAt     DateTime? @map("recovery_at")
+  // Which detector produced the current state.
+  detectorId     String?   @map("detector_id")
+  // Circuit breaker accounting.
+  recoveryCount    Int       @default(0) @map("recovery_count")
+  recoveryWindowAt DateTime? @map("recovery_window_at")
+  breakerOpenUntil DateTime? @map("breaker_open_until")
+  // Set when the breaker tripped or an escalate-only detector fired, so the
+  // reporter/acting manager is notified exactly once per episode of trouble.
+  escalatedAt DateTime? @map("escalated_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@index([state])
+  @@index([projectId])
+  @@map("task_execution_states")
+}
+
 // Lightweight sub-task checklist (ENV-60). A SubTask is NOT a Task: it has no
 // assignee, reviewer, status, work-item key, or board presence. It is a single
 // goal line plus an optional completion timestamp. The point is progress: a
@@ -521,6 +798,8 @@ model SubTask {
   id           String    @id @default(cuid())
   taskId       String
   task         Task      @relation("TaskChecklist", fields: [taskId], references: [id], onDelete: Cascade)
+  actionPlanStepId String? @unique @map("action_plan_step_id")
+  actionPlanStep   ActionPlanStep? @relation(fields: [actionPlanStepId], references: [id], onDelete: SetNull)
   text         String
   // Which phase this checklist item belongs to: "implementation" items are
   // the assignee's In Progress breakdown; "review" items are the reviewer's
@@ -540,6 +819,109 @@ model SubTask {
 
   @@index([taskId])
   @@index([taskId, kind])
+  @@unique([taskId, kind, text])
+}
+
+// ------------------------------------------------------------------
+// ENV-119: Structured Action Plans. Replaces parsing Markdown from
+// AgentChatMessage.body. The ActionPlan is a 1:1 row per Task; each
+// ActionPlanStep is a structured step with acceptance criteria, kind,
+// and optional assignee. Markdown body remains in AgentChatMessage as
+// presentation only.
+// ------------------------------------------------------------------
+
+model ActionPlan {
+  id           String           @id @default(cuid())
+  taskId       String           @unique
+  task         Task             @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  summary      String
+  version      Int              @default(1)
+  status       String           @default("draft")
+  authorId     String?
+  author       User?            @relation("ActionPlanAuthor", fields: [authorId], references: [id])
+  sourceRunId  String?
+  sourceMessageId String?
+  contentHash  String           @default("")
+  approvedOn   DateTime?
+  approvedById String?
+  approvedBy   User?            @relation("ActionPlanApprovedBy", fields: [approvedById], references: [id])
+  steps        ActionPlanStep[]
+  revisions    ActionPlanRevision[]
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  @@index([approvedById])
+  @@index([authorId])
+  @@index([sourceRunId])
+}
+
+model ActionPlanRevision {
+  id              String   @id @default(cuid())
+  actionPlanId    String
+  actionPlan      ActionPlan @relation(fields: [actionPlanId], references: [id], onDelete: Cascade)
+  taskId          String
+  task            Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  version         Int
+  summary         String
+  status          String   @default("draft")
+  authorId        String?
+  author          User?    @relation("ActionPlanRevisionAuthor", fields: [authorId], references: [id])
+  sourceRunId     String?
+  sourceMessageId String?
+  contentHash     String
+  approvedOn      DateTime?
+  approvedById    String?
+  approvedBy      User?    @relation("ActionPlanRevisionApprovedBy", fields: [approvedById], references: [id])
+  steps           ActionPlanRevisionStep[]
+  createdAt       DateTime @default(now())
+
+  @@unique([taskId, version])
+  @@unique([actionPlanId, version])
+  @@index([authorId])
+  @@index([approvedById])
+  @@index([sourceRunId])
+}
+
+model ActionPlanRevisionStep {
+  id                 String   @id @default(cuid())
+  revisionId         String
+  revision           ActionPlanRevision @relation(fields: [revisionId], references: [id], onDelete: Cascade)
+  stepId             String
+  title              String
+  acceptanceCriteria String
+  kind               StepKind @default(sequential)
+  assigneeId         String?
+  assignee           User?    @relation("ActionPlanRevisionStepAssignee", fields: [assigneeId], references: [id])
+  rank               Int      @default(0)
+  createdAt          DateTime @default(now())
+
+  @@unique([revisionId, stepId])
+  @@index([revisionId, rank])
+  @@index([assigneeId])
+}
+
+enum StepKind {
+  sequential
+  parallel
+}
+
+model ActionPlanStep {
+  id                 String       @id @default(cuid())
+  actionPlanId       String
+  actionPlan         ActionPlan   @relation(fields: [actionPlanId], references: [id], onDelete: Cascade)
+  stepId             String
+  title              String
+  acceptanceCriteria String       // JSON-encoded string[]
+  kind               StepKind     @default(sequential)
+  assigneeId         String?
+  assignee           User?        @relation("ActionPlanStepAssignee", fields: [assigneeId], references: [id])
+  rank               Int          @default(0)
+  createdAt          DateTime     @default(now())
+  checklistItem      SubTask?
+
+  @@unique([actionPlanId, stepId])
+  @@index([actionPlanId, rank])
+  @@index([assigneeId])
 }
 
 // ------------------------------------------------------------------
@@ -613,12 +995,27 @@ model Comment {
   deletedAt   DateTime?
   deletedById String?
   deletedBy   User?     @relation("CommentDeletedBy", fields: [deletedById], references: [id])
+  // ENV-122 — comment metadata for identity-normalized rendering.
+  // authorAgentSlug: agent slug if author is an agent, null for humans.
+  // provider/model: LLM provenance when produced via a PM-channel run.
+  // runId: FK to PmChannelRun.id when produced via a PM-channel run.
+  // commentKind: agent_reply | workflow_action | blocker_notice | runtime_error | human
+  // isGenerated: true if PM/system generated this comment (not authored by a human/agent).
+  authorAgentSlug String? @map("author_agent_slug")
+  provider        String?
+  model           String?
+  runId           String?  @map("run_id")
+  run             PmChannelRun? @relation(fields: [runId], references: [id], onDelete: SetNull)
+  commentKind     String? @map("comment_kind")
+  isGenerated     Boolean @default(false) @map("is_generated")
 
   @@index([taskId])
   @@index([epicId])
   @@index([userId])
   @@index([deletedAt])
   @@index([deletedById])
+  @@index([authorAgentSlug])
+  @@index([commentKind])
 }
 
 model ActivityLog {
@@ -758,19 +1155,49 @@ model PmChannelRun {
   driver              String                 @default("openclaw-pm-channel")
   gatewayPort         Int?
   httpStatus          Int?
-  status              String                 @default("queued") // queued | accepted | streaming | complete | failed
+  status              String                 @default("queued") // queued | accepted | streaming | completed | failed | timed_out | cancelled | superseded
   error               String?
+  // Leased state machine fields (ENV-117)
+  leaseExpiresAt     DateTime?
+  heartbeatAt        DateTime?
+  finishedAt         DateTime?
+  finishedReason     String?
+  supersededByRunId  String?
+  // Process-level execution fencing. A replacement run may reserve the lane,
+  // but it is not dispatched until every superseded gateway session records a
+  // cancellation acknowledgement (or is confirmed absent).
+  cancellationRequestedAt    DateTime? @map("cancellation_requested_at")
+  cancellationAcknowledgedAt DateTime? @map("cancellation_acknowledged_at")
+  cancellationError          String?   @map("cancellation_error")
   // Late error evidence on an already-settled run (PH-124): a workflow action
   // settles the run complete, then the gateway aborts the post-action phase.
   // The abort must not flip the legitimate settle, but it must not vanish
   // either — it lands here (plus a pm.channel.completion_anomaly ActivityLog).
   completionAnomaly   String?
   completionAnomalyAt DateTime?
+  // ENV-118. `disposition` is the explicit end-of-turn outcome from the closed
+  // enum in lib/workflow-invariants.ts (continue | waiting_external |
+  // ready_for_review | completed | failed); every terminal write records one.
+  // `settledByAction` names the workflow action that settled the run, and is
+  // written ONLY when a workflow action was the thing that settled it — a run
+  // ended by a stream event leaves it null. Together they replace the
+  // ActivityLog-scraping derivations the ENV-116 adapter had to guess with.
+  disposition         String?
+  settledByAction     String?
+  // The most recent workflow action recorded against this run, whatever its
+  // effect. A continuation-required action lands here without settling.
+  lastAction          String?
+  lastActionAt        DateTime?
   acceptedAt          DateTime?
   streamingAt         DateTime?
   completedAt         DateTime?
   failedAt            DateTime?
   lastEventAt         DateTime?
+  // ENV-122: LLM provenance — the provider and model that handled this run.
+  // Captured at dispatch time so comment metadata can copy them without
+  // the comment creation sites needing their own model identity source.
+  provider            String?
+  model               String?
   streamSeq           Int                    @default(0)
   workItemGrantUsedAt DateTime?
   createdAt           DateTime               @default(now())
@@ -778,6 +1205,8 @@ model PmChannelRun {
   jobs                PmChannelJob[]
   streamEvents        PmChannelStreamEvent[]
   contextGrants       ContextGrant[]
+  continuations       PmChannelContinuation[]
+  comments            Comment[]
 
   @@index([agentSlug])
   @@index([messageId])
@@ -787,6 +1216,51 @@ model PmChannelRun {
   @@index([epicId])
   @@index([status])
   @@index([lastEventAt])
+  @@index([supersededByRunId])
+}
+
+// ENV-118 continuation outbox. A continuation-required workflow action (start,
+// add_subtask, complete_subtask, remove_subtask, clear_blocker,
+// publish_checkpoint) is a step INSIDE an execution episode, not the end of
+// one. Recording the intent to continue in the SAME transaction as the run/job
+// write is what makes it crash-safe: a process death between "start task" and
+// "queue the next turn" leaves an `armed` row the drain still honours, instead
+// of a task that PM believes is finished.
+//
+// armed      — a continue action happened; the turn is still running.
+// queued     — the turn ended without an episode-terminal action; drain it.
+// dispatched — a fresh execution turn was enqueued for the agent.
+// superseded — an episode-terminal action (or cancellation) closed the episode.
+// failed     — the drain could not enqueue a turn and gave up.
+model PmChannelContinuation {
+  id                  String       @id @default(cuid())
+  runId               String
+  run                 PmChannelRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  agentSlug           String
+  projectId           String?
+  taskId              String?
+  epicId              String?
+  // The source turn's message id: the turn whose episode must continue.
+  messageId           String
+  // The continuation-required action that armed this row.
+  action              String
+  status              String       @default("armed")
+  availableAt         DateTime     @default(now())
+  attempts            Int          @default(0)
+  lastError           String?
+  // Message id of the continuation turn the drain enqueued.
+  dispatchedMessageId String?
+  dispatchedAt        DateTime?
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+
+  // Idempotency: one row per (run, source turn, action). Re-running the same
+  // action inside one episode renews the row instead of queueing a second turn.
+  @@unique([runId, messageId, action])
+  @@index([status, availableAt])
+  @@index([agentSlug])
+  @@index([taskId])
+  @@index([runId])
 }
 
 // Durable PM-channel dispatch queue. Server actions enqueue one job per
@@ -907,6 +1381,10 @@ model AgentChatMessage {
   // mirrored from a task comment so the reply should return to comments.
   originChannel           String                @default("chat")
   originCommentId         String?
+  // Stable key used by WorkflowOutbox notification effects. If a dispatcher
+  // dies after creating the message but before acknowledging the outbox row,
+  // its retry reuses this message and therefore the same PM-channel target.
+  workflowDedupeKey       String?               @unique @map("workflow_dedupe_key")
   createdAt               DateTime              @default(now())
   // Soft delete (HOMELAB-41 / item 2). See Comment.deletedAt for the
   // same convention. Active reads filter deletedAt: null; agent context

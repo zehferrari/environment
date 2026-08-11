@@ -105,6 +105,7 @@ const repositoryRunner = readFileSync(join(root, "lib/deploy/epic-merge.ts"), "u
 const workflowRoute = readFileSync(join(root, "app/api/agent/tasks/[taskId]/workflow/route.ts"), "utf8");
 const epicWorkflowRoute = readFileSync(join(root, "app/api/agent/epics/[epicId]/workflow/route.ts"), "utf8");
 const epicNotifications = readFileSync(join(root, "lib/agents/workflow/notifications/epic.ts"), "utf8");
+const workflowOutbox = readFileSync(join(root, "lib/tasks/workflow-outbox-drain.ts"), "utf8");
 
 assert(
   handoff.includes('status: "To Do"') &&
@@ -125,9 +126,10 @@ assert(
 );
 assert(
   finalization.includes('completionReviewStatus: "Preparing"') &&
-    finalization.includes("enqueueEpicCompletionReview") &&
+    finalization.includes('type: "epic_completion_review"') &&
+    finalization.includes("enqueueWorkflowEffects") &&
     !finalization.includes("enqueueEpicDoneCleanup"),
-  "the final child must start whole-Epic review without completing or cleaning the Epic",
+  "the final child must atomically outbox whole-Epic review without completing or cleaning the Epic",
 );
 assert(
   repositoryRunner.includes('kind: "review"') &&
@@ -141,8 +143,16 @@ assert(
   epicWorkflowRoute.includes('"completion_review_approve"') &&
     epicWorkflowRoute.includes("parseCompletionReviewReport") &&
     epicWorkflowRoute.includes("completionReviewReportCanApprove") &&
-    epicWorkflowRoute.includes("enqueueEpicCompletionReviewApproval"),
-  "whole-Epic approval must require a structured all-Pass report and privileged final verification",
+    epicWorkflowRoute.includes('type: "epic_completion_review_approval"') &&
+    epicWorkflowRoute.includes("applyPmChannelRunWorkflowAction") &&
+    workflowOutbox.includes("enqueueEpicCompletionReviewApproval"),
+  "whole-Epic approval must atomically outbox an all-Pass report and privileged final verification",
+);
+assert(
+  repositoryRunner.includes("child merge(s) still pending before whole-Epic acceptance") &&
+    repositoryRunner.includes('outcome: "deferred"') &&
+    repositoryRunner.includes('type: "epic_cleanup"'),
+  "whole-Epic preparation must wait for child integrations and Done must durably outbox cleanup",
 );
 assert(
   epicNotifications.includes("linkedTasks") &&
@@ -151,9 +161,12 @@ assert(
   "the reviewer turn must expose bounded per-child context grants instead of injecting every Task thread",
 );
 assert(
-  finalization.includes("task.repositoryRun && !args.repositoryFinalized") &&
-    repositoryRunner.includes('task.repositoryRun?.repoTouched === true') &&
-    repositoryRunner.includes("declared no repository changes"),
+  finalization.includes("task.project.repositoryPath && task.repositoryRun && !args.repositoryFinalized") &&
+    finalization.includes("? task.repositoryRun.candidateSha") &&
+    finalization.includes(": task.repositoryRun.baseSha") &&
+    finalization.includes('type: "review_finalize"') &&
+    repositoryRunner.includes("const repoTouched = task.repositoryRun?.repoTouched === true") &&
+    repositoryRunner.includes("const finalizedWorktreePath = task.repositoryRun?.worktreePath"),
   "no-change repository tasks must still finalize and clean up their worktree before Done",
 );
 assert(
@@ -176,7 +189,7 @@ assert(
   verifier.includes("recordedCheckpointReviewBaseline") &&
     verifier.includes("job.baseSha") &&
     verifier.includes("subjectHasCommitPrefix(checkpointBaseline.checkpoint.subject") &&
-    verifier.includes("repoTouched: !checkpointBaseline"),
+    verifier.includes("repoTouched: !noChangeCandidate && !checkpointBaseline"),
   "an already-published checkpoint baseline must satisfy prefix review and use the no-change cleanup path",
 );
 assert(

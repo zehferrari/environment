@@ -323,7 +323,7 @@ function settledAgentSlugsForMessage(
 ) {
   const slugs = new Set<string>();
   for (const run of runs) {
-    if (run.messageId === messageId && run.status === "complete") {
+    if (run.messageId === messageId && run.status === "completed") {
       slugs.add(run.agentSlug);
     }
   }
@@ -544,7 +544,18 @@ export default async function EpicDetailPage({
         // human-facing page so the dotted divider can render; agent
         // context filters deletedAt: null upstream.
         orderBy: { createdAt: "asc" },
-        include: {
+        select: {
+          id: true,
+          body: true,
+          createdAt: true,
+          deletedAt: true,
+          deletedById: true,
+          userId: true,
+          authorAgentSlug: true,
+          provider: true,
+          model: true,
+          commentKind: true,
+          isGenerated: true,
           user: {
             select: {
               id: true,
@@ -858,7 +869,7 @@ export default async function EpicDetailPage({
           kind: "epic-chat",
           epicId: epic.id,
           messageId: { in: humanChatMessageIds },
-          status: "complete",
+          status: "completed",
         },
         select: { messageId: true, agentSlug: true, status: true },
       })
@@ -1570,6 +1581,16 @@ export default async function EpicDetailPage({
                                     {authorRole ? (
                                       <span className={`rounded-full px-2 py-0.5 text-nano font-semibold uppercase tracking-wide ${authorRole.chipClass}`}>
                                         {authorRole.label}
+                                      </span>
+                                    ) : null}
+                                    {c.isGenerated ? (
+                                      <span className="rounded-full border border-line bg-bg-elev px-2 py-0.5 text-nano font-semibold uppercase tracking-wide text-text-muted">
+                                        System
+                                      </span>
+                                    ) : null}
+                                    {c.provider && c.model ? (
+                                      <span className="rounded-full border border-line bg-bg-elev px-2 py-0.5 text-nano font-medium text-text-muted" title={`${c.provider}/${c.model}`}>
+                                        {c.provider}/{c.model}
                                       </span>
                                     ) : null}
                                     <MessageTimestamp value={c.createdAt} />

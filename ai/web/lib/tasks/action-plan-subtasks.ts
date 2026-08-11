@@ -1,5 +1,19 @@
+// ENV-119: Action Plan subtask creation.
+//
+// On Action Plan approval, seed the task's progress checklist (SubTask rows)
+// from the assignee's posted plan — so the board immediately shows how many
+// steps remain. These are lightweight checklist items (text only), NOT child
+// tasks.
+//
+// The only production path reads ActionPlan + ActionPlanStep. Rendered
+// Markdown is presentation and is never interpreted as workflow state.
+
 import { db } from "@/lib/db";
-import { createSubTaskItem } from "@/lib/tasks/subtasks";
+import {
+  getActionPlanForTask,
+  createChecklistAndDelegatableTasksFromPlan,
+  parseAcceptanceCriteria,
+} from "@/lib/tasks/action-plan-store";
 
 const MAX_AUTO_SUBTASKS = 8;
 const STEP_LINE_RE = /^\s*(?:[-*]\s+|\d+[.)]\s+|\[[ xX]\]\s+)(.+)$/;
@@ -57,9 +71,8 @@ export function extractActionPlanSteps(body: string) {
 }
 
 // On Action Plan approval, seed the task's progress checklist (SubTask rows)
-// from the assignee's posted plan — so the board immediately shows how many
-// steps remain. These are lightweight checklist items (text only), NOT child
-// tasks. No-op if the task already has a checklist, has no assignee, or its
+// from the assignee's structured plan.
+// No-op if the task already has a checklist, has no assignee, or its
 // plan has no parseable steps.
 export async function createActionPlanSubtasksForTask(args: {
   taskId: string;
@@ -79,30 +92,18 @@ export async function createActionPlanSubtasksForTask(args: {
     return { created: 0, reason: "not_applicable" as const };
   }
 
-  const latestPlan = await db.agentChatMessage.findFirst({
-    where: {
+  const plan = await getActionPlanForTask(task.id);
+  if (plan && plan.steps.length > 0) {
+    const result = await createChecklistAndDelegatableTasksFromPlan({
       taskId: task.id,
-      archiveId: null,
-      deletedAt: null,
-      originChannel: "chat",
-      body: { not: { startsWith: "PM workflow notification for @" } },
-      ...(task.assigneeId ? { senderUserId: task.assigneeId } : {}),
-    },
-    orderBy: { createdAt: "desc" },
-    select: { id: true, body: true },
-  });
-  if (!latestPlan) return { created: 0, reason: "no_plan" as const };
-
-  const steps = extractActionPlanSteps(latestPlan.body);
-  if (steps.length === 0) return { created: 0, reason: "no_steps" as const };
-
-  for (const step of steps) {
-    await createSubTaskItem({
-      taskId: task.id,
-      text: step,
-      actorUserId: task.assigneeId,
+      approvedAt: args.approvedAt,
+      approvedById: args.approvedById,
     });
+    return {
+      created: result.checklistCreated,
+      reason: result.reason as "created" | "already_exists",
+    };
   }
 
-  return { created: steps.length, reason: "created" as const };
+  return { created: 0, reason: "no_structured_plan" as const };
 }

@@ -27,7 +27,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import type { MoveTaskResult } from "@/lib/tasks/move-status";
+import type { MoveTaskOptions, MoveTaskResult } from "@/lib/tasks/move-status";
 import {
   actorDisplayName,
   MessageAvatar,
@@ -70,6 +70,8 @@ type Task = {
   subtaskReviewDone: number;
   subtaskMinutes: number;
   blockedByKey: string | null;
+  executionState: string | null;
+  executionReason: string | null;
   hasActiveBlocker: boolean;
   activeBlockerCommentId: string | null;
   activeWorking: boolean;
@@ -102,6 +104,34 @@ function BlockedBadge({ task }: { task: Task }) {
     >
       <LockGlyph />
       {task.blockedByKey}
+    </span>
+  );
+}
+
+// Execution badge (ENV-123): the board's compact form of the task page's
+// execution strip. Only the states an operator must act on are painted —
+// "running" and "idle" are the normal case and would be pure noise on every
+// card. Hovering gives the reason sentence, so a stalled card explains itself
+// without a click.
+const EXECUTION_BADGE_TONE: Record<string, string> = {
+  stalled: "bg-crit/[0.07] text-crit",
+  blocked: "bg-warn/[0.07] text-warn",
+};
+
+function ExecutionBadge({ task }: { task: Task }) {
+  const tone = task.executionState ? EXECUTION_BADGE_TONE[task.executionState] : undefined;
+  if (!task.executionState || !tone) return null;
+  return (
+    <span
+      data-execution-badge={task.executionState}
+      className={`inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-micro font-semibold ${tone}`}
+      title={
+        task.executionReason
+          ? `Execution: ${task.executionState} — ${task.executionReason}`
+          : `Execution: ${task.executionState}`
+      }
+    >
+      {task.executionState.replaceAll("_", " ")}
     </span>
   );
 }
@@ -217,11 +247,14 @@ type BoardProps = {
     taskId: string,
     status: string,
     slug: string,
+    options?: MoveTaskOptions,
   ) => Promise<MoveTaskResult>;
   reorderTasksAction: (orderedIds: string[]) => Promise<void>;
   deleteTaskAction: (formData: FormData) => Promise<void>;
   roleOptions?: AvatarComboboxOption[];
   canManageTaskRoles?: boolean;
+  /** Admin viewers may force a rejected drag as an audited operator override. */
+  canOperatorOverride?: boolean;
 };
 
 // Per Stage 0 sign-off (HOMELAB-44 description): the Backlog column has a
@@ -251,7 +284,7 @@ const boardCollisionDetection: CollisionDetection = (args) => {
   return pointer.length > 0 ? pointer : rectIntersection(args);
 };
 
-export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, columns, tasks, moveTaskAction, reorderTasksAction, deleteTaskAction, roleOptions = [], canManageTaskRoles = false }: BoardProps) {
+export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, columns, tasks, moveTaskAction, reorderTasksAction, deleteTaskAction, roleOptions = [], canManageTaskRoles = false, canOperatorOverride = false }: BoardProps) {
   // Card colour context drives which identity cues a card shows:
   //   home  (aggregate landing) → workspace left border + project background
   //   workspace board           → project background only (no border)
@@ -269,6 +302,11 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
   const [items, setItems] = useState<Task[]>(tasks);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [moveError, setMoveError] = useState<string | null>(null);
+  // A rejected drag an admin may force: re-submitted with the explicit
+  // operatorOverride flag only after the ConfirmPopup below is confirmed.
+  const [overridePrompt, setOverridePrompt] = useState<
+    { taskId: string; status: string; message: string } | null
+  >(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isPending, startTransition] = useTransition();
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
@@ -500,7 +538,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
     }
   }
 
-  function crossColumnMove(task: Task, newStatus: string) {
+  function crossColumnMove(task: Task, newStatus: string, options?: MoveTaskOptions) {
     const previousStatus = task.status;
     const previousStatusChangedAt = task.statusChangedAt;
     const previousRank = task.rank;
@@ -517,7 +555,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
     setMoveError(null);
     startTransition(async () => {
       try {
-        const result = await moveTaskAction(task.id, newStatus, projectSlug);
+        const result = await moveTaskAction(task.id, newStatus, projectSlug, options);
         if (result.ok) return;
         setItems((prev) =>
           prev.map((t) =>
@@ -526,6 +564,13 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
               : t,
           ),
         );
+        // A workflow rejection an admin can force: offer the explicit
+        // operator-override confirm instead of the plain error banner.
+        // Never re-prompt when the override itself was rejected.
+        if (canOperatorOverride && !options?.operatorOverride && result.code !== "UNKNOWN_COLUMN") {
+          setOverridePrompt({ taskId: task.id, status: newStatus, message: result.message });
+          return;
+        }
         setMoveError(result.message);
       } catch (error) {
         setItems((prev) =>
@@ -538,6 +583,15 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
         setMoveError(error instanceof Error ? error.message : "Task could not be moved.");
       }
     });
+  }
+
+  function performOperatorOverride() {
+    const prompt = overridePrompt;
+    setOverridePrompt(null);
+    if (!prompt) return;
+    const task = items.find((t) => t.id === prompt.taskId);
+    if (!task || task.status === prompt.status) return;
+    crossColumnMove(task, prompt.status, { operatorOverride: true });
   }
 
   const [lastCheckedId, setLastCheckedId] = useState<string | null>(null);
@@ -616,6 +670,8 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
           if (!result.ok) {
             restoreUnmoved();
             setSelectedIds(new Set(movingTasks.filter((item) => !succeededIds.has(item.id)).map((item) => item.id)));
+            // Bulk moves intentionally never offer the operator override —
+            // forcing the state machine is a one-task-at-a-time decision.
             setMoveError(result.message);
             return;
           }
@@ -1032,6 +1088,18 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
         busy={isPending}
         onConfirm={performSingleDelete}
         onCancel={() => setDeleteTarget(null)}
+      />
+      <ConfirmPopup
+        open={Boolean(overridePrompt)}
+        title="Move blocked"
+        description={overridePrompt
+          ? `Move blocked: ${overridePrompt.message} Force as operator override? The forced move skips workflow gates and automation and is recorded in the workflow history.`
+          : ""}
+        confirmLabel="Force move"
+        danger
+        busy={isPending}
+        onConfirm={performOperatorOverride}
+        onCancel={() => setOverridePrompt(null)}
       />
       {chromeTargets.controls
         ? createPortal(
@@ -2146,6 +2214,7 @@ function BoardCardBody({
           >
             {relativeUpdated(task.updatedAt)}
           </time>
+          <ExecutionBadge task={task} />
           <BlockedBadge task={task} />
           {canShowTaskDeploymentIndicator(task) ? (
             <DeploymentIndicator status={task.deploymentStatus} />
@@ -2432,6 +2501,7 @@ function WorkflowFocusCard({
               >
                 {relativeUpdated(task.updatedAt)}
               </time>
+              <ExecutionBadge task={task} />
               <BlockedBadge task={task} />
             </div>
           </div>
@@ -2540,6 +2610,7 @@ function BacklogRow({
           {task.title}
         </Link>
         <SubtaskProgress task={task} />
+        <ExecutionBadge task={task} />
         <BlockedBadge task={task} />
         <ActiveBlockerButton task={task} projectSlug={projectSlug} />
       </div>

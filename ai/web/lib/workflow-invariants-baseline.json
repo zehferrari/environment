@@ -1,0 +1,56 @@
+{
+  "scenario": "canonical-current-behaviour",
+  "_comment": [
+    "ENV-116 expected-fail baseline.",
+    "",
+    "Each entry records an invariant that CURRENT PM behaviour violates, with the",
+    "exact violation codes and counts produced by the canonical scenario seeded in",
+    "scripts/workflow-invariants-db-test.ts. That scenario is the only consumer:",
+    "counts are deterministic there, unlike a live database.",
+    "",
+    "The suite is green only while observed == expected, code for code and count",
+    "for count. A new code is a regression; a code that stops firing is an",
+    "'unrecorded pass' and also fails. That second rule is deliberate: an Epic item",
+    "must delete its baseline entry in the SAME commit that makes the invariant",
+    "pass, so 'fixed' and 'recorded as fixed' can never drift apart.",
+    "",
+    "WFI-001 has no entry — it already holds. Do not add one to silence it.",
+    "",
+    "WFI-004 and WFI-005 were removed by ENV-118: a continuation-required action",
+    "no longer settles the run, and every terminal write records an explicit",
+    "disposition on PmChannelRun. Do not re-add them.",
+    "",
+    "WFI-006 stays red. ENV-118 makes an interrupted turn recoverable (the",
+    "continuation outbox schedules a fresh execution turn) but it does not make",
+    "an empty response a concrete completion — that is Epic item 3.",
+    "",
+    "WFI-007 was removed by ENV-120: flag_blocker now validates a structured",
+    "FormalBlockerReport before a task may enter a human-blocked state, so every",
+    "active blocker names its external actor and its actionable requirement.",
+    "Do not re-add it.",
+    "",
+    "WFI-008 was removed by the workflow hardening pass: approved ActionPlanStep",
+    "rows now materialize checklist rows with immutable provenance. Rendered",
+    "Markdown is presentation only. Do not re-add it."
+  ],
+  "entries": [
+    {
+      "invariantId": "WFI-002",
+      "epicItem": 2,
+      "codes": { "WFI-002/lease-not-renewed": 1 },
+      "note": "The canonical scenario deliberately seeds one expired active lease so the invariant/watchdog handoff remains covered."
+    },
+    {
+      "invariantId": "WFI-003",
+      "epicItem": 2,
+      "codes": { "WFI-003/stale-active-run-without-successor": 1 },
+      "note": "The canonical scenario deliberately seeds an In Progress task whose only run lease expired and has not yet reached the watchdog pass."
+    },
+    {
+      "invariantId": "WFI-006",
+      "epicItem": 3,
+      "codes": { "WFI-006/empty-final-response": 1 },
+      "note": "A turn that produces no durable response and takes no workflow action still settles complete instead of interrupted."
+    }
+  ]
+}

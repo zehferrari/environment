@@ -41,6 +41,10 @@ import {
   continueActionableTaskAfterReply,
   taskWorkflowReasonForMessage,
 } from "@/lib/agents/workflow/execution-continuation";
+import {
+  persistTaskReply,
+  activeAgentUser,
+} from "@/lib/agents/pm-channel/persist-task-reply";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -62,19 +66,31 @@ function replyBody(payload: Record<string, unknown>) {
   return typeof value === "string" ? value.trim() : "";
 }
 
-async function activeAgentUser(agentSlug: string) {
-  const agent = await db.agent.findUnique({
-    where: { slug: agentSlug },
-    select: {
-      slug: true,
-      deactivatedAt: true,
-      user: { select: { id: true, status: true } },
-    },
-  });
-  if (!agent?.user || agent.deactivatedAt || agent.user.status !== "active") {
-    return null;
+// ENV-122: Extract provider/model from the OpenClaw reply payload's agentMeta,
+// then persist them to the PmChannelRun so comment creation sites can copy
+// provenance from the run row instead of each needing its own model identity.
+function extractRunProvenance(payload: Record<string, unknown>): { provider: string | null; model: string | null } {
+  const meta = (payload.meta ?? payload.result) as Record<string, unknown> | undefined;
+  const agentMeta = meta?.agentMeta as Record<string, unknown> | undefined;
+  return {
+    provider: typeof agentMeta?.provider === "string" ? agentMeta.provider : null,
+    model: typeof agentMeta?.model === "string" ? agentMeta.model : null,
+  };
+}
+
+async function persistRunProvenance(target: PmChannelReplyTarget, provenance: { provider: string | null; model: string | null }) {
+  if (provenance.provider === null && provenance.model === null) return;
+  try {
+    await db.pmChannelRun.update({
+      where: { targetKey: pmChannelRunTargetKey(target) },
+      data: {
+        ...(provenance.provider !== null ? { provider: provenance.provider } : {}),
+        ...(provenance.model !== null ? { model: provenance.model } : {}),
+      },
+    });
+  } catch (err) {
+    console.warn("[pm-channel] failed to persist run provenance", err);
   }
-  return agent.user;
 }
 
 async function persistDirectReply(target: Extract<PmChannelReplyTarget, { kind: "direct" }>, body: string) {
@@ -133,241 +149,7 @@ async function persistDirectReply(target: Extract<PmChannelReplyTarget, { kind: 
   return { status: 200, body: { ok: true, id: reply.id, channel: "direct" }, streamText: body };
 }
 
-async function resolveTaskReplyOrigin(args: {
-  messageId: string;
-  taskId: string;
-  agentSlug: string;
-  targetKind: "task-chat" | "task-comment";
-  originChannel?: string | null;
-  originCommentId?: string | null;
-}) {
-  if (args.targetKind === "task-comment" || args.originChannel === "comment") {
-    return { channel: "comment" as const, originCommentId: args.originCommentId ?? null };
-  }
-  return { channel: "chat" as const, originCommentId: null };
-}
 
-async function persistTaskReply(
-  target: Extract<PmChannelReplyTarget, { kind: "task-chat" | "task-comment" }>,
-  body: string,
-) {
-  const original = await db.agentChatMessage.findUnique({
-    where: { id: target.messageId },
-    select: {
-      id: true,
-      projectId: true,
-      taskId: true,
-      agentSlug: true,
-      archiveId: true,
-      baseArchiveId: true,
-      originChannel: true,
-      originCommentId: true,
-      project: { select: { slug: true } },
-      task: { select: { deletedAt: true } },
-    },
-  });
-  if (!original || original.taskId !== target.taskId || original.task?.deletedAt) {
-    return { status: 404, body: { error: "Message not found" } };
-  }
-  if (original.agentSlug !== "room" && original.agentSlug !== target.agentSlug) {
-    return { status: 403, body: { error: "Agent mismatch" } };
-  }
-
-  const agentUser = await activeAgentUser(target.agentSlug);
-  if (!agentUser) {
-    return { status: 403, body: { error: "Agent not active" } };
-  }
-
-  const origin = await resolveTaskReplyOrigin({
-    messageId: target.messageId,
-    taskId: target.taskId,
-    agentSlug: target.agentSlug,
-    targetKind: target.kind,
-    originChannel: original.originChannel,
-    originCommentId: original.originCommentId,
-  });
-  const originWorkflowReason = origin.channel === "comment"
-    ? await taskWorkflowReasonForMessage(target.taskId, target.messageId)
-    : null;
-  const persistedBody = origin.channel === "chat"
-    ? normalizeDiscussionReplySections(body)
-    : body;
-
-  const reply = await db.$transaction(async (tx) => {
-    if (origin.channel === "comment") {
-      const comment = await tx.comment.create({
-        data: {
-          taskId: target.taskId,
-          userId: agentUser.id,
-          body: persistedBody,
-        },
-        select: { id: true },
-      });
-      await tx.activityLog.create({
-        data: {
-          projectId: original.projectId,
-          taskId: target.taskId,
-          userId: agentUser.id,
-          kind: "task.comment",
-          targetAgent: target.agentSlug,
-          payload: JSON.stringify({
-            driver: "openclaw-pm-channel",
-            commentId: comment.id,
-            originCommentId: origin.originCommentId,
-            inReplyToMessageId: target.messageId,
-            agentSlug: target.agentSlug,
-          }),
-        },
-      });
-      return { id: comment.id, channel: "comment" as const };
-    }
-
-    const created = await tx.agentChatMessage.create({
-      data: {
-        projectId: original.projectId,
-        taskId: target.taskId,
-        epicId: null,
-        agentSlug: original.agentSlug,
-        archiveId: original.archiveId,
-        baseArchiveId: original.baseArchiveId,
-        senderUserId: agentUser.id,
-        body: persistedBody,
-        allowDescriptionEdit: false,
-        originChannel: "chat",
-      },
-      select: { id: true, archiveId: true, createdAt: true },
-    });
-    if (created.archiveId) {
-      await tx.agentChatRoomArchive.update({
-        where: { id: created.archiveId },
-        data: {
-          endedAt: created.createdAt,
-          messageCount: { increment: 1 },
-        },
-      });
-    }
-    await tx.activityLog.create({
-      data: {
-        projectId: original.projectId,
-        taskId: target.taskId,
-        userId: agentUser.id,
-        kind: "task.chat.reply",
-        targetAgent: target.agentSlug,
-        payload: JSON.stringify({
-          driver: "openclaw-pm-channel",
-          messageId: created.id,
-          inReplyToMessageId: target.messageId,
-          agentSlug: target.agentSlug,
-        }),
-      },
-    });
-    return { id: created.id, channel: "chat" as const };
-  });
-
-  const reviewAutomation = reply.channel === "comment"
-    ? await tryCompleteTaskFromReviewerComment({
-        taskId: target.taskId,
-        commentId: reply.id,
-        body: persistedBody,
-        agentUserId: agentUser.id,
-        agentSlug: target.agentSlug,
-      })
-    : null;
-
-  if (reply.channel === "chat") {
-    const task = await db.task.findUnique({
-      where: { id: target.taskId },
-      select: {
-        id: true,
-        title: true,
-        status: true,
-        assigneeId: true,
-        actingManagerId: true,
-        reporterId: true,
-        approvedOn: true,
-        epic: { select: { status: true, actingManagerId: true } },
-      },
-    });
-    const reviewerId = task ? resolveReviewOwnerId(task) : null;
-    if (
-      task &&
-      !task.approvedOn &&
-      task.assigneeId === agentUser.id &&
-      (task.status === "Backlog" || task.status === "To Do") &&
-      reviewerId &&
-      reviewerId !== agentUser.id
-    ) {
-      await sendTaskWorkflowNotification({
-        taskId: task.id,
-        targetUserId: reviewerId,
-        actor: { id: agentUser.id, kind: "agent", username: target.agentSlug },
-        reason: "action_plan_review_requested",
-        body: [
-          `@${target.agentSlug} posted an Action Plan for "${task.title}".`,
-          "Review the plan in Action Plan. If it is acceptable, call the workflow endpoint with action=approve_plan. If it needs changes, reply in Action Plan with concise feedback.",
-        ].join("\n"),
-      });
-    }
-  }
-
-  if (reply.channel === "comment" && !reviewAutomation?.completed) {
-    await sendTaskCommentNotifications({
-      taskId: target.taskId,
-      commentId: reply.id,
-      body: persistedBody,
-      actor: {
-        id: agentUser.id,
-        kind: "agent",
-        username: target.agentSlug,
-      },
-      excludeAgentSlugs: [target.agentSlug],
-    });
-
-    // A decision-owner response to a formal blocker is a trusted workflow
-    // continuation, not an ordinary peer-authored mention. Close the loop
-    // immediately by waking the visible assignee in the stable execution
-    // session; otherwise the corrective comment is stored but the paused
-    // assignee does not see it until a later monitor sweep.
-    if (originWorkflowReason === "blocker") {
-      const blockedTask = await db.task.findUnique({
-        where: { id: target.taskId },
-        select: { assigneeId: true },
-      });
-      if (blockedTask?.assigneeId && blockedTask.assigneeId !== agentUser.id) {
-        await sendTaskWorkflowNotification({
-          taskId: target.taskId,
-          targetUserId: blockedTask.assigneeId,
-          actor: { id: agentUser.id, kind: "agent", username: target.agentSlug },
-          reason: "blocker_response",
-          body: [
-            `Decision owner @${target.agentSlug} responded to your active blocker in task comment ${reply.id}.`,
-            "Read that response now. If it resolves the dependency, call action=clear_blocker with the evidence and resume implementation immediately; otherwise keep the blocker active and add only material new evidence.",
-          ].join("\n"),
-        });
-      }
-    }
-  }
-
-  revalidateTaskReplyScope(target.taskId, reply.channel);
-  if (reviewAutomation?.completed) {
-    revalidateTaskShell(target.taskId);
-    for (const next of reviewAutomation.nextTasks ?? []) {
-      revalidateTaskShell(next.id);
-      revalidatePath(`/projects/${next.projectSlug}/tasks/${next.id}`);
-    }
-    revalidatePath(`/projects/${reviewAutomation.projectSlug}`);
-  }
-  return {
-    status: 200,
-    body: {
-      ok: true,
-      id: reply.id,
-      channel: reply.channel,
-      reviewAutomation,
-    },
-    streamText: persistedBody,
-  };
-}
 
 async function persistEpicReply(
   target: Extract<PmChannelReplyTarget, { kind: "epic-chat" }>,
@@ -600,13 +382,21 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, duplicate: true });
   }
 
+  // ENV-122: Extract provider/model from the OpenClaw reply payload and
+  // persist them to the PmChannelRun before persisting the reply, so the
+  // comment creation sites can copy provenance from the run row.
+  const provenance = extractRunProvenance(payload);
+  await persistRunProvenance(target, provenance);
+
+  const actionPlanPayload = payload.actionPlan;
+
   const result = isSilentPmReplyText(body)
     ? await persistSilentReply(target)
     : target.kind === "direct"
     ? await persistDirectReply(target, body)
     : target.kind === "epic-chat"
     ? await persistEpicReply(target, body)
-    : await persistTaskReply(target, body);
+    : await persistTaskReply(target, body, actionPlanPayload);
 
   if (result.status >= 200 && result.status < 300) {
     const executionContinuation = target.kind === "task-chat" || target.kind === "task-comment"

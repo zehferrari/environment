@@ -54,4 +54,41 @@ for (const { file, surface, source } of sources) {
   );
 }
 
+// ENV-121. The continuation brief is a SECOND context path into the same
+// unified prompt contract, and it must not become a hole in it: a brief-driven
+// turn still sends null legacy contextText, and the dispatcher must still be
+// able to choose the full first-contact packet.
+{
+  const dispatcher = readFileSync(join(root, "lib/agents/workflow/notifications/task.ts"), "utf8");
+  assert(
+    dispatcher.includes("buildTaskEpisodeBrief"),
+    "the task dispatcher must be able to send a bounded continuation brief",
+  );
+  assert(
+    dispatcher.includes("buildTaskAgentUserMessage"),
+    "the task dispatcher must keep the full packet for first-contact and plan turns",
+  );
+
+  const briefPrompt = buildUnifiedPmTurnSystemPrompt({
+    kind: "task-comment",
+    trustedPrompt: "Trusted workflow envelope",
+    primaryContext: "EXECUTION EPISODE BRIEF (bounded continuation context):\nresume here",
+  });
+  assert(briefPrompt.includes("EXECUTION EPISODE BRIEF"));
+  assert(
+    briefPrompt.includes("contextText is intentionally null"),
+    "a brief-driven turn is still bound by the unified null-contextText contract",
+  );
+  assert(
+    briefPrompt.includes("Deeper history remains available through the scoped loopback context grant"),
+    "a bounded brief must still advertise retrieval for the history it left out",
+  );
+  // The dispatcher is the ONLY place the brief/packet choice is made, so the
+  // trigger is asserted there rather than trusting the context module alone.
+  assert(
+    /latestTaskExecutionCheckpoint/.test(dispatcher),
+    "the brief/packet choice must be driven by a stored episode checkpoint",
+  );
+}
+
 console.log("pm-unified-context-test: ok");

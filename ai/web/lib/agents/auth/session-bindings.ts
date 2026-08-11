@@ -118,7 +118,7 @@ export async function getOrCreateAgentSessionBinding(args: {
       agentSlug: args.agentSlug,
       taskId: args.scopeId,
       sessionKey: binding.openclawSessionKey,
-      status: "complete",
+      status: "completed",
     },
   });
   if (completedTurns < maxCompletedTurns) return binding;

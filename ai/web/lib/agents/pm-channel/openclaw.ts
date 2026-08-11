@@ -68,6 +68,10 @@ export interface SendPmChannelTurnResult {
   error?: string;
   driver: "openclaw-pm-channel";
   transportMode?: PmChannelTransportMode;
+  // ENV-122: LLM provenance captured from the OpenClaw gateway dispatch
+  // response so comment metadata can copy provider/model from the run.
+  provider?: string | null;
+  model?: string | null;
 }
 
 export function buildPmTurnSessionKey(baseSessionKey: string, messageId: string): string {
@@ -241,13 +245,30 @@ export function buildPmChannelIngressPayload(
 export async function sendOpenClawPmChannelTurn(
   args: SendPmChannelTurnArgs,
 ): Promise<SendPmChannelTurnResult> {
-  await recordPmChannelRunQueued({
+  const run = await recordPmChannelRunQueued({
     target: args.replyTarget,
     kind: args.kind,
     projectId: args.projectId ?? null,
     gatewayPort: args.gatewayPort,
     sessionKey: args.sessionKey,
   });
+  if (!run) {
+    return { ok: false, driver: "openclaw-pm-channel", error: "failed to reserve PM execution lane" };
+  }
+  const { fenceSupersededPmChannelRuns } = await import("@/lib/agents/pm-channel/supersession");
+  const fence = await fenceSupersededPmChannelRuns({
+    replacementRunId: run.id,
+    fetchImpl: args.fetchImpl,
+  });
+  if (!fence.ok) {
+    const result: SendPmChannelTurnResult = {
+      ok: false,
+      driver: "openclaw-pm-channel",
+      error: `replacement dispatch fenced: ${fence.error}`,
+    };
+    await recordPmChannelRunDispatch({ target: args.replyTarget, result });
+    return result;
+  }
   return dispatchOpenClawPmChannelTurn(args);
 }
 
@@ -346,11 +367,25 @@ export async function dispatchOpenClawPmChannelTurnViaHttp(
       return result;
     }
 
+    // ENV-122: Parse provider/model from the OpenClaw gateway dispatch
+    // response so they can be persisted on the PmChannelRun and copied
+    // into comment metadata at all comment creation sites.
+    let provider: string | null = null;
+    let model: string | null = null;
+    try {
+      const body = await res.json().catch(() => null);
+      provider = typeof body?.provider === "string" ? body.provider : null;
+      model = typeof body?.model === "string" ? body.model : null;
+    } catch {
+      // Non-JSON response — leave provider/model null.
+    }
     const result: SendPmChannelTurnResult = {
       ok: true,
       status: res.status,
       driver: "openclaw-pm-channel",
       transportMode,
+      provider,
+      model,
     };
     await recordPmChannelRunDispatch({ target: args.replyTarget, result });
     return result;

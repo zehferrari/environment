@@ -73,7 +73,7 @@ assert.equal(state.runStatus, "streaming");
 apply({ event: "final", text: "hello world", replace: true });
 assert.equal(state.text, "hello world");
 assert.equal(state.status, "done");
-assert.equal(state.runStatus, "complete");
+assert.equal(state.runStatus, "completed");
 assert.equal(state.error, null);
 
 state = emptyPmChannelStreamState(target);

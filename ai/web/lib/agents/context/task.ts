@@ -9,10 +9,15 @@ import {
   renderDirectedSilenceRule,
   type DirectedDescriptor,
 } from "@/lib/agents/ops/directed-targets";
-import { resolveAgentCaps, type ContextCaps } from "@/lib/agents/context/caps";
+import { episodeCaps, resolveAgentCaps, type ContextCaps } from "@/lib/agents/context/caps";
 import { clip, clipWithMeta, renderBudgetedTimeline } from "@/lib/agents/context/budget";
 import { effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
 import { effectiveTaskBranchName } from "@/lib/work-items/branches";
+import { parseAcceptanceCriteria } from "@/lib/tasks/action-plan-store";
+import {
+  executionStateLines,
+  renderExecutionState,
+} from "@/lib/agents/watchdog/state";
 
 // Context-packet caps live in ./caps.ts and are resolved per-recipient
 // from agent.role. Coding agents (can_modify_code=true) get the 1M-token
@@ -69,6 +74,23 @@ export type AgentContextPacket = {
       assignee: string;
       reviewer: string;
       blockedBy: string | null;
+      // ENV-123 — the same four lines the task page renders, so an agent reading
+      // its own context sees exactly what the operator sees on the board.
+      executionState: string[] | null;
+      actionPlan: {
+        id: string;
+        summary: string;
+        approvedOn: Date | null;
+        steps: Array<{
+          id: string;
+          stepId: string;
+          title: string;
+          acceptanceCriteria: string;
+          kind: string;
+          assigneeId: string | null;
+          rank: number;
+        }>;
+      } | null;
     } | null;
     epic: {
       id: string;
@@ -93,6 +115,11 @@ export type AgentContextPacket = {
     body: string;
     createdAt: string;
     kind?: string;
+    commentKind?: string | null;
+    authorAgentSlug?: string | null;
+    isGenerated?: boolean;
+    provider?: string | null;
+    model?: string | null;
   }>;
   attachments: AttachmentContext[];
   renderedPrompt: string;
@@ -424,6 +451,15 @@ export async function buildTaskAgentContextPacket(args: {
       approvedOn: true,
       createdAt: true,
       updatedAt: true,
+      executionState: {
+        select: {
+          state: true,
+          reasonDetail: true,
+          lastDurableAction: true,
+          lastDurableActionAt: true,
+          recoveryAction: true,
+        },
+      },
       project: {
         select: {
           id: true,
@@ -480,6 +516,11 @@ export async function buildTaskAgentContextPacket(args: {
         take: 50,
         select: { id: true, text: true, completedAt: true, minutesSpent: true },
       },
+      actionPlan: {
+        include: {
+          steps: { orderBy: { rank: "asc" }, select: { id: true, stepId: true, title: true, acceptanceCriteria: true, kind: true, assigneeId: true, rank: true } },
+        },
+      },
       attachments: {
         orderBy: { createdAt: "asc" },
         take: 30,
@@ -504,6 +545,11 @@ export async function buildTaskAgentContextPacket(args: {
           id: true,
           body: true,
           createdAt: true,
+          authorAgentSlug: true,
+          provider: true,
+          model: true,
+          commentKind: true,
+          isGenerated: true,
           user: { select: { username: true, kind: true, isOwner: true } },
         },
       },
@@ -578,6 +624,25 @@ export async function buildTaskAgentContextPacket(args: {
             reviewer: actorLabel(task.actingManager),
             blockedBy: task.blockedBy && !task.blockedBy.private && !task.blockedBy.epic?.private && !task.blockedBy.parent?.private && !task.blockedBy.parent?.epic?.private
               ? `${task.blockedBy.workItemKey ?? "another task"} (${task.blockedBy.status})`
+              : null,
+            executionState: task.executionState
+              ? executionStateLines(renderExecutionState(task.executionState))
+              : null,
+            actionPlan: task.actionPlan
+              ? {
+                  id: task.actionPlan.id,
+                  summary: task.actionPlan.summary,
+                  approvedOn: task.actionPlan.approvedOn,
+                  steps: task.actionPlan.steps.map((s) => ({
+                    id: s.id,
+                    stepId: s.stepId,
+                    title: s.title,
+                    acceptanceCriteria: s.acceptanceCriteria,
+                    kind: s.kind,
+                    assigneeId: s.assigneeId,
+                    rank: s.rank,
+                  })),
+                }
               : null,
           }
         : null,
@@ -668,6 +733,11 @@ export async function buildTaskAgentContextPacket(args: {
         actor: actorLabel(comment.user),
         body: comment.body,
         createdAt: formatDate(comment.createdAt)!,
+        commentKind: comment.commentKind,
+        authorAgentSlug: comment.authorAgentSlug,
+        isGenerated: comment.isGenerated,
+        provider: comment.provider,
+        model: comment.model,
       })),
       ...archivedChats.map((chat) => ({
         type: "chat" as const,
@@ -830,7 +900,30 @@ export function renderAgentContextPacket(packet: AgentContextPacket): string {
     `Updated: ${task.updatedAt}`,
     "",
   );
+  // ENV-123 — PM's own view of whether this task is executing. An agent that
+  // just woke on a recovery turn needs this to tell "I was interrupted" from
+  // "I am duplicating a sibling that is still running".
+  if (task.executionState) {
+    lines.push("EXECUTION STATE (PM's observation, not a comment you must parse):");
+    lines.push(...task.executionState);
+    lines.push("");
+  }
   pushDescription(lines, "TASK DESCRIPTION", task.description, packet.caps.taskDescriptionMax);
+
+  // ENV-119: Render structured Action Plan if it exists
+  if (task.actionPlan) {
+    lines.push("", "ACTION PLAN (structured):");
+    lines.push(`Summary: ${task.actionPlan.summary}`);
+    for (const step of task.actionPlan.steps) {
+      const criteria = parseAcceptanceCriteria(step.acceptanceCriteria);
+      lines.push(
+        `  Step ${step.rank}: [${step.kind}] ${step.title}`,
+        `    ID: ${step.stepId}`,
+        ...(criteria.length > 0 ? ["    Acceptance criteria:", ...criteria.map((c) => `      - ${c}`)] : []),
+        ...(step.assigneeId ? [`    Assignee: ${step.assigneeId}`] : []),
+      );
+    }
+  }
 
   lines.push("", "EPIC SNAPSHOT:");
   if (epic) {
@@ -907,7 +1000,7 @@ export function renderAgentContextPacket(packet: AgentContextPacket): string {
     "If you are the assignee: before starting a To Do task, make sure your technical Action Plan is posted and approved_on is set. Structure the plan as independent, parallelizable checklist items where that is useful, but do not split small or strictly sequential/dependent work. Then use action=start; PM provisions the worktree and moves the task to In Progress before implementation begins. When implementation is complete, leave repository changes uncommitted and unpushed and call ready_for_review with one concise note. PM keeps repository work In Progress until Monitor Agent validation passes.",
     "For an Epic-child task whose remaining live-verification checklist requires a remotely deployable commit, do not manually commit/push and do not send incomplete work to Review. Request the exact permission with flag_blocker permissionKind=publish_checkpoint. After the active owner grants it, call action=publish_checkpoint with that exact single-use authorizationCommentId and a concise reason. PM publishes only the Epic branch, keeps the Task In Progress, and closes that permission round on either success or failure because the grant has been consumed. Fix agent-actionable failure evidence; any later publication requires a fresh blocker/grant. The configured project automation owns deployment of the returned Epic SHA: never SSH to the target, run Git there, or substitute another OS identity as a manual fallback. Verify the automation's actual outcome before live verification continues.",
     "Task execution belongs to the visible assignee. Never hand implementation or evidence collection to another agent through comments or hidden workflow state. If another agent must perform independent work, create and explicitly assign a separate PM task so ownership and dependencies remain visible on the board.",
-    "If active implementation is blocked by infrastructure, credentials, access, an external service, or a human decision you cannot resolve, call action=flag_blocker once with one concise comment containing the failure evidence and required intervention. PM keeps the task In Progress, alerts the decision owners, and suppresses ordinary stale-work nudges only while external input is actually missing. A structured permission grant makes the round agent-actionable immediately. Do not repeat the blocker. For non-checkpoint blockers, when the dependency is actually resolved, call action=clear_blocker with the unblocking evidence and resume.",
+    "If active implementation is blocked by infrastructure, credentials, access, an external service, or a human decision you cannot resolve, call action=flag_blocker once with one concise comment containing the failure evidence and required intervention, plus a structured blockerReport (blockedOn, requestedActor, requestedAction, evidence, diagnosticsAttempted, resumeCondition, reporterCanResolve). PM validates it and answers 422 naming the rule that fired if the claim is self-directed, undiagnosed, or has no concrete resume condition; a recoverable technical failure becomes an internal incident that keeps the task In Progress instead of a human-blocked state. PM keeps the task In Progress, alerts the decision owners, and suppresses ordinary stale-work nudges only while external input is actually missing. A structured permission grant makes the round agent-actionable immediately. Do not repeat the blocker. For non-checkpoint blockers, when the dependency is actually resolved, call action=clear_blocker with the unblocking evidence and resume.",
     "If you are reviewing an Action Plan that could be safely split into independent sub-tasks, flag that in one consolidated feedback comment; do not require sub-task splitting for small or strictly sequential/dependent work.",
     "Worktrees ONLY, no exceptions: Action Plan approval reserves the branch contract; start provisions and validates the linked Git worktree at the In Progress boundary. Use the worktreePath returned by PM; never edit a primary checkout and never create/copy an ordinary task folder. If PM rejects provisioning, tag the reporter with the returned error before making changes.",
     "Review is reviewer work only. The assignee may answer comments there but cannot resume implementation in place; review_feedback returns the task to To Do for a fresh start.",
@@ -918,6 +1011,372 @@ export function renderAgentContextPacket(packet: AgentContextPacket): string {
   );
 
   return lines.join("\n");
+}
+
+// ------------------------------------------------------------------
+// ENV-121 — the continuation-episode brief
+// ------------------------------------------------------------------
+//
+// buildTaskAgentContextPacket above is the FIRST-CONTACT packet: it inlines
+// the whole bounded working set because the agent has never seen this task.
+// A CONTINUATION episode has already seen it. What it needs is the resume
+// point, not the archive:
+//
+//   task snapshot + approved plan + open checklist
+//   + latest unresolved blocker
+//   + the previous episode's structured checkpoint
+//   + the last few evidence rows
+//
+// Everything else stays reachable through the same scoped loopback grants the
+// full packet advertises. That is the whole point of the Epic item: retrieval,
+// not injection, with compaction demoted to the fallback it was meant to be.
+
+export type TaskEpisodeBrief = {
+  scope: { type: "task"; id: string; projectId: string | null; projectSlug: string | null };
+  targetAgentSlug: string;
+  caps: ContextCaps;
+  episodeNo: number | null;
+  renderedPrompt: string;
+};
+
+/** Blocker-shaped activity kinds, newest of which is inlined verbatim. */
+const BLOCKER_ACTIVITY_KINDS = [
+  "task.blocker",
+  "task.extra_work.blocker",
+  "task.blocker.cleared",
+  "task.blocker.permission.granted",
+];
+
+/** The structured-plan slice the episode-brief query loads (ENV-119). */
+export type EpisodeBriefActionPlan = {
+  summary: string;
+  steps: Array<{
+    id: string;
+    stepId: string;
+    title: string;
+    /** JSON-encoded string[], exactly as the action-plan store persists it. */
+    acceptanceCriteria: string;
+    kind: string;
+    assigneeId: string | null;
+    rank: number;
+  }>;
+};
+
+/**
+ * The brief's "APPROVED ACTION PLAN" section body. ENV-119's structured
+ * ActionPlan is the plan of record, so when one exists it is rendered the
+ * same way the first-contact packet renders it — summary + ordered steps
+ * with acceptance criteria — plus per-step completion derived from the
+ * actionPlanStepId-linked checklist rows the brief already loads. The
+ * pre-ENV-119 heuristic (newest non-notification room message authored by
+ * this agent) survives ONLY as the fallback for legacy tasks with no
+ * ActionPlan row. Either shape is clipped, so the section stays flat no
+ * matter how chatty the task is.
+ */
+export function episodeActionPlanLines(args: {
+  plan: EpisodeBriefActionPlan | null;
+  /** Checklist rows as loaded by the brief query; links steps to done state. */
+  checklist: Array<{ actionPlanStepId: string | null; completedAt: Date | null }>;
+  /** Live room messages, newest first, as loaded by the brief query. */
+  chats: Array<{ body: string; sender: { username: string | null } | null }>;
+  agentSlug: string;
+  caps: ContextCaps;
+}): string[] {
+  if (args.plan) {
+    const doneStepIds = new Set<string>();
+    for (const item of args.checklist) {
+      if (item.completedAt !== null && item.actionPlanStepId) doneStepIds.add(item.actionPlanStepId);
+    }
+    const planLines = [`Summary: ${args.plan.summary}`];
+    for (const step of args.plan.steps) {
+      const criteria = parseAcceptanceCriteria(step.acceptanceCriteria);
+      planLines.push(
+        `  Step ${step.rank}: [${step.kind}] ${step.title}${doneStepIds.has(step.id) ? " (done)" : ""}`,
+        `    ID: ${step.stepId}`,
+        ...(criteria.length > 0 ? ["    Acceptance criteria:", ...criteria.map((c) => `      - ${c}`)] : []),
+        ...(step.assigneeId ? [`    Assignee: ${step.assigneeId}`] : []),
+      );
+    }
+    // One clip bounds the whole structured block. The plan is description-
+    // grade context, so it shares the description's episode cap rather than
+    // the per-chat body cap the fallback message gets.
+    return clip(planLines.join("\n"), args.caps.taskDescriptionMax).split("\n");
+  }
+  const planMessage = [...args.chats]
+    .reverse()
+    .filter((chat) => chat.sender?.username === args.agentSlug && !chat.body.startsWith("PM workflow notification"))
+    .pop();
+  return [
+    planMessage
+      ? clip(planMessage.body, args.caps.maxTimelineBody)
+      : "(no plan message found inline — fetch the task grant and read the Action Plan discussion)",
+  ];
+}
+
+export async function buildTaskEpisodeBrief(args: {
+  taskId: string;
+  agentSlug: string;
+  currentTurn: TaskAgentCurrentTurn;
+  episode?: { episodeNo: number; checkpointLines: string[] } | null;
+}): Promise<TaskEpisodeBrief> {
+  const caps = episodeCaps();
+  const task = await db.task.findFirst({
+    where: {
+      id: args.taskId,
+      private: false,
+      AND: [
+        { OR: [{ epicId: null }, { epic: { private: false } }] },
+        {
+          OR: [
+            { parentTaskId: null },
+            { parent: { private: false, OR: [{ epicId: null }, { epic: { private: false } }] } },
+          ],
+        },
+      ],
+    },
+    select: {
+      id: true,
+      workItemKey: true,
+      title: true,
+      status: true,
+      description: true,
+      branchName: true,
+      commitPrefix: true,
+      approvedOn: true,
+      executionState: {
+        select: {
+          state: true,
+          reasonDetail: true,
+          lastDurableAction: true,
+          lastDurableActionAt: true,
+          recoveryAction: true,
+        },
+      },
+      project: { select: { id: true, slug: true, name: true } },
+      epic: {
+        select: {
+          id: true,
+          title: true,
+          status: true,
+          workItemKey: true,
+          branchName: true,
+          commitPrefix: true,
+        },
+      },
+      assignee: { select: { username: true, kind: true } },
+      actingManager: { select: { username: true, kind: true } },
+      blockedBy: {
+        select: {
+          workItemKey: true,
+          status: true,
+          private: true,
+          epic: { select: { private: true } },
+          parent: { select: { private: true, epic: { select: { private: true } } } },
+        },
+      },
+      checklist: {
+        orderBy: { rank: "asc" },
+        take: 50,
+        select: { id: true, text: true, completedAt: true, minutesSpent: true, actionPlanStepId: true },
+      },
+      // ENV-119 structured plan of record: summary + ordered steps, loaded the
+      // same way the first-contact packet loads them. Acceptance criteria stay
+      // JSON-encoded until render time.
+      actionPlan: {
+        include: {
+          steps: { orderBy: { rank: "asc" }, select: { id: true, stepId: true, title: true, acceptanceCriteria: true, kind: true, assigneeId: true, rank: true } },
+        },
+      },
+      // Live room messages back the RECENT EVIDENCE section and the legacy
+      // plan-of-record fallback for tasks that predate the structured store.
+      chats: {
+        where: { archiveId: null, deletedAt: null, originChannel: "chat" },
+        orderBy: { createdAt: "desc" },
+        take: caps.maxLiveChats,
+        select: {
+          id: true,
+          agentSlug: true,
+          targetType: true,
+          targetValue: true,
+          targetLabel: true,
+          body: true,
+          createdAt: true,
+          sender: { select: { username: true, kind: true, isOwner: true } },
+        },
+      },
+      comments: {
+        where: { deletedAt: null },
+        orderBy: { createdAt: "desc" },
+        take: caps.maxComments,
+        select: {
+          id: true,
+          body: true,
+          createdAt: true,
+          user: { select: { username: true, kind: true, isOwner: true } },
+        },
+      },
+      activity: {
+        orderBy: { createdAt: "desc" },
+        take: caps.maxActivity,
+        select: {
+          id: true,
+          kind: true,
+          payload: true,
+          targetAgent: true,
+          targetFile: true,
+          createdAt: true,
+          user: { select: { username: true, kind: true, isOwner: true } },
+        },
+      },
+    },
+  });
+
+  const scope = {
+    type: "task" as const,
+    id: args.taskId,
+    projectId: task?.project.id ?? null,
+    projectSlug: task?.project.slug ?? null,
+  };
+
+  if (!task) {
+    return {
+      scope,
+      targetAgentSlug: args.agentSlug,
+      caps,
+      episodeNo: args.episode?.episodeNo ?? null,
+      renderedPrompt: [
+        "CURRENT TURN:",
+        clip(args.currentTurn.body, 4000),
+        "",
+        "EXECUTION EPISODE BRIEF:",
+        `Task ${args.taskId} could not be loaded. Use the current turn only.`,
+      ].join("\n"),
+    };
+  }
+
+  const lines: string[] = [
+    "CURRENT TURN:",
+    `${currentTurnSource(args.currentTurn.source)} from ${actorLabelFromParts(args.currentTurn.actorUsername, args.currentTurn.actorKind)}${args.currentTurn.createdAt ? ` at ${formatDate(args.currentTurn.createdAt)}` : ""}`,
+    args.currentTurn.id ? `Turn id: ${args.currentTurn.id}` : "Turn id: (not set)",
+    "-----",
+    clip(args.currentTurn.body, 4000),
+    "-----",
+    "",
+    "EXECUTION EPISODE BRIEF (bounded continuation context):",
+    `This is execution episode ${args.episode?.episodeNo ?? "(unnumbered)"} for @${args.agentSlug} on this task. You have worked it before.`,
+    "This brief is deliberately SMALL: task state, the approved plan, the open checklist, the newest blocker, your last checkpoint, and recent evidence. It is not the full history.",
+    "The complete comment/activity history is still available — fetch it through the scoped loopback grant URLs in this prompt when you actually need it. Do not assume something is missing just because it is not inlined here.",
+    "",
+    "TASK SNAPSHOT:",
+    `Task: ${task.title} (${task.workItemKey || task.id}; system id: ${task.id})`,
+    `Project: ${task.project.name} (${task.project.slug})`,
+    `Status: ${task.status}`,
+    `Assignee: ${actorLabel(task.assignee)}`,
+    `Reviewer: ${actorLabel(task.actingManager)}`,
+    `Blocked by: ${
+      task.blockedBy &&
+      !task.blockedBy.private &&
+      !task.blockedBy.epic?.private &&
+      !task.blockedBy.parent?.private &&
+      !task.blockedBy.parent?.epic?.private
+        ? `${task.blockedBy.workItemKey ?? "another task"} (${task.blockedBy.status})`
+        : "(none)"
+    }`,
+    `Action Plan approved_on: ${formatDate(task.approvedOn) || "(not approved)"}`,
+    `Branch: ${effectiveTaskBranchName(task) || "(not set)"}`,
+    `Commit prefix: ${effectiveTaskCommitPrefix(task) || "(not set)"}`,
+  ];
+  // ENV-123 — see the note on the packet renderer. A rolled-over episode is the
+  // case most likely to re-do finished work, so it gets the same four lines.
+  if (task.executionState) {
+    lines.push(
+      "",
+      "EXECUTION STATE (PM's observation, not a comment you must parse):",
+      ...executionStateLines(renderExecutionState(task.executionState)),
+    );
+  }
+  if (task.epic) {
+    lines.push(`Epic: ${task.epic.title} (${task.epic.status}, ${task.epic.id})`);
+  }
+  lines.push("");
+  pushDescription(lines, "TASK DESCRIPTION", task.description, caps.taskDescriptionMax);
+
+  // Plan of record: the ENV-119 structured ActionPlan when one exists; only
+  // legacy tasks that predate the structured store fall back to the newest
+  // room message this agent authored.
+  lines.push("", "APPROVED ACTION PLAN (your plan of record):");
+  lines.push(
+    ...episodeActionPlanLines({
+      plan: task.actionPlan,
+      checklist: task.checklist,
+      chats: task.chats,
+      agentSlug: args.agentSlug,
+      caps,
+    }),
+  );
+
+  lines.push("", "OPEN CHECKLIST (tick each with action=complete_subtask as it lands):");
+  const open = task.checklist.filter((item) => item.completedAt === null);
+  const doneCount = task.checklist.length - open.length;
+  lines.push(`Progress: ${doneCount}/${task.checklist.length} done`);
+  if (open.length === 0) {
+    lines.push("- (no open items)");
+  } else {
+    for (const item of open) lines.push(`- [ ] ${item.text} (id: ${item.id})`);
+  }
+
+  const blockerRow = task.activity.find((row) => BLOCKER_ACTIVITY_KINDS.includes(row.kind));
+  lines.push("", "LATEST BLOCKER SIGNAL:");
+  lines.push(
+    blockerRow
+      ? `[${formatDate(blockerRow.createdAt)}] ${blockerRow.kind} ${actorLabel(blockerRow.user)}: ${clip(payloadText(blockerRow.payload), caps.maxActivityBody)}`
+      : "(none recorded)",
+  );
+
+  lines.push("", ...(args.episode?.checkpointLines ?? ["LAST EXECUTION CHECKPOINT:", "(none recorded)"]));
+
+  // Recent evidence only: the newest comments/chats, rendered through the same
+  // budgeted renderer the full packet uses so one cap governs both paths.
+  const evidence: AgentContextPacket["timeline"] = [
+    ...task.comments.map((comment) => ({
+      type: "comment" as const,
+      id: comment.id,
+      actor: actorLabel(comment.user),
+      body: comment.body,
+      createdAt: formatDate(comment.createdAt)!,
+    })),
+    ...task.chats.map((chat) => ({
+      type: "chat" as const,
+      id: chat.id,
+      actor: actorLabel(chat.sender),
+      body: chatTimelineBody(chat),
+      createdAt: formatDate(chat.createdAt)!,
+    })),
+  ]
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .slice(-caps.recentTimelineVerbatimItems);
+
+  lines.push("", `RECENT EVIDENCE (last ${evidence.length} rows only — older rows exist and are retrievable):`);
+  lines.push(...renderBudgetedTimeline(evidence, caps).lines);
+
+  lines.push(
+    "",
+    "EPISODE RULES:",
+    "Work the open checklist from the checkpoint's next exact action. Do not re-derive the plan and do not redo work the checkpoint already records as complete.",
+    "Tick each checklist item with action=complete_subtask the moment it lands; PM counts those as episode cycles.",
+    "This episode has two budgets, both counted server-side: workflow actions (cycleCount/cycleBudget) and PM-observed tool calls (toolCycleCount/toolCycleBudget). Every workflow response reports both.",
+    "When PM answers with episodeBudgetExhausted, this episode is CLOSED and enforced closed: the only action PM will still accept from this turn is action=checkpoint. Record completedWork, evidence, openChecklist, nextAction and risks, then stop. Every other action returns 409 and changes nothing — PM dispatches the next episode with a fresh session briefed from your checkpoint.",
+    "Finish through ready_for_review, or record one precise external dependency with flag_blocker. Do not stop at a progress comment.",
+    `If this turn requires no visible contribution, reply exactly ${PM_SILENT_REPLY_TOKEN} and nothing else.`,
+  );
+
+  return {
+    scope,
+    targetAgentSlug: args.agentSlug,
+    caps,
+    episodeNo: args.episode?.episodeNo ?? null,
+    renderedPrompt: lines.join("\n"),
+  };
 }
 
 export async function buildTaskAgentUserMessage(args: {

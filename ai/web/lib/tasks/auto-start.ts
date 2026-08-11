@@ -5,6 +5,8 @@ import { epicAllowsAgentAction } from "@/lib/tasks/workflow-actors";
 import { promoteEpicOnTaskInProgress } from "@/lib/epics/promote-on-start";
 import { effectiveTaskBranchName } from "@/lib/work-items/branches";
 import { ensureTaskCodeWorktree, TaskWorktreeError } from "@/lib/tasks/worktree-claim";
+import { applyTaskTransition, TaskTransitionRejected } from "@/lib/tasks/transition-kernel";
+import { drainWorkflowOutbox } from "@/lib/tasks/workflow-outbox-drain";
 
 type Actor = {
   id: string;
@@ -125,6 +127,7 @@ export async function startApprovedTodoTaskIfIdle(args: {
       id: true,
       title: true,
       status: true,
+      workflowVersion: true,
       projectId: true,
       assigneeId: true,
       approvedOn: true,
@@ -180,7 +183,7 @@ export async function startApprovedTodoTaskIfIdle(args: {
   }
 
   try {
-    await ensureTaskCodeWorktree(task.id, args.actor.id);
+    await ensureTaskCodeWorktree(task.id, task.assigneeId);
   } catch (err) {
     return {
       started: false,
@@ -192,7 +195,9 @@ export async function startApprovedTodoTaskIfIdle(args: {
     };
   }
 
-  const result = await db.$transaction(async (tx) => {
+  let result: TaskAutoStartResult;
+  try {
+    result = await db.$transaction(async (tx) => {
     // Shared In Progress entry gate (P4): per-project WIP limit + effective-
     // branch clash. Same helper backs the workflow endpoint's `start` action.
     const conflict = await findInProgressStartConflict(tx, {
@@ -210,47 +215,17 @@ export async function startApprovedTodoTaskIfIdle(args: {
       };
     }
 
-    const maxRank = await tx.task.aggregate({
-      where: {
-        projectId: task.projectId,
-        status: "In Progress",
-        archivedAt: null,
-        deletedAt: null,
-      },
-      _max: { rank: true },
-    });
-    const now = new Date();
-    const updated = await tx.task.updateMany({
-      where: {
-        id: task.id,
-        status: "To Do",
-        assigneeId: task.assigneeId,
-        approvedOn: { not: null },
-        deletedAt: null,
-      },
-      data: {
-        status: "In Progress",
-        rank: (maxRank._max.rank ?? 0) + 1,
-        statusChangedAt: now,
-      },
-    });
-    if (updated.count !== 1) {
-      return { started: false as const, reason: "changed" as const, task: taskRef };
-    }
-
-    await tx.activityLog.create({
-      data: {
-        projectId: task.projectId,
-        taskId: task.id,
-        userId: args.actor.id,
-        kind: "task.move",
-        payload: JSON.stringify({
-          from: "To Do",
-          to: "In Progress",
-          via: args.via,
-          autoStart: true,
-        }),
-      },
+    await applyTaskTransition(tx, {
+      taskId: task.id,
+      projectId: task.projectId,
+      actorUserId: args.actor.id,
+      intent: "auto_start",
+      from: "To Do",
+      to: "In Progress",
+      source: args.via,
+      idempotencyKey: `auto-start:${args.via}:v${task.workflowVersion + 1}`,
+      evidence: { autoStart: true, assigneeId: task.assigneeId },
+      effects: [{ type: "board_touch", key: "board-auto-start", payload: {} }],
     });
 
     await promoteEpicOnTaskInProgress(tx, {
@@ -271,8 +246,17 @@ export async function startApprovedTodoTaskIfIdle(args: {
         assigneeUsername: task.assignee!.username,
       },
     };
-  });
+    });
+  } catch (error) {
+    if (error instanceof TaskTransitionRejected) {
+      return { started: false, reason: "changed", task: taskRef };
+    }
+    throw error;
+  }
 
-  if (result.started) publishBoardTouch(result.task.projectId);
+  if (result.started) {
+    await drainWorkflowOutbox({ limit: 1 }).catch(() => {});
+    publishBoardTouch(result.task.projectId);
+  }
   return result;
 }

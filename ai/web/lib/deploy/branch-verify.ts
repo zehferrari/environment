@@ -18,6 +18,7 @@
 
 import { mkdir, writeFile } from "fs/promises";
 import { join } from "path";
+import type { ValidationProfileSnapshot } from "@/lib/tasks/validation-profile";
 
 export const BRANCH_VERIFY_DIR =
   process.env.PM_BRANCH_VERIFY_DIR ?? "/var/lib/pm/branch-verify";
@@ -60,6 +61,7 @@ export interface BranchVerifyJob {
   requestedByAgentSlug: string;
   requestedByUserId: string;
   requestedAt: string;
+  validationProfile?: ValidationProfileSnapshot;
 }
 
 export async function enqueueBranchVerifyJob(job: BranchVerifyJob): Promise<string> {

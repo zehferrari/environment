@@ -1,8 +1,9 @@
 import { db } from "@/lib/db";
-import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
 import { ACTIVE_TASK_ASSIGNMENT_STATUSES } from "@/lib/epics/assignment";
 import { startApprovedTodoTaskIfIdle } from "@/lib/tasks/auto-start";
 import { publishBoardTouch } from "@/lib/pm/board-events";
+import { applyTaskTransition, enqueueWorkflowEffects, type WorkflowEffect } from "@/lib/tasks/transition-kernel";
+import { drainWorkflowOutbox } from "@/lib/tasks/workflow-outbox-drain";
 
 type Actor = {
   id: string;
@@ -148,6 +149,7 @@ export async function assignTaskAfterPlanApproval(args: {
       id: true,
       title: true,
       status: true,
+      workflowVersion: true,
       projectId: true,
       assigneeId: true,
       actingManagerId: true,
@@ -197,27 +199,53 @@ export async function assignTaskAfterPlanApproval(args: {
   // new assignee's plan is accepted.
   const planApproved = Boolean(task.approvedOn);
   const movedToTodo = planApproved && task.status === "Backlog";
-  await db.$transaction(async (tx) => {
-    const rank = movedToTodo
-      ? await tx.task.aggregate({
-          where: { projectId: task.projectId, status: "To Do", archivedAt: null, deletedAt: null },
-          _max: { rank: true },
-        })
-      : null;
-    const now = new Date();
-    await tx.task.update({
-      where: { id: task.id },
-      data: {
-        assigneeId: assignee.id,
-        ...(movedToTodo
-          ? {
-              status: "To Do",
-              rank: (rank?._max.rank ?? 0) + 1,
-              statusChangedAt: now,
-            }
-          : {}),
+  const effects: WorkflowEffect[] = [
+    { type: "board_touch", key: "board-reviewer-assignment", payload: {} },
+    {
+      type: "task_notification",
+      key: `reviewer-assignment:${assignee.id}`,
+      payload: {
+        taskId: task.id,
+        targetUserId: assignee.id,
+        actor: args.actor,
+        reason: planApproved ? "todo_start_required" : "backlog_plan_requested",
+        body: planApproved
+          ? [
+              `The Action Plan for "${task.title}" was approved and reviewer @${args.actor.username ?? "unknown"} assigned it to you.`,
+              "PM will auto-start it if the execution lane and repository gates are free. Check the current status: implement immediately if In Progress, otherwise call action=start when it remains To Do.",
+              "Do not post a visible acknowledgement unless a blocker or material plan change appears.",
+            ].join("\n")
+          : [
+              `Reviewer @${args.actor.username ?? "unknown"} assigned you to "${task.title}", which has no approved Action Plan yet.`,
+              "Read the full task context and existing comments, then post one concise structured implementation plan through action=submit_plan and wait for approval.",
+              "Do not change task status and do not start work until the plan is approved.",
+            ].join("\n"),
       },
-    });
+    },
+  ];
+  await db.$transaction(async (tx) => {
+    if (movedToTodo) {
+      await applyTaskTransition(tx, {
+        taskId: task.id,
+        projectId: task.projectId,
+        actorUserId: args.actor.id,
+        intent: "queue",
+        from: "Backlog",
+        to: "To Do",
+        source: "reviewer-plan-approval",
+        idempotencyKey: `reviewer-assign:${assignee.id}:v${task.workflowVersion + 1}`,
+        taskData: { assigneeId: assignee.id },
+        effects,
+      });
+    } else {
+      await tx.task.update({ where: { id: task.id }, data: { assigneeId: assignee.id } });
+      await enqueueWorkflowEffects(tx, {
+        taskId: task.id,
+        projectId: task.projectId,
+        aggregateVersion: task.workflowVersion,
+        effects,
+      });
+    }
     await tx.activityLog.create({
       data: {
         projectId: task.projectId,
@@ -235,21 +263,6 @@ export async function assignTaskAfterPlanApproval(args: {
         }),
       },
     });
-    if (movedToTodo) {
-      await tx.activityLog.create({
-        data: {
-          projectId: task.projectId,
-          taskId: task.id,
-          userId: args.actor.id,
-          kind: "task.move",
-          payload: JSON.stringify({
-            from: "Backlog",
-            to: "To Do",
-            via: "reviewer-plan-approval",
-          }),
-        },
-      });
-    }
   });
 
   let startedNow = false;
@@ -260,40 +273,8 @@ export async function assignTaskAfterPlanApproval(args: {
       via: "reviewer-plan-approval",
     });
     startedNow = autoStart.started;
-    await sendTaskWorkflowNotification({
-      taskId: task.id,
-      targetUserId: assignee.id,
-      actor: args.actor,
-      reason: "todo_start_required",
-      body: autoStart.started
-        ? [
-            `The Action Plan for "${task.title}" was approved and reviewer @${args.actor.username ?? "unknown"} assigned it to you.`,
-            "PM moved the task to In Progress because you have no other In Progress task.",
-            "Start implementing the approved plan now. Do not post a visible acknowledgement unless a blocker or material plan change appears.",
-          ].join("\n")
-        : [
-            `The Action Plan for "${task.title}" was approved and reviewer @${args.actor.username ?? "unknown"} assigned it to you.`,
-            autoStart.reason === "busy"
-              ? "You already have another In Progress task in this project, so this task remains in To Do until you are idle."
-              : autoStart.reason === "worktree_unavailable"
-                ? `PM left the task in To Do because its linked worktree is unavailable: ${autoStart.worktreeError}`
-              : "Call the workflow endpoint with action=start, move the task to In Progress, and implement the approved plan.",
-            "Do not post a visible acknowledgement unless a blocker or material plan change appears.",
-          ].join("\n"),
-    });
-  } else {
-    await sendTaskWorkflowNotification({
-      taskId: task.id,
-      targetUserId: assignee.id,
-      actor: args.actor,
-      reason: "backlog_plan_requested",
-      body: [
-        `Reviewer @${args.actor.username ?? "unknown"} assigned you to "${task.title}", which has no approved Action Plan yet.`,
-        "Read the full task context and existing comments, then post one concise technical implementation plan in Action Plan and wait for approval.",
-        "Do not change task status and do not start work until the plan is approved.",
-      ].join("\n"),
-    });
   }
+  await drainWorkflowOutbox({ limit: effects.length }).catch(() => {});
   publishBoardTouch(task.projectId);
 
   return {

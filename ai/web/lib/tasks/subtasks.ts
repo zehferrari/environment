@@ -12,7 +12,15 @@
 // there, which is how "who completed it / when" is audited without widening the
 // minimal row shape).
 
+import type { Prisma } from "@prisma/client";
+
 import { db } from "@/lib/db";
+
+// ENV-118: the agent workflow endpoint runs these mutations inside the same
+// transaction as its continuation-outbox write, so every mutation below takes
+// an optional client. Omitted, it behaves exactly as before (its own
+// transaction on the base client).
+type TxClient = Prisma.TransactionClient | typeof db;
 
 export const MAX_SUBTASK_TEXT = 500;
 export const MAX_SUBTASKS_PER_TASK = 50;
@@ -43,12 +51,23 @@ export async function createSubTaskItem(args: {
   actorUserId: string;
   completedAt?: Date | null;
   kind?: SubTaskKind;
-}): Promise<{ id: string } | null> {
+  actionPlanStepId?: string | null;
+  client?: TxClient;
+}): Promise<{ id: string; created: boolean } | null> {
+  const client = args.client ?? db;
   const text = args.text.trim().slice(0, MAX_SUBTASK_TEXT);
   if (!text) return null;
   const kind = normalizeSubTaskKind(args.kind);
 
-  const agg = await db.subTask.aggregate({
+  const existing = await client.subTask.findFirst({
+    where: args.actionPlanStepId
+      ? { actionPlanStepId: args.actionPlanStepId }
+      : { taskId: args.taskId, kind, text },
+    select: { id: true },
+  });
+  if (existing) return { id: existing.id, created: false };
+
+  const agg = await client.subTask.aggregate({
     where: { taskId: args.taskId },
     _max: { rank: true },
     _count: true,
@@ -57,17 +76,18 @@ export async function createSubTaskItem(args: {
     throw new Error(`A task may have at most ${MAX_SUBTASKS_PER_TASK} checklist items.`);
   }
 
-  const item = await db.subTask.create({
+  const item = await client.subTask.create({
     data: {
       taskId: args.taskId,
       text,
       kind,
+      actionPlanStepId: args.actionPlanStepId ?? null,
       rank: (agg._max.rank ?? 0) + 1,
       completedAt: args.completedAt ?? null,
     },
     select: { id: true, task: { select: { projectId: true } } },
   });
-  await db.activityLog.create({
+  await client.activityLog.create({
     data: {
       projectId: item.task.projectId,
       taskId: args.taskId,
@@ -76,7 +96,7 @@ export async function createSubTaskItem(args: {
       payload: JSON.stringify({ subTaskId: item.id, text, kind }),
     },
   });
-  return { id: item.id };
+  return { id: item.id, created: true };
 }
 
 // Clamp a self-reported minutes value to a sane non-negative integer, or null.
@@ -94,8 +114,10 @@ export async function setSubTaskCompletion(args: {
   minutesSpent?: number | null;
   actorUserId: string;
   expectTaskId?: string;
+  client?: TxClient;
 }): Promise<{ id: string; taskId: string; completedAt: Date | null; minutesSpent: number | null } | null> {
-  const item = await db.subTask.findUnique({
+  const client = args.client ?? db;
+  const item = await client.subTask.findUnique({
     where: { id: args.subTaskId },
     select: {
       id: true,
@@ -132,9 +154,11 @@ export async function setSubTaskCompletion(args: {
       ? "task.subtask.complete"
       : "task.subtask.reopen"
     : "task.subtask.time";
-  await db.$transaction([
-    db.subTask.update({ where: { id: item.id }, data: { completedAt, minutesSpent: nextMinutes } }),
-    db.activityLog.create({
+  // The row write and its audit row stay atomic either way: on the caller's
+  // transaction when one was supplied, in our own when it was not.
+  const write = async (tx: TxClient) => {
+    await tx.subTask.update({ where: { id: item.id }, data: { completedAt, minutesSpent: nextMinutes } });
+    await tx.activityLog.create({
       data: {
         projectId: item.task.projectId,
         taskId: item.taskId,
@@ -142,8 +166,10 @@ export async function setSubTaskCompletion(args: {
         kind,
         payload: JSON.stringify({ subTaskId: item.id, text: item.text, minutesSpent: nextMinutes }),
       },
-    }),
-  ]);
+    });
+  };
+  if (args.client) await write(args.client);
+  else await db.$transaction((tx) => write(tx));
   return { id: item.id, taskId: item.taskId, completedAt, minutesSpent: nextMinutes };
 }
 
@@ -151,8 +177,10 @@ export async function deleteSubTaskItem(args: {
   subTaskId: string;
   actorUserId: string;
   expectTaskId?: string;
+  client?: TxClient;
 }): Promise<{ taskId: string } | null> {
-  const item = await db.subTask.findUnique({
+  const client = args.client ?? db;
+  const item = await client.subTask.findUnique({
     where: { id: args.subTaskId },
     select: {
       id: true,
@@ -164,9 +192,9 @@ export async function deleteSubTaskItem(args: {
   if (!item) return null;
   if (args.expectTaskId && item.taskId !== args.expectTaskId) return null;
 
-  await db.$transaction([
-    db.subTask.delete({ where: { id: item.id } }),
-    db.activityLog.create({
+  const write = async (tx: TxClient) => {
+    await tx.subTask.delete({ where: { id: item.id } });
+    await tx.activityLog.create({
       data: {
         projectId: item.task.projectId,
         taskId: item.taskId,
@@ -174,8 +202,10 @@ export async function deleteSubTaskItem(args: {
         kind: "task.subtask.delete",
         payload: JSON.stringify({ subTaskId: item.id, text: item.text }),
       },
-    }),
-  ]);
+    });
+  };
+  if (args.client) await write(args.client);
+  else await db.$transaction((tx) => write(tx));
   return { taskId: item.taskId };
 }
 

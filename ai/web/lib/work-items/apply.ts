@@ -18,9 +18,9 @@
 // lib/work-items/actions.ts add auth + cache revalidation.
 
 import { db } from "@/lib/db";
+import type { Prisma } from "@prisma/client";
 import {
   sendTaskCommentNotifications,
-  sendTaskWorkflowNotification,
   type TaskWorkflowNotificationReason,
 } from "@/lib/agents/workflow/notifications/task";
 import { listAssignablePrincipals } from "@/lib/principals";
@@ -30,6 +30,13 @@ import { allocateWorkItemKey } from "@/lib/work-items/keys";
 import { MAX_SUBTASK_TEXT } from "@/lib/tasks/subtasks";
 import { validateBlockedBy } from "@/lib/tasks/blocking";
 import { isActionableEpicStatus } from "@/lib/tasks/workflow-actors";
+import {
+  applyTaskTransition,
+  enqueueWorkflowEffects,
+  type TaskTransitionIntent,
+  type TaskWorkflowStatus,
+} from "@/lib/tasks/transition-kernel";
+import { drainWorkflowOutbox } from "@/lib/tasks/workflow-outbox-drain";
 
 type RawOp = Record<string, unknown>;
 
@@ -435,7 +442,9 @@ export async function commitProposal(
       }
 
       // ---- updates + comments ----
+      let operationIndex = 0;
       for (const op of ops) {
+        const currentOperationIndex = operationIndex++;
         if (op.op === "update_epic") {
           const id = String(op.target);
           const epic = await tx.epic.findUnique({
@@ -485,6 +494,7 @@ export async function commitProposal(
             where: { id },
             select: {
               id: true, title: true, description: true, status: true, epicId: true, parentTaskId: true,
+              workflowVersion: true,
               assigneeId: true, actingManagerId: true, reporterId: true, approvedOn: true, alertReporter: true,
               blockedById: true,
               assignee: { select: { username: true } },
@@ -613,13 +623,15 @@ export async function commitProposal(
               logs.push({ kind: "task.alert_reporter", payload: { taskId: id, from: task.alertReporter, to: alertReporter, proposalId: proposal.id } });
             }
           }
+          let targetStatus = task.status;
+          let statusIntent: TaskTransitionIntent | null = null;
           if (typeof op.status === "string" && op.status !== task.status) {
             // Proposals must not be a side door around the workflow engine:
             // proposals never bypass the shared start boundary. Even an
             // approved, unblocked proposal targeting In Progress lands in To
             // Do first so action=start can validate/provision the exact linked
             // worktree before any implementation becomes active.
-            let targetStatus = op.status;
+            targetStatus = op.status;
             if (targetStatus === "In Progress") {
               const blockerUncleared = Boolean(task.blockedById && task.blockedBy && task.blockedBy.status !== "Done");
               const planUnapproved = !task.approvedOn;
@@ -640,24 +652,47 @@ export async function commitProposal(
               });
             }
             if (targetStatus !== task.status) {
-              const rankAgg = await tx.task.aggregate({
-                where: { projectId, status: targetStatus, archivedAt: null, deletedAt: null },
-                _max: { rank: true },
-              });
-              data.status = targetStatus;
-              data.rank = (rankAgg._max.rank ?? 0) + 1;
-              data.statusChangedAt = new Date();
-              logs.push({ kind: "task.move", payload: { from: task.status, to: targetStatus, proposalId: proposal.id } });
+              if (targetStatus === "Review" || targetStatus === "Done") {
+                throw new Error(`Proposal status ${targetStatus} requires the dedicated Review workflow.`);
+              }
+              const edge = `${task.status}->${targetStatus}`;
+              const intents: Record<string, TaskTransitionIntent> = {
+                "Backlog->To Do": "triage",
+                "To Do->Backlog": "cancel",
+                "In Progress->To Do": "queue",
+                "Review->To Do": "request_changes",
+                "Done->To Do": "reopen",
+              };
+              statusIntent = intents[edge] ?? null;
+              if (!statusIntent) {
+                throw new Error(`Proposal status edge ${edge} requires a dedicated workflow action.`);
+              }
             }
           }
-          if (Object.keys(data).length > 0) {
-            await tx.task.update({ where: { id }, data });
+          if (Object.keys(data).length > 0 || statusIntent) {
+            if (statusIntent && targetStatus !== task.status) {
+              await applyTaskTransition(tx, {
+                taskId: id,
+                projectId,
+                actorUserId: approverUserId,
+                intent: statusIntent,
+                from: task.status as TaskWorkflowStatus,
+                to: targetStatus as TaskWorkflowStatus,
+                source: "proposal-apply",
+                idempotencyKey: `proposal:${proposal.id}:op:${currentOperationIndex}`,
+                expectedVersion: task.workflowVersion,
+                taskData: data as Prisma.TaskUncheckedUpdateManyInput,
+                evidence: { proposalId: proposal.id, proposedByUserId: agentId },
+              });
+            } else {
+              await tx.task.update({ where: { id }, data });
+            }
             for (const l of logs) {
               await tx.activityLog.create({ data: { projectId, taskId: id, userId: typeof l.userId === "string" ? l.userId : agentId, kind: l.kind as string, payload: JSON.stringify(l.payload) } });
             }
             counts.updates++;
 
-            const finalStatus = typeof data.status === "string" ? data.status : task.status;
+            const finalStatus = targetStatus;
             const finalAssigneeId = asg !== undefined ? asg : task.assigneeId;
             const finalActingManagerId = am !== undefined ? am : task.actingManagerId;
             const assignmentChanged = asg !== undefined && asg !== task.assigneeId;
@@ -742,7 +777,7 @@ export async function commitProposal(
           const body = typeof op.body === "string" ? op.body : "";
           if (!body.trim()) continue;
           const comment = await tx.comment.create({
-            data: { taskId: id, userId: agentId, body },
+            data: { taskId: id, userId: agentId, body, commentKind: "workflow_action", isGenerated: true },
             select: { id: true },
           });
           await tx.activityLog.create({
@@ -757,6 +792,34 @@ export async function commitProposal(
           commentNotifications.push({ taskId: id, commentId: comment.id, body });
           counts.comments++;
         }
+      }
+
+      for (const [notificationIndex, notification] of workflowNotifications.entries()) {
+        const state = await tx.task.findUnique({
+          where: { id: notification.taskId },
+          select: { projectId: true, workflowVersion: true },
+        });
+        if (!state) continue;
+        await enqueueWorkflowEffects(tx, {
+          taskId: notification.taskId,
+          projectId: state.projectId,
+          aggregateVersion: state.workflowVersion,
+          effects: [{
+            type: "task_notification",
+            key: `proposal:${proposal.id}:notification:${notificationIndex}:${notification.targetUserId}`,
+            payload: {
+              taskId: notification.taskId,
+              targetUserId: notification.targetUserId,
+              actor: {
+                id: agentId,
+                username: actorUsername,
+                kind: actorUser?.kind === "agent" ? "agent" : "human",
+              },
+              reason: notification.reason,
+              body: notification.body,
+            },
+          }],
+        });
       }
 
       await tx.workItemProposal.update({
@@ -781,16 +844,8 @@ export async function commitProposal(
     username: actorUsername,
     kind: actorUser?.kind === "agent" ? "agent" as const : "human" as const,
   };
+  await drainWorkflowOutbox({ limit: Math.max(1, workflowNotifications.length) }).catch(() => {});
   await Promise.allSettled([
-    ...workflowNotifications.map((notification) =>
-      sendTaskWorkflowNotification({
-        taskId: notification.taskId,
-        targetUserId: notification.targetUserId,
-        actor,
-        reason: notification.reason,
-        body: notification.body,
-      }),
-    ),
     ...commentNotifications.map((notification) =>
       sendTaskCommentNotifications({
         taskId: notification.taskId,

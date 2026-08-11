@@ -193,6 +193,23 @@ export function getCachedTaskDetailShell(taskId: string) {
           },
         },
         blockedBy: { select: { id: true, workItemKey: true, title: true, status: true } },
+        // ENV-123 — the operator-visible execution strip. Nullable: a task that
+        // has never been evaluated by the watchdog has no row, and the page
+        // renders nothing rather than guessing a state.
+        executionState: {
+          select: {
+            state: true,
+            reasonCode: true,
+            reasonDetail: true,
+            lastDurableAction: true,
+            lastDurableActionAt: true,
+            recoveryAction: true,
+            recoveryAt: true,
+            detectorId: true,
+            escalatedAt: true,
+            updatedAt: true,
+          },
+        },
         repositoryRun: {
           select: {
             phase: true,
@@ -219,7 +236,18 @@ export function getCachedTaskComments(taskId: string) {
     // Soft-deleted comments are returned to humans on the task page so
     // they can render the collapsed dotted divider. Agent context queries
     // filter deletedAt: null upstream so agents never see deleted bodies.
-    include: {
+    select: {
+      id: true,
+      body: true,
+      createdAt: true,
+      deletedAt: true,
+      deletedById: true,
+      userId: true,
+      authorAgentSlug: true,
+      provider: true,
+      model: true,
+      commentKind: true,
+      isGenerated: true,
       user: {
         select: {
           id: true,

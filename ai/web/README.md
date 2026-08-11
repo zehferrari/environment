@@ -314,11 +314,13 @@ stays `Review`/`finalizing` until the trusted repository runner verifies or
 publishes the accepted candidate and removes the local task worktree.
 
 The final child Task does not move its Epic directly to `Done`. It moves the
-Epic to `Review`; the runner freezes and verifies the combined origin SHA, then
-the selected Deploy Reviewer (Monitor fallback) submits a structured whole-Epic
-requirement/test report. Only an all-Pass report plus a runner-side immutable
-candidate recheck unlocks Epic `Done` and child-branch cleanup. Deployment
-review remains a separate optional post-Done lane.
+Epic to `Review` and atomically records candidate preparation in the workflow
+outbox. The runner waits for every child integration, freezes and verifies the
+combined origin SHA, then the selected Deploy Reviewer (Monitor fallback)
+submits a structured whole-Epic requirement/test report. Only an all-Pass
+report plus a runner-side immutable candidate recheck unlocks Epic `Done`; the
+same transaction durably outboxes child-branch cleanup. Deployment review
+remains a separate optional post-Done lane.
 
 ## Startup and background work
 
@@ -409,12 +411,22 @@ pnpm build
 ```
 
 The package contains focused executable contract tests rather than one
-monolithic test command. Choose tests by the area changed. High-value workflow
-checks include:
+monolithic test command. Choose tests by the area changed.
+
+`pnpm test:workflow` is the aggregate pre-deploy gate: it serially runs every
+workflow-related suite (the boundary AST lint first, the twelve-case regression
+family last — see `scripts/workflow-test-all.ts` for the member list) and fails
+if any member fails. Run it before promoting a worktree with `pm-switch`;
+`--only=<name>` runs a subset.
+
+High-value workflow checks include:
 
 ```bash
 pnpm test:p0-kernel
 pnpm test:workflow-agent-rules
+pnpm test:workflow-transition-kernel
+pnpm test:workflow-reconciler
+pnpm test:workflow-boundary
 pnpm test:repository-workflow
 pnpm test:worktree-cleanup
 pnpm test:pm-channel-transport
@@ -453,16 +465,22 @@ and recovery procedures are intentionally kept in
 
 When diagnosing a workflow, inspect all four evidence layers:
 
-1. **Canonical item state:** Task/Epic fields and `TaskRepositoryRun`.
+1. **Canonical item state:** Task/Epic fields, `WorkflowTransition`,
+   `TaskRepositoryRun`, immutable `ReviewRun`, and structured Action Plan rows.
 2. **Audit:** `ActivityLog.kind` and parsed payload, including actor,
    target agent, branch, candidate, and transition source.
-3. **Delivery:** `PmChannelRun`, `PmChannelJob`,
+3. **Delivery:** `WorkflowOutbox`, `PmChannelRun`, `PmChannelJob`,
    `PmChannelStreamEvent`, and `PmEventDelivery`.
 4. **Host execution:** systemd journals plus runner spool/state files under
    `/var/lib/pm`.
 
 A board column alone cannot prove that a wake was delivered, a branch was
 validated, a worktree was removed, or a deployment occurred.
+
+`pnpm workflow-doctor` gives a read-only cross-layer report and health metrics.
+Use `pnpm workflow-doctor --apply` only for the bounded repairs described in
+[docs/workflow-watchdog.md](./docs/workflow-watchdog.md): requeueing an existing
+durable effect or retrying an already-recorded process cancellation fence.
 
 ## Change guidelines
 

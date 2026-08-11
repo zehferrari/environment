@@ -51,6 +51,17 @@ async function main() {
     recordPmChannelRunEvent,
     recordPmChannelRunWorkflowAction,
   } = await import("@/lib/agents/pm-channel/runs");
+  const { runWorkflowActionAtomically } = await import(
+    "@/lib/agents/workflow/transactional-action"
+  );
+  // ENV-118: continuation-required actions only reach the recorder through the
+  // atomic primitive now (see workflow-action-effect-test B8/B9).
+  const recordContinuationAction = async (args: {
+    taskId: string;
+    agentSlug: string;
+    messageId: string;
+    action: string;
+  }) => (await runWorkflowActionAtomically(args, async () => {})).result;
   const {
     enqueueOpenClawPmChannelTurn,
     isRetryablePmChannelTurnFailure,
@@ -138,8 +149,11 @@ async function main() {
         status: true,
         error: true,
         failedAt: true,
+        completedAt: true,
         completionAnomaly: true,
         completionAnomalyAt: true,
+        disposition: true,
+        settledByAction: true,
         sessionKey: true,
         jobs: { select: { id: true, status: true, attemptCount: true, availableAt: true, lastError: true, payload: true } },
       },
@@ -216,8 +230,11 @@ async function main() {
       select: { payload: true },
     });
 
-    // ---- A1: workflow action settles the run; a late error becomes an
-    // anomaly instead of being discarded or flipping the settle. ----
+    // ---- A1: an EPISODE-TERMINAL workflow action settles the run; a late
+    // error becomes an anomaly instead of being discarded or flipping the
+    // settle. ENV-118 changed which actions settle: `start` is
+    // continuation-required and deliberately leaves the run open, so this
+    // case uses ready_for_review. A0 below covers the continuation half. ----
     const mA = "lifecycle-a1";
     await grantMessage(mA);
     await enqueue({ target: commentTarget(mA), text: "turn A1 comment" });
@@ -226,25 +243,74 @@ async function main() {
       taskId: task.id,
       agentSlug,
       messageId: mA,
-      action: "start",
+      action: "ready_for_review",
     });
     const settledComment = await runRow(`task-comment:${agentSlug}:${task.id}:${mA}`);
     const settledChat = await runRow(`task-chat:${agentSlug}:${task.id}:${mA}`);
-    assert.equal(settledComment.status, "complete", "workflow action settles the task-comment run");
-    assert.equal(settledChat.status, "complete", "workflow action settles the task-chat run");
+    // ENV-117 allows at most one ACTIVE run per (taskId, agentSlug), so
+    // enqueueing the chat surface supersedes the comment surface of the same
+    // turn. The live run is the one an episode-terminal action settles.
+    assert.equal(settledChat.status, "completed", "workflow action settles the live run");
+    assert.equal(settledComment.status, "superseded", "the earlier surface was superseded on enqueue");
+    assert.equal(
+      settledComment.disposition,
+      "continue",
+      "a superseded run did not finish its episode (WFI-005)",
+    );
+    assert.equal(
+      settledChat.disposition,
+      "ready_for_review",
+      "an episode-terminal action records its disposition (WFI-005)",
+    );
+    assert.equal(
+      settledChat.settledByAction,
+      "ready_for_review",
+      "settledByAction names the action that actually settled the run",
+    );
     assert.deepEqual(
-      [...settledComment.jobs, ...settledChat.jobs].map((job) => job.status),
-      ["complete", "complete"],
-      "workflow action settles both jobs",
+      settledChat.jobs.map((job) => job.status),
+      ["complete"],
+      "workflow action settles the live run's job",
+    );
+
+    // ---- A0 (ENV-118): a continuation-required action must NOT settle the
+    // run or its job. Reporting the job complete on `start` is exactly the
+    // "workflow succeeded before any work happened" bug. ----
+    const mA0 = "lifecycle-a0";
+    await grantMessage(mA0);
+    await enqueue({ target: commentTarget(mA0), text: "turn A0 comment" });
+    const startResult = await recordContinuationAction({
+      taskId: task.id,
+      agentSlug,
+      messageId: mA0,
+      action: "start",
+    });
+    assert.equal(startResult.actionEffect, "continue", "start is a continuation-required action");
+    assert.equal(startResult.turnComplete, false, "start does not complete the turn");
+    assert.equal(startResult.nextAction, "ready_for_review", "start names the terminal next action");
+    const startedRun = await runRow(`task-comment:${agentSlug}:${task.id}:${mA0}`);
+    assert.equal(startedRun.status, "queued", "start leaves the run active");
+    assert.equal(startedRun.completedAt, null, "start records no completion time");
+    assert.equal(startedRun.disposition, "continue", "start records the continue disposition");
+    assert.equal(startedRun.settledByAction, null, "start settles nothing, so it names no settling action");
+    assert.deepEqual(
+      startedRun.jobs.map((job) => job.status),
+      ["queued"],
+      "start leaves the PM job unsettled",
+    );
+    assert.equal(
+      await db.pmChannelContinuation.count({ where: { runId: startedRun.id, status: "armed" } }),
+      1,
+      "start arms exactly one continuation",
     );
 
     await recordPmChannelRunEvent({
-      target: commentTarget(mA),
+      target: chatTarget(mA),
       event: "error",
       error: "gateway aborted turn (cancel endpoint)",
     });
-    const anomalous = await runRow(`task-comment:${agentSlug}:${task.id}:${mA}`);
-    assert.equal(anomalous.status, "complete", "late error must not flip the settled status");
+    const anomalous = await runRow(`task-chat:${agentSlug}:${task.id}:${mA}`);
+    assert.equal(anomalous.status, "completed", "late error must not flip the settled status");
     assert.equal(anomalous.error, null, "late error must not land in the run error field");
     assert.equal(
       anomalous.completionAnomaly,
@@ -256,7 +322,7 @@ async function main() {
     const a1Log = await anomalyLog(mA);
     assert.ok(a1Log, "pm.channel.completion_anomaly ActivityLog row must exist");
     const a1Payload = JSON.parse(a1Log!.payload!) as Record<string, unknown>;
-    assert.equal(a1Payload.settledStatus, "complete", "anomaly payload records the settled status");
+    assert.equal(a1Payload.settledStatus, "completed", "anomaly payload records the settled status");
     assert.equal(a1Payload.hadDurableReply, false, "anomaly payload records durable-reply state");
     assert.equal(a1Payload.event, "error");
 
@@ -272,7 +338,7 @@ async function main() {
     await durableReply(mB);
     await recordPmChannelRunEvent({ target: chatTarget(mB), event: "done" });
     const cleanDone = await runRow(`task-chat:${agentSlug}:${task.id}:${mB}`);
-    assert.equal(cleanDone.status, "complete", "done after durable reply settles complete");
+    assert.equal(cleanDone.status, "completed", "done after durable reply settles complete");
     assert.equal(cleanDone.completionAnomaly, null, "plain done must stay anomaly-free");
     assert.equal(await anomalyLog(mB), null, "no anomaly ActivityLog for a clean settle");
 
@@ -296,7 +362,7 @@ async function main() {
     });
     assert.equal(callbackResult.status, 200, "durable-reply error callback is accepted");
     const converted = await runRow(`task-chat:${agentSlug}:${task.id}:${mC}`);
-    assert.equal(converted.status, "complete", "durable reply still settles the run complete");
+    assert.equal(converted.status, "completed", "durable reply still settles the run complete");
     assert.equal(
       converted.completionAnomaly,
       "gateway aborted turn: post-action abort",
@@ -331,9 +397,13 @@ async function main() {
     const beforeRetry = Date.now();
     await recordPmChannelRunEvent({ target: chatTarget(mD), event: "done" });
     const retried = await runRow(d1Key);
-    assert.equal(retried.status, "retryable", "notification no-reply run goes retryable");
-    assert.equal(retried.error, NO_REPLY_ERROR, "retryable run keeps the no-reply error");
-    assert.equal(retried.failedAt, null, "retryable run clears failedAt");
+    // ENV-117 removed `retryable` from the RUN status vocabulary — it is a job
+    // status now. A retrying turn leaves the run `failed` with failedAt null
+    // (the distinction from an exhausted failure) while the job re-enters the
+    // ladder. This expectation was stale on pm-workflow and failed there too.
+    assert.equal(retried.status, "queued", "notification no-reply run remains non-terminal while retry is pending");
+    assert.equal(retried.error, NO_REPLY_ERROR, "the retrying run keeps the no-reply error");
+    assert.equal(retried.failedAt, null, "a retrying run clears failedAt; only an exhausted one stamps it");
     assert.equal(retried.jobs[0]!.status, "retryable", "job re-enters the ladder");
     assert.equal(retried.jobs[0]!.lastError, NO_REPLY_ERROR);
     const delayMs = retried.jobs[0]!.availableAt.getTime() - beforeRetry;
@@ -426,10 +496,17 @@ async function main() {
     await db.pmChannelRun.update({ where: { id: d4Seed.id }, data: { status: "streaming" } });
     await recordPmChannelRunEvent({ target: chatTarget(mF), event: "done" });
     const heuristicRetried = await runRow(d4Key);
+    // Same ENV-117 vocabulary change as D1: the retry lands on the job, and the
+    // run records a non-terminal `failed` attempt.
     assert.equal(
       heuristicRetried.status,
+      "queued",
+      "prefix heuristic must keep legacy notification jobs retryable",
+    );
+    assert.equal(
+      heuristicRetried.jobs[0]!.status,
       "retryable",
-      "prefix heuristic must classify legacy notification jobs as retryable",
+      "the legacy-notification job re-enters the retry ladder",
     );
 
     // ---- D5: the retried dispatch carries the idempotency preamble on the
@@ -490,7 +567,16 @@ async function main() {
     const contextFailure = "⚠️ Context is too large and auto-compaction could not recover this turn. Try again.";
     await recordPmChannelRunEvent({ target: chatTarget(mH), event: "error", error: contextFailure });
     const contextRetried = await runRow(d6Key);
-    assert.equal(contextRetried.status, "retryable", "terminal context failure remains on the bounded retry ladder");
+    assert.equal(
+      contextRetried.status,
+      "queued",
+      "a retrying run returns to queued so no terminal-looking failed run owns the live lane",
+    );
+    assert.equal(
+      contextRetried.jobs[0]!.status,
+      "retryable",
+      "terminal context failure remains on the bounded retry ladder",
+    );
     assert.notEqual(contextRetried.sessionKey, oldSessionKey, "the retry run must point at a fresh OpenClaw session");
     const rotatedBinding = await db.agentSessionBinding.findFirstOrThrow({
       where: { scopeType: "task", scopeId: task.id, agentSlug },
@@ -521,7 +607,7 @@ async function main() {
         projectId: project.id,
         taskId: task.id,
         sessionKey: rotatedBinding.openclawSessionKey,
-        status: "complete",
+        status: "completed",
       },
     });
     process.env.PM_TASK_SESSION_MAX_COMPLETED_TURNS = "1";

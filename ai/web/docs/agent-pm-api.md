@@ -728,7 +728,42 @@ Two operational notes surfaced during this pass:
 For an assigned `In Progress` Task, use the native workflow action
 `flag_blocker` with one concise evidence-bearing comment when an
 infrastructure, credential, access, external-service, or human-decision
-dependency cannot be resolved by the assignee. PM sets `alert_reporter`,
+dependency cannot be resolved by the assignee.
+
+Since ENV-120 a non-permission `flag_blocker` also requires a structured
+`blockerReport`, and PM validates it before the Task can enter a human-blocked
+state:
+
+```json
+{
+  "blockedOn": "person | permission | external_service | decision | dependency",
+  "requestedActor": "who must act — never you",
+  "requestedAction": "the exact action they must perform",
+  "evidence": "the observed failure: exact error text, endpoint or identifier",
+  "diagnosticsAttempted": ["what you already tried"],
+  "resumeCondition": "the observable condition that lets work resume",
+  "reporterCanResolve": true
+}
+```
+
+PM answers `422` — naming the rule in `rejectedRule` — when the report is
+missing or malformed, when `requestedActor` resolves to you, when
+`diagnosticsAttempted` is empty, or when `resumeCondition` is not concrete. A
+refused blocker records **no** workflow action: your episode simply continues,
+so fix the report or the work and keep going.
+
+A recoverable technical failure (`external_service`/`dependency`) is not a
+blocker at all. PM records it as an internal `task.blocker.incident`, leaves the
+Task In Progress, wakes nobody, and answers `422` with `incident: true` plus
+retry guidance. Escalating it later is a bounded policy over **distinct
+diagnostic evidence** — at least two distinct diagnoses in the report and at
+least one earlier incident round for the same failure carrying a different
+diagnosis. Elapsed time and repeated retries never earn an escalation, and
+restating one attempt does not count twice.
+
+A permission blocker (`permissionKind` set) does not need the report: PM
+synthesizes it from the validated permission request, since the dependency is
+the grant itself. PM sets `alert_reporter`,
 notifies the decision owners, highlights the Task, and suppresses ordinary
 stale-assignee nudges. Before treating a login failure as a blocker, retry the
 literal account identifier and endpoint from the latest trusted context. A
@@ -736,8 +771,14 @@ permission-only blocker may also send `permissionKind=reporter_approval` plus
 an exact `permissionScope`, or `permissionKind=publish_checkpoint` for the
 existing validated checkpoint capability. PM stores the blocker comment id
 with that lifecycle so the board control opens and focuses the precise comment;
-the reporter can grant the scoped permission there, which records an auditable
-authorization comment and wakes the visible assignee. Use these fields only
+the reporter can grant the scoped permission there. That grant is one atomic,
+idempotent transaction: it records the auditable authorization comment,
+supersedes every competing active run for that Task and agent, reserves exactly
+one authorization-linked continuation, and wakes the visible assignee. For
+`reporter_approval` it also clears the blocker round it answers — do **not**
+call `clear_blocker` for a granted `reporter_approval` round. A
+`publish_checkpoint` round instead stays open until its authorized attempt
+settles, because that attempt has to consume the single-use authorization. Use these fields only
 when permission is the sole dependency. A decision-owner response to the
 formal blocker immediately dispatches a `blocker_response` turn to the
 assignee's current task execution session. Once granted, a permission round is

@@ -5,6 +5,7 @@ import {
   activeFormalBlockerStatesByTask,
   formalBlockerNeedsExternalInput,
 } from "@/lib/tasks/formal-blocker";
+import { taskHasPmChannelContinuationForMessage } from "@/lib/agents/pm-channel/continuations";
 
 export async function taskWorkflowReasonForMessage(taskId: string, messageId: string) {
   const row = await db.activityLog.findFirst({
@@ -53,6 +54,16 @@ export async function continueActionableTaskAfterReply(args: {
   replyId: string | null;
 }) {
   try {
+    // ENV-118: the continuation outbox is the durable owner of "this episode
+    // needs another turn". When a continuation-required workflow action armed
+    // a row for this turn, the drain schedules the next turn — running this
+    // heuristic as well would put two active runs in one lane (WFI-001).
+    if (await taskHasPmChannelContinuationForMessage({
+      taskId: args.target.taskId,
+      agentSlug: args.target.agentSlug,
+      messageId: args.target.messageId,
+    })) return;
+
     let workflowReason = await taskWorkflowReasonForMessage(args.target.taskId, args.target.messageId);
     if (!workflowReason) {
       // Historical owner-comment dispatch rows predate workflowReason in their
@@ -115,7 +126,7 @@ export async function continueActionableTaskAfterReply(args: {
         taskId: task.id,
         agentSlug: args.target.agentSlug,
         messageId: { not: args.target.messageId },
-        status: { in: ["queued", "accepted", "streaming", "retryable"] },
+        status: { in: ["queued", "accepted", "streaming"] },
       },
       select: { id: true },
     });
