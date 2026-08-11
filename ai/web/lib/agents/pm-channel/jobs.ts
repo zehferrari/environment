@@ -805,9 +805,11 @@ export async function runPmChannelWorkerDrain(
   }
 
   // Reconcile the durable transition/outbox ledger with repository runners
-  // and process fences before draining effects. Safe repairs only requeue an
-  // existing recorded effect or retry an existing cancellation request;
-  // missing evidence is escalated instead of reconstructed from comments.
+  // and process fences before draining effects. Safe repairs requeue an
+  // existing recorded effect, retry an existing cancellation request, or
+  // finish an accepted review when the immutable candidate, completed
+  // repository state, and verified Epic merge audit all agree. Missing
+  // evidence is escalated instead of reconstructed from comments.
   let reconciliation = { findings: 0, repaired: 0, escalated: 0 };
   try {
     const { runWorkflowReconciliation } = await import("@/lib/tasks/workflow-reconciler");

@@ -146,15 +146,23 @@ workflow ledger and asynchronous projections:
   delivered but never advanced downstream state;
 - repository phases with no durable effect at all;
 - Review tasks missing an active immutable `ReviewRun` lease;
+- stale Review tasks whose `ReviewRun` was accepted and whose repository run
+  completed after the exact candidate was verified on the Epic branch, but
+  whose audited Review-to-Done transition is missing;
 - Done tasks whose repository lifecycle is not `completed`;
 - superseded gateway processes whose cancellation was never acknowledged.
 
-Safe repair means requeueing the **existing** effect payload or retrying the
-**existing** cancellation fence. The reconciler never guesses a transition,
-candidate SHA or command from comments. Missing evidence and exhausted effects
-raise `alertReporter`, write `TaskExecutionState=stalled`, and create one
-idempotent audit event. The PM worker runs reconciliation immediately before
-the generic outbox drain, so a repaired effect is dispatched in the same pass.
+Safe repair means requeueing the **existing** effect payload, retrying the
+**existing** cancellation fence, or finishing an accepted review only when the
+durable `ReviewRun`, repository candidate/reviewed SHA, valid completed
+repository state, and matching `pm.epic.merge.ok` audit evidence all agree.
+That completion uses the normal transition kernel, next-task assignment, Epic
+roll-forward, notifications, and idempotency guards; it is not a raw board
+status override. The reconciler never guesses a transition, candidate SHA or
+command from comments. Missing evidence and exhausted effects raise
+`alertReporter`, write `TaskExecutionState=stalled`, and create one idempotent
+audit event. The PM worker runs reconciliation immediately before the generic
+outbox drain, so a repaired effect is dispatched in the same pass.
 
 The operator command is read-only unless `--apply` is explicit:
 

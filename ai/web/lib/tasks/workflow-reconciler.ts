@@ -1,6 +1,8 @@
 import { db } from "@/lib/db";
 import { fenceSupersededPmChannelRuns } from "@/lib/agents/pm-channel/supersession";
 import { writeTaskExecutionState } from "@/lib/agents/watchdog/state";
+import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation";
+import { resolveActiveMonitorAgent } from "@/lib/tasks/repository-state";
 
 const DEFAULT_STALE_MS = 10 * 60_000;
 const DEFAULT_LIMIT = 100;
@@ -11,6 +13,7 @@ export type WorkflowReconciliationKind =
   | "repository_effect_missing"
   | "repository_projection_stale"
   | "review_lease_missing"
+  | "review_completion_missing"
   | "done_repository_incomplete"
   | "cancellation_unacknowledged";
 
@@ -19,7 +22,7 @@ export type WorkflowReconciliationFinding = {
   taskId: string | null;
   rowId: string;
   detail: string;
-  repair: "drain" | "requeue" | "retry_cancellation" | "escalate";
+  repair: "drain" | "requeue" | "complete_review" | "retry_cancellation" | "escalate";
   repaired: boolean;
   error: string | null;
 };
@@ -47,6 +50,26 @@ function staleMs() {
 
 function errorText(error: unknown) {
   return (error instanceof Error ? error.message : String(error)).trim().slice(0, 2_000);
+}
+
+function verifiedEpicMerge(args: {
+  taskId: string;
+  epicId: string | null;
+  candidateSha: string;
+  activity: Array<{ payload: string | null }>;
+}) {
+  if (!args.epicId) return false;
+  return args.activity.some((row) => {
+    if (!row.payload) return false;
+    try {
+      const payload = JSON.parse(row.payload) as Record<string, unknown>;
+      return payload.taskId === args.taskId
+        && payload.epicId === args.epicId
+        && payload.candidateSha === args.candidateSha;
+    } catch {
+      return false;
+    }
+  });
 }
 
 async function escalateTask(args: {
@@ -125,15 +148,37 @@ export async function runWorkflowReconciliation(options: {
     select: {
       id: true,
       projectId: true,
+      epicId: true,
       status: true,
       workflowVersion: true,
       repositoryRun: {
-        select: { id: true, phase: true, updatedAt: true },
+        select: {
+          id: true,
+          phase: true,
+          repoTouched: true,
+          candidateSha: true,
+          reviewedSha: true,
+          validationOutcome: true,
+          updatedAt: true,
+        },
       },
       reviewRuns: {
         where: { status: { in: ["validating", "awaiting_review", "accepted"] } },
         orderBy: { createdAt: "desc" },
-        select: { id: true, status: true, candidateSha: true, updatedAt: true },
+        select: {
+          id: true,
+          status: true,
+          candidateSha: true,
+          reviewerId: true,
+          reviewedAt: true,
+          updatedAt: true,
+        },
+      },
+      activity: {
+        where: { kind: "pm.epic.merge.ok" },
+        orderBy: { createdAt: "desc" },
+        take: 20,
+        select: { payload: true },
       },
       workflowOutbox: {
         orderBy: { updatedAt: "desc" },
@@ -232,6 +277,38 @@ export async function runWorkflowReconciliation(options: {
         });
       }
     }
+    if (
+      task.status === "Review"
+      && repository?.phase === "completed"
+      && repository.updatedAt.getTime() <= staleBefore.getTime()
+      && repository.repoTouched === true
+      && repository.candidateSha
+      && repository.reviewedSha === repository.candidateSha
+      && (repository.validationOutcome === "valid" || repository.validationOutcome === "valid_with_warning")
+    ) {
+      const acceptedReview = task.reviewRuns.some((run) =>
+        run.status === "accepted"
+        && run.candidateSha === repository.candidateSha
+        && Boolean(run.reviewerId)
+        && Boolean(run.reviewedAt),
+      );
+      if (acceptedReview && verifiedEpicMerge({
+        taskId: task.id,
+        epicId: task.epicId,
+        candidateSha: repository.candidateSha,
+        activity: task.activity,
+      })) {
+        add({
+          kind: "review_completion_missing",
+          taskId: task.id,
+          rowId: repository.id,
+          detail: "review was accepted and the validated candidate was merged, but the audited Review-to-Done transition is missing",
+          repair: "complete_review",
+          repaired: false,
+          error: null,
+        });
+      }
+    }
     if (task.status === "Done" && repository && repository.phase !== "completed") {
       add({
         kind: "done_repository_incomplete",
@@ -316,6 +393,61 @@ export async function runWorkflowReconciliation(options: {
           // The generic outbox drain immediately follows this pass in the PM
           // worker. Expired leases are claimable without rewriting them here.
           finding.repaired = true;
+        } else if (finding.repair === "complete_review" && finding.taskId) {
+          const task = tasks.find((candidate) => candidate.id === finding.taskId);
+          const candidateSha = task?.repositoryRun?.candidateSha;
+          const monitor = await resolveActiveMonitorAgent();
+          if (!task || !candidateSha) {
+            throw new Error("The stale review no longer has its recorded repository candidate.");
+          }
+          if (!monitor.ok) {
+            await escalateTask({
+              taskId: task.id,
+              projectId: task.projectId,
+              kind: finding.kind,
+              detail: `${finding.detail}; ${monitor.error}`,
+              rowId: finding.rowId,
+              now,
+            });
+            finding.repaired = true;
+            escalated += 1;
+          } else {
+            try {
+              const completion = await completeReviewedTaskAndAssignNext({
+                taskId: task.id,
+                actor: { ...monitor.user, kind: "agent" },
+                via: "workflow-reconciliation",
+                repositoryFinalized: true,
+              });
+              finding.repaired = completion.completed
+                && completion.finalizing === false
+                && completion.status === "Done";
+            } catch (error) {
+              const current = await db.task.findUnique({
+                where: { id: task.id },
+                select: { status: true },
+              });
+              if (current?.status === "Done") {
+                finding.repaired = true;
+              } else {
+                throw error;
+              }
+            }
+            if (!finding.repaired) {
+              const current = await db.task.findUnique({
+                where: { id: task.id },
+                select: { status: true },
+              });
+              finding.repaired = current?.status === "Done";
+            }
+            if (!finding.repaired) {
+              throw new Error("The evidence-gated review completion did not reach Done.");
+            }
+            await db.reviewRun.updateMany({
+              where: { taskId: task.id, candidateSha, status: "accepted" },
+              data: { status: "completed" },
+            });
+          }
         } else if (finding.repair === "retry_cancellation") {
           const row = cancellationRows.find((candidate) => candidate.id === finding.rowId);
           if (!row?.supersededByRunId) continue;
