@@ -44,6 +44,10 @@ import {
 import { reserveTaskRepositoryState } from "@/lib/tasks/repository-state";
 import { enqueueTaskCheckpoint } from "@/lib/deploy/epic-merge";
 import {
+  inspectOriginBranch,
+  inspectValidatedCandidateWorktree,
+} from "@/lib/deploy/epic-merge-git";
+import {
   activityPayloadUsesCheckpointAuthorization,
   validateCheckpointAuthorizationText,
 } from "@/lib/deploy/checkpoint-authorization";
@@ -333,7 +337,7 @@ async function handleTaskWorkflowAction(
             },
           },
         },
-        repositoryRun: { select: { phase: true, worktreePath: true } },
+        repositoryRun: { select: { phase: true, worktreePath: true, baseSha: true } },
         project: {
           select: {
             slug: true,
@@ -1785,6 +1789,34 @@ async function handleTaskWorkflowAction(
           error: `The Epic integration branch ${epicBranch} is protected from agent-originated repository changes`,
         }, { status: 409 });
       }
+      // A freshly provisioned deployment-validation task can already be based
+      // on the Epic SHA that the previous child finalizer pushed. In that
+      // state there is no task checkpoint to publish: accepting a permission
+      // blocker would pause the task for an operation PM already completed.
+      // Fail closed only when all three facts are proven at request time: the
+      // registered task worktree is clean, it is still on its exact repository
+      // baseline, and origin's Epic ref is that same SHA. Dirty/new work keeps
+      // the normal owner-authorized checkpoint path.
+      const repositoryBaseline = task.repositoryRun.baseSha?.trim() ?? "";
+      if (repositoryBaseline) {
+        const baselineWorktree = await inspectValidatedCandidateWorktree({
+          worktreePath: task.repositoryRun.worktreePath,
+          taskBranch,
+          candidateSha: repositoryBaseline,
+        });
+        if (baselineWorktree.ok) {
+          const publishedEpic = await inspectOriginBranch(task.project.repositoryPath, epicBranch);
+          if (publishedEpic.ok && publishedEpic.sha === repositoryBaseline) {
+            return NextResponse.json({
+              error: `Nothing is waiting to be published: the clean ${taskBranch} worktree and origin/${epicBranch} already point to repository baseline ${repositoryBaseline}. Do not merge, commit, push, or request publish_checkpoint. Verify the configured deployment automation for this already-published SHA; if deployment failed or the target reports another SHA, flag a general external deployment blocker with that observed evidence.`,
+              alreadyPublished: true,
+              publishedSha: repositoryBaseline,
+              taskBranch,
+              epicBranch,
+            }, { status: 409 });
+          }
+        }
+      }
       permissionRequest = {
         kind: requestedPermissionKind,
         scope: permissionScope || `Publish the current ${task.workItemKey ?? taskBranch} checkpoint to ${epicBranch} for deployment-dependent verification.`,
@@ -1833,8 +1865,19 @@ async function handleTaskWorkflowAction(
         for (const row of incidents) {
           if (!row.payload) continue;
           try {
-            const parsed = JSON.parse(row.payload) as { signature?: unknown; diagnosticsFingerprint?: unknown };
-            if (parsed.signature !== signature) continue;
+            const parsed = JSON.parse(row.payload) as {
+              signature?: unknown;
+              diagnosticsFingerprint?: unknown;
+              report?: unknown;
+            };
+            // Recompute from the structured report when available. This keeps
+            // historical incident rows usable after signature rules improve;
+            // legacy rows without a report retain their stored identity.
+            const priorReport = formalBlockerReportFromValue(parsed.report);
+            const priorSignature = priorReport
+              ? blockerFailureSignature(priorReport)
+              : parsed.signature;
+            if (priorSignature !== signature) continue;
             if (typeof parsed.diagnosticsFingerprint !== "string") continue;
             if (parsed.diagnosticsFingerprint === fingerprint) continue;
             distinct.add(parsed.diagnosticsFingerprint);

@@ -178,6 +178,24 @@ assert.equal(
   blockerFailureSignature(reportB),
   "the same observed failure keeps one signature across rounds",
 );
+const reportWithImprovedEvidence = formalBlockerReportFromValue(serviceBlocker({
+  evidence: "A fresh browser and an independent host both reproduce ERR_CONNECTION_RESET after TLS succeeds.",
+}));
+assert(reportWithImprovedEvidence, "the improved-evidence fixture parses back into a report");
+assert.equal(
+  blockerFailureSignature(reportA),
+  blockerFailureSignature(reportWithImprovedEvidence),
+  "improving the evidence paragraph must not make the same external dependency look like a new incident",
+);
+const reportForAnotherOwner = formalBlockerReportFromValue(serviceBlocker({
+  requestedActor: "the identity-provider operator",
+}));
+assert(reportForAnotherOwner, "the different-owner fixture parses back into a report");
+assert.notEqual(
+  blockerFailureSignature(reportA),
+  blockerFailureSignature(reportForAnotherOwner),
+  "a different external dependency owner starts a separate incident group",
+);
 assert.notEqual(
   blockerDiagnosticsFingerprint(reportA),
   blockerDiagnosticsFingerprint(reportB),

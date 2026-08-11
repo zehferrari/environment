@@ -455,7 +455,13 @@ Allowed actions are `submit_plan`, `start`, `checkpoint`, `publish_checkpoint`, 
   publication.
 - `publish_checkpoint` — assignee-only, Epic-child only, and the Task stays In
   Progress. Use it only when open live-verification work requires a remotely
-  deployable commit. The request must include a concise `comment` plus
+  deployable commit that the current task has not already published. First
+  compare the clean task repository baseline with `origin/<Epic branch>`:
+  accepted Epic children are eagerly integrated and that Epic branch is pushed,
+  so a following validation task may already have its exact baseline available
+  remotely. In that case verify deployment for the published SHA; report an
+  observed pipeline/deployed-SHA failure as a general external blocker instead
+  of requesting publication again. A real checkpoint request must include a concise `comment` plus
   `authorizationCommentId`, the exact id of a fresh active-owner Task comment
   that explicitly authorized this checkpoint/deployment after the current
   Action Plan approval and names the Task key/branch plus target Epic branch.

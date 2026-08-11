@@ -393,9 +393,20 @@ export function validateFormalBlockerReport(input: unknown): FormalBlockerValida
   };
 }
 
-/** Stable identity for "the same failure", used to group incident rounds. */
+/**
+ * Stable identity for "the same external dependency", used to group incident
+ * rounds within one task/assignee query.
+ *
+ * Evidence is deliberately excluded. A useful retry adds observations to (and
+ * often rewrites the opening of) its evidence paragraph; deriving identity
+ * from those first characters reset priorDistinctDiagnostics to zero on every
+ * improved report and made the bounded escalation path unreachable. The
+ * diagnostic fingerprint below remains evidence-sensitive, so repeating the
+ * same work still earns nothing. A different dependency owner or dependency
+ * type starts a new incident group.
+ */
 export function blockerFailureSignature(report: FormalBlockerReport) {
-  return `${report.blockedOn}:${report.evidence.toLowerCase().slice(0, 160)}`;
+  return `${report.blockedOn}:${normalizeActor(report.requestedActor)}`;
 }
 
 /** Stable identity for "this diagnosis", used to require DISTINCT evidence. */

@@ -292,6 +292,15 @@ assert(
   "deployment-dependent Epic checkpoints must require a fresh explicit single-use owner authorization and use the trusted repository runner",
 );
 assert(
+  taskWorkflowRoute.includes("inspectValidatedCandidateWorktree") &&
+    taskWorkflowRoute.includes("inspectOriginBranch") &&
+    taskWorkflowRoute.includes("alreadyPublished: true") &&
+    taskWorkflowRoute.includes("Nothing is waiting to be published") &&
+    taskNotifications.includes("already-published SHA") &&
+    taskNotifications.includes("pipeline/deployed-SHA failure evidence"),
+  "a clean repository baseline already published as the Epic tip must not create a redundant checkpoint permission blocker",
+);
+assert(
   taskWorkflowRoute.indexOf('action === "publish_checkpoint"') < taskWorkflowRoute.indexOf("openImplementationSubtasks"),
   "publish_checkpoint must remain available before the completed-checklist review gate",
 );
@@ -308,6 +317,11 @@ assert(
     taskWorkflowRoute.includes("permissionScope") &&
     taskWorkflowRoute.includes("commentId: row.id, permissionRequest"),
   "active external blockers must have a durable assignee escalation action",
+);
+assert(
+  taskWorkflowRoute.includes("formalBlockerReportFromValue(parsed.report)") &&
+    taskWorkflowRoute.includes("blockerFailureSignature(priorReport)"),
+  "the blocker escalation ladder must recompute stable signatures from historical structured incident reports",
 );
 assert(
   taskNotifications.includes("permissionKind=reporter_approval") &&

@@ -592,9 +592,15 @@ Latency / PM queue/status names:
     after review; only the Epic branch reaches origin. Do not create or update
     a pull request. PR creation and landing are human-only.
     If an Epic-child task's remaining live-verification steps require a
-    remotely deployable commit, use `publish_checkpoint` instead of committing,
-    pushing, or submitting incomplete work. When that authorization is the
-    sole missing dependency, call `flag_blocker` with
+    remotely deployable commit, first check whether PM's previous child
+    finalizer already published the task's clean repository baseline as the
+    current `origin/<Epic branch>` tip. If it did, there is no checkpoint to
+    publish: verify the configured deployment automation for that SHA and
+    report an actual pipeline/deployed-SHA failure as a general external
+    blocker if necessary. Only when the current task has unpublished work use
+    `publish_checkpoint` instead of committing, pushing, or submitting
+    incomplete work. When owner authorization is then the sole missing
+    dependency, call `flag_blocker` with
     `permissionKind=publish_checkpoint`; PM presents the validated grant on the
     exact blocker comment. The resulting fresh active-owner authorization
     names the Task key/branch and target Epic branch; cite that exact
