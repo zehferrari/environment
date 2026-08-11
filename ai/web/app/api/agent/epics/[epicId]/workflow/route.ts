@@ -19,6 +19,7 @@ import {
 } from "@/lib/epics/completion-review";
 import { drainWorkflowOutbox } from "@/lib/tasks/workflow-outbox-drain";
 import { validateTaskDependency } from "@/lib/tasks/blocking";
+import { markActionPlanRevisionRequired } from "@/lib/tasks/action-plan-store";
 import {
   applyTaskTransition,
   enqueueWorkflowEffects,
@@ -498,6 +499,27 @@ export async function POST(
           }] : []),
           { type: "board_touch" as const, key: `completion-review-reject-board:${messageId}`, payload: {} },
         ];
+        const resetPlan = await markActionPlanRevisionRequired({
+          taskId: flaggedTask.id,
+          client: tx,
+        });
+        if (resetPlan.changed) {
+          await tx.activityLog.create({
+            data: {
+              projectId: epic.projectId,
+              taskId: flaggedTask.id,
+              userId: agent.user!.id,
+              kind: "task.action_plan.reset",
+              targetAgent: agent.slug,
+              payload: JSON.stringify({
+                reason: "completion_review_reject",
+                actionPlanId: resetPlan.actionPlanId,
+                previousVersion: resetPlan.version,
+                commentId: commentRow.id,
+              }),
+            },
+          });
+        }
         if (flaggedTask.status === "To Do") {
           await tx.task.update({
             where: { id: flaggedTask.id },

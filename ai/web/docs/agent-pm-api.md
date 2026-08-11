@@ -346,6 +346,12 @@ plus evidence, a combined-test matrix with `Pass | Fail` plus evidence, and
 re-verified against the frozen SHA by the repository runner before Done and
 cleanup. This is independent of the optional deployment-review lane.
 
+When `completion_review_reject` names an existing child Task, PM preserves the
+previous approved Action Plan revision, marks its current projection
+`revision_required`, and clears the Task approval gate. The assignee must call
+`submit_plan` with a focused repair revision. Reviewers must approve only the
+latest `draft`; the historical plan is not executable or re-approvable.
+
 Proposals are not a side door: a proposed jump to `In Progress` is
 downgraded to `To Do` when the task's blocker is uncleared or its Action
 Plan is unapproved, and every proposal-applied assignment/status change

@@ -188,7 +188,15 @@ async function main() {
 
     const applied = await runWorkflowReconciliation({ projectId: project.id, now, dryRun: false });
     assert(applied.repaired >= 3);
-    assert.equal((await db.workflowOutbox.findUniqueOrThrow({ where: { id: verifyEffect.id } })).status, "queued");
+    // The review-completion repair later in the same reconciliation pass can
+    // drain this freshly requeued effect before the assertion runs. Both
+    // states prove the recovery: queued awaits the shared drain; completed
+    // means that drain already projected it durably.
+    assert(
+      ["queued", "completed"].includes(
+        (await db.workflowOutbox.findUniqueOrThrow({ where: { id: verifyEffect.id } })).status,
+      ),
+    );
     assert.equal((await db.task.findUniqueOrThrow({ where: { id: missingLease.id } })).alertReporter, true);
     assert.equal((await db.task.findUniqueOrThrow({ where: { id: incompleteDone.id } })).alertReporter, true);
     assert.equal((await db.task.findUniqueOrThrow({ where: { id: missingCompletion.id } })).status, "Done");

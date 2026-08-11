@@ -40,6 +40,7 @@ async function main() {
     validateActionPlanInput,
     persistActionPlan,
     getActionPlanForTask,
+    markActionPlanRevisionRequired,
     createChecklistAndDelegatableTasksFromPlan,
     parseAcceptanceCriteria,
   } = await import("../lib/tasks/action-plan-store");
@@ -319,14 +320,66 @@ async function main() {
     });
 
     await okAsync("rejects replacing approved plan", async () => {
-      await db.actionPlan.update({
-        where: { taskId: task1.id },
-        data: { approvedOn: new Date(), approvedById: agentUser.id },
-      });
+      const approvedAt = new Date();
+      const plan = await db.actionPlan.findUniqueOrThrow({ where: { taskId: task1.id } });
+      await db.$transaction([
+        db.task.update({
+          where: { id: task1.id },
+          data: { approvedOn: approvedAt, approvedById: agentUser.id },
+        }),
+        db.actionPlan.update({
+          where: { id: plan.id },
+          data: { status: "approved", approvedOn: approvedAt, approvedById: agentUser.id },
+        }),
+        db.actionPlanRevision.updateMany({
+          where: { actionPlanId: plan.id, version: plan.version },
+          data: { status: "approved", approvedOn: approvedAt, approvedById: agentUser.id },
+        }),
+      ]);
       await assert.rejects(
         () => persistActionPlan({ taskId: task1.id, input: validInput }),
         /already approved/i,
       );
+    });
+
+    await okAsync("repair round preserves the approved revision and accepts a new current revision", async () => {
+      await db.$transaction(async (tx) => {
+        await tx.task.update({
+          where: { id: task1.id },
+          data: { approvedOn: null, approvedById: null },
+        });
+        const reset = await markActionPlanRevisionRequired({ taskId: task1.id, client: tx });
+        assert.equal(reset.changed, true);
+      });
+
+      const resetPlan = await getActionPlanForTask(task1.id);
+      assert.equal(resetPlan!.status, "revision_required");
+      assert.equal(resetPlan!.approvedOn, null);
+
+      const repair = await persistActionPlan({
+        taskId: task1.id,
+        input: {
+          summary: "Focused repair revision",
+          steps: [{
+            id: "repair-regression",
+            title: "Add the missing regression test",
+            acceptanceCriteria: ["The original defect is simulated"],
+            kind: "sequential",
+          }],
+        },
+      });
+      assert.equal(repair.version, 3);
+      assert.equal(repair.status, "draft");
+      const revisions = await db.actionPlanRevision.findMany({
+        where: { actionPlanId: repair.id },
+        orderBy: { version: "asc" },
+        select: { version: true, status: true },
+      });
+      assert.deepEqual(revisions, [
+        { version: 1, status: "superseded" },
+        { version: 2, status: "approved" },
+        { version: 3, status: "draft" },
+      ]);
     });
 
     // ── 3. createChecklistAndDelegatableTasksFromPlan ───────────────
@@ -404,6 +457,70 @@ async function main() {
       const rows = await db.subTask.findMany({ where: { taskId: taskRecovery.id } });
       assert.equal(rows.length, 1);
       assert.equal(rows[0].id, existing.id);
+      assert.ok(rows[0].actionPlanStepId);
+    });
+
+    await okAsync("reopens a completed checklist row when a repair revision repeats its step", async () => {
+      const taskRepair = await makeTestTask(project.id, agentUser.id);
+      taskIds.push(taskRepair.id);
+      const title = "Repeat the defect simulation";
+      const first = await persistActionPlan({
+        taskId: taskRepair.id,
+        input: {
+          summary: "Original round",
+          steps: [{ id: "original", title, acceptanceCriteria: ["Pass"], kind: "sequential" }],
+        },
+      });
+      const approvedAt = new Date();
+      await db.$transaction([
+        db.task.update({ where: { id: taskRepair.id }, data: { approvedOn: approvedAt, approvedById: agentUser.id } }),
+        db.actionPlan.update({ where: { id: first.id }, data: { status: "approved", approvedOn: approvedAt, approvedById: agentUser.id } }),
+        db.actionPlanRevision.updateMany({
+          where: { actionPlanId: first.id, version: first.version },
+          data: { status: "approved", approvedOn: approvedAt, approvedById: agentUser.id },
+        }),
+      ]);
+      await createChecklistAndDelegatableTasksFromPlan({
+        taskId: taskRepair.id,
+        approvedAt,
+        approvedById: agentUser.id,
+      });
+      const completed = await db.subTask.findFirstOrThrow({ where: { taskId: taskRepair.id, text: title } });
+      await db.subTask.update({
+        where: { id: completed.id },
+        data: { completedAt: new Date(), minutesSpent: 5 },
+      });
+
+      await db.$transaction(async (tx) => {
+        await tx.task.update({ where: { id: taskRepair.id }, data: { approvedOn: null, approvedById: null } });
+        await markActionPlanRevisionRequired({ taskId: taskRepair.id, client: tx });
+      });
+      const revised = await persistActionPlan({
+        taskId: taskRepair.id,
+        input: {
+          summary: "Repair round",
+          steps: [{ id: "repair", title, acceptanceCriteria: ["Pass again"], kind: "sequential" }],
+        },
+      });
+      const repairApprovedAt = new Date();
+      await db.$transaction([
+        db.task.update({ where: { id: taskRepair.id }, data: { approvedOn: repairApprovedAt, approvedById: agentUser.id } }),
+        db.actionPlan.update({ where: { id: revised.id }, data: { status: "approved", approvedOn: repairApprovedAt, approvedById: agentUser.id } }),
+        db.actionPlanRevision.updateMany({
+          where: { actionPlanId: revised.id, version: revised.version },
+          data: { status: "approved", approvedOn: repairApprovedAt, approvedById: agentUser.id },
+        }),
+      ]);
+      await createChecklistAndDelegatableTasksFromPlan({
+        taskId: taskRepair.id,
+        approvedAt: repairApprovedAt,
+        approvedById: agentUser.id,
+      });
+      const rows = await db.subTask.findMany({ where: { taskId: taskRepair.id, text: title } });
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].id, completed.id);
+      assert.equal(rows[0].completedAt, null);
+      assert.equal(rows[0].minutesSpent, null);
       assert.ok(rows[0].actionPlanStepId);
     });
 
@@ -583,10 +700,17 @@ async function main() {
         },
       });
       // Approve the plan to prevent replacement
-      await db.actionPlan.update({
-        where: { taskId: task7.id },
-        data: { approvedOn: new Date(), approvedById: agentUser.id },
-      });
+      const task7ApprovedAt = new Date();
+      await db.$transaction([
+        db.task.update({
+          where: { id: task7.id },
+          data: { approvedOn: task7ApprovedAt, approvedById: agentUser.id },
+        }),
+        db.actionPlan.update({
+          where: { taskId: task7.id },
+          data: { status: "approved", approvedOn: task7ApprovedAt, approvedById: agentUser.id },
+        }),
+      ]);
       // Attempt to replace the approved plan — should throw and leave original intact
       await assert.rejects(
         () => persistActionPlan({

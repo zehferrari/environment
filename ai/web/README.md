@@ -324,6 +324,13 @@ report plus a runner-side immutable candidate recheck unlocks Epic `Done`; the
 same transaction durably outboxes child-branch cleanup. Deployment review
 remains a separate optional post-Done lane.
 
+If whole-Epic acceptance returns an existing child for repair, PM retains the
+approved plan revision as history, marks the current plan projection
+`revision_required`, and clears only the Task's executable approval. The
+assignee submits a focused next revision; only that latest draft can be
+approved. Completed checklist rows remain evidence and a repeated step is
+reopened when the repair revision is approved.
+
 ## Startup and background work
 
 `instrumentation.ts` loads `instrumentation.node.ts` only in the Node runtime.

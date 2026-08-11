@@ -9,7 +9,7 @@ import type { Prisma } from "@prisma/client";
 import { createHash } from "node:crypto";
 
 import { db } from "@/lib/db";
-import { createSubTaskItem } from "@/lib/tasks/subtasks";
+import { createSubTaskItem, setSubTaskCompletion } from "@/lib/tasks/subtasks";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -176,20 +176,26 @@ export async function persistActionPlan(args: {
     where: { taskId: args.taskId },
     select: { id: true, approvedOn: true, version: true },
   });
-  if (existing?.approvedOn) {
+  // Task.approvedOn is the executable approval gate. ActionPlan.approvedOn is
+  // its denormalized projection. A repair/reopen transition deliberately
+  // clears the task gate before asking for a new revision, so tolerate and
+  // heal an older approved projection if a crash or an older deployment left
+  // the two rows out of sync. Never replace a plan while the task itself is
+  // still approved.
+  const task = await client.task.findUnique({
+    where: { id: args.taskId },
+    select: { projectId: true, approvedOn: true },
+  });
+  if (!task) {
+    throw new Error(`Task not found: ${args.taskId}`);
+  }
+  if (existing?.approvedOn && task.approvedOn) {
     throw new Error("Action plan already approved — cannot replace");
   }
 
   // Verify assigneeIds reference active principals of the task's project
   const assigneeIds = steps.filter((s) => s.assigneeId).map((s) => s.assigneeId!) as string[];
   if (assigneeIds.length > 0) {
-    const task = await client.task.findUnique({
-      where: { id: args.taskId },
-      select: { projectId: true },
-    });
-    if (!task) {
-      throw new Error(`Task not found: ${args.taskId}`);
-    }
     // Look up active project members (principals) for the task's project
     const members = await client.projectMember.findMany({
       where: {
@@ -227,6 +233,13 @@ export async function persistActionPlan(args: {
 
   async function doWrites(tx: Prisma.TransactionClient | typeof db) {
     if (existing) {
+      // Only the latest submitted revision can be approved. Earlier drafts
+      // remain immutable history, but are explicitly superseded instead of
+      // being swept into a later approval by a broad status update.
+      await tx.actionPlanRevision.updateMany({
+        where: { actionPlanId: existing.id, status: "draft" },
+        data: { status: "superseded" },
+      });
       await tx.actionPlanStep.deleteMany({ where: { actionPlanId: existing.id } });
       const updated = await tx.actionPlan.update({
         where: { id: existing.id },
@@ -320,6 +333,30 @@ export async function persistActionPlan(args: {
   };
 }
 
+// A whole-Epic acceptance rejection is a new planning round, not ordinary
+// task review feedback. Preserve the approved ActionPlanRevision snapshot, but
+// make the mutable current-plan projection non-approvable until the assignee
+// submits the focused repair revision.
+export async function markActionPlanRevisionRequired(args: {
+  taskId: string;
+  client?: TxClient;
+}): Promise<{ actionPlanId: string | null; version: number | null; changed: boolean }> {
+  const client = args.client ?? db;
+  const plan = await client.actionPlan.findUnique({
+    where: { taskId: args.taskId },
+    select: { id: true, version: true, status: true, approvedOn: true, approvedById: true },
+  });
+  if (!plan) return { actionPlanId: null, version: null, changed: false };
+  if (plan.status === "revision_required" && !plan.approvedOn && !plan.approvedById) {
+    return { actionPlanId: plan.id, version: plan.version, changed: false };
+  }
+  await client.actionPlan.update({
+    where: { id: plan.id },
+    data: { status: "revision_required", approvedOn: null, approvedById: null },
+  });
+  return { actionPlanId: plan.id, version: plan.version, changed: true };
+}
+
 // ── Read ────────────────────────────────────────────────────────────────
 
 export async function getActionPlanForTask(taskId: string): Promise<PersistedActionPlan | null> {
@@ -385,6 +422,16 @@ export async function createChecklistAndDelegatableTasksFromPlan(args: {
       select: { id: true },
     });
     if (existingUnlinked) {
+      // If a repair revision deliberately repeats a completed step title,
+      // reuse the unique checklist row but reopen it. Leaving it completed
+      // would make the new revision look done before implementation starts.
+      await setSubTaskCompletion({
+        subTaskId: existingUnlinked.id,
+        completed: false,
+        actorUserId: args.approvedById,
+        expectTaskId: args.taskId,
+        client,
+      });
       await client.subTask.update({
         where: { id: existingUnlinked.id },
         data: { actionPlanStepId: step.id },

@@ -95,6 +95,11 @@ const workflowRoute = readFileSync(join(root, "app/api/agent/epics/[epicId]/work
 assert(!workflowRoute.includes("effectiveEpicBranchName(epic)"), "Epic manager workflow must not persist a generated branch");
 assert(workflowRoute.includes("branchName: null"), "Epic-created Tasks must keep a null branch override");
 assert(workflowRoute.includes("commitPrefix: null"), "Epic-created Tasks must keep a null commit-prefix override");
+assert(
+  workflowRoute.includes("markActionPlanRevisionRequired") &&
+    workflowRoute.includes('reason: "completion_review_reject"'),
+  "whole-Epic rejection must preserve plan history while requiring a new repair revision",
+);
 
 const proposalApply = readFileSync(join(root, "lib/work-items/apply.ts"), "utf8");
 assert(!proposalApply.includes("inheritedBranchName"), "proposal-created Tasks must not copy an Epic branch");
@@ -130,6 +135,11 @@ assert(
     taskPage.includes("Messages below are discussion only") &&
     taskPage.includes("action=submit_plan"),
   "the Action Plan tab must distinguish durable structured state from discussion chat",
+);
+assert(
+  taskPage.includes('task.actionPlan?.status === "draft"') &&
+    taskPage.includes("A revised structured Action Plan is required"),
+  "the Action Plan tab must not offer approval for a historical plan awaiting a repair revision",
 );
 
 const workflowNudge = readFileSync(join(root, "scripts/pm-workflow-nudge.ts"), "utf8");

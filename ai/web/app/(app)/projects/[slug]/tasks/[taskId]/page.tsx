@@ -650,7 +650,7 @@ async function approveTaskActionPlan(formData: FormData) {
       actingManagerId: true,
       reporterId: true,
       deletedAt: true,
-      actionPlan: { select: { id: true, steps: { select: { id: true }, take: 1 } } },
+      actionPlan: { select: { id: true, version: true, status: true, steps: { select: { id: true }, take: 1 } } },
       project: { select: { slug: true, onlyReportersCanApproveActionPlans: true } },
       epic: { select: { status: true, actingManagerId: true } },
     },
@@ -670,6 +670,11 @@ async function approveTaskActionPlan(formData: FormData) {
   }
   if (!task.actionPlan || task.actionPlan.steps.length === 0) {
     throw new Error("A validated structured Action Plan must be submitted before approval.");
+  }
+  if (task.actionPlan.status !== "draft") {
+    throw new Error(task.actionPlan.status === "revision_required"
+      ? "The assignee must submit a revised structured Action Plan before approval."
+      : "Only the latest submitted Action Plan revision can be approved.");
   }
 
   // Approval reserves the repository contract. Worktree provisioning belongs
@@ -747,7 +752,7 @@ async function approveTaskActionPlan(formData: FormData) {
       data: { status: "approved", approvedOn: approvedAt, approvedById: actor.id },
     });
     await tx.actionPlanRevision.updateMany({
-      where: { actionPlanId: task.actionPlan!.id, status: "draft" },
+      where: { actionPlanId: task.actionPlan!.id, version: task.actionPlan!.version, status: "draft" },
       data: { status: "approved", approvedOn: approvedAt, approvedById: actor.id },
     });
     await createChecklistAndDelegatableTasksFromPlan({
@@ -1850,6 +1855,7 @@ export default async function TaskDetailPage({
     ?? "";
   const canApproveActionPlan =
     !task.approvedOn &&
+    task.actionPlan?.status === "draft" &&
     (viewer.kind === "human" || canApproveActionPlanForActor(task, viewer.id));
   const doneActivity = allActivity.find((row) =>
     row.kind === "task.move" && payloadValue(row.payload, "to") === "Done"
@@ -2422,7 +2428,9 @@ export default async function TaskDetailPage({
                     }`}
                   >
                     {task.actionPlan
-                      ? `Structured plan v${task.actionPlan.version} is ${task.actionPlan.status}. The messages below are its discussion and review history.`
+                      ? task.actionPlan.status === "revision_required"
+                        ? `The approved plan v${task.actionPlan.version} is preserved as history. A revised structured Action Plan is required before this repair can be approved.`
+                        : `Structured plan v${task.actionPlan.version} is ${task.actionPlan.status}. The messages below are its discussion and review history.`
                       : "No structured Action Plan has been submitted. Messages below are discussion only and cannot be approved until the assignee calls action=submit_plan."}
                   </div>
                   {canApproveActionPlan ? (

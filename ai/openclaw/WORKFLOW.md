@@ -1107,6 +1107,13 @@ streams or acknowledgement-only text. Approval remains `Approval Pending`
 until PM re-verifies that origin still equals the frozen SHA; only then does PM
 move the Epic to Done and enqueue cleanup.
 
+When rejection reopens an existing child Task, PM preserves its previously
+approved Action Plan revision and completed checklist as historical evidence,
+marks the current plan `revision_required`, and clears the Task approval gate.
+The assignee must submit one focused repair revision with `submit_plan`; the
+reviewer approves that latest revision only. Do not try to approve the old plan
+or delete completed checklist history to manufacture a fresh planning state.
+
 ---
 
 ## Email

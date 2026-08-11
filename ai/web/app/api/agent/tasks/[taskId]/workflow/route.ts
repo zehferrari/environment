@@ -780,11 +780,19 @@ async function handleTaskWorkflowAction(
     }
     const structuredPlan = await db.actionPlan.findUnique({
       where: { taskId: task.id },
-      select: { id: true, approvedOn: true, steps: { select: { id: true }, take: 1 } },
+      select: { id: true, version: true, status: true, approvedOn: true, steps: { select: { id: true }, take: 1 } },
     });
     if (!structuredPlan || structuredPlan.steps.length === 0) {
       return NextResponse.json({
         error: "A validated structured Action Plan must be submitted before approval",
+      }, { status: 409 });
+    }
+    if (structuredPlan.status !== "draft" && !task.approvedOn) {
+      return NextResponse.json({
+        error: structuredPlan.status === "revision_required"
+          ? "The previous Action Plan is historical. The assignee must submit a revised structured Action Plan before approval."
+          : "Only the latest submitted Action Plan revision can be approved.",
+        actionPlanStatus: structuredPlan.status,
       }, { status: 409 });
     }
     if (task.approvedOn) {
@@ -796,7 +804,7 @@ async function handleTaskWorkflowAction(
             data: { status: "approved", approvedOn: task.approvedOn, approvedById },
           }),
           db.actionPlanRevision.updateMany({
-            where: { actionPlanId: structuredPlan.id, status: "draft" },
+            where: { actionPlanId: structuredPlan.id, version: structuredPlan.version, status: "draft" },
             data: { status: "approved", approvedOn: task.approvedOn, approvedById },
           }),
         ]);
@@ -862,7 +870,7 @@ async function handleTaskWorkflowAction(
         data: { status: "approved", approvedOn: approvedAt, approvedById: agentUser.id },
         });
         await tx.actionPlanRevision.updateMany({
-        where: { actionPlanId: structuredPlan.id, status: "draft" },
+        where: { actionPlanId: structuredPlan.id, version: structuredPlan.version, status: "draft" },
         data: { status: "approved", approvedOn: approvedAt, approvedById: agentUser.id },
         });
         await tx.activityLog.create({
