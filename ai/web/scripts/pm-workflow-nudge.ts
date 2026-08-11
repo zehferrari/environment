@@ -9,6 +9,7 @@ type Args = {
   taskId?: string;
   agent?: string;
   kind?: string;
+  messageId?: string;
   requiredAction?: string;
 };
 
@@ -26,12 +27,38 @@ function parseArgs(argv: string[]): Args {
     } else if (arg === "--kind" && next) {
       out.kind = next;
       i += 1;
+    } else if (arg === "--message-id" && next) {
+      out.messageId = next;
+      i += 1;
     } else if (arg === "--required-action" && next) {
       out.requiredAction = next;
       i += 1;
     }
   }
   return out;
+}
+
+const EXPECTED_STATUS_BY_KIND: Readonly<Record<string, string>> = {
+  "pm-backlog-plan-missing": "Backlog",
+  "pm-action-plan-missing": "Backlog",
+  "pm-action-plan-awaiting-approval": "Backlog",
+  "pm-todo-not-started": "To Do",
+  "pm-in-progress-stale": "In Progress",
+  "pm-blocker-response-awaiting-assignee": "In Progress",
+  "pm-review-awaiting-reviewer": "Review",
+  "pm-review-feedback-awaiting-assignee": "Review",
+  "pm-review-response-awaiting-assignee": "Review",
+};
+
+function skip(args: {
+  taskId: string;
+  project: string;
+  agent: string;
+  kind?: string;
+  reason: string;
+  status?: string;
+}) {
+  console.log(JSON.stringify({ ok: true, skipped: true, ...args }, null, 2));
 }
 
 function reasonForKind(kind: string | undefined): TaskWorkflowNotificationReason {
@@ -90,7 +117,7 @@ function defaultRequiredAction(status: string, kind: string | undefined): string
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (!args.taskId || !args.agent) {
-    throw new Error("Usage: pm-workflow-nudge --task-id <id> --agent <slug> [--kind <kind>] [--required-action <text>]");
+    throw new Error("Usage: pm-workflow-nudge --task-id <id> --agent <slug> [--kind <kind>] [--message-id <id>] [--required-action <text>]");
   }
 
   const [task, targetUser, monitorSender] = await Promise.all([
@@ -100,8 +127,18 @@ async function main() {
         id: true,
         title: true,
         status: true,
+        statusChangedAt: true,
         deletedAt: true,
         project: { select: { slug: true } },
+        assignee: { select: { agent: { select: { slug: true } } } },
+        actingManager: { select: { agent: { select: { slug: true } } } },
+        reporter: { select: { agent: { select: { slug: true } } } },
+        epic: {
+          select: {
+            status: true,
+            actingManager: { select: { agent: { select: { slug: true } } } },
+          },
+        },
       },
     }),
     db.user.findFirst({
@@ -123,6 +160,121 @@ async function main() {
   ]);
 
   if (!task || task.deletedAt) throw new Error(`Task not found or deleted: ${args.taskId}`);
+
+  const expectedStatus = args.kind ? EXPECTED_STATUS_BY_KIND[args.kind] : undefined;
+  if (expectedStatus && task.status !== expectedStatus) {
+    skip({
+      taskId: task.id,
+      project: task.project.slug,
+      agent: args.agent,
+      kind: args.kind,
+      status: task.status,
+      reason: `incident-stale-task-is-${task.status}`,
+    });
+    return;
+  }
+
+  // Channel-health incidents are observations about one exact message/run,
+  // not permission to wake whichever agent happened to own the task when the
+  // monitor first saw it. Revalidate the identity and current workflow owner
+  // at the final write boundary. This closes the race where a task moves to
+  // Review during the monitor's T1/T2/T3 confirmation windows.
+  if (args.kind?.startsWith("pm-channel-")) {
+    if (!args.messageId) {
+      skip({
+        taskId: task.id,
+        project: task.project.slug,
+        agent: args.agent,
+        kind: args.kind,
+        status: task.status,
+        reason: "channel-incident-missing-message-id",
+      });
+      return;
+    }
+
+    const sourceMessage = await db.agentChatMessage.findUnique({
+      where: { id: args.messageId },
+      select: {
+        taskId: true,
+        agentSlug: true,
+        targetValue: true,
+        createdAt: true,
+        deletedAt: true,
+      },
+    });
+    const addressedAgent = sourceMessage?.agentSlug === "room" && sourceMessage.targetValue?.startsWith("agent:")
+      ? sourceMessage.targetValue.slice("agent:".length)
+      : sourceMessage?.agentSlug;
+    if (
+      !sourceMessage ||
+      sourceMessage.deletedAt ||
+      sourceMessage.taskId !== task.id ||
+      addressedAgent !== args.agent
+    ) {
+      skip({
+        taskId: task.id,
+        project: task.project.slug,
+        agent: args.agent,
+        kind: args.kind,
+        status: task.status,
+        reason: "channel-incident-message-no-longer-matches",
+      });
+      return;
+    }
+
+    const currentWorkflowAgent = task.status === "Review"
+      ? task.actingManager?.agent?.slug
+        ?? (task.epic?.status === "To Do" || task.epic?.status === "In Progress"
+          ? task.epic.actingManager?.agent?.slug
+          : undefined)
+        ?? task.reporter?.agent?.slug
+      : task.assignee?.agent?.slug;
+    if (currentWorkflowAgent !== args.agent) {
+      skip({
+        taskId: task.id,
+        project: task.project.slug,
+        agent: args.agent,
+        kind: args.kind,
+        status: task.status,
+        reason: "channel-incident-target-is-not-current-workflow-owner",
+      });
+      return;
+    }
+
+    if (task.statusChangedAt && sourceMessage.createdAt < task.statusChangedAt) {
+      skip({
+        taskId: task.id,
+        project: task.project.slug,
+        agent: args.agent,
+        kind: args.kind,
+        status: task.status,
+        reason: "channel-incident-predates-current-task-state",
+      });
+      return;
+    }
+
+    const laterSuccessfulRun = await db.pmChannelRun.findFirst({
+      where: {
+        taskId: task.id,
+        agentSlug: args.agent,
+        createdAt: { gte: sourceMessage.createdAt },
+        status: { in: ["completed", "complete"] },
+      },
+      select: { id: true },
+    });
+    if (laterSuccessfulRun) {
+      skip({
+        taskId: task.id,
+        project: task.project.slug,
+        agent: args.agent,
+        kind: args.kind,
+        status: task.status,
+        reason: "channel-incident-already-has-successful-run",
+      });
+      return;
+    }
+  }
+
   if (!targetUser) {
     // Human (or inactive-agent) target: degrade to a clear rc=0 skip so the
     // monitor ladder never burns wake/restart attempts on a non-agent user.

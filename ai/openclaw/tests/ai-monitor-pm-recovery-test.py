@@ -100,6 +100,80 @@ class PmRecoveryTest(unittest.TestCase):
         self.assertIn("status IN ('queued', 'accepted', 'streaming', 'retryable')", source)
         self.assertIn('not kind.startswith("pm-channel-")', source)
 
+    def test_completed_status_suppresses_historical_orphan_recovery(self):
+        source = SCRIPT.read_text()
+        self.assertIn(
+            "rr.status IN ('streaming', 'complete', 'completed')",
+            source,
+        )
+        self.assertTrue(self.monitor._pm_channel_run_confirmed({
+            "ok": True,
+            "status": "completed",
+        }))
+        self.assertIn("AND m.deletedAt IS NULL", source)
+        self.assertIn("AND (r.id IS NOT NULL OR m.createdAt >= ?)", source)
+
+    def test_unknown_human_message_is_current_only_for_current_workflow_owner(self):
+        row = {
+            "body": "An old human-authored comment with no workflow status marker",
+            "status": "Review",
+            "messageAgentSlug": "asdrubal",
+            "reviewerAgentSlug": "karen",
+            "reviewerUsername": "karen",
+            "epicManagerAgentSlug": None,
+            "epicManagerUsername": None,
+            "epicStatus": "Review",
+            "reporterUsername": "zeh",
+        }
+        self.assertFalse(self.monitor._pm_workflow_notification_is_current(row))
+        row["messageAgentSlug"] = "karen"
+        self.assertTrue(self.monitor._pm_workflow_notification_is_current(row))
+
+    def test_channel_nudge_carries_the_incident_message_identity(self):
+        bucket = {
+            "pm_tasks": [{
+                "task_id": "task-1",
+                "kind": "pm-channel-no-start",
+                "message_id": "message-1",
+                "reason": "Required action: retry the exact turn",
+            }]
+        }
+        with mock.patch.object(
+            self.monitor,
+            "run_cmd",
+            return_value=(0, '{"ok":true,"skipped":true}', ""),
+        ) as run_cmd:
+            self.monitor._run_pm_workflow_nudges("asdrubal", bucket)
+        argv = run_cmd.call_args.args[0]
+        self.assertIn("--message-id", argv)
+        self.assertEqual(argv[argv.index("--message-id") + 1], "message-1")
+
+    def test_deterministic_channel_issue_preserves_message_identity(self):
+        issues = self.monitor.deterministic_issues({
+            "pm_workflow": {
+                "items": [{
+                    "kind": "pm-channel-no-start",
+                    "agent": "asdrubal",
+                    "task_id": "task-1",
+                    "task_title": "Historical task",
+                    "project": "environment",
+                    "status": "Review",
+                    "epic_status": "Review",
+                    "age_s": 999,
+                    "required_action": "retry exact turn",
+                    "message_id": "message-1",
+                    "run_status": "failed",
+                }],
+                "errors": [],
+            },
+            "integrity_check": {"exit_code": 0},
+            "registry": {"ok": True, "agents_seen": 1},
+            "ollama_probe": {"ok": True},
+        })
+        issue = next(i for i in issues if i["kind"] == "pm-channel-no-start")
+        self.assertEqual(issue["message_id"], "message-1")
+        self.assertEqual(issue["run_status"], "failed")
+
     def comment_conn(self):
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row

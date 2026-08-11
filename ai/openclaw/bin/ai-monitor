@@ -1914,7 +1914,13 @@ def _pm_current_workflow_slugs(row):
 def _pm_workflow_notification_is_current(row):
     expected_status = _pm_workflow_notification_status(row["body"])
     if not expected_status:
-        return True
+        # Human-authored task messages also enter the orphan-run query when a
+        # PM-channel row exists. They do not encode the workflow status in
+        # their body, so treating an unparseable body as current is unsafe: a
+        # failed run from an old assignee can otherwise be resurrected months
+        # after the task moved to Review. Fail closed against the task's
+        # current workflow owner instead.
+        return row["messageAgentSlug"] in _pm_current_workflow_slugs(row)
     if row["status"] != expected_status:
         return False
     return row["messageAgentSlug"] in _pm_current_workflow_slugs(row)
@@ -2082,10 +2088,17 @@ def probe_pm_workflow(cfg, registry):
               )
               AND t.deletedAt IS NULL
               AND p.deletedAt IS NULL
+              AND m.deletedAt IS NULL
               AND t.parentTaskId IS NULL
               AND t.status NOT IN ('Backlog', 'Done')
               AND (r.status IS NULL OR r.status IN ('queued', 'accepted', 'streaming', 'retryable', 'failed'))
               AND (COALESCE(r.status, '') != 'failed' OR m.createdAt >= ?)
+              -- A missing run is useful recovery evidence only near the
+              -- original message. Older gaps are legacy display residue; the
+              -- status-specific task detectors own any real unfinished work.
+              -- Keeping them forever manufactured month-old "live bubbles"
+              -- and repeatedly pulled the monitor agent into dead tasks.
+              AND (r.id IS NOT NULL OR m.createdAt >= ?)
               AND NOT EXISTS (
                 SELECT 1
                 FROM PmChannelRun rr
@@ -2095,7 +2108,11 @@ def probe_pm_workflow(cfg, registry):
                       THEN substr(m.targetValue, 7)
                     ELSE m.agentSlug
                   END
-                  AND rr.status IN ('streaming', 'complete')
+                  -- `completed` is the canonical ENV-117 terminal spelling.
+                  -- Keep `complete` during rolling upgrades, otherwise the
+                  -- status-normalization migration makes every historical
+                  -- successful turn invisible and resurrects old messages.
+                  AND rr.status IN ('streaming', 'complete', 'completed')
                   AND COALESCE(rr.lastEventAt, rr.updatedAt, rr.createdAt) >= m.createdAt
               )
               AND NOT EXISTS (
@@ -2115,7 +2132,10 @@ def probe_pm_workflow(cfg, registry):
             # Prisma stores DateTime as integer epoch-milliseconds in SQLite,
             # so the failed-run age floor is a ms cutoff computed here rather
             # than a datetime('now', ...) expression.
-            (int((time.time() - failed_run_max_age_hours * 3600) * 1000),),
+            (
+                int((time.time() - failed_run_max_age_hours * 3600) * 1000),
+                int((time.time() - failed_run_max_age_hours * 3600) * 1000),
+            ),
         ).fetchall()
 
         def add(row, kind, target_agent, age_s, required_action, severity="warn", extra=None):
@@ -3010,6 +3030,14 @@ def deterministic_issues(probes):
             "severity": item.get("severity", "warn"),
             "reason": reason,
             "suggested_action": "investigate",
+            # Preserve the concrete channel incident identity through the
+            # deterministic issue/ladder boundary. The nudge helper must
+            # revalidate this exact message/run immediately before it writes;
+            # task id + kind alone are not enough once task state can change
+            # during a monitor confirmation window.
+            **({"message_id": item.get("message_id")} if item.get("message_id") else {}),
+            **({"run_status": item.get("run_status")} if item.get("run_status") else {}),
+            **({"run_failed_at": item.get("run_failed_at")} if item.get("run_failed_at") else {}),
         })
     for err in pmw.get("errors", []) or []:
         out.append({
@@ -3323,6 +3351,8 @@ def _run_pm_workflow_nudges(user, bucket, cfg=None):
             "--agent", user,
             "--kind", p.get("kind") or "pm-workflow",
         ]
+        if p.get("message_id"):
+            cmd.extend(["--message-id", p.get("message_id")])
         required = _pm_required_action_from_reason(p.get("reason") or "")
         if required:
             cmd.extend(["--required-action", required])
@@ -3397,13 +3427,15 @@ def _pm_channel_run_snapshot(cfg, agent, message_id):
 
 
 def _pm_channel_run_confirmed(snapshot, accepted_window_s=120):
-    """Confirmed only when the run is actually alive: streaming/complete, or
+    """Confirmed only when the run is actually alive: streaming/completed, or
     accepted with a fresh lastEventAt. A failed run never confirms recovery
     — streamSeq>0 on a failed run is a dead stream, not progress."""
     if not snapshot or not snapshot.get("ok"):
         return False
     status = snapshot.get("status")
-    if status in ("streaming", "complete"):
+    # `completed` is canonical; `complete` remains accepted while a rolling
+    # deployment may still have an older PM process writing the legacy value.
+    if status in ("streaming", "complete", "completed"):
         return True
     if status == "accepted":
         age_s = _pm_age_s(snapshot.get("lastEventAt"))
