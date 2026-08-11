@@ -405,6 +405,7 @@ const BLOCKER_CLEAR_LOOP: WatchdogDetector = {
   detect: (snapshot) => {
     const findings: WatchdogFinding[] = [];
     for (const task of snapshot.tasks) {
+      if (!isRepairableEpisode(task)) continue;
       if (task.blockerCycles < WATCHDOG_BLOCKER_LOOP_THRESHOLD) continue;
       findings.push({
         detectorId: "blocker_clear_loop",
@@ -431,12 +432,19 @@ const SESSION_CHURN: WatchdogDetector = {
     "A (task, agent) lane burning sessions or failing runs faster than the window allows is escalated, never auto-repaired.",
   detect: (snapshot) => {
     const since = snapshot.now - WATCHDOG_CHURN_WINDOW_MS;
+    const repairableTaskIds = new Set(
+      snapshot.tasks.filter(isRepairableEpisode).map((task) => task.id),
+    );
     const sessions = new Map<string, Set<string>>();
     const failures = new Map<string, number>();
     const laneTask = new Map<string, { taskId: string; agentSlug: string }>();
 
     for (const run of snapshot.runs) {
       if (!run.taskId) continue;
+      // Churn is actionable only while the assignee owns an active execution
+      // episode. Historical runs on Review/Done/Backlog tasks are evidence,
+      // not a reason to page the reporter or pull the implementer back in.
+      if (!repairableTaskIds.has(run.taskId)) continue;
       if (run.createdAt < since) continue;
       const lane = `${run.taskId}|${run.agentSlug}`;
       laneTask.set(lane, { taskId: run.taskId, agentSlug: run.agentSlug });

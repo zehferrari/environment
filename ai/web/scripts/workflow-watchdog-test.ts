@@ -218,6 +218,30 @@ for (const detector of WATCHDOG_DETECTORS) {
 }
 
 {
+  const reviewTask = task({
+    status: "Review",
+    blockerCycles: WATCHDOG_BLOCKER_LOOP_THRESHOLD,
+  });
+  const reviewRuns = Array.from({ length: WATCHDOG_SESSION_CHURN_THRESHOLD }, (_, index) =>
+    run({
+      id: `review-run-${index}`,
+      sessionKey: `review-session-${index}`,
+      status: "completed",
+      createdAt: NOW - (index + 1) * MINUTE,
+      lastEventAt: NOW - (index + 1) * MINUTE,
+    }),
+  );
+  const findings = detectWatchdogFindings(
+    snapshot({ tasks: [reviewTask], runs: reviewRuns }),
+  );
+  assertEqual(
+    findings.length,
+    0,
+    "historical blocker/session churn on Review never pages or wakes the implementer",
+  );
+}
+
+{
   const blocked = task({
     activeBlocker: { needsExternalInput: true, permissionGranted: false, raisedAt: STALE },
   });
