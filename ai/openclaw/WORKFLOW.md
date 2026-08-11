@@ -289,15 +289,23 @@ Two distinct decomposition levels, each with its own creator and gate:
   plan of action.
 - Once the Epic Action Plan is approved, the Epic acting manager creates
   **all** the tasks required to implement the Epic.
-- To clearly display the steps order, each child task title **must** start
-  with a sequential number: `1.`, `2.`, `3.`, matching the intended
-  implementation order.
-- Epic implementation tasks may be created only by the Epic acting
-  manager, only after the Epic Action Plan is approved, and only when the
-  Epic has no existing child tasks. Additional work inside an existing
-  Task is tracked as task-local subtasks, not new Epic tasks.
-- The manager moves the ordered tasks to `To Do` and assigns only the
-  first executable task.
+- Each `create_tasks` entry declares a unique local `ref`, an explicit
+  `execution` classification, and `dependsOn`: use `parallel` with `[]` when
+  the task can start immediately, or `dependent` with every prerequisite ref.
+  A prerequisite may be another local ref (including a forward ref), or an
+  existing public Task id/work-item key. Cross-project prerequisites require
+  both projects to share an active Workspace.
+- Numbering and queue rank are presentation order only. They NEVER serialize
+  tasks. PM creates the tasks plus all dependency edges atomically, rejects
+  cycles/private or unrelated-project references, and assigns every unblocked
+  To Do task for which a pool worker is free.
+- A task remains unassigned and cannot enter In Progress until **all** of its
+  prerequisites are Done. Completion of any prerequisite durably triggers a
+  refill of every newly eligible dependent Epic queue, including other Epics
+  and projects in the same Workspace.
+- Additional work required by the existing Epic goal may be added by the
+  acting manager with `create_tasks`; do not expand scope. Work internal to one
+  existing Task remains task-local subtasks, not new Epic tasks.
 
 ### Task-local subtasks (created by the task assignee/reviewer)
 
@@ -725,10 +733,10 @@ The durable workflow contract for the local PM workflow.
 **Manager / assignee / reviewer loop:**
 
 1. A manager takes on an assigned Epic and posts the Epic Action Plan.
-   Once approved, the manager creates all the implementation tasks, with
-   titles starting `1.`, `2.`, `3.` in implementation order.
-2. The manager moves the ordered tasks to `To Do` and assigns only the
-   first executable task.
+   Once approved, the manager creates all implementation tasks with explicit
+   `parallel`/`dependent` scheduling and complete `dependsOn` refs.
+2. The manager advances the tasks to `To Do`; PM assigns every eligible task
+   to free pool workers, while dependent tasks wait for all prerequisites.
 3. The assignee posts one concrete technical Action Plan in the task's
    Action Plan tab before implementation. See
    [Action Plan approval](#action-plan-approval) for the approver chain.

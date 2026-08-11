@@ -35,6 +35,7 @@ import { drainWorkflowOutbox } from "@/lib/tasks/workflow-outbox-drain";
 import { assignTaskAfterPlanApproval } from "@/lib/tasks/reviewer-assignment";
 import { refillEpicQueue } from "@/lib/epics/queue";
 import { promoteEpicOnTaskInProgress } from "@/lib/epics/promote-on-start";
+import { unresolvedTaskPrerequisites } from "@/lib/tasks/blocking";
 import { hasAuthorizedTaskAgentOrigin } from "@/lib/agents/owner-origin";
 import {
   ensureTaskCodeWorktree,
@@ -310,11 +311,26 @@ async function handleTaskWorkflowAction(
         blockedById: true,
         blockedBy: {
           select: {
+            id: true,
             workItemKey: true,
             status: true,
             private: true,
             epic: { select: { private: true } },
             parent: { select: { private: true, epic: { select: { private: true } } } },
+          },
+        },
+        dependencies: {
+          select: {
+            prerequisite: {
+              select: {
+                id: true,
+                workItemKey: true,
+                status: true,
+                private: true,
+                epic: { select: { private: true } },
+                parent: { select: { private: true, epic: { select: { private: true } } } },
+              },
+            },
           },
         },
         repositoryRun: { select: { phase: true, worktreePath: true } },
@@ -597,15 +613,19 @@ async function handleTaskWorkflowAction(
         currentStatus: task.status,
       }, { status: 409 });
     }
-    // Hard dependency (ENV-62): can't start while a blocker is still open.
-    if (task.blockedById && task.blockedBy && task.blockedBy.status !== "Done") {
+    const unresolvedPrerequisites = unresolvedTaskPrerequisites(task);
+    if (unresolvedPrerequisites.length > 0) {
+      const visibleKeys = unresolvedPrerequisites.flatMap((prerequisite) => {
+        const detail = prerequisite as typeof task.blockedBy;
+        return detail && !detail.private && !detail.epic?.private && !detail.parent?.private && !detail.parent?.epic?.private
+          ? [detail.workItemKey ?? "another task"]
+          : [];
+      });
       return NextResponse.json({
-        error: task.blockedBy.private || task.blockedBy.epic?.private || task.blockedBy.parent?.private || task.blockedBy.parent?.epic?.private
-          ? "Task is blocked by another task, which must reach Done first."
-          : `Task is blocked by ${task.blockedBy.workItemKey ?? "another task"}, which must reach Done first.`,
-        blockedBy: task.blockedBy.private || task.blockedBy.epic?.private || task.blockedBy.parent?.private || task.blockedBy.parent?.epic?.private
-          ? null
-          : task.blockedBy.workItemKey ?? null,
+        error: visibleKeys.length > 0
+          ? `Task is waiting for ${visibleKeys.join(", ")}; every prerequisite must reach Done first.`
+          : "Task is waiting for another task; every prerequisite must reach Done first.",
+        blockedBy: visibleKeys,
       }, { status: 409 });
     }
     if (!task.approvedOn) {

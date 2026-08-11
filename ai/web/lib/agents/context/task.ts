@@ -73,7 +73,7 @@ export type AgentContextPacket = {
       updatedAt: string;
       assignee: string;
       reviewer: string;
-      blockedBy: string | null;
+      prerequisites: string[];
       // ENV-123 — the same four lines the task page renders, so an agent reading
       // its own context sees exactly what the operator sees on the board.
       executionState: string[] | null;
@@ -149,6 +149,32 @@ function actorLabel(user: UserLabel) {
 
 function actorLabelFromParts(username: string | null | undefined, kind?: string | null) {
   return actorLabel({ username: username ?? null, kind });
+}
+
+type ContextPrerequisite = {
+  workItemKey: string | null;
+  status: string;
+  private: boolean;
+  epic: { private: boolean } | null;
+  parent: { private: boolean; epic: { private: boolean } | null } | null;
+};
+
+function visiblePrerequisiteLabels(task: {
+  blockedBy: ContextPrerequisite | null;
+  dependencies: Array<{ prerequisite: ContextPrerequisite }>;
+}) {
+  const labels = new Set<string>();
+  for (const prerequisite of [
+    ...(task.blockedBy ? [task.blockedBy] : []),
+    ...task.dependencies.map((edge) => edge.prerequisite),
+  ]) {
+    const visible = !prerequisite.private && !prerequisite.epic?.private &&
+      !prerequisite.parent?.private && !prerequisite.parent?.epic?.private;
+    labels.add(visible
+      ? `${prerequisite.workItemKey ?? "another task"} (${prerequisite.status})`
+      : `another task (${prerequisite.status})`);
+  }
+  return [...labels];
 }
 
 function chatRoutingLabel(chat: {
@@ -511,6 +537,19 @@ export async function buildTaskAgentContextPacket(args: {
           parent: { select: { private: true, epic: { select: { private: true } } } },
         },
       },
+      dependencies: {
+        select: {
+          prerequisite: {
+            select: {
+              workItemKey: true,
+              status: true,
+              private: true,
+              epic: { select: { private: true } },
+              parent: { select: { private: true, epic: { select: { private: true } } } },
+            },
+          },
+        },
+      },
       checklist: {
         orderBy: { rank: "asc" },
         take: 50,
@@ -622,9 +661,7 @@ export async function buildTaskAgentContextPacket(args: {
             updatedAt: formatDate(task.updatedAt)!,
             assignee: actorLabel(task.assignee),
             reviewer: actorLabel(task.actingManager),
-            blockedBy: task.blockedBy && !task.blockedBy.private && !task.blockedBy.epic?.private && !task.blockedBy.parent?.private && !task.blockedBy.parent?.epic?.private
-              ? `${task.blockedBy.workItemKey ?? "another task"} (${task.blockedBy.status})`
-              : null,
+            prerequisites: visiblePrerequisiteLabels(task),
             executionState: task.executionState
               ? executionStateLines(renderExecutionState(task.executionState))
               : null,
@@ -892,7 +929,7 @@ export function renderAgentContextPacket(packet: AgentContextPacket): string {
     `Status: ${task.status}`,
     `Assignee: ${task.assignee}`,
     `Reviewer: ${task.reviewer}`,
-    `Blocked by: ${task.blockedBy ?? "(none)"}`,
+    `Prerequisites: ${task.prerequisites.length > 0 ? task.prerequisites.join(", ") : "(none)"}`,
     `Action Plan approved_on: ${task.approvedOn || "(not approved)"}`,
     `Branch: ${task.branchName || "(not set)"}`,
     `Commit prefix: ${task.commitPrefix || "(not set)"}`,
@@ -1006,7 +1043,7 @@ export function renderAgentContextPacket(packet: AgentContextPacket): string {
     "Review is reviewer work only. The assignee may answer comments there but cannot resume implementation in place; review_feedback returns the task to To Do for a fresh start.",
     "Sub-tasks are a lightweight progress checklist (text + done + minutes), NOT child tasks. As the assignee, break the task into INDEPENDENT, PARALLELIZABLE steps so you can work multiple fronts at once — dispatch parallel sub-agents to tackle the independent steps concurrently whenever the work allows, instead of doing them one at a time. Keep the checklist current so the board shows how close the task is to done: POST action=add_subtask {subtaskText} to add a step, and action=complete_subtask {subtaskId, completed, minutesSpent} as each step lands (include minutesSpent = the minutes that step took, so the task's total cost rolls up). Use the SUB-TASKS list above for ids. Do not create child Tasks for steps within a single task.",
     "When a task comes back from Review with reviewer feedback, add a new sub-task (add_subtask) for each concrete feedback item BEFORE resuming — your earlier checklist items are already ticked, so without this the progress bar wrongly reads as finished. Tick each new item off (with minutesSpent) as you address it.",
-    "If the TASK SNAPSHOT shows this task is Blocked by another task that is not yet Done, do not start it — the workflow start action will refuse until the blocker is Done.",
+    "If the TASK SNAPSHOT lists any prerequisite that is not Done, do not start — assignment and start remain locked until every prerequisite is Done. Task numbering and board order do not imply a dependency.",
     `If the current turn requires no visible contribution from you, reply exactly ${PM_SILENT_REPLY_TOKEN} and nothing else.`,
   );
 
@@ -1174,6 +1211,19 @@ export async function buildTaskEpisodeBrief(args: {
           parent: { select: { private: true, epic: { select: { private: true } } } },
         },
       },
+      dependencies: {
+        select: {
+          prerequisite: {
+            select: {
+              workItemKey: true,
+              status: true,
+              private: true,
+              epic: { select: { private: true } },
+              parent: { select: { private: true, epic: { select: { private: true } } } },
+            },
+          },
+        },
+      },
       checklist: {
         orderBy: { rank: "asc" },
         take: 50,
@@ -1273,15 +1323,7 @@ export async function buildTaskEpisodeBrief(args: {
     `Status: ${task.status}`,
     `Assignee: ${actorLabel(task.assignee)}`,
     `Reviewer: ${actorLabel(task.actingManager)}`,
-    `Blocked by: ${
-      task.blockedBy &&
-      !task.blockedBy.private &&
-      !task.blockedBy.epic?.private &&
-      !task.blockedBy.parent?.private &&
-      !task.blockedBy.parent?.epic?.private
-        ? `${task.blockedBy.workItemKey ?? "another task"} (${task.blockedBy.status})`
-        : "(none)"
-    }`,
+    `Prerequisites: ${visiblePrerequisiteLabels(task).join(", ") || "(none)"}`,
     `Action Plan approved_on: ${formatDate(task.approvedOn) || "(not approved)"}`,
     `Branch: ${effectiveTaskBranchName(task) || "(not set)"}`,
     `Commit prefix: ${effectiveTaskCommitPrefix(task) || "(not set)"}`,

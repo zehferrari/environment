@@ -69,7 +69,7 @@ type Task = {
   subtaskReviewTotal: number;
   subtaskReviewDone: number;
   subtaskMinutes: number;
-  blockedByKey: string | null;
+  blockedByKeys: string[];
   executionState: string | null;
   executionReason: string | null;
   hasActiveBlocker: boolean;
@@ -90,20 +90,20 @@ type BoardStats = {
   byStatus: Record<string, number>;
 };
 
-// Bottom-right lock badge (ENV-62): shown when the task is blocked by another
-// task that isn't Done yet. The key is the blocker's work-item id.
+// Bottom-right lock badge: shown while any workflow prerequisite is not Done.
 // Which colour cues a board card paints, derived from the board's chrome scope.
 type CardScope = "home" | "workspace" | "project";
 
 function BlockedBadge({ task }: { task: Task }) {
-  if (!task.blockedByKey) return null;
+  if (task.blockedByKeys.length === 0) return null;
+  const [first, ...rest] = task.blockedByKeys;
   return (
     <span
       className="inline-flex shrink-0 items-center gap-1 rounded-md bg-crit/[0.07] px-1.5 py-0.5 text-micro font-semibold text-crit"
-      title={`Blocked by ${task.blockedByKey} — it must be Done first`}
+      title={`Waiting for ${task.blockedByKeys.join(", ")} — every prerequisite must be Done`}
     >
       <LockGlyph />
-      {task.blockedByKey}
+      {first}{rest.length > 0 ? ` +${rest.length}` : ""}
     </span>
   );
 }
@@ -857,7 +857,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
     let attention = 0;
     for (const task of items) {
       byStatus[task.status] = (byStatus[task.status] ?? 0) + 1;
-      if (task.blockedByKey || task.hasActiveBlocker) blocked += 1;
+      if (task.blockedByKeys.length > 0 || task.hasActiveBlocker) blocked += 1;
       if (taskNeedsAttention(task)) attention += 1;
     }
     const done = byStatus.Done ?? 0;
@@ -2774,7 +2774,7 @@ function isPlanningAssigned(task: Task) {
 
 function taskNeedsAttention(task: Task) {
   return Boolean(
-    task.blockedByKey ||
+    task.blockedByKeys.length > 0 ||
     task.hasActiveBlocker ||
     task.status === "Review" ||
     isPlanningAssigned(task),

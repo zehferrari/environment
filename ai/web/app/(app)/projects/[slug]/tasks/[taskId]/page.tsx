@@ -2243,21 +2243,50 @@ export default async function TaskDetailPage({
                         task is a subset of "not executing". */}
                     <TaskExecutionStrip executionState={task.executionState} />
 
-                    {/* Blocked by — hard dependency on another task (ENV-62). */}
+                    {task.dependencies.length > 0 ? (
+                      <div className="space-y-1.5 rounded-card border border-line bg-panel-soft p-card">
+                        <div className="flex items-center gap-1.5 text-micro font-semibold uppercase tracking-wider text-text-muted">
+                          <LockIcon />
+                          Workflow prerequisites
+                        </div>
+                        <div className="space-y-1 text-caption">
+                          {task.dependencies.map(({ prerequisite }) => (
+                            <Link
+                              key={prerequisite.id}
+                              href={`/projects/${prerequisite.project.slug}/tasks/${prerequisite.id}`}
+                              className="flex items-center justify-between gap-2 rounded-md px-1.5 py-1 hover:bg-bg"
+                            >
+                              <span className="min-w-0 truncate">
+                                {prerequisite.workItemKey ?? prerequisite.title}
+                                {prerequisite.project.slug !== slug ? ` · ${prerequisite.project.name}` : ""}
+                              </span>
+                              <span className={prerequisite.status === "Done" ? "text-ok" : "text-warn"}>
+                                {prerequisite.status}
+                              </span>
+                            </Link>
+                          ))}
+                        </div>
+                        <p className="text-nano text-text-muted">
+                          Assignment and start unlock only after every prerequisite is Done.
+                        </p>
+                      </div>
+                    ) : null}
+
+                    {/* Legacy primary prerequisite editor (ENV-62). */}
                     {currentBlockerVisible ? <div className="space-y-1 rounded-card border border-line bg-panel-soft p-card">
                       <label className="block">
                         <span className="mb-1 flex items-center gap-1.5 text-micro font-semibold uppercase tracking-wider text-text-muted">
                           <LockIcon />
-                          Blocked by
+                          Primary prerequisite
                         </span>
                         <select
                           form="taskMain"
                           name="blockedById"
                           defaultValue={task.blockedById ?? ""}
-                          aria-label="Blocked by"
+                          aria-label="Primary prerequisite"
                           className="w-full rounded-lg border border-line bg-bg px-2 py-1.5 text-caption outline-none focus:border-accent"
                         >
-                          <option value="">Not blocked</option>
+                          <option value="">None</option>
                           {blockerCandidates.map((candidate) => (
                             <option key={candidate.id} value={candidate.id}>
                               {(candidate.workItemKey ? `${candidate.workItemKey} — ` : "") + candidate.title} ({candidate.status})
@@ -2266,7 +2295,7 @@ export default async function TaskDetailPage({
                         </select>
                       </label>
                       <p className="text-nano text-text-muted">
-                        This task waits until the chosen task is Done. Circular blocks are rejected.
+                        Human-edited same-project prerequisite. Manager-created multi-project dependencies are listed above.
                       </p>
                     </div> : null}
 

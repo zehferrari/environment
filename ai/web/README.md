@@ -212,7 +212,9 @@ The schema falls into these groups:
 - **Identity and access:** `User`, `Agent`, `RolePermission`,
   `ProjectMember`, password reset state, and workspace agent pools.
 - **Planning:** `Workspace`, `Project`, `Epic`, `EpicWorker`, `Task`,
-  `SubTask`, hard task dependencies, and effective settings.
+  `TaskDependency`, `SubTask`, and effective settings. Dependency scheduling
+  requires every prerequisite to be Done; Epic-manager creation can link
+  public tasks across projects only when they share an active Workspace.
 - **Repository/deployment:** `TaskRepositoryRun` and
   `DeploymentPullRequest`.
 - **Knowledge:** `Comment`, `Attachment`, `AttachmentExtract`, project

@@ -421,13 +421,17 @@ export default async function WorkspaceBoardPage({ params }: { params: Promise<{
           // ENV-123 — drives the board's execution badge. Only the state word
           // is needed here; the full four-line strip lives on the task page.
           executionState: { select: { state: true, reasonDetail: true } },
+          blockedBy: { select: { status: true } },
+          dependencies: {
+            select: { prerequisite: { select: { id: true, status: true } } },
+          },
         },
       })
     : [];
 
   const taskIds = tasks.map((task) => task.id);
   const blockerIds = tasks
-    .map((task) => task.blockedById)
+    .flatMap((task) => [task.blockedById, ...task.dependencies.map((edge) => edge.prerequisite.id)])
     .filter((id): id is string => Boolean(id));
   const [taskActivityRows, busyAgentSlugs, actorVisibility, visibleBlockers, legacyBlockerComments] = await Promise.all([
     taskIds.length > 0
@@ -495,7 +499,11 @@ export default async function WorkspaceBoardPage({ params }: { params: Promise<{
         boardStreamUrl={`/api/workspaces/${workspace.slug}/board/stream`}
         columns={COLUMNS}
         tasks={tasks.map((t) => {
-          const blocker = t.blockedById ? visibleBlockerById.get(t.blockedById) : null;
+          const unresolvedIds = [...new Set([
+            ...(t.blockedById && t.blockedBy?.status !== "Done" ? [t.blockedById] : []),
+            ...t.dependencies.filter((edge) => edge.prerequisite.status !== "Done").map((edge) => edge.prerequisite.id),
+          ])];
+          const blockedByKeys = unresolvedIds.map((id) => visibleBlockerById.get(id)?.workItemKey ?? "another task");
           return {
             id: t.id,
             workItemKey: t.workItemKey ?? null,
@@ -521,7 +529,7 @@ export default async function WorkspaceBoardPage({ params }: { params: Promise<{
             subtaskReviewTotal: t.checklist.filter((c) => c.kind === "review").length,
             subtaskReviewDone: t.checklist.filter((c) => c.kind === "review" && c.completedAt !== null).length,
             subtaskMinutes: t.checklist.reduce((sum, c) => sum + (c.minutesSpent ?? 0), 0),
-            blockedByKey: blocker && blocker.status !== "Done" ? blocker.workItemKey ?? null : null,
+            blockedByKeys,
             hasActiveBlocker: activeFormalBlockers.has(t.id),
             executionState: t.executionState?.state ?? null,
             executionReason: t.executionState?.reasonDetail ?? null,

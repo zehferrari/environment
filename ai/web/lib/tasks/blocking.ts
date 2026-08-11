@@ -1,58 +1,156 @@
-// Task hard-dependency ("blocked_by") validation (ENV-62).
+// Task hard-dependency graph.
 //
-// A task may declare one blocker — another task that must reach Done before this
-// one is actionable. The only real hazard is a dependency cycle (A blocked_by B
-// blocked_by … blocked_by A), which would deadlock the board. validateBlockedBy
-// proves the new edge is safe: the blocker exists, lives in the same project,
-// isn't the task itself, and does not already depend (transitively) on the task.
+// `blockedById` is the legacy single-prerequisite field. New manager-created
+// work uses TaskDependency, while every reader below deliberately consumes the
+// union so old Tasks keep their exact scheduling semantics.
 
 import { db } from "@/lib/db";
 import type { Prisma } from "@prisma/client";
 
 type Client = Prisma.TransactionClient | typeof db;
 
-export type BlockedByCode = "SELF" | "NOT_FOUND" | "WRONG_PROJECT" | "CYCLE";
+export type PrerequisiteState = {
+  id: string;
+  status: string;
+  workItemKey?: string | null;
+  title?: string;
+};
+
+export type TaskWithPrerequisites = {
+  blockedById?: string | null;
+  blockedBy?: PrerequisiteState | null;
+  dependencies?: Array<{ prerequisite: PrerequisiteState }>;
+};
+
+export function taskPrerequisites(task: TaskWithPrerequisites) {
+  const prerequisites = new Map<string, PrerequisiteState>();
+  if (task.blockedById && task.blockedBy) prerequisites.set(task.blockedBy.id, task.blockedBy);
+  for (const edge of task.dependencies ?? []) {
+    prerequisites.set(edge.prerequisite.id, edge.prerequisite);
+  }
+  return [...prerequisites.values()];
+}
+
+export function unresolvedTaskPrerequisites(task: TaskWithPrerequisites) {
+  return taskPrerequisites(task).filter((prerequisite) => prerequisite.status !== "Done");
+}
+
+export type BlockedByCode =
+  | "SELF"
+  | "NOT_FOUND"
+  | "PRIVATE"
+  | "WRONG_PROJECT"
+  | "NO_SHARED_WORKSPACE"
+  | "CYCLE";
 export type BlockedByResult = { ok: true } | { ok: false; code: BlockedByCode; message: string };
 
+async function projectsShareActiveWorkspace(
+  client: Client,
+  leftProjectId: string,
+  rightProjectId: string,
+) {
+  if (leftProjectId === rightProjectId) return true;
+  const shared = await client.workspaceProject.findFirst({
+    where: {
+      projectId: leftProjectId,
+      workspace: {
+        archivedAt: null,
+        projects: { some: { projectId: rightProjectId } },
+      },
+    },
+    select: { id: true },
+  });
+  return Boolean(shared);
+}
+
+export async function validateTaskDependency(args: {
+  taskId: string;
+  projectId: string;
+  prerequisiteTaskId: string;
+  allowSharedWorkspace?: boolean;
+  client?: Client;
+}): Promise<BlockedByResult> {
+  const client = args.client ?? db;
+  if (args.prerequisiteTaskId === args.taskId) {
+    return { ok: false, code: "SELF", message: "A task cannot depend on itself." };
+  }
+  const prerequisite = await client.task.findUnique({
+    where: { id: args.prerequisiteTaskId },
+    select: {
+      id: true,
+      projectId: true,
+      private: true,
+      deletedAt: true,
+      epic: { select: { private: true, deletedAt: true } },
+      parent: { select: { private: true, deletedAt: true, epic: { select: { private: true, deletedAt: true } } } },
+    },
+  });
+  if (!prerequisite || prerequisite.deletedAt) {
+    return { ok: false, code: "NOT_FOUND", message: "Prerequisite task unavailable." };
+  }
+  if (
+    prerequisite.private || prerequisite.epic?.private || prerequisite.epic?.deletedAt ||
+    prerequisite.parent?.private || prerequisite.parent?.deletedAt ||
+    prerequisite.parent?.epic?.private || prerequisite.parent?.epic?.deletedAt
+  ) {
+    return { ok: false, code: "PRIVATE", message: "Prerequisite task unavailable." };
+  }
+  if (prerequisite.projectId !== args.projectId) {
+    if (!args.allowSharedWorkspace) {
+      return { ok: false, code: "WRONG_PROJECT", message: "Blocking task must be in the same project." };
+    }
+    if (!(await projectsShareActiveWorkspace(client, args.projectId, prerequisite.projectId))) {
+      return {
+        ok: false,
+        code: "NO_SHARED_WORKSPACE",
+        message: "Cross-project prerequisites must belong to projects in the same active workspace.",
+      };
+    }
+  }
+
+  // Walk every outgoing dependency from the proposed prerequisite. Reaching
+  // taskId means adding taskId -> prerequisiteTaskId would close a cycle.
+  const pending = [args.prerequisiteTaskId];
+  const seen = new Set<string>();
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    if (current === args.taskId) {
+      return {
+        ok: false,
+        code: "CYCLE",
+        message: "That would create a circular dependency.",
+      };
+    }
+    if (seen.has(current)) continue;
+    seen.add(current);
+    const row = await client.task.findUnique({
+      where: { id: current },
+      select: {
+        blockedById: true,
+        dependencies: { select: { prerequisiteTaskId: true } },
+      },
+    });
+    if (!row) continue;
+    if (row.blockedById) pending.push(row.blockedById);
+    for (const edge of row.dependencies) pending.push(edge.prerequisiteTaskId);
+  }
+  return { ok: true };
+}
+
+// Compatibility validator for the human single-prerequisite editor. Its
+// historical same-project boundary remains intentional; manager-created graph
+// edges use validateTaskDependency(..., allowSharedWorkspace: true).
 export async function validateBlockedBy(args: {
   taskId: string;
   projectId: string;
   blockerId: string;
   client?: Client;
 }): Promise<BlockedByResult> {
-  const client = args.client ?? db;
-  if (args.blockerId === args.taskId) {
-    return { ok: false, code: "SELF", message: "A task cannot be blocked by itself." };
-  }
-  const blocker = await client.task.findUnique({
-    where: { id: args.blockerId },
-    select: { id: true, projectId: true, deletedAt: true },
+  return validateTaskDependency({
+    taskId: args.taskId,
+    projectId: args.projectId,
+    prerequisiteTaskId: args.blockerId,
+    allowSharedWorkspace: false,
+    client: args.client,
   });
-  if (!blocker || blocker.deletedAt) {
-    return { ok: false, code: "NOT_FOUND", message: "Blocking task not found." };
-  }
-  if (blocker.projectId !== args.projectId) {
-    return { ok: false, code: "WRONG_PROJECT", message: "Blocking task must be in the same project." };
-  }
-  // Walk the blocker's own blocked-by chain; reaching taskId means this new edge
-  // would close a cycle. `seen` guards against any pre-existing cycle.
-  let current: string | null = args.blockerId;
-  const seen = new Set<string>();
-  while (current) {
-    if (current === args.taskId) {
-      return {
-        ok: false,
-        code: "CYCLE",
-        message: "That would create a circular block — the chosen task already depends on this one.",
-      };
-    }
-    if (seen.has(current)) break;
-    seen.add(current);
-    const row: { blockedById: string | null } | null = await client.task.findUnique({
-      where: { id: current },
-      select: { blockedById: true },
-    });
-    current = row?.blockedById ?? null;
-  }
-  return { ok: true };
 }

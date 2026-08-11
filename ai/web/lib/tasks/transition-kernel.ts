@@ -20,7 +20,8 @@ export type WorkflowEffect = {
     | "board_touch"
     | "epic_cleanup"
     | "epic_completion_review"
-    | "epic_completion_review_approval";
+    | "epic_completion_review_approval"
+    | "dependency_refill";
   key: string;
   payload: Record<string, unknown>;
   availableAt?: Date;
@@ -249,12 +250,28 @@ export async function applyTaskTransition(
   if (args.mutate) {
     await args.mutate({ tx, transitionId: transition.id, workflowVersion });
   }
+  const dependencyRefillNeeded = args.to === "Done" && (
+    await tx.taskDependency.count({ where: { prerequisiteTaskId: args.taskId } }) > 0 ||
+    await tx.task.count({ where: { blockedById: args.taskId, deletedAt: null } }) > 0
+  );
   await enqueueWorkflowEffects(tx, {
     taskId: args.taskId,
     projectId: args.projectId,
     aggregateVersion: workflowVersion,
     transitionId: transition.id,
-    effects: args.effects ?? [],
+    effects: [
+      ...(args.effects ?? []),
+      ...(dependencyRefillNeeded
+        ? [{
+            type: "dependency_refill" as const,
+            key: "dependency-refill",
+            payload: {
+              prerequisiteTaskId: args.taskId,
+              actorUserId: args.actorUserId ?? null,
+            },
+          }]
+        : []),
+    ],
   });
   return { transition, replayed: false as const };
 }

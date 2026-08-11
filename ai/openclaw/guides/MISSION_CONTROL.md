@@ -77,7 +77,7 @@ it holds something.
 |---|---|
 | `app/(app)/projects` | projects list + inline create. |
 | `app/(app)/projects/bin` | project-level soft-delete bin (30-day TTL restores). |
-| `app/(app)/projects/[slug]` | kanban board — four workflow columns (To Do · In Progress · Review · Done) with drag-and-drop; Backlog is a separate table below with a show/hide toggle. When the Workflow Focus block is shown, the board narrows to In Progress + Review only. Done cards older than `doneTtlDays` drop off and show the assignee + resolved reviewer avatar pair (built-by / accepted-by). Task cards show the current workflow actor + `updated` time, and a checklist progress bar that is column-aware: implementation items in In Progress, review items in Review. An unresolved formal `flag_blocker` lifecycle paints a red alert button in the card's bottom-left rail and contributes to Blocked / Needs attention; the button opens the Comments tab and focuses the exact blocker comment. A permission-only formal blocker can expose a scoped reporter grant action at the bottom of that comment. The existing lock badge remains reserved for a `blockedById` task dependency. |
+| `app/(app)/projects/[slug]` | kanban board — four workflow columns (To Do · In Progress · Review · Done) with drag-and-drop; Backlog is a separate table below with a show/hide toggle. When the Workflow Focus block is shown, the board narrows to In Progress + Review only. Done cards older than `doneTtlDays` drop off and show the assignee + resolved reviewer avatar pair (built-by / accepted-by). Task cards show the current workflow actor + `updated` time, and a checklist progress bar that is column-aware: implementation items in In Progress, review items in Review. An unresolved formal `flag_blocker` lifecycle paints a red alert button in the card's bottom-left rail and contributes to Blocked / Needs attention; the button opens the Comments tab and focuses the exact blocker comment. A permission-only formal blocker can expose a scoped reporter grant action at the bottom of that comment. The lock badge shows unresolved hard prerequisites from both the legacy `blockedById` field and the multi-edge dependency graph (`KEY +N` when several remain). |
 | `app/(app)/projects/[slug]/tasks/[taskId]` | task editor — two-column. **Main**: inline title, markdown description editor, sub-tasks progress checklist, attachments, comments. **Sidebar**: status, assignee, reviewer, epic picker, dates. |
 | `app/(app)/projects/[slug]/tasks` | flat task list across all statuses (search/filter; shows the deployment indicator for standalone tasks). |
 | `app/(app)/projects/[slug]/epics` | epic list (status filter: Backlog / To Do / In Progress / Done) + inline create. |
@@ -148,11 +148,12 @@ workspace group.
 - `Task.actingManagerId` — the reviewer / acting manager (UI label is
   "Reviewer"; the schema column stays `actingManagerId` for audit
   continuity).
-- `Task.blockedById` — optional self-FK to a blocking task that must
-  reach Done first (cycle-guarded on write). Enforced server-side: a
-  blocked task is skipped by automated epic-queue assignment and cannot
-  be started (workflow `start` and auto-start refuse) until the blocker
-  is Done.
+- `Task.blockedById` — legacy human-editable primary prerequisite. Runtime
+  gates read it together with `Task.dependencies`.
+- `TaskDependency` / `Task.dependencies` — multi-prerequisite graph created by
+  the Epic-manager workflow. All prerequisites must be Done before assignment
+  or start. Public cross-project links require a shared active Workspace;
+  cycles are rejected. Completion refills all affected Epic queues durably.
 - `Task.deletedAt` / `Epic.deletedAt` — soft-delete; `!= null` means in
   the bin.
 - `Epic.actingManagerId` — Epic-level acting manager. Epics have **no

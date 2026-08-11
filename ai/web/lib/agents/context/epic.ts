@@ -324,8 +324,11 @@ function buildEpicWorkflowPrompt(args: {
       summary: "<required for create_tasks: why the new tasks are needed to achieve the existing Epic goal>",
       tasks: [
         {
+          ref: "stable-local-ref",
           title: "<required for create_tasks>",
           description: "<optional markdown>",
+          execution: "<parallel | dependent>",
+          dependsOn: ["<local ref from this payload, existing Task id, or work-item key>"],
         },
       ],
       reason: "<required for deploy_review_reject: the technical reason the contribution is not safe to merge>",
@@ -347,6 +350,9 @@ function buildEpicWorkflowPrompt(args: {
     "- `advance_queue`: when the Epic is In Progress and approved, move direct child Backlog tasks to To Do and assign the next eligible worker.",
     "- `assign_next`: when the Epic is In Progress and approved, assign the next unassigned To Do task without changing Backlog tasks.",
     "- `create_tasks`: create Backlog tasks that are necessary to achieve the current Epic goal. This does not change Epic status and does not approve/start the plan.",
+    "- For every created task, declare scheduling explicitly: execution=parallel with dependsOn=[] when it may start immediately, or execution=dependent with one or more dependsOn refs. Array order and task numbering NEVER imply a dependency.",
+    "- `ref` must be unique within the request. dependsOn may reference another ref in the same request (including a forward ref), or an existing public Task by id/work-item key. Cross-project prerequisites are allowed only when both projects share an active Workspace.",
+    "- PM creates all tasks and dependency edges atomically. A dependent task is not assigned and cannot start until every prerequisite is Done; finishing a prerequisite automatically refills every newly eligible Epic queue.",
     "- Do not use create_tasks to expand the Epic scope. Use it only to cover missing work required by the existing Epic goal.",
     "- Human approval remains required before queue advancement: only call `advance_queue` or `assign_next` after the Epic is In Progress and approved.",
     "- You must never change Epic status. If the Epic is not In Progress/approved, create or discuss planning artifacts only.",

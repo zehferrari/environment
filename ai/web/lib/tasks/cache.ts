@@ -201,6 +201,20 @@ export function getCachedTaskDetailShell(taskId: string) {
           },
         },
         blockedBy: { select: { id: true, workItemKey: true, title: true, status: true } },
+        dependencies: {
+          orderBy: { createdAt: "asc" },
+          select: {
+            prerequisite: {
+              select: {
+                id: true,
+                workItemKey: true,
+                title: true,
+                status: true,
+                project: { select: { slug: true, name: true } },
+              },
+            },
+          },
+        },
         // ENV-123 — the operator-visible execution strip. Nullable: a task that
         // has never been evaluated by the watchdog has no row, and the page
         // renders nothing rather than guessing a state.

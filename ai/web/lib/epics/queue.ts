@@ -6,6 +6,7 @@
 import { db } from "@/lib/db";
 import { assignOpenEpicTasks } from "@/lib/epics/assignment";
 import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
+import { unresolvedTaskPrerequisites } from "@/lib/tasks/blocking";
 
 type Actor = {
   id: string;
@@ -72,4 +73,115 @@ export async function refillEpicQueue(args: {
   }
 
   return { ...assignment, epic };
+}
+
+// A completed prerequisite can unlock tasks outside its own Epic (including a
+// different project in the same Workspace). Refill every affected queue from a
+// durable outbox effect instead of relying on whichever UI/API path marked the
+// prerequisite Done.
+export async function refillDependentEpicQueuesForDoneTask(args: {
+  prerequisiteTaskId: string;
+  actorUserId?: string | null;
+}) {
+  const prerequisite = await db.task.findUnique({
+    where: { id: args.prerequisiteTaskId },
+    select: {
+      status: true,
+      workItemKey: true,
+      blocking: {
+        where: { deletedAt: null, archivedAt: null },
+        select: {
+          id: true,
+          title: true,
+          status: true,
+          epicId: true,
+          assigneeId: true,
+          approvedOn: true,
+          blockedById: true,
+          blockedBy: { select: { id: true, status: true, workItemKey: true } },
+          dependencies: { select: { prerequisite: { select: { id: true, status: true, workItemKey: true } } } },
+        },
+      },
+      dependents: {
+        where: { task: { deletedAt: null, archivedAt: null } },
+        select: {
+          task: {
+            select: {
+              id: true,
+              title: true,
+              status: true,
+              epicId: true,
+              assigneeId: true,
+              approvedOn: true,
+              blockedById: true,
+              blockedBy: { select: { id: true, status: true, workItemKey: true } },
+              dependencies: { select: { prerequisite: { select: { id: true, status: true, workItemKey: true } } } },
+            },
+          },
+        },
+      },
+    },
+  });
+  if (!prerequisite || prerequisite.status !== "Done") {
+    return { refilledEpicIds: [], skipped: "prerequisite_not_done" as const };
+  }
+
+  const dependentById = new Map([
+    ...prerequisite.blocking.map((task) => [task.id, task] as const),
+    ...prerequisite.dependents.map((edge) => [edge.task.id, edge.task] as const),
+  ]);
+  const newlyEligible = [...dependentById.values()].filter(
+    (task) => task.status === "To Do" && unresolvedTaskPrerequisites(task).length === 0,
+  );
+  if (newlyEligible.length === 0) return { refilledEpicIds: [], skipped: "no_newly_eligible_tasks" as const };
+  const epicIds = [...new Set(newlyEligible.map((task) => task.epicId).filter((id): id is string => Boolean(id)))];
+
+  const requestedActor = args.actorUserId
+    ? await db.user.findFirst({
+        where: { id: args.actorUserId, status: "active" },
+        select: { id: true, username: true, kind: true, isOwner: true },
+      })
+    : null;
+  const requestedActorUsable = Boolean(requestedActor && (requestedActor.kind === "agent" || requestedActor.isOwner));
+  const fallbackActor = requestedActorUsable ? null : await db.user.findFirst({
+    where: { status: "active", OR: [{ isOwner: true }, { agent: { role: "monitor", deactivatedAt: null } }] },
+    orderBy: [{ isOwner: "desc" }, { createdAt: "asc" }],
+    select: { id: true, username: true, kind: true, isOwner: true },
+  });
+  const usableActor = requestedActorUsable ? requestedActor : fallbackActor;
+  if (!usableActor) throw new Error("No active workflow actor can refill dependent Epic queues.");
+  const actor: Actor = {
+    id: usableActor.id,
+    username: usableActor.username,
+    kind: usableActor.kind === "agent" ? "agent" : "human",
+  };
+
+  for (const epicId of epicIds) {
+    await refillEpicQueue({
+      epicId,
+      actor,
+      via: "dependency-completed",
+      contextLine: `Prerequisite ${prerequisite.workItemKey ?? args.prerequisiteTaskId} is Done; this task is now eligible if all other prerequisites are also Done.`,
+    });
+  }
+
+  // A human may have deliberately assigned a blocked Task before its
+  // prerequisites cleared. It is not an open queue claim, so refill cannot
+  // rediscover it; wake that assignee explicitly once the full graph clears.
+  for (const task of newlyEligible.filter((candidate) => candidate.assigneeId)) {
+    await sendTaskWorkflowNotification({
+      taskId: task.id,
+      targetUserId: task.assigneeId!,
+      actor,
+      reason: "todo_start_required",
+      dedupeKey: `dependency-unlocked:${args.prerequisiteTaskId}:${task.id}`,
+      body: [
+        `All prerequisites for "${task.title}" are now Done.`,
+        task.approvedOn
+          ? "Its Action Plan is approved: call action=start and continue now."
+          : "Submit one structured technical Action Plan and wait for approval before starting.",
+      ].join("\n"),
+    });
+  }
+  return { refilledEpicIds: epicIds, skipped: null };
 }

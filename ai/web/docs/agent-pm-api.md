@@ -314,7 +314,7 @@ effective-branch clash check, and a rejection names the task to finish
 first. `start` itself is To Do → In Progress only: there is no agent
 path back from Review (human board drags remain authoritative).
 
-The queue is self-driving. PM automatically assigns the next unblocked
+The queue is self-driving. PM automatically assigns unblocked
 To Do task to every free pool worker when: a task reaches Done (any
 path), a task passes validation and moves to Review (`ready_for_review`
 or a human Review request), an Action Plan is approved
@@ -322,7 +322,10 @@ on an unassigned task, a human unassigns or returns a task to the queue,
 or the Epic's Action Plan is approved (which also promotes its Backlog
 tasks to To Do and starts the queue). Acting managers keep `assign_next`
 / `advance_queue` for corrections, but should rarely need a human prompt:
-keep every pool worker busy whenever an unblocked To Do task exists.
+keep every pool worker busy whenever an unblocked To Do task exists. When a
+completed Task is a prerequisite in another Epic or project, a durable workflow
+effect refills every affected Epic queue; this is not limited to the completed
+Task's own Epic.
 
 A plan approved while its task sat unassigned survives assignment: the
 new assignee inherits the approved plan and starts immediately instead of
@@ -348,13 +351,21 @@ downgraded to `To Do` when the task's blocker is uncleared or its Action
 Plan is unapproved, and every proposal-applied assignment/status change
 dispatches the same workflow wake as the engine paths.
 
-A Task with a blocker (`blocked_by`) cannot be started until the blocking
-task reaches Done. This is enforced server-side everywhere: automated
-assignment skips blocked tasks (the epic queue hands out the next
-unblocked task instead), the workflow `start` action rejects blocked
-tasks, and post-approval auto-start refuses them. If you are assigned a
-blocked task anyway (human override), do not start it — plan in the
-Action Plan tab and wait for the blocker to reach Done.
+A Task can have multiple hard prerequisites. PM reads the union of the legacy
+single `blocked_by` field and `TaskDependency` graph edges, and requires **all**
+prerequisites to reach Done. This is enforced server-side everywhere:
+automated assignment skips dependent tasks, workflow `start` and manual moves
+to In Progress reject them, and post-approval auto-start refuses them. Task
+numbering, array order, and board rank never imply a dependency.
+
+Epic-manager `create_tasks` requests must give every task a unique `ref`,
+`execution: "parallel" | "dependent"`, and `dependsOn`. `parallel` requires an
+empty list; `dependent` requires one or more local refs, existing Task ids, or
+work-item keys. Local forward references are valid. PM validates the complete
+graph and creates all Task rows and edges atomically. Same-project links are
+allowed; cross-project links require public Tasks in projects sharing an active
+Workspace. Self-links, cycles, private/deleted targets, duplicates, and
+unrelated-project links reject the whole request without partial writes.
 
 A reviewer `review_feedback` action returns the task to the **front** of
 the project's To Do queue so it is picked up before any other pending
@@ -816,6 +827,10 @@ be created as a separate explicitly assigned PM Task, with any dependency
 represented on the board. Human/external blockers still use `flag_blocker`.
 
 ### Hard task dependencies
+
+Epic-manager `create_tasks` is the graph-aware interface described above and
+is preferred for Epic scheduling. It supports multiple prerequisites and
+controlled cross-project links.
 
 Work-item proposals may set `blockedBy` on both `create_task` and
 `update_task`. The value is either an existing visible task id, a

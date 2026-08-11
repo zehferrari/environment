@@ -408,12 +408,14 @@ model Task {
   parentTaskId     String?
   parent           Task?     @relation("TaskSubtasks", fields: [parentTaskId], references: [id], onDelete: Cascade)
   subtasks         Task[]    @relation("TaskSubtasks")
-  // Optional hard dependency (ENV-62): this task requires blockedBy to be Done
-  // first. Cycle-guarded on write (lib/tasks/blocking.ts). SetNull so deleting
-  // the blocker clears the dependency rather than orphaning it.
+  // Legacy primary hard dependency (ENV-62). New workflow code stores the full
+  // dependency graph in TaskDependency and reads the union of both shapes so
+  // old rows and the human single-prerequisite editor remain compatible.
   blockedById      String?
   blockedBy        Task?     @relation("TaskBlockedBy", fields: [blockedById], references: [id], onDelete: SetNull)
   blocking         Task[]    @relation("TaskBlockedBy")
+  dependencies     TaskDependency[] @relation("TaskDependencies")
+  dependents       TaskDependency[] @relation("TaskDependents")
   title            String
   workItemKey      String?   @unique @map("work_item_key")
   description      String?
@@ -499,6 +501,23 @@ model Task {
   @@index([archivedById])
   @@index([deletedAt])
   @@index([alertReporter])
+}
+
+// A Task can require multiple prerequisite Tasks. Dependencies are scheduling
+// gates: every prerequisite must be Done before assignment or start. The
+// manager workflow may link public Tasks in projects that share an active
+// Workspace, allowing an Epic queue to model controlled cross-project work.
+model TaskDependency {
+  id                 String   @id @default(cuid())
+  taskId             String   @map("task_id")
+  task               Task     @relation("TaskDependencies", fields: [taskId], references: [id], onDelete: Cascade)
+  prerequisiteTaskId String   @map("prerequisite_task_id")
+  prerequisite       Task     @relation("TaskDependents", fields: [prerequisiteTaskId], references: [id], onDelete: Cascade)
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  @@unique([taskId, prerequisiteTaskId])
+  @@index([prerequisiteTaskId])
+  @@map("task_dependencies")
 }
 
 // PM-owned repository lifecycle for one Task. Board status remains the

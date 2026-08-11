@@ -29,6 +29,7 @@ import {
   type WorkflowEffect,
 } from "@/lib/tasks/transition-kernel";
 import { drainWorkflowOutbox } from "@/lib/tasks/workflow-outbox-drain";
+import { unresolvedTaskPrerequisites } from "@/lib/tasks/blocking";
 
 const TASK_STATUSES: readonly string[] = [
   "Backlog",
@@ -84,7 +85,12 @@ export async function moveTaskStatus(
       deletedAt: true,
       epicId: true,
       blockedById: true,
-      blockedBy: { select: { status: true, workItemKey: true } },
+      blockedBy: { select: { id: true, status: true, workItemKey: true } },
+      dependencies: {
+        select: {
+          prerequisite: { select: { id: true, status: true, workItemKey: true } },
+        },
+      },
       branchName: true,
       workItemKey: true,
       repositoryRun: { select: { phase: true } },
@@ -162,11 +168,12 @@ export async function moveTaskStatus(
         message: "Assign an implementation owner before moving this task to In Progress.",
       };
     }
-    if (current.blockedById && current.blockedBy?.status !== "Done") {
+    const unresolvedPrerequisites = unresolvedTaskPrerequisites(current);
+    if (unresolvedPrerequisites.length > 0) {
       return {
         ok: false,
         code: "EXPLICIT_USER_ACTION_REQUIRED",
-        message: `Task is blocked by ${current.blockedBy?.workItemKey ?? "another task"}, which must reach Done first.`,
+        message: `Task is waiting for ${unresolvedPrerequisites.map((item) => item.workItemKey ?? item.id).join(", ")}; every prerequisite must reach Done first.`,
       };
     }
     if (!epicAllowsAgentAction(current)) {

@@ -179,7 +179,7 @@ assert.equal(
   "checkpoint failure, idempotent replay, and success must all settle the exact consumed permission round",
 );
 assert(
-  board.includes("task.blockedByKey || task.hasActiveBlocker") &&
+  board.includes("task.blockedByKeys.length > 0 || task.hasActiveBlocker") &&
     board.includes("task.hasActiveBlocker ||\n    task.status"),
   "formal blockers must contribute to the Blocked count and Needs attention filter",
 );

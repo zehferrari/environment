@@ -28,7 +28,7 @@ import { validateProposal } from "@/lib/work-items/proposal";
 import { nextEpicTaskTitle } from "@/lib/tasks/epic-numbering";
 import { allocateWorkItemKey } from "@/lib/work-items/keys";
 import { MAX_SUBTASK_TEXT } from "@/lib/tasks/subtasks";
-import { validateBlockedBy } from "@/lib/tasks/blocking";
+import { unresolvedTaskPrerequisites, validateBlockedBy } from "@/lib/tasks/blocking";
 import { isActionableEpicStatus } from "@/lib/tasks/workflow-actors";
 import {
   applyTaskTransition,
@@ -499,7 +499,10 @@ export async function commitProposal(
               blockedById: true,
               assignee: { select: { username: true } },
               actingManager: { select: { username: true } },
-              blockedBy: { select: { workItemKey: true, status: true } },
+              blockedBy: { select: { id: true, workItemKey: true, status: true } },
+              dependencies: {
+                select: { prerequisite: { select: { id: true, workItemKey: true, status: true } } },
+              },
               epic: { select: { status: true, actingManagerId: true } },
             },
           });
@@ -633,7 +636,8 @@ export async function commitProposal(
             // worktree before any implementation becomes active.
             targetStatus = op.status;
             if (targetStatus === "In Progress") {
-              const blockerUncleared = Boolean(task.blockedById && task.blockedBy && task.blockedBy.status !== "Done");
+              const unresolvedPrerequisites = unresolvedTaskPrerequisites(task);
+              const blockerUncleared = unresolvedPrerequisites.length > 0;
               const planUnapproved = !task.approvedOn;
               targetStatus = "To Do";
               logs.push({
@@ -647,7 +651,7 @@ export async function commitProposal(
                     : planUnapproved
                       ? "plan_not_approved"
                       : "worktree_validation_required",
-                  blockedBy: task.blockedBy?.workItemKey ?? null,
+                  blockedBy: unresolvedPrerequisites.map((item) => item.workItemKey ?? item.id),
                 },
               });
             }

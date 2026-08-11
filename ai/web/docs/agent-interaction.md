@@ -750,17 +750,22 @@ restricted to the Epic's acting manager; acceptance/deployment actions are
 restricted to the selected Deploy Reviewer or unique Monitor fallback.
 Acting-manager actions:
 
-- `create_tasks` — create the Epic's implementation tasks from the
-  approved Epic Action Plan (only when the Epic has no child tasks yet).
+- `create_tasks` — atomically create implementation tasks and their dependency
+  graph for work required by the existing Epic goal. Each task requires a
+  unique `ref`, `execution: "parallel" | "dependent"`, and `dependsOn` array:
+  parallel tasks use `[]`; dependent tasks name every local ref, existing Task
+  id, or work-item key they require. Forward refs are valid. Cross-project
+  prerequisites must be public and share an active Workspace with this Epic's
+  project. Invalid targets, duplicate refs, or cycles reject the whole request.
 - `assign_next` — assign unassigned To Do tasks (queue order) to
   available workers from the Epic's pool, one task per free worker.
   A worker already holding an active task in the project (active means
   To Do / In Progress — a task the worker sent to Review does NOT
   count) is skipped, but other free pool workers
   are still assigned — the pool works in parallel, one active task per
-  agent. Tasks with an uncleared blocker (`blocked_by` task not Done)
-  are never assigned; the queue skips past them to the next unblocked
-  task, and they become assignable once the blocker reaches Done.
+  agent. Tasks with any uncleared prerequisite are never assigned; the queue
+  skips them, and a durable completion effect refills all affected Epic queues
+  once every prerequisite is Done. Numbering/order never implies dependency.
 - `advance_queue` — promote the Epic's Backlog tasks to To Do, then
   assign like `assign_next` (same per-worker availability rules).
 

@@ -18,6 +18,7 @@ import {
   renderCompletionReviewReport,
 } from "@/lib/epics/completion-review";
 import { drainWorkflowOutbox } from "@/lib/tasks/workflow-outbox-drain";
+import { validateTaskDependency } from "@/lib/tasks/blocking";
 import {
   applyTaskTransition,
   enqueueWorkflowEffects,
@@ -55,20 +56,65 @@ function cleanText(value: unknown, max: number) {
   return text;
 }
 
-function parseCreateTasks(value: unknown) {
+type RequestedCreateTask = {
+  ref: string;
+  title: string;
+  description: string | null;
+  execution: "parallel" | "dependent";
+  dependsOn: string[];
+};
+
+class CreateTaskValidationError extends Error {}
+
+function parseCreateTasks(value: unknown): RequestedCreateTask[] | null {
   if (!Array.isArray(value)) return null;
   if (value.length === 0 || value.length > 20) return null;
-  const tasks = value.flatMap((item) => {
+  const tasks = value.flatMap<RequestedCreateTask>((item) => {
     if (!item || typeof item !== "object") return [];
     const record = item as Record<string, unknown>;
+    const ref = cleanText(record.ref, 80);
     const title = cleanText(record.title, 220);
-    if (!title) return [];
+    const execution: RequestedCreateTask["execution"] | null = record.execution === "parallel" || record.execution === "dependent"
+      ? record.execution
+      : null;
+    const rawDependsOn = Array.isArray(record.dependsOn) ? record.dependsOn : null;
+    const dependsOn = rawDependsOn && rawDependsOn.length <= 20
+      ? rawDependsOn.flatMap((entry) => {
+          const dependencyRef = cleanText(entry, 160);
+          return dependencyRef ? [dependencyRef] : [];
+        })
+      : null;
+    if (!ref || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(ref) || !title || !execution || !dependsOn || !rawDependsOn || dependsOn.length !== rawDependsOn.length) return [];
+    if (new Set(dependsOn).size !== dependsOn.length) return [];
+    if (execution === "parallel" && dependsOn.length !== 0) return [];
+    if (execution === "dependent" && dependsOn.length === 0) return [];
+    if (dependsOn.includes(ref)) return [];
     const description = typeof record.description === "string" && record.description.trim()
       ? record.description.trim().slice(0, 8000)
       : null;
-    return [{ title, description }];
+    return [{ ref, title, description, execution, dependsOn }];
   });
-  return tasks.length === value.length ? tasks : null;
+  if (tasks.length !== value.length || new Set(tasks.map((task) => task.ref)).size !== tasks.length) return null;
+
+  // Detect cycles among forward/local refs before any database work. Existing
+  // Task refs cannot point back to not-yet-created rows, so only this local
+  // graph can form a cycle during create_tasks.
+  const localRefs = new Set(tasks.map((task) => task.ref));
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const byRef = new Map(tasks.map((task) => [task.ref, task]));
+  const visit = (ref: string): boolean => {
+    if (visiting.has(ref)) return false;
+    if (visited.has(ref)) return true;
+    visiting.add(ref);
+    for (const dependencyRef of byRef.get(ref)?.dependsOn ?? []) {
+      if (localRefs.has(dependencyRef) && !visit(dependencyRef)) return false;
+    }
+    visiting.delete(ref);
+    visited.add(ref);
+    return true;
+  };
+  return tasks.every((task) => visit(task.ref)) ? tasks : null;
 }
 
 async function notifyAssignedTask(args: {
@@ -889,60 +935,109 @@ export async function POST(
     const requestedTasks = parseCreateTasks(payload.tasks);
     if (!summary || !requestedTasks) {
       return NextResponse.json({
-        error: "summary and 1-20 tasks with non-empty title are required",
+        error: "summary and 1-20 valid tasks are required. Every task needs a unique ref, title, execution=parallel|dependent, and dependsOn (empty for parallel; non-empty for dependent).",
       }, { status: 400 });
     }
 
-    const created = await db.$transaction(async (tx) => {
-      const maxRank = await tx.task.aggregate({
-        where: { projectId: epic.projectId, status: "Backlog", archivedAt: null, deletedAt: null },
-        _max: { rank: true },
-      });
-      let nextRank = (maxRank._max.rank ?? 0) + 1;
-      const now = new Date();
-      const rows: Array<{ id: string; title: string; workItemKey: string | null }> = [];
-      for (const task of requestedTasks) {
-        const title = await nextEpicTaskTitle(epic.id, task.title, tx);
-        const row = await tx.task.create({
-          data: {
-            projectId: epic.projectId,
-            epicId: epic.id,
-            parentTaskId: null,
-            workItemKey: await allocateWorkItemKey(epic.projectId, tx),
-            title,
-            description: task.description,
-            status: "Backlog",
-            rank: nextRank++,
-            statusChangedAt: now,
-            // Leave the task reviewer unstamped: resolveReviewOwnerId falls
-            // back to the epic's CURRENT acting manager while the epic is In
-            // Progress. Stamping the manager here froze a stale reference when
-            // the human later swapped or deactivated the manager.
-            actingManagerId: null,
-            reporterId: epic.reporterId ?? null,
-            branchName: null,
-            commitPrefix: null,
-          },
-          select: { id: true, title: true, workItemKey: true },
-        });
-        rows.push(row);
-        await tx.activityLog.create({
-          data: {
-            projectId: epic.projectId,
-            taskId: row.id,
-            userId: agent.user!.id,
-            kind: "task.create",
-            payload: JSON.stringify({
-              title: row.title,
-              epicId: epic.id,
-              via: "epic-manager-workflow",
-              action,
-            }),
-          },
-        });
-      }
+    let created: Array<{ id: string; ref: string; title: string; workItemKey: string | null }>;
+    try {
+      created = await db.$transaction(async (tx) => {
+        const localRefs = new Set(requestedTasks.map((task) => task.ref));
+        const externalRefs = [...new Set(requestedTasks.flatMap((task) => task.dependsOn))]
+          .filter((ref) => !localRefs.has(ref));
+        const resolvedExternal = new Map<string, string>();
+        for (const ref of externalRefs) {
+          const prerequisite = await tx.task.findFirst({
+            where: {
+              deletedAt: null,
+              OR: [{ id: ref }, { workItemKey: ref }],
+            },
+            select: { id: true },
+          });
+          if (!prerequisite) {
+            throw new CreateTaskValidationError(`Prerequisite ${ref} is unavailable.`);
+          }
+          resolvedExternal.set(ref, prerequisite.id);
+        }
 
-      await tx.agentChatMessage.create({
+        const maxRank = await tx.task.aggregate({
+          where: { projectId: epic.projectId, status: "Backlog", archivedAt: null, deletedAt: null },
+          _max: { rank: true },
+        });
+        let nextRank = (maxRank._max.rank ?? 0) + 1;
+        const now = new Date();
+        const rows: Array<{ id: string; ref: string; title: string; workItemKey: string | null }> = [];
+        const rowByRef = new Map<string, { id: string; ref: string; title: string; workItemKey: string | null }>();
+        for (const task of requestedTasks) {
+          const title = await nextEpicTaskTitle(epic.id, task.title, tx);
+          const row = await tx.task.create({
+            data: {
+              projectId: epic.projectId,
+              epicId: epic.id,
+              parentTaskId: null,
+              workItemKey: await allocateWorkItemKey(epic.projectId, tx),
+              title,
+              description: task.description,
+              status: "Backlog",
+              rank: nextRank++,
+              statusChangedAt: now,
+              // Leave the task reviewer unstamped: resolveReviewOwnerId falls
+              // back to the epic's CURRENT acting manager while the epic is In
+              // Progress. Stamping the manager here froze a stale reference when
+              // the human later swapped or deactivated the manager.
+              actingManagerId: null,
+              reporterId: epic.reporterId ?? null,
+              branchName: null,
+              commitPrefix: null,
+            },
+            select: { id: true, title: true, workItemKey: true },
+          });
+          const referencedRow = { ...row, ref: task.ref };
+          rows.push(referencedRow);
+          rowByRef.set(task.ref, referencedRow);
+          await tx.activityLog.create({
+            data: {
+              projectId: epic.projectId,
+              taskId: row.id,
+              userId: agent.user!.id,
+              kind: "task.create",
+              payload: JSON.stringify({
+                title: row.title,
+                epicId: epic.id,
+                via: "epic-manager-workflow",
+                action,
+                ref: task.ref,
+                execution: task.execution,
+                dependsOn: task.dependsOn,
+              }),
+            },
+          });
+        }
+
+        const edges: Array<{ taskId: string; prerequisiteTaskId: string }> = [];
+        for (const task of requestedTasks) {
+          const dependent = rowByRef.get(task.ref)!;
+          for (const dependencyRef of task.dependsOn) {
+            const prerequisiteTaskId = rowByRef.get(dependencyRef)?.id ?? resolvedExternal.get(dependencyRef);
+            if (!prerequisiteTaskId) {
+              throw new CreateTaskValidationError(`Prerequisite ${dependencyRef} is unavailable.`);
+            }
+            const validation = await validateTaskDependency({
+              taskId: dependent.id,
+              projectId: epic.projectId,
+              prerequisiteTaskId,
+              allowSharedWorkspace: true,
+              client: tx,
+            });
+            if (!validation.ok) throw new CreateTaskValidationError(`${dependencyRef}: ${validation.message}`);
+            edges.push({ taskId: dependent.id, prerequisiteTaskId });
+          }
+        }
+        if (edges.length > 0) {
+          await tx.taskDependency.createMany({ data: edges });
+        }
+
+        await tx.agentChatMessage.create({
         data: {
           projectId: epic.projectId,
           taskId: null,
@@ -955,13 +1050,19 @@ export async function POST(
             "",
             summary,
             "",
-            ...rows.map((row) => `- ${row.workItemKey ?? row.id}: ${row.title}`),
+            ...rows.map((row) => {
+              const request = requestedTasks.find((task) => task.ref === row.ref)!;
+              const dependencyText = request.dependsOn.length > 0
+                ? ` — waits for ${request.dependsOn.join(", ")}`
+                : " — parallel-ready";
+              return `- ${row.workItemKey ?? row.id} [${row.ref}]: ${row.title}${dependencyText}`;
+            }),
           ].join("\n"),
           allowDescriptionEdit: false,
           originChannel: "chat",
         },
       });
-      await tx.activityLog.create({
+        await tx.activityLog.create({
         data: {
           projectId: epic.projectId,
           userId: agent.user!.id,
@@ -971,14 +1072,21 @@ export async function POST(
             epicId: epic.id,
             summary,
             taskIds: rows.map((row) => row.id),
+            dependencies: requestedTasks.map((task) => ({ ref: task.ref, dependsOn: task.dependsOn })),
             status: epic.status,
             approvalCleared: false,
             epicStatusChanged: false,
           }),
         },
       });
-      return rows;
-    });
+        return rows;
+      }, { timeout: 20_000 });
+    } catch (error) {
+      if (error instanceof CreateTaskValidationError) {
+        return NextResponse.json({ error: error.message }, { status: 409 });
+      }
+      throw error;
+    }
 
     await recordPmChannelRunWorkflowAction({
       epicId: epic.id,

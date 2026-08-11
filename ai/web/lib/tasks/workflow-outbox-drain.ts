@@ -11,6 +11,7 @@ import {
   type TaskWorkflowNotificationReason,
 } from "@/lib/agents/workflow/notifications/task";
 import { publishBoardTouch } from "@/lib/pm/board-events";
+import { refillDependentEpicQueuesForDoneTask } from "@/lib/epics/queue";
 
 const MAX_ATTEMPTS = 8;
 const LEASE_MS = 2 * 60_000;
@@ -123,6 +124,13 @@ async function dispatch(row: OutboxRow) {
   }
   if (row.effectType === "board_touch") {
     publishBoardTouch(row.projectId);
+    return;
+  }
+  if (row.effectType === "dependency_refill") {
+    await refillDependentEpicQueuesForDoneTask({
+      prerequisiteTaskId: String(payload.prerequisiteTaskId),
+      actorUserId: typeof payload.actorUserId === "string" ? payload.actorUserId : null,
+    });
     return;
   }
   throw new Error(`Unsupported workflow outbox effect type: ${row.effectType}`);

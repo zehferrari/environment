@@ -1,5 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { applyTaskTransition } from "@/lib/tasks/transition-kernel";
+import { unresolvedTaskPrerequisites } from "@/lib/tasks/blocking";
 
 // "One active Task per project" (docs/agent-pm-api.md § Role permissions):
 // a worker holding a task in any of these statuses is not eligible for another
@@ -142,8 +143,8 @@ export async function promoteEpicBacklogTasks(
 // either runs out. Each assignment makes that worker ineligible for the rest
 // of the loop (their fresh To Do task counts as active inside the same
 // transaction), so one call fills every free worker with exactly one task.
-// Tasks with an uncleared blocker (blockedBy not Done) are never handed out —
-// the same dependency rule the start/auto-start guards enforce.
+// Tasks with any uncleared prerequisite are never handed out — the same full
+// dependency-graph rule the start/auto-start guards enforce.
 export async function assignOpenEpicTasks(
   tx: Prisma.TransactionClient,
   args: {
@@ -173,7 +174,12 @@ export async function assignOpenEpicTasks(
       actingManagerId: true,
       approvedOn: true,
       blockedById: true,
-      blockedBy: { select: { status: true, workItemKey: true } },
+      blockedBy: { select: { id: true, status: true, workItemKey: true } },
+      dependencies: {
+        select: {
+          prerequisite: { select: { id: true, status: true, workItemKey: true } },
+        },
+      },
       project: { select: { slug: true } },
     },
   });
@@ -181,9 +187,7 @@ export async function assignOpenEpicTasks(
     return { assignments: [] as EpicTaskAssignment[], skipped: "no_todo_task" as const };
   }
 
-  const tasks = openTasks.filter(
-    (task) => !task.blockedById || task.blockedBy?.status === "Done",
-  );
+  const tasks = openTasks.filter((task) => unresolvedTaskPrerequisites(task).length === 0);
   if (tasks.length === 0) {
     await tx.activityLog.create({
       data: {
@@ -196,6 +200,10 @@ export async function assignOpenEpicTasks(
           epicId: args.epicId,
           via: args.via,
           blockedTaskIds: openTasks.map((task) => task.id),
+          unresolvedPrerequisites: Object.fromEntries(openTasks.map((task) => [
+            task.id,
+            unresolvedTaskPrerequisites(task).map((prerequisite) => prerequisite.workItemKey ?? prerequisite.id),
+          ])),
         }),
       },
     });

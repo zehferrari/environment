@@ -93,6 +93,7 @@
     "test:epic-completion-review": "node --import tsx scripts/epic-completion-review-test.ts",
     "test:workflow-action-effect": "tsx scripts/workflow-action-effect-test.ts",
     "test:workflow-transition-kernel": "tsx scripts/workflow-transition-kernel-test.ts",
+    "test:task-dependency-graph": "tsx scripts/task-dependency-graph-test.ts",
     "test:workflow-reconciler": "node --import tsx scripts/workflow-reconciler-test.ts",
     "test:workflow-boundary": "node --import tsx scripts/workflow-boundary-test.ts",
     "test:task-execution-episode": "node --import tsx scripts/task-execution-episode-test.ts",

@@ -7,6 +7,7 @@ import { effectiveTaskBranchName } from "@/lib/work-items/branches";
 import { ensureTaskCodeWorktree, TaskWorktreeError } from "@/lib/tasks/worktree-claim";
 import { applyTaskTransition, TaskTransitionRejected } from "@/lib/tasks/transition-kernel";
 import { drainWorkflowOutbox } from "@/lib/tasks/workflow-outbox-drain";
+import { unresolvedTaskPrerequisites } from "@/lib/tasks/blocking";
 
 type Actor = {
   id: string;
@@ -136,6 +137,11 @@ export async function startApprovedTodoTaskIfIdle(args: {
       branchName: true,
       blockedById: true,
       blockedBy: { select: { id: true, title: true, status: true, workItemKey: true } },
+      dependencies: {
+        select: {
+          prerequisite: { select: { id: true, title: true, status: true, workItemKey: true } },
+        },
+      },
       epicId: true,
       epic: { select: { status: true, workItemKey: true, branchName: true } },
       project: { select: { slug: true } },
@@ -170,12 +176,16 @@ export async function startApprovedTodoTaskIfIdle(args: {
   ) {
     return { started: false, reason: "not_agent_assignee", task: taskRef };
   }
-  if (task.blockedById && task.blockedBy && task.blockedBy.status !== "Done") {
+  const [unresolvedPrerequisite] = unresolvedTaskPrerequisites(task);
+  if (unresolvedPrerequisite) {
     return {
       started: false,
       reason: "blocked",
       task: taskRef,
-      activeTask: { id: task.blockedBy.id, title: task.blockedBy.workItemKey ?? task.blockedBy.title },
+      activeTask: {
+        id: unresolvedPrerequisite.id,
+        title: unresolvedPrerequisite.workItemKey ?? unresolvedPrerequisite.title ?? "another task",
+      },
     };
   }
   if (!epicAllowsAgentAction(task)) {
