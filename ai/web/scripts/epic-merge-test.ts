@@ -97,6 +97,56 @@ async function main() {
       "local refs/heads/epic-x must track the pushed Epic tip after each merge",
     );
 
+    // 4b. The stable checkout may intentionally have the Epic branch checked
+    // out. A successful child merge must fast-forward that clean worktree too;
+    // otherwise whole-Epic acceptance sees local behind origin and stalls in
+    // Operational Error after the final child is Done.
+    makeBranch("feat-checked", [{ path: "checked.txt", content: "checked\n" }]);
+    git(cloneDir, "checkout", "-B", "epic-checked", "main");
+    r = await mergeTaskBranchIntoEpic({
+      ...base,
+      epicBranch: "epic-checked",
+      taskBranch: "feat-checked",
+    });
+    assert(r.ok && r.kind === "merged", "checked-out Epic branch must accept a child merge");
+    git(cloneDir, "fetch", "--quiet", "origin");
+    assert.equal(
+      git(cloneDir, "rev-parse", "HEAD"),
+      git(cloneDir, "rev-parse", "origin/epic-checked"),
+      "clean checked-out Epic worktree must fast-forward to the published candidate",
+    );
+    assert.equal(git(cloneDir, "status", "--porcelain"), "", "fast-forwarded Epic worktree must remain clean");
+    assert(
+      git(cloneDir, "ls-tree", "-r", "--name-only", "HEAD").includes("checked.txt"),
+      "checked-out Epic worktree must expose the newly integrated child content",
+    );
+    git(cloneDir, "checkout", "main");
+
+    // 4c. Never update a checked-out Epic worktree with local state. Origin
+    // may still receive the immutable merge candidate, but the dirty checkout
+    // is preserved and the later acceptance gate must surface reconciliation.
+    makeBranch("feat-dirty-checked", [{ path: "dirty-checked.txt", content: "merged remotely\n" }]);
+    git(cloneDir, "checkout", "-B", "epic-dirty-checked", "main");
+    const localOnlyPath = join(cloneDir, "preserve-me.tmp");
+    writeFileSync(localOnlyPath, "local operator state\n");
+    const dirtyBefore = git(cloneDir, "rev-parse", "HEAD");
+    r = await mergeTaskBranchIntoEpic({
+      ...base,
+      epicBranch: "epic-dirty-checked",
+      taskBranch: "feat-dirty-checked",
+    });
+    assert(r.ok && r.kind === "merged", "dirty checked-out Epic branch must not block immutable origin integration");
+    git(cloneDir, "fetch", "--quiet", "origin");
+    assert.equal(git(cloneDir, "rev-parse", "HEAD"), dirtyBefore, "dirty Epic worktree HEAD must remain untouched");
+    assert.notEqual(
+      git(cloneDir, "rev-parse", "HEAD"),
+      git(cloneDir, "rev-parse", "origin/epic-dirty-checked"),
+      "dirty checked-out Epic branch must remain visibly behind the published candidate",
+    );
+    assert.equal(git(cloneDir, "status", "--porcelain"), "?? preserve-me.tmp", "local dirty state must be preserved");
+    rmSync(localOnlyPath);
+    git(cloneDir, "checkout", "main");
+
     // 5. idempotent — an already-integrated task is detected via the LOCAL
     //    Epic ref, not re-merged
     r = await mergeTaskBranchIntoEpic({ ...base, epicBranch: "epic-x", taskBranch: "feat-a" });

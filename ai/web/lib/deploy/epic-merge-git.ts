@@ -277,30 +277,44 @@ export async function removeMergedOriginChildBranch(args: {
   return { branch: taskBranch, outcome: "removed", detail: null };
 }
 
-// True when refs/heads/<branch> is checked out in the primary checkout or any
-// linked worktree — `git branch -f` refuses to move a checked-out ref.
-async function branchCheckedOut(repoPath: string, branch: string) {
+// Return the worktree that currently owns refs/heads/<branch>. Git refuses to
+// move a checked-out ref with `branch -f`, but a clean owning worktree can be
+// advanced safely with an ordinary fast-forward merge.
+async function checkedOutBranchWorktree(repoPath: string, branch: string) {
   try {
     const out = await git(repoPath, ["worktree", "list", "--porcelain"]);
-    return out.split("\n").includes(`branch refs/heads/${branch}`);
+    const branchLine = `branch refs/heads/${branch}`;
+    const record = out
+      .split(/\n\s*\n/)
+      .map((entry) => entry.split("\n"))
+      .find((lines) => lines.includes(branchLine));
+    return record?.find((line) => line.startsWith("worktree "))?.slice("worktree ".length) ?? null;
   } catch {
-    return true; // unknown — be conservative, skip the ref update
+    return null; // unknown — be conservative and leave reconciliation visible
   }
 }
 
-// Best-effort: keep the local Epic ref in step with what was just pushed so
-// local-only child branches (P6) always have a fresh local merge target and
-// claim-branch --epic bases new siblings on current work. Never moves a
-// checked-out or diverged ref; failures are ignored (origin stays canonical).
+// Best-effort: keep the local Epic ref and its owning worktree in step with
+// what was just pushed so local-only child branches (P6) always have a fresh
+// merge target and whole-Epic acceptance sees the same frozen candidate on
+// both sides. A checked-out ref advances only through `merge --ff-only` after
+// proving its worktree clean; dirty/diverged/racing state remains untouched
+// and is reported later by the acceptance gate. Origin stays canonical.
 async function fastForwardLocalEpicRef(repoPath: string, epicBranch: string, sha: string) {
-  if (await branchCheckedOut(repoPath, epicBranch)) return;
   if (!(await localRefExists(repoPath, epicBranch))) {
     await gitOk(repoPath, ["branch", epicBranch, sha]);
     return;
   }
-  if (await isAncestor(repoPath, `refs/heads/${epicBranch}`, sha)) {
+  const localRef = `refs/heads/${epicBranch}`;
+  if (!(await isAncestor(repoPath, localRef, sha))) return;
+  const worktreePath = await checkedOutBranchWorktree(repoPath, epicBranch);
+  if (!worktreePath) {
     await gitOk(repoPath, ["branch", "-f", epicBranch, sha]);
+    return;
   }
+  const status = await git(worktreePath, ["status", "--porcelain=v1", "--untracked-files=all"]).catch(() => null);
+  if (status !== "") return;
+  await gitOk(worktreePath, ["merge", "--ff-only", sha]);
 }
 
 export type EpicMergeResult =
