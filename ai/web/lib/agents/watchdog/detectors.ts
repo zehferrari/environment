@@ -7,7 +7,7 @@
 // "what is broken" decision separable from the "what do we do about it" one in
 // lib/agents/watchdog/repairs.ts.
 //
-// The seven modes, in the description's order:
+// The original seven execution modes plus one pre-start workflow mode:
 //
 //   expired_lease                       — expired run leases
 //   in_progress_no_active_run           — In Progress tasks with no active run
@@ -16,9 +16,11 @@
 //   blocker_permission_already_granted  — blocker whose permission was granted
 //   blocker_clear_loop                  — repeated blocker/clear loops
 //   session_churn                       — excessive rotation / context failures
+//   assigned_todo_plan_missing          — assignee replied but no structured plan landed
 //
-// The first five have a bounded, idempotent repair. The last two deliberately
-// do NOT: a task that keeps re-raising a blocker, or that keeps burning
+// The ordinary execution findings and the pre-start plan finding have a
+// bounded, idempotent repair. The loop/churn findings deliberately do NOT: a
+// task that keeps re-raising a blocker, or that keeps burning
 // sessions, is a task where more automated recovery is the problem rather than
 // the fix. Those escalate to the reporter and stop.
 
@@ -99,6 +101,11 @@ export interface WatchdogTaskRecord {
   projectId: string | null;
   status: string;
   assigneeSlug: string | null;
+  /** When this board state began; used as the pre-start stall anchor. */
+  statusChangedAt?: number | null;
+  /** Task approval and structured-plan state for the To Do planning gate. */
+  approvedOn?: number | null;
+  hasActionPlan?: boolean;
   /** Implementation checklist rows still open. */
   openChecklistCount: number;
   activeBlocker: WatchdogBlockerState | null;
@@ -131,6 +138,7 @@ export type WatchdogRepairKind =
   | "settle_run"
   | "queue_continuation"
   | "wake_assignee"
+  | "request_plan"
   | "escalate";
 
 export interface WatchdogFinding {
@@ -239,7 +247,17 @@ function isRepairableEpisode(task: WatchdogTaskRecord): boolean {
 }
 
 function idleSince(task: WatchdogTaskRecord, snapshot: WatchdogSnapshot): number {
-  const anchor = task.lastDurableActionAt ?? 0;
+  let anchor = Math.max(task.lastDurableActionAt ?? 0, task.statusChangedAt ?? 0);
+  // A recently completed/failed planning turn is still activity. Give the
+  // assignee a full grace window before deciding that its lack of a durable
+  // structured plan needs another turn.
+  for (const run of snapshot.runs) {
+    if (run.taskId !== task.id) continue;
+    anchor = Math.max(
+      anchor,
+      run.lastEventAt ?? run.streamingAt ?? run.acceptedAt ?? run.createdAt,
+    );
+  }
   return snapshot.now - anchor;
 }
 
@@ -298,6 +316,39 @@ const IN_PROGRESS_NO_ACTIVE_RUN: WatchdogDetector = {
         reasonDetail: "no active run",
         repair: "queue_continuation",
         priority: 60,
+      });
+    }
+    return findings;
+  },
+};
+
+// Pre-start gate — an assigned To Do task is not executable until its
+// structured Action Plan exists and is approved. A free-form chat reply is
+// intentionally not parsed as a plan (ENV-119), so the watchdog must detect
+// the durable absence and request the exact submit_plan action instead of
+// letting the task sit forever.
+const ASSIGNED_TODO_PLAN_MISSING: WatchdogDetector = {
+  id: "assigned_todo_plan_missing",
+  statement:
+    "An assigned To Do task with no durable structured Action Plan gets a bounded plan-submission turn.",
+  detect: (snapshot) => {
+    const live = liveRunTaskIds(snapshot);
+    const findings: WatchdogFinding[] = [];
+    for (const task of snapshot.tasks) {
+      if (task.status !== "To Do" || !task.assigneeSlug) continue;
+      if (task.approvedOn || task.hasActionPlan) continue;
+      if (live.has(task.id)) continue;
+      if (idleSince(task, snapshot) < stallGrace(snapshot)) continue;
+      findings.push({
+        detectorId: "assigned_todo_plan_missing",
+        taskId: task.id,
+        runId: null,
+        agentSlug: task.assigneeSlug,
+        state: "stalled",
+        reasonCode: "structured_action_plan_missing",
+        reasonDetail: "the assigned task has no submitted structured Action Plan",
+        repair: "request_plan",
+        priority: 65,
       });
     }
     return findings;
@@ -491,6 +542,7 @@ export const WATCHDOG_DETECTORS: readonly WatchdogDetector[] = [
   SESSION_CHURN,
   EXPIRED_LEASE,
   BLOCKER_PERMISSION_ALREADY_GRANTED,
+  ASSIGNED_TODO_PLAN_MISSING,
   IN_PROGRESS_NO_ACTIVE_RUN,
   STARTED_NO_WORK,
   OPEN_CHECKLIST_NO_CONTINUATION,

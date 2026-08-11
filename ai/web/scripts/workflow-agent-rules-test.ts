@@ -198,6 +198,12 @@ assert(
   taskNotifications.includes("remove_subtask"),
   "agent workflow guidance must expose obsolete/duplicate checklist cleanup",
 );
+assert(
+  taskNotifications.includes("<submit_plan | start") &&
+    taskNotifications.includes("A plain text reply is not a submitted plan") &&
+    taskNotifications.includes("acceptanceCriteria"),
+  "planning turns must advertise submit_plan and its structured payload instead of implying Markdown creates executable plan state",
+);
 
 // --- 2026-07 workflow overhaul (P1-P6) ---
 
@@ -248,6 +254,10 @@ assert(
 assert(
   taskWorkflowRoute.includes("ready_for_review rejected"),
   "the sub-task gate rejection must list the open items and how to clear them",
+);
+assert(
+  taskWorkflowRoute.includes("wait for approval before adding implementation sub-tasks"),
+  "implementation checklist actions must not mutate an unapproved planning task",
 );
 assert(
   taskWorkflowRoute.includes('action === "publish_checkpoint"') &&

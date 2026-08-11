@@ -1428,7 +1428,7 @@ async function handleTaskWorkflowAction(
             `Task "${task.title}" is now in To Do and assigned to you.`,
             task.approvedOn
               ? "The Action Plan is approved. Move it to In Progress through the workflow endpoint and start work immediately."
-              : "Before starting work, post one concise technical implementation plan in Action Plan and wait for reviewer/reporter approval.",
+              : "Before starting work, call action=submit_plan with one structured technical Action Plan and wait for reviewer/reporter approval. A plain chat reply is discussion only.",
           ].join("\n"),
         },
       });
@@ -1468,6 +1468,15 @@ async function handleTaskWorkflowAction(
       if (!isReviewer) return NextResponse.json({ error: "Only the resolved reviewer can add review sub-tasks" }, { status: 403 });
     } else if (!isAssignee) {
       return NextResponse.json({ error: "Only the assignee can add implementation sub-tasks" }, { status: 403 });
+    } else if (!task.approvedOn) {
+      return NextResponse.json({
+        error: "Submit the structured Action Plan with action=submit_plan and wait for approval before adding implementation sub-tasks",
+      }, { status: 409 });
+    } else if (task.status !== "To Do" && task.status !== "In Progress") {
+      return NextResponse.json({
+        error: "Implementation sub-tasks can be added only to an approved To Do or In Progress task",
+        currentStatus: task.status,
+      }, { status: 409 });
     }
     const text = typeof payload.subtaskText === "string" ? payload.subtaskText.trim() : "";
     if (!text) return NextResponse.json({ error: "subtaskText is required" }, { status: 400 });
@@ -1531,6 +1540,11 @@ async function handleTaskWorkflowAction(
       if (!isReviewer) return NextResponse.json({ error: "Only the resolved reviewer can update review sub-tasks" }, { status: 403 });
     } else if (!isAssignee) {
       return NextResponse.json({ error: "Only the assignee can update implementation sub-tasks" }, { status: 403 });
+    } else if (!task.approvedOn || (task.status !== "To Do" && task.status !== "In Progress")) {
+      return NextResponse.json({
+        error: "Implementation sub-tasks can be updated only after Action Plan approval while the task is To Do or In Progress",
+        currentStatus: task.status,
+      }, { status: 409 });
     }
     // Default to marking complete; pass completed:false to reopen.
     const completed = payload.completed === undefined ? true : payload.completed === true;
@@ -1619,6 +1633,11 @@ async function handleTaskWorkflowAction(
       if (!isReviewer) return NextResponse.json({ error: "Only the resolved reviewer can remove review sub-tasks" }, { status: 403 });
     } else if (!isAssignee) {
       return NextResponse.json({ error: "Only the assignee can remove implementation sub-tasks" }, { status: 403 });
+    } else if (!task.approvedOn || (task.status !== "To Do" && task.status !== "In Progress")) {
+      return NextResponse.json({
+        error: "Implementation sub-tasks can be removed only after Action Plan approval while the task is To Do or In Progress",
+        currentStatus: task.status,
+      }, { status: 409 });
     }
     const { value: removed } = await runWorkflowActionAtomically(
       { taskId: task.id, agentSlug: agent.slug, messageId, action, taskState: task.status },

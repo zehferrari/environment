@@ -328,7 +328,62 @@ export async function wakeAssigneeAfterGrant(args: {
 }
 
 // ------------------------------------------------------------------
-// Repair 4 — escalation (the only "repair" for the escalate-only detectors)
+// Repair 4 — request a missing structured pre-start Action Plan
+// ------------------------------------------------------------------
+
+export async function requestMissingActionPlan(args: {
+  taskId: string;
+  now: Date;
+}): Promise<RepairResult> {
+  const task = await db.task.findUnique({
+    where: { id: args.taskId },
+    select: {
+      id: true,
+      title: true,
+      status: true,
+      approvedOn: true,
+      assigneeId: true,
+      deletedAt: true,
+      actionPlan: { select: { id: true } },
+      assignee: { select: { agent: { select: { slug: true } } } },
+    },
+  });
+  if (
+    !task ||
+    task.deletedAt ||
+    task.status !== "To Do" ||
+    task.approvedOn ||
+    task.actionPlan ||
+    !task.assigneeId
+  ) {
+    return { outcome: "noop", recoveryAction: null };
+  }
+  const slug = task.assignee?.agent?.slug;
+  if (!slug) return { outcome: "noop", recoveryAction: null };
+
+  const notification = await sendTaskWorkflowNotification({
+    taskId: task.id,
+    targetUserId: task.assigneeId,
+    actor: { id: task.assigneeId, kind: "agent", username: slug },
+    reason: "todo_start_required",
+    body: [
+      `PM's workflow watchdog found that "${task.title}" is assigned to you in To Do but still has no durable structured Action Plan.`,
+      "Call the task workflow endpoint now with action=submit_plan and the required actionPlan object (summary plus validated steps). A normal Action Plan chat reply is discussion only and does not satisfy this gate.",
+      "After submit_plan succeeds, stop and let the resolved reviewer approve it. Do not add implementation sub-tasks or start repository work before approval.",
+    ].join("\n"),
+  });
+  if (!notification) {
+    return {
+      outcome: "failed",
+      recoveryAction: null,
+      detail: "could not enqueue a structured Action Plan request for the assignee",
+    };
+  }
+  return { outcome: "repaired", recoveryAction: "Action Plan submission requested" };
+}
+
+// ------------------------------------------------------------------
+// Repair 5 — escalation (the only "repair" for the escalate-only detectors)
 // ------------------------------------------------------------------
 
 /**

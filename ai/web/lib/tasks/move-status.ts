@@ -309,7 +309,7 @@ export async function moveTaskStatus(
           ].join("\n")
           : [
             `Task "${current.title}" is now in To Do and assigned to you.`,
-            "Before starting work, post one concise technical implementation plan in Action Plan and wait for reviewer/reporter approval.",
+            "Before starting work, call action=submit_plan with one structured technical Action Plan and wait for reviewer/reporter approval. A plain chat reply is discussion only.",
             "Do not move it to In Progress until approved_on is set.",
           ].join("\n"),
       },

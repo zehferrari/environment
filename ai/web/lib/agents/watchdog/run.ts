@@ -30,6 +30,7 @@ import {
   queueRecoveryContinuation,
   settleExpiredRun,
   wakeAssigneeAfterGrant,
+  requestMissingActionPlan,
   type RepairResult,
 } from "@/lib/agents/watchdog/repairs";
 import { writeTaskExecutionState } from "@/lib/agents/watchdog/state";
@@ -95,7 +96,7 @@ export async function loadWatchdogSnapshot(
   const taskRows = await db.task.findMany({
     where: {
       deletedAt: null,
-      status: { in: ["In Progress", "Review"] },
+      status: { in: ["To Do", "In Progress", "Review"] },
       ...(options.projectId ? { projectId: options.projectId } : {}),
     },
     take,
@@ -103,7 +104,10 @@ export async function loadWatchdogSnapshot(
       id: true,
       projectId: true,
       status: true,
+      statusChangedAt: true,
+      approvedOn: true,
       assignee: { select: { agent: { select: { slug: true } } } },
+      actionPlan: { select: { id: true } },
       checklist: {
         where: { kind: "implementation", completedAt: null },
         select: { id: true },
@@ -198,6 +202,9 @@ export async function loadWatchdogSnapshot(
       projectId: task.projectId,
       status: task.status,
       assigneeSlug: task.assignee?.agent?.slug ?? null,
+      statusChangedAt: ms(task.statusChangedAt),
+      approvedOn: ms(task.approvedOn),
+      hasActionPlan: Boolean(task.actionPlan),
       openChecklistCount: task.checklist.length,
       activeBlocker: blocker
         ? {
@@ -263,6 +270,8 @@ async function applyRepair(args: {
         : { outcome: "noop", recoveryAction: null };
     case "wake_assignee":
       return wakeAssigneeAfterGrant({ taskId: args.finding.taskId, now: args.now });
+    case "request_plan":
+      return requestMissingActionPlan({ taskId: args.finding.taskId, now: args.now });
     case "escalate":
       return escalateToReporter({
         finding: args.finding,
@@ -327,7 +336,11 @@ export async function runWorkflowWatchdog(
       // strictly terminal, once-per-run write that can never repeat — charging
       // either of them would let noise trip the breaker that protects the
       // recoveries which actually matter.
-      if (finding.repair === "queue_continuation" || finding.repair === "wake_assignee") {
+      if (
+        finding.repair === "queue_continuation" ||
+        finding.repair === "wake_assignee" ||
+        finding.repair === "request_plan"
+      ) {
         const decision = await consumeRecoveryBudget({ taskId: finding.taskId, now });
         if (!decision.allowed) {
           report.breakerOpen += 1;

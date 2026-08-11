@@ -381,6 +381,32 @@ async function main() {
       assert.equal(checklist.length, 2);
     });
 
+    await okAsync("adopts an exact pre-approval checklist row instead of duplicating it", async () => {
+      const taskRecovery = await makeTestTask(project.id, agentUser.id);
+      taskIds.push(taskRecovery.id);
+      const title = "Legacy client planning step";
+      const existing = await db.subTask.create({
+        data: { taskId: taskRecovery.id, text: title, kind: "implementation", rank: 1 },
+      });
+      await persistActionPlan({
+        taskId: taskRecovery.id,
+        input: {
+          summary: "Recover a pre-approval planning turn",
+          steps: [{ id: "legacy-step", title, acceptanceCriteria: ["Recovered"], kind: "sequential" }],
+        },
+      });
+      const result = await createChecklistAndDelegatableTasksFromPlan({
+        taskId: taskRecovery.id,
+        approvedAt: new Date(),
+        approvedById: agentUser.id,
+      });
+      assert.equal(result.checklistCreated, 0);
+      const rows = await db.subTask.findMany({ where: { taskId: taskRecovery.id } });
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].id, existing.id);
+      assert.ok(rows[0].actionPlanStepId);
+    });
+
     await okAsync("delegatable step creates child PM task", async () => {
       const childTasks = await db.task.findMany({
         where: { parentTaskId: task3.id, deletedAt: null },

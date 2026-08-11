@@ -26,12 +26,12 @@ export interface TaskExecutionStateRow {
   reasonCode: string | null;
   reasonDetail: string | null;
   lastDurableAction: string | null;
-  lastDurableActionAt: Date | null;
+  lastDurableActionAt: Date | string | number | null;
   recoveryAction: string | null;
-  recoveryAt: Date | null;
+  recoveryAt: Date | string | number | null;
   detectorId: string | null;
-  escalatedAt: Date | null;
-  updatedAt: Date;
+  escalatedAt: Date | string | number | null;
+  updatedAt: Date | string | number;
 }
 
 const STATE_TONE: Record<ExecutionState, string> = {

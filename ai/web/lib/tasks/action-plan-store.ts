@@ -370,14 +370,35 @@ export async function createChecklistAndDelegatableTasksFromPlan(args: {
   let delegatableCreated = 0;
 
   for (const step of plan.steps) {
-    const checklistItem = await createSubTaskItem({
-      taskId: args.taskId,
-      text: step.title,
-      actorUserId: args.approvedById,
-      actionPlanStepId: step.id,
-      client,
+    // A planning turn from an older client may already have created the exact
+    // checklist row before plan approval. Adopt that unlinked row instead of
+    // duplicating it when the structured plan is approved. New clients are
+    // blocked from pre-approval checklist writes, but this keeps recovery of
+    // existing tasks lossless.
+    const existingUnlinked = await client.subTask.findFirst({
+      where: {
+        taskId: args.taskId,
+        kind: "implementation",
+        actionPlanStepId: null,
+        text: step.title,
+      },
+      select: { id: true },
     });
-    if (checklistItem?.created) checklistCreated++;
+    if (existingUnlinked) {
+      await client.subTask.update({
+        where: { id: existingUnlinked.id },
+        data: { actionPlanStepId: step.id },
+      });
+    } else {
+      const checklistItem = await createSubTaskItem({
+        taskId: args.taskId,
+        text: step.title,
+        actorUserId: args.approvedById,
+        actionPlanStepId: step.id,
+        client,
+      });
+      if (checklistItem?.created) checklistCreated++;
+    }
 
     // Parallel steps are independently delegatable. An optional assignee
     // chooses the initial owner; a parallel step without one is still a real

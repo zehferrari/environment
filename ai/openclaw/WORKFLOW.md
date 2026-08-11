@@ -236,6 +236,10 @@ agent.
 Every Epic and Task assignment requires a concrete Action Plan **before**
 implementation begins. A Task Action Plan is authored by the task
 **assignee only** (an Epic Action Plan by the Epic acting manager). The
+Task assignee submits it through the granted workflow endpoint with
+`action=submit_plan` and a structured `actionPlan` object (`summary` plus
+validated `steps`). Free-form text in the Action Plan chat is discussion only;
+it is never executable plan state and does not notify the approver.
 approver chain, in order:
 
 1. **Task reviewer** — the first approver. If the task has a reviewer set,
@@ -485,8 +489,9 @@ Latency / PM queue/status names:
    instruction, not from persona alone.
 3. **`Backlog` means planning/opinion only.** If you are assigned while
    the task is in Backlog, read all context and comments, then post one
-   technical Action Plan message with your implementation plan or
-   perspective. Do not change status and do not start implementation.
+   structured technical Action Plan with `action=submit_plan`; do not merely
+   post the plan as free-form chat text. Do not change status and do not start
+   implementation.
 4. If the task is unassigned, do not assign it to yourself and do not
    start implementation.
 5. You may implement only when the PM task is explicitly assigned to you
@@ -494,7 +499,8 @@ Latency / PM queue/status names:
    ownership.
 6. `To Do` is actionable only after the Action Plan is approved. When a
    task assigned to you reaches `To Do`, check `approved_on`. If it is
-   empty, post the Action Plan and wait. Approval reserves the branch contract
+   empty, call `action=submit_plan` with the structured `actionPlan` payload and
+   wait. Approval reserves the branch contract
    but does not create a worktree. If `approved_on` is set, move the task to
    `In Progress` through the PM workflow endpoint; `start` provisions or
    revalidates the worktree and returns its exact `worktreePath`. If start
@@ -796,9 +802,9 @@ the exact silent token and no other text.
 
 - Proposal application must wake affected agents after assignment, status,
   manager, or comment changes. The database row changing is not enough.
-- Assigned `Backlog` work asks for an Action Plan message only. It does
+- Assigned `Backlog` work asks for `action=submit_plan` only. It does
   not authorize implementation or status changes.
-- Assigned `To Do` work asks the assignee to post an Action Plan if
+- Assigned `To Do` work asks the assignee to submit a structured Action Plan if
   `approved_on` is empty. Only approved `To Do` work can move to
   `In Progress`.
 - A `ready_for_review` action or human Review request runs the same handoff.

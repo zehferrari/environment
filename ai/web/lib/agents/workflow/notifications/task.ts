@@ -165,7 +165,19 @@ function workflowPrompt(args: {
     {
       messageId: args.messageId,
       token,
-      action: "<start | checkpoint | publish_checkpoint | approve_plan | ready_for_review | review_feedback | review_done | triage_to_todo | assign_task | add_subtask | complete_subtask | remove_subtask | request_subtask | request_task | flag_blocker | clear_blocker | flag_extra_work_blocker>",
+      action: "<submit_plan | start | checkpoint | publish_checkpoint | approve_plan | ready_for_review | review_feedback | review_done | triage_to_todo | assign_task | add_subtask | complete_subtask | remove_subtask | request_subtask | request_task | flag_blocker | clear_blocker | flag_extra_work_blocker>",
+      actionPlan: {
+        summary: "<required on submit_plan: concise technical summary>",
+        steps: [
+          {
+            id: "<stable unique step id>",
+            title: "<concrete implementation step>",
+            acceptanceCriteria: ["<observable acceptance criterion>"],
+            kind: "<sequential | parallel>",
+            assigneeId: "<optional active project-principal user id or null>",
+          },
+        ],
+      },
       comment: "<required for review_feedback, blocker/dependency actions, and scope requests; optional on ready_for_review>",
       authorizationCommentId: "<required only on publish_checkpoint: id of a fresh single-use owner comment explicitly naming the checkpoint Task and target Epic branch>",
       completedWork: "<optional on checkpoint: string[] of what this episode finished>",
@@ -244,8 +256,8 @@ function workflowPrompt(args: {
     `This notification is addressed to @${args.agentSlug}. Its workflow reason is ${args.reason}.`,
     "",
     "Workflow rules:",
-    "- Backlog is for planning and opinions only. If you are the assignee and the task is in Backlog, reply in Action Plan with one concrete technical plan, structured as a checklist of INDEPENDENT, PARALLELIZABLE steps wherever possible so the work can be tackled on multiple fronts by parallel sub-agents. Do not split small tasks or strictly sequential/dependent work. Do not change task status and do not start work.",
-    "- To Do means the task is actionable, but execution is still blocked until the Action Plan has approved_on set. If you are the assignee and approved_on is empty, reply in Action Plan with one concrete technical plan and wait.",
+    "- Backlog is for planning and opinions only. If you are the assignee and the task is in Backlog, call action=submit_plan with the required structured actionPlan payload. Use INDEPENDENT, PARALLELIZABLE steps wherever useful, but do not split small or strictly sequential/dependent work. A plain text reply is discussion only and does NOT create the durable Action Plan. Do not change task status and do not start work.",
+    "- To Do means the task is actionable, but execution is still blocked until the Action Plan has approved_on set. If you are the assignee and approved_on is empty, call action=submit_plan with the structured actionPlan payload and then stop for approval. A plain text reply is not a submitted plan.",
     "- If you are the assigned task reviewer on an unassigned task, call action=assign_task to select or request an eligible coding agent. The assignee authors the implementation plan; reviewers never author that artifact. If the plan can be safely split into independent steps, flag that in consolidated feedback; do not demand splitting for small or strictly sequential/dependent work.",
     "- If you are the resolved reviewer or reporter and you accept the assignee's Action Plan, call action=approve_plan and include one concise `comment` explaining why the plan is acceptable or naming any constraints. If the task was in Backlog, PM will move it to To Do and wake the assignee.",
     args.onlyReportersCanApproveActionPlans
@@ -297,7 +309,7 @@ function workflowPrompt(args: {
     bodyShape,
     "",
     `Silent reply token: ${PM_SILENT_REPLY_TOKEN}`,
-    "Replies to this PM-channel turn are stored in the channel that woke you: Action Plan for plan/assignment turns, or task comments for review/completion turns. Use a visible reply only for a plan, opinion, completion evidence, review feedback, blocker, or necessary question. Do not post 'task moved' acknowledgements after calling the workflow endpoint.",
+    "Replies to this PM-channel turn are stored in the channel that woke you: Action Plan for plan/assignment turns, or task comments for review/completion turns. A Task Action Plan becomes executable state ONLY through action=submit_plan with a structured actionPlan payload; free-form reply text remains discussion. Use a visible reply only for an opinion, completion evidence, review feedback, blocker, or necessary question. Do not post 'task moved' acknowledgements after calling the workflow endpoint.",
   ].join("\n");
 }
 

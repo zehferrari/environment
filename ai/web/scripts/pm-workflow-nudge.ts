@@ -85,7 +85,7 @@ function reasonForKind(kind: string | undefined): TaskWorkflowNotificationReason
 
 function defaultRequiredAction(status: string, kind: string | undefined): string {
   if (kind === "pm-backlog-plan-missing" || kind === "pm-action-plan-missing") {
-    return "Post one concise technical Action Plan message. Do not change status or start work until reviewer/reporter approval stamps approved_on.";
+    return "Call action=submit_plan with one concise structured Action Plan. A plain chat reply is discussion only. Do not change status or start work until reviewer/reporter approval stamps approved_on.";
   }
   if (kind === "pm-action-plan-awaiting-approval") {
     return "Review the Action Plan. If acceptable, approve it so approved_on is set; otherwise reply with concise feedback in Action Plan.";
@@ -128,6 +128,7 @@ async function main() {
         title: true,
         status: true,
         statusChangedAt: true,
+        approvedOn: true,
         deletedAt: true,
         project: { select: { slug: true } },
         assignee: { select: { agent: { select: { slug: true } } } },
@@ -332,6 +333,8 @@ async function main() {
         activeTask: autoStart.activeTask ?? null,
       }, null, 2));
       return;
+    } else if (autoStart.reason === "not_approved") {
+      requiredAction = "Call action=submit_plan with the structured actionPlan payload now, then stop for reviewer approval. A plain Action Plan chat reply is discussion only and cannot satisfy approved_on.";
     }
   }
   const body = [

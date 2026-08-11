@@ -65,7 +65,7 @@ export async function refillEpicQueue(args: {
         `Task "${assigned.task.title}" is now assigned to you in To Do.`,
         assigned.approvedPlan
           ? "Its Action Plan is already approved: move the task to In Progress through the workflow endpoint and start immediately."
-          : "Before starting work, post one concise technical implementation plan in Action Plan and wait for reviewer/reporter approval.",
+          : "Before starting work, call action=submit_plan with one structured technical Action Plan and wait for reviewer/reporter approval. A plain chat reply is discussion only.",
         "If you have unresolved review feedback on another Review-stage task, address that feedback first — it stays your top priority.",
       ].join("\n"),
     });

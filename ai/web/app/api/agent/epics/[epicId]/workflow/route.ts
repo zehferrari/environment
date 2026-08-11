@@ -87,7 +87,7 @@ async function notifyAssignedTask(args: {
       `Epic manager @${args.actor.username} assigned "${args.taskTitle}" to you in To Do.`,
       args.approvedPlan
         ? "Its Action Plan is already approved: move the task to In Progress through the workflow endpoint and start immediately."
-        : "Before starting work, post one concise technical implementation plan in Action Plan and wait for reviewer/reporter approval.",
+        : "Before starting work, call action=submit_plan with one structured technical Action Plan and wait for reviewer/reporter approval. A plain chat reply is discussion only.",
       "If you have unresolved review feedback on another Review-stage task, address that feedback first; otherwise begin this task now.",
     ].join("\n"),
   });
@@ -569,7 +569,7 @@ export async function POST(
               reason: "review_feedback",
               body: [
                 `Whole-Epic acceptance created and assigned repair task "${task.title}" in To Do.`,
-                "Read the structured acceptance report in the task, post one concise technical Action Plan, and wait for reviewer approval before starting.",
+                "Read the structured acceptance report in the task, call action=submit_plan with one structured technical Action Plan, and wait for reviewer approval before starting.",
                 "Completing the repair will produce a new frozen combined candidate and a fresh whole-Epic review.",
                 "Do not post an acknowledgement-only response.",
               ].join("\n"),

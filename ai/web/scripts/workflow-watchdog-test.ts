@@ -57,6 +57,9 @@ function task(overrides: Partial<WatchdogTaskRecord> = {}): WatchdogTaskRecord {
     projectId: "project-1",
     status: "In Progress",
     assigneeSlug: "barekbaal",
+    statusChangedAt: STALE,
+    approvedOn: STALE,
+    hasActionPlan: true,
     openChecklistCount: 0,
     activeBlocker: null,
     blockerCycles: 0,
@@ -112,14 +115,61 @@ function byDetector(findings: WatchdogFinding[], id: string): WatchdogFinding[] 
 // Registry
 // ------------------------------------------------------------------
 
-assertEqual(WATCHDOG_DETECTORS.length, 7, "every failure mode in the task description has a detector");
+assertEqual(WATCHDOG_DETECTORS.length, 8, "all execution and pre-start failure modes have a detector");
 assertEqual(
   new Set(WATCHDOG_DETECTORS.map((detector) => detector.id)).size,
-  7,
+  8,
   "detector ids are unique",
 );
 for (const detector of WATCHDOG_DETECTORS) {
   assert(detector.statement.trim().length > 0, `${detector.id} states what it checks`);
+}
+
+// ------------------------------------------------------------------
+// Pre-start — assigned To Do with no structured Action Plan
+// ------------------------------------------------------------------
+
+{
+  const planless = task({
+    status: "To Do",
+    approvedOn: null,
+    hasActionPlan: false,
+    lastDurableAction: null,
+    lastDurableActionAt: null,
+  });
+  const findings = detectWatchdogFindings(snapshot({ tasks: [planless] }));
+  const hits = byDetector(findings, "assigned_todo_plan_missing");
+  assertEqual(hits.length, 1, "an assigned To Do task with no structured plan is detected");
+  assertEqual(hits[0].repair, "request_plan", "the repair requests the exact missing plan action");
+}
+
+{
+  const findings = detectWatchdogFindings(snapshot({
+    tasks: [task({ status: "To Do", approvedOn: null, hasActionPlan: true })],
+  }));
+  assertEqual(
+    byDetector(findings, "assigned_todo_plan_missing").length,
+    0,
+    "a submitted plan waiting for approval is intentional idle state",
+  );
+}
+
+{
+  const findings = detectWatchdogFindings(snapshot({
+    tasks: [task({
+      status: "To Do",
+      approvedOn: null,
+      hasActionPlan: false,
+      statusChangedAt: NOW - MINUTE,
+      lastDurableAction: null,
+      lastDurableActionAt: null,
+    })],
+  }));
+  assertEqual(
+    byDetector(findings, "assigned_todo_plan_missing").length,
+    0,
+    "the grace window protects a newly assigned planning turn",
+  );
 }
 
 // ------------------------------------------------------------------
@@ -464,6 +514,11 @@ for (const detector of WATCHDOG_DETECTORS) {
     formatLastDurableAction("ready_for_review", at),
     "ready for review at 09:24",
     "underscores render as spaces",
+  );
+  assertEqual(
+    formatLastDurableAction("add_subtask", "2026-08-05T09:24:00.000"),
+    "add subtask at 09:24",
+    "cached ISO timestamps render without requiring a Date instance",
   );
   assertEqual(formatLastDurableAction(null, at), null, "no action renders as nothing");
 

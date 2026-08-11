@@ -137,7 +137,7 @@ export async function POST(
       `You requested a fresh workflow turn for "${task.title}" (status: To Do).`,
       task.approvedOn
         ? "The Action Plan is approved: call the workflow endpoint with action=start, move the task to In Progress, and begin work."
-        : "The Action Plan is not approved yet: post one concise technical implementation plan in Action Plan and wait for approval. Do not start work.",
+        : "The Action Plan is not approved yet: call action=submit_plan with one structured technical Action Plan and wait for approval. A plain chat reply is discussion only; do not start work.",
     ].join("\n");
   } else if (task.status === "In Progress") {
     reason = "ready_for_review_available";

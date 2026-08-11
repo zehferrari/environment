@@ -143,7 +143,15 @@ export interface RenderedExecutionState {
   recovery: string | null;
 }
 
-function clockLabel(at: Date): string {
+type DateLike = Date | string | number;
+
+function clockLabel(value: DateLike): string | null {
+  // Next's unstable_cache serializes Prisma Date values before returning the
+  // cached task shell. Direct Prisma reads still supply Date objects, while a
+  // cached page render supplies ISO strings. Accept both or the first task
+  // with a durable-action timestamp crashes its detail page.
+  const at = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(at.getTime())) return null;
   const hours = String(at.getHours()).padStart(2, "0");
   const minutes = String(at.getMinutes()).padStart(2, "0");
   return `${hours}:${minutes}`;
@@ -152,18 +160,19 @@ function clockLabel(at: Date): string {
 /** "started at 09:24" — the exact shape the task description asks for. */
 export function formatLastDurableAction(
   action: string | null | undefined,
-  at: Date | null | undefined,
+  at: DateLike | null | undefined,
 ): string | null {
   if (!action) return null;
   const verb = action.replaceAll("_", " ");
-  return at ? `${verb} at ${clockLabel(at)}` : verb;
+  const clock = at == null ? null : clockLabel(at);
+  return clock ? `${verb} at ${clock}` : verb;
 }
 
 export function renderExecutionState(row: {
   state: string;
   reasonDetail: string | null;
   lastDurableAction: string | null;
-  lastDurableActionAt: Date | null;
+  lastDurableActionAt: DateLike | null;
   recoveryAction: string | null;
 }): RenderedExecutionState {
   return {

@@ -426,7 +426,7 @@ token for:
 POST /api/agent/tasks/<taskId>/workflow
 ```
 
-Allowed actions are `start`, `checkpoint`, `publish_checkpoint`, `ready_for_review`, `review_feedback`,
+Allowed actions are `submit_plan`, `start`, `checkpoint`, `publish_checkpoint`, `ready_for_review`, `review_feedback`,
 `review_done`, `triage_to_todo`, `approve_plan`,
 `assign_task`, `add_subtask`, `complete_subtask`, and
 `remove_subtask`
@@ -440,6 +440,12 @@ Allowed actions are `start`, `checkpoint`, `publish_checkpoint`, `ready_for_revi
   Progress including auto-start) or when the task's effective branch
   clashes with another agent's active work; the rejection names exactly
   what to finish first.
+- `submit_plan` — assignee-only, before implementation. Sends the durable
+  structured Action Plan as `actionPlan: {summary, steps}`; every step has
+  `id`, `title`, `acceptanceCriteria: string[]`, and `kind` (`sequential` or
+  `parallel`), plus optional `assigneeId`. A free-form Action Plan chat reply
+  is discussion only and never satisfies the approval gate. On success PM
+  stores the plan and wakes the resolved reviewer.
 - `checkpoint` — assignee-only, In Progress only (ENV-121). Persists the
   agent's own structured execution checkpoint — `completedWork`, `evidence`,
   `openChecklist`, `nextAction`, `risks`, any subset — against the open
