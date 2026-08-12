@@ -122,6 +122,7 @@ async function sectionB(): Promise<void> {
     const {
       closeOpenTaskExecutionEpisode,
       openTaskExecutionEpisode,
+      rollOverTaskExecutionEpisodeForContextPressure,
       latestTaskExecutionCheckpoint,
       recordTaskExecutionEpisodeCycle,
       renderEpisodeCheckpoint,
@@ -354,6 +355,61 @@ async function sectionB(): Promise<void> {
     assert(
       fullPacket.renderedPrompt.length > after.length * 2,
       "B6: the continuation brief is materially smaller than the first-contact packet",
+    );
+
+    // B6b — an unrecoverable compaction failure retires the poisoned episode
+    // without fencing a turn that has already ended. Its successor must be a
+    // genuinely fresh session and must use today's configured safety ceilings,
+    // not an oversized budget inherited from the legacy row.
+    const recoveryEpisode = await db.$transaction((tx) =>
+      openTaskExecutionEpisode(tx, {
+        taskId: task.id,
+        projectId: project.id,
+        agentSlug: AGENT_SLUG,
+        sessionKey: "poisoned-context-session",
+        messageId: "poisoned-context-message",
+        cycleBudget: 99,
+        toolCycleBudget: 99,
+      }),
+    );
+    await cycle({
+      taskId: task.id,
+      agentSlug: AGENT_SLUG,
+      checkpoint: {
+        nextAction: "resume from the durable browser checkpoint",
+        openChecklist: ["finish the payment verification"],
+      },
+      countsAgainstBudget: false,
+    });
+    const contextRecovery = await db.$transaction((tx) =>
+      rollOverTaskExecutionEpisodeForContextPressure(tx, {
+        taskId: task.id,
+        projectId: project.id,
+        agentSlug: AGENT_SLUG,
+      }),
+    );
+    assert(contextRecovery, "B6b: the open poisoned episode is recovered");
+    assertEqual(
+      contextRecovery!.closed.id,
+      recoveryEpisode.id,
+      "B6b: recovery closes the episode that owned the poisoned session",
+    );
+    assertEqual(
+      contextRecovery!.closed.closeReason,
+      EPISODE_CLOSE_REASON.contextPressureRecovery,
+      "B6b: the close reason is auditable",
+    );
+    assertEqual(
+      contextRecovery!.closed.exhaustedByMessageId,
+      null,
+      "B6b: an already-ended context failure raises no stale-message barrier",
+    );
+    assertEqual(contextRecovery!.nextEpisode.sessionKey, null, "B6b: successor has a fresh session");
+    assertEqual(contextRecovery!.nextEpisode.cycleBudget, 3, "B6b: current action budget is applied");
+    assertEqual(
+      contextRecovery!.nextEpisode.toolCycleBudget,
+      TOOL_BUDGET,
+      "B6b: current tool budget is applied",
     );
 
     // B7 — the DISPATCHER, not just the builder. First contact must send the

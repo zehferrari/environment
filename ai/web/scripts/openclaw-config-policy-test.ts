@@ -5,6 +5,7 @@ const rendered = renderOpenClawJson({
   user: "test-agent",
   email: "test-agent@example.test",
   reasoning: "medium",
+  thinking: "xhigh",
   primary: "ollama/qwen2.5:3b-instruct",
   fallbacks: [],
   selectedModels: [],
@@ -21,7 +22,7 @@ const config = JSON.parse(rendered) as {
     defaultProfile?: string;
   };
   diagnostics?: { memoryPressureSnapshot?: boolean };
-  agents?: { defaults?: { compaction?: { mode?: string; reserveTokensFloor?: number } } };
+  agents?: { defaults?: { thinkingDefault?: string; compaction?: { mode?: string; reserveTokensFloor?: number } } };
   gateway?: { port?: number };
   meta?: { lastTouchedVersion?: string };
 };
@@ -46,6 +47,11 @@ assert.deepEqual(
     defaultProfile: "openclaw",
   },
   "every provisioned agent must receive the isolated host-managed Chromium policy",
+);
+assert.equal(
+  config.agents?.defaults?.thinkingDefault,
+  "xhigh",
+  "a registry-managed effort policy must survive agent configuration rendering",
 );
 assert.equal(
   config.gateway?.port,

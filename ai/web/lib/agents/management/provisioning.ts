@@ -46,6 +46,7 @@ export type AgentRegistryEntry = {
   enabled: boolean;
   role: AgentRole;
   reasoning: string;
+  thinking?: string;
   home: string;
   workspace: string;
   email: string;
@@ -266,6 +267,7 @@ export function renderOpenClawJson(args: {
   user: string;
   email: string;
   reasoning: string;
+  thinking?: string;
   primary: string;
   fallbacks: string[];
   selectedModels: SelectedModel[];
@@ -351,6 +353,7 @@ export function renderOpenClawJson(args: {
         },
         models: aliases,
         reasoningDefault: args.reasoning,
+        ...(args.thinking ? { thinkingDefault: args.thinking } : {}),
         workspace: `/home/${args.user}/workspace`,
         compaction: {
           mode: "safeguard",
@@ -373,6 +376,7 @@ export function renderAgentFiles(args: {
   role: AgentRole;
   email: string;
   reasoning: string;
+  thinking?: string;
   primary: string;
   fallbacks: string[];
   selectedModels: SelectedModel[];
@@ -389,6 +393,7 @@ export function renderAgentFiles(args: {
       user: args.user,
       email: args.email,
       reasoning: args.reasoning,
+      thinking: args.thinking,
       primary: args.primary,
       fallbacks: args.fallbacks,
       selectedModels: args.selectedModels,
@@ -404,6 +409,7 @@ export function buildAgentEntry(args: {
   name: string;
   role: AgentRole;
   reasoning: string;
+  thinking?: string;
   email: string;
   telegram?: { enabled?: boolean; bot?: string } | null;
   integrations?: { gmail?: boolean; jira?: boolean; bitbucket?: boolean; maildir?: boolean } | null;
@@ -425,6 +431,7 @@ export function buildAgentEntry(args: {
     enabled: true,
     role: args.role,
     reasoning: args.reasoning,
+    ...(args.thinking ? { thinking: args.thinking } : {}),
     home: `/home/${args.user}`,
     workspace: workspaceFor(args.user, args.role),
     email: args.email,

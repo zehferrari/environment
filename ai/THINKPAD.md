@@ -102,8 +102,11 @@ Installed on 2026-05-06 for host `thinkpad` (`10.0.0.105`).
   live models (Ollama `/api/tags` + popular, OpenRouter `/api/v1/models`
   free/popular, Anthropic if keyed, Codex curated); the admin ticks which models
   the agent may use, picks a default, and drag-orders fallbacks. Only the chosen
-  providers/models are written to the agent's `openclaw.json`. (`google-gravity`
-  was retired.)
+  providers/models are written to the agent's `openclaw.json`. Per-agent model
+  effort is stored as registry field `thinking` and rendered as OpenClaw
+  `agents.defaults.thinkingDefault`; it is distinct from `reasoning`, which
+  controls reasoning-output visibility. Agent edits preserve that host policy.
+  (`google-gravity` was retired.)
 - **Profile images.** The Add Agent form stores a `profileImages.theme` in the
   registry entry. `Manually Uploaded` enables authenticated upload/remove
   controls on the agent profile page for

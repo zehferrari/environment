@@ -20,6 +20,7 @@ import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 
 export const CONTINUATION_OPEN_STATUSES = ["armed", "queued", "dispatching"] as const;
+export const CONTEXT_PRESSURE_RECOVERY_ACTION = "context_pressure_recovery";
 
 type TxClient = Prisma.TransactionClient | typeof db;
 

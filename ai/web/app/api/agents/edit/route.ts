@@ -3,7 +3,7 @@ import { z } from "zod";
 import { auth } from "@/lib/auth";
 import { isOwnerUserId } from "@/lib/auth/permissions";
 import { db } from "@/lib/db";
-import { DEFAULT_AGENT_REASONING, normalizeAgentReasoning, readAgentIndex, gatewayPortFor } from "@/lib/agents/management/index-loader";
+import { DEFAULT_AGENT_REASONING, normalizeAgentReasoning, normalizeAgentThinking, readAgentIndex, gatewayPortFor } from "@/lib/agents/management/index-loader";
 import { syncAgents } from "@/lib/agents/management/sync";
 import { runManageUser } from "@/lib/agents/management/manage-user";
 import { getSystemSettings } from "@/lib/settings/system";
@@ -143,6 +143,10 @@ export async function POST(request: Request) {
   }
 
   const roleChanged = existing.role !== data.role;
+  // Effort is a host policy stored in the registry, not the reasoning-output
+  // visibility control in this form. Preserve it across an otherwise unrelated
+  // Agent edit so a requested `xhigh` policy cannot silently fall back to low.
+  const thinking = normalizeAgentThinking(existing.thinking);
 
   // Keep the existing port allocation unless the role changed (which flips the
   // gateway/sidecar listener shape); only then reallocate against the others.
@@ -174,6 +178,7 @@ export async function POST(request: Request) {
     name: data.name,
     role: data.role,
     reasoning,
+    thinking,
     email: data.email,
     telegram: data.telegram,
     integrations: data.integrations,
@@ -195,6 +200,7 @@ export async function POST(request: Request) {
     role: data.role,
     email: data.email,
     reasoning,
+    thinking,
     primary: data.model_config.default_model,
     fallbacks: data.model_config.fallback_models,
     selectedModels: data.model_config.selected_models,

@@ -68,6 +68,7 @@ export const EPISODE_STATUS = {
 export const EPISODE_CLOSE_REASON = {
   budgetExhausted: "cycle_budget_exhausted",
   toolBudgetExhausted: "tool_cycle_budget_exhausted",
+  contextPressureRecovery: "context_pressure_recovery",
   terminalAction: "episode_terminal_action",
   superseded: "superseded",
 } as const;
@@ -397,6 +398,42 @@ async function rollOverExhaustedEpisode(
     agentSlug: args.agentSlug,
     cycleBudget: args.episode.cycleBudget,
     toolCycleBudget: args.episode.toolCycleBudget || episodeToolCycleBudget(),
+  });
+  return { closed, nextEpisode };
+}
+
+/**
+ * Retire an execution episode whose OpenClaw session can no longer compact.
+ *
+ * This is deliberately different from budget exhaustion: the failing turn has
+ * already ended, so there is no live message to fence and no rollover barrier
+ * to seal. The caller settles that run and queues the successor continuation
+ * in the SAME transaction. The successor receives no session identity and is
+ * therefore dispatched with a fresh full episode brief from the checkpoint.
+ */
+export async function rollOverTaskExecutionEpisodeForContextPressure(
+  tx: Prisma.TransactionClient,
+  args: {
+    taskId: string;
+    projectId?: string | null;
+    agentSlug: string;
+  },
+) {
+  const existing = await openEpisodeRow(tx, args);
+  if (!existing) return null;
+  const episode = summarizeEpisode(existing);
+  const closed = await closeTaskExecutionEpisode(tx, {
+    episodeId: episode.id,
+    closeReason: EPISODE_CLOSE_REASON.contextPressureRecovery,
+  });
+  const nextEpisode = await openTaskExecutionEpisode(tx, {
+    taskId: args.taskId,
+    projectId: args.projectId ?? null,
+    agentSlug: args.agentSlug,
+    // A recovery must take the currently configured ceilings, not inherit the
+    // oversized values that allowed the poisoned episode to grow unchecked.
+    cycleBudget: episodeCycleBudget(),
+    toolCycleBudget: episodeToolCycleBudget(),
   });
   return { closed, nextEpisode };
 }

@@ -71,6 +71,12 @@ async function main() {
   } = await import("@/lib/agents/pm-channel/jobs");
   const { applyPmChannelStreamCallback } = await import("@/lib/agents/pm-channel/stream-callback");
   const { getOrCreateAgentSessionBinding } = await import("@/lib/agents/auth/session-bindings");
+  const { openTaskExecutionEpisode, EPISODE_CLOSE_REASON } = await import(
+    "@/lib/agents/episodes/lifecycle"
+  );
+  const { CONTEXT_PRESSURE_RECOVERY_ACTION } = await import(
+    "@/lib/agents/pm-channel/continuations"
+  );
 
   const agentSlug = "lifecycle-agent";
 
@@ -152,6 +158,7 @@ async function main() {
         completedAt: true,
         completionAnomaly: true,
         completionAnomalyAt: true,
+        finishedReason: true,
         disposition: true,
         settledByAction: true,
         sessionKey: true,
@@ -544,6 +551,13 @@ async function main() {
 
     // ---- D6: terminal context failure rotates the poisoned session before
     // retrying. The newer OpenClaw wording must be classified too. ----
+    // Earlier lifecycle cases record workflow actions directly and therefore
+    // may leave a synthetic execution episode open. D6 is specifically the
+    // non-execution notification fallback; close that fixture residue first.
+    await db.taskExecutionEpisode.updateMany({
+      where: { taskId: task.id, agentSlug, status: "open" },
+      data: { status: "closed", closedAt: new Date(), closeReason: "test_fixture_cleanup" },
+    });
     const oldSessionKey = `lifecycle:binding:${task.id}:${agentSlug}`;
     const mH = "lifecycle-d6-context-rotation";
     await grantMessage(mH);
@@ -595,6 +609,87 @@ async function main() {
     });
     assert.ok(rotationLog, "session rotation must be auditable");
     assert.equal((JSON.parse(rotationLog!.payload ?? "{}") as { reason?: unknown }).reason, "context_failure");
+
+    // ---- D6b: an assignee execution episode must NOT retry the poisoned job
+    // under a cosmetically different key. Close it, preserve its checkpoint,
+    // and queue a fresh successor episode instead. ----
+    await db.taskExecutionEpisode.deleteMany({ where: { taskId: task.id, agentSlug } });
+    const executionAgent = await db.agent.create({
+      data: { slug: agentSlug, name: "Lifecycle Agent", role: "coding" },
+    });
+    const executionUser = await db.user.create({
+      data: {
+        username: agentSlug,
+        email: `${agentSlug}@example.test`,
+        kind: "agent",
+        agentId: executionAgent.id,
+      },
+    });
+    await db.task.update({ where: { id: task.id }, data: { assigneeId: executionUser.id } });
+    const poisonedEpisode = await db.$transaction((tx) =>
+      openTaskExecutionEpisode(tx, {
+        taskId: task.id,
+        projectId: project.id,
+        agentSlug,
+        sessionKey: "lifecycle:poisoned-episode",
+        messageId: "lifecycle-d6b-context-episode",
+        toolCycleBudget: 60,
+      }),
+    );
+    await db.taskExecutionEpisode.update({
+      where: { id: poisonedEpisode.id },
+      data: {
+        nextAction: "resume the browser verification",
+        openChecklist: JSON.stringify(["finish the payment journey"]),
+        checkpointAt: new Date(),
+      },
+    });
+    const mI = "lifecycle-d6b-context-episode";
+    await grantMessage(mI);
+    await enqueue({
+      target: chatTarget(mI),
+      text: `PM workflow notification for @${agentSlug}:\n\nContinue the execution episode.`,
+      turnClass: "notification",
+      sessionKey: "lifecycle:poisoned-episode",
+    });
+    const d6bKey = `task-chat:${agentSlug}:${task.id}:${mI}`;
+    const d6bSeed = await runRow(d6bKey);
+    await db.pmChannelJob.updateMany({
+      where: { runId: d6bSeed.id },
+      data: { status: "accepted", attemptCount: 1, acceptedAt: new Date() },
+    });
+    await db.pmChannelRun.update({ where: { id: d6bSeed.id }, data: { status: "streaming" } });
+    await recordPmChannelRunEvent({ target: chatTarget(mI), event: "error", error: contextFailure });
+
+    const recoveredRun = await runRow(d6bKey);
+    assert.equal(recoveredRun.status, "failed", "the poisoned transport turn is terminal");
+    assert.equal(recoveredRun.disposition, "continue", "task execution continues in the successor episode");
+    assert.equal(recoveredRun.finishedReason, "context_pressure_episode_recovered");
+    assert.equal(recoveredRun.jobs[0]!.status, "failed", "the stale job itself is never replayed");
+    const recoveredEpisodes = await db.taskExecutionEpisode.findMany({
+      where: { taskId: task.id, agentSlug },
+      orderBy: { episodeNo: "asc" },
+      select: {
+        episodeNo: true,
+        status: true,
+        sessionKey: true,
+        closeReason: true,
+        nextAction: true,
+        toolCycleBudget: true,
+      },
+    });
+    assert.equal(recoveredEpisodes.length, 2, "context recovery creates exactly one successor");
+    assert.equal(recoveredEpisodes[0]!.closeReason, EPISODE_CLOSE_REASON.contextPressureRecovery);
+    assert.equal(recoveredEpisodes[0]!.nextAction, "resume the browser verification");
+    assert.equal(recoveredEpisodes[1]!.status, "open");
+    assert.equal(recoveredEpisodes[1]!.sessionKey, null, "the successor has never used the poisoned session");
+    assert.equal(recoveredEpisodes[1]!.toolCycleBudget, 30, "the successor uses the tightened default ceiling");
+    const contextContinuation = await db.pmChannelContinuation.findFirstOrThrow({
+      where: { runId: d6bSeed.id, action: CONTEXT_PRESSURE_RECOVERY_ACTION },
+      select: { status: true },
+    });
+    assert.equal(contextContinuation.status, "queued", "the fresh checkpoint continuation is durable");
+    await db.task.update({ where: { id: task.id }, data: { assigneeId: null } });
 
     // The same mechanism rotates proactively by a provider-neutral completed
     // turn budget, before any backend-specific overflow string is required.

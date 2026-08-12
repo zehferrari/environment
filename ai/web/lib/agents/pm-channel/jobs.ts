@@ -19,6 +19,11 @@ import {
 } from "@/lib/agents/auth/session-bindings";
 import { isPmTerminalFailureText } from "@/lib/agents/ops/pm-silence";
 import { fenceSupersededPmChannelRuns } from "@/lib/agents/pm-channel/supersession";
+import { rollOverTaskExecutionEpisodeForContextPressure } from "@/lib/agents/episodes/lifecycle";
+import {
+  armPmChannelContinuations,
+  CONTEXT_PRESSURE_RECOVERY_ACTION,
+} from "@/lib/agents/pm-channel/continuations";
 
 // Idempotency discriminator for the turn-failure retry policy: only
 // PM-generated notification/nudge turns are safe to auto-replay. Stamped at
@@ -636,7 +641,14 @@ export async function retryOrFailPmChannelJobForTurnFailure(args: {
   const now = args.now ?? new Date();
   const run = await db.pmChannelRun.findUnique({
     where: { targetKey: args.targetKey },
-    select: { id: true, status: true },
+    select: {
+      id: true,
+      status: true,
+      projectId: true,
+      taskId: true,
+      agentSlug: true,
+      messageId: true,
+    },
   });
   if (!run || run.status === "cancelled" || run.status === "superseded" || run.status === "timed_out") return "no_job";
   const job = await db.pmChannelJob.findUnique({
@@ -652,6 +664,68 @@ export async function retryOrFailPmChannelJobForTurnFailure(args: {
   }
 
   const error = clippedError(args.error) ?? args.error;
+  const isTaskExecutionTarget =
+    payload.replyTarget.kind === "task-chat" || payload.replyTarget.kind === "task-comment";
+  const contextPressureRecovery =
+    payloadTurnClass(payload) === "notification" &&
+    isPmTerminalFailureText(args.error) &&
+    isTaskExecutionTarget &&
+    Boolean(run.taskId);
+
+  if (contextPressureRecovery && run.taskId) {
+    const recovered = await db.$transaction(async (tx) => {
+      const rollover = await rollOverTaskExecutionEpisodeForContextPressure(tx, {
+        taskId: run.taskId!,
+        projectId: run.projectId,
+        agentSlug: run.agentSlug,
+      });
+      // Plan/review notifications have task-shaped reply targets too, but no
+      // assignee execution episode. Preserve their existing bounded retry path.
+      if (!rollover) return false;
+
+      await tx.pmChannelJob.updateMany({
+        where: { id: job.id, status: { in: ["queued", "claimed", "accepted", "retryable"] } },
+        data: {
+          status: "failed",
+          claimedBy: null,
+          claimedAt: null,
+          lastError: error,
+        },
+      });
+      await tx.pmChannelRun.update({
+        where: { id: run.id },
+        data: {
+          status: "failed",
+          error,
+          failedAt: now,
+          finishedAt: now,
+          finishedReason: "context_pressure_episode_recovered",
+          lastEventAt: now,
+          // The failed transport turn is terminal, but execution continues in
+          // the fresh successor episode queued below.
+          disposition: "continue",
+        },
+      });
+      await tx.pmChannelContinuation.updateMany({
+        where: { runId: run.id, status: { in: ["armed", "queued", "dispatching"] } },
+        data: { status: "superseded", lastError: "replaced by context-pressure recovery" },
+      });
+      await armPmChannelContinuations(tx, {
+        runs: [{ id: run.id, projectId: run.projectId, taskId: run.taskId, epicId: null }],
+        agentSlug: run.agentSlug,
+        messageId: run.messageId,
+        action: CONTEXT_PRESSURE_RECOVERY_ACTION,
+        now,
+        status: "queued",
+      });
+      return true;
+    });
+    if (recovered) {
+      await appendAndPublishStatus({ payload, runStatus: "failed", error });
+      return "retried";
+    }
+  }
+
   const eligible =
     job.attemptCount < maxAttempts() &&
     payloadTurnClass(payload) === "notification" &&

@@ -8,6 +8,7 @@
 
 import { db } from "@/lib/db";
 import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
+import { CONTEXT_PRESSURE_RECOVERY_ACTION } from "@/lib/agents/pm-channel/continuations";
 import {
   activeFormalBlockerStatesByTask,
   formalBlockerNeedsExternalInput,
@@ -133,6 +134,7 @@ async function dispatchContinuation(row: ContinuationRow): Promise<"dispatched" 
   // "your turn ended without a terminal action" there would be false and would
   // push the agent to re-audit finished work instead of continuing.
   const isEpisodeRollover = row.action === "episode_rollover";
+  const isContextPressureRecovery = row.action === CONTEXT_PRESSURE_RECOVERY_ACTION;
   // ENV-123: a watchdog recovery is neither of the other two. The agent did
   // not end a turn on a continuation-required action and did not spend an
   // episode budget — PM observed that nothing was running or scheduled at all.
@@ -144,7 +146,13 @@ async function dispatchContinuation(row: ContinuationRow): Promise<"dispatched" 
     targetUserId: task.assigneeId,
     actor: { id: agent.user.id, kind: "agent", username: row.agentSlug },
     reason: "monitor_recovery",
-    body: isWatchdogRecovery
+    body: isContextPressureRecovery
+      ? [
+          `Your previous execution session for "${task.title}" reached an unrecoverable context limit. PM closed only that bounded episode and queued this fresh session from its durable checkpoint.`,
+          "Use the EXECUTION EPISODE BRIEF above as the handover: start at its next exact action, verify current task state before repeating a side effect, and retrieve older detail only through the scoped grant URLs when needed.",
+          "Continue the remaining implementation and verification now. Finish through ready_for_review, or record one precise external dependency with flag_blocker. Do not stop at another progress comment.",
+        ].join("\n")
+      : isWatchdogRecovery
       ? [
           `PM's workflow watchdog found "${task.title}" In Progress with no execution turn running or scheduled, so this fresh turn was queued for you.`,
           "Nothing was lost: check the task's current status, checklist, comments and your last checkpoint before repeating any step. The task's Execution strip shows what PM observed and what it did about it.",
