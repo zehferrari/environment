@@ -111,6 +111,42 @@ export async function POST(
     }, { status: 409 });
   }
 
+  // This endpoint is a recovery seam for an agent whose token-bearing turn
+  // has ENDED. Calling it from inside a live turn used to supersede that very
+  // process, start a replacement on the same OpenClaw session, and leave the
+  // original model mutating its worktree behind PM's callback fence. Treat a
+  // currently leased run as success-with-no-op so an uncertain agent cannot
+  // create a competing execution lane.
+  const now = new Date();
+  const activeRun = await db.pmChannelRun.findFirst({
+    where: {
+      taskId: task.id,
+      agentSlug,
+      status: { in: ["queued", "accepted", "streaming"] },
+      OR: [
+        { leaseExpiresAt: null },
+        { leaseExpiresAt: { gt: now } },
+      ],
+    },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, status: true, messageId: true, leaseExpiresAt: true },
+  });
+  if (activeRun) {
+    return NextResponse.json({
+      ok: true,
+      taskId: task.id,
+      status: task.status,
+      dispatched: false,
+      alreadyActive: true,
+      activeRun: {
+        id: activeRun.id,
+        status: activeRun.status,
+        messageId: activeRun.messageId,
+        leaseExpiresAt: activeRun.leaseExpiresAt,
+      },
+    });
+  }
+
   // Rate limit: 1 request per task per 5 minutes, durable via ActivityLog.
   const lastRequest = await db.activityLog.findFirst({
     where: { taskId: task.id, kind: "task.workflow.turn_requested" },

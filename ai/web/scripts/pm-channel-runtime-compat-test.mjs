@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolvePmInboundRuntime } from "../openclaw-pm-channel/runtime-compat.js";
+import { abortTrackedPmTurn } from "../openclaw-pm-channel/turn-cancellation.js";
 
 function surface(api, dispatchMethod) {
   return {
@@ -81,5 +82,70 @@ assert.match(
   /meta: \{ agentMeta: selectedAgentMeta \}/,
   "stream callbacks must carry model provenance to Mission Control",
 );
+assert.match(
+  pluginSource,
+  /registeredTurn\.canonicalSessionKey = sessionKey/,
+  "gateway cancellation must retain the canonical OpenClaw session key",
+);
+
+const tracked = new Map([["raw", {
+  acceptedId: "accepted-1",
+  abortedAt: null,
+  canonicalSessionKey: "agent:main:pm:raw",
+}]]);
+const resolvedKeys = [];
+const abortedIds = [];
+const canceled = await abortTrackedPmTurn({
+  activeTurns: tracked,
+  sessionKey: "raw",
+  wait: async () => {},
+  harness: {
+    resolveActiveEmbeddedRunSessionId(key) {
+      resolvedKeys.push(key);
+      return "embedded-1";
+    },
+    abortAgentHarnessRun(id) {
+      abortedIds.push(id);
+      return true;
+    },
+  },
+});
+assert.deepEqual(canceled, { aborted: true });
+assert.deepEqual(resolvedKeys, ["agent:main:pm:raw"]);
+assert.deepEqual(abortedIds, ["embedded-1"]);
+assert.equal(typeof tracked.get("raw").abortedAt, "number");
+
+const refused = await abortTrackedPmTurn({
+  activeTurns: new Map([["raw", {
+    acceptedId: "accepted-2",
+    abortedAt: null,
+    canonicalSessionKey: "agent:main:pm:raw",
+  }]]),
+  sessionKey: "raw",
+  wait: async () => {},
+  harness: {
+    resolveActiveEmbeddedRunSessionId: () => "embedded-2",
+    abortAgentHarnessRun: () => false,
+  },
+});
+assert.deepEqual(refused, { aborted: false, reason: "active_run_not_abortable" });
+
+let resolveAttempt = 0;
+const raced = await abortTrackedPmTurn({
+  activeTurns: new Map([["raw", {
+    acceptedId: "accepted-3",
+    abortedAt: null,
+    canonicalSessionKey: "agent:main:pm:raw",
+  }]]),
+  sessionKey: "raw",
+  wait: async () => {},
+  maxAttempts: 3,
+  harness: {
+    resolveActiveEmbeddedRunSessionId: () => (++resolveAttempt === 2 ? "embedded-3" : undefined),
+    abortAgentHarnessRun: () => true,
+  },
+});
+assert.deepEqual(raced, { aborted: true });
+assert.equal(resolveAttempt, 2);
 
 console.log("pm channel runtime compatibility tests passed");

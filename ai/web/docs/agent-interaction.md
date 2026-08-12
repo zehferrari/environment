@@ -739,11 +739,15 @@ Auth is the same per-agent PM-channel bearer used by
 `/api/openclaw/pm-channel/reply`. Constraints: the caller must be the
 task's CURRENT assignee and an active agent; the task must be in To Do,
 In Progress, or Review; and the endpoint is rate-limited to one request
-per task per 5 minutes. PM dispatches a fresh workflow-notification turn
-to you with the required action derived from status — To Do: start the
-task; In Progress: verify every sub-task is ticked, then
-`ready_for_review`; Review: a re-send of the current state. Each request
-is logged as a `task.workflow.turn_requested` activity row.
+per task per 5 minutes. If a queued, accepted, or streaming run still has
+a live lease for you on that task, PM returns `ok: true`,
+`alreadyActive: true`, and `dispatched: false`; continue the existing
+turn. The recovery endpoint never supersedes that live process. Otherwise
+PM dispatches a fresh workflow-notification turn with the required action
+derived from status — To Do: start the task; In Progress: verify every
+sub-task is ticked, then `ready_for_review`; Review: a re-send of the
+current state. Each dispatched request is logged as a
+`task.workflow.turn_requested` activity row.
 
 ### Epic workflow endpoint
 

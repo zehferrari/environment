@@ -14,6 +14,7 @@ import {
 import { createPluginRuntimeStore } from "openclaw/plugin-sdk/runtime-store";
 import { resolvePmInboundRuntime } from "./runtime-compat.js";
 import { canonicalizePmStoreSessionKey } from "./session-key.js";
+import { abortTrackedPmTurn } from "./turn-cancellation.js";
 
 const CHANNEL_ID = "pm";
 const DEFAULT_ACCOUNT_ID = "default";
@@ -554,6 +555,14 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
   // Canonical agent-scoped key for session persistence, routing, and dispatch
   // so PM sessions land under `agent:<agentId>:pm:*`.
   const sessionKey = canonicalizePmStoreSessionKey({ agentId, requestKey: rawSessionKey });
+  const registeredTurn = activeTurns.get(rawSessionKey);
+  if (registeredTurn?.acceptedId === acceptedId) {
+    // The PM run stores/sends the raw correlation key, while OpenClaw indexes
+    // the embedded run by this canonical agent-scoped key. Cancellation must
+    // retain both identities or it can acknowledge a no-op abort while the
+    // superseded model keeps running.
+    registeredTurn.canonicalSessionKey = sessionKey;
+  }
   const messageId = typeof payload.messageId === "string" && payload.messageId
     ? payload.messageId
     : payload.replyTarget.messageId ?? randomUUID();
@@ -640,6 +649,17 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
       WasMentioned: true,
     },
   });
+
+  // A replacement can fence this turn after ingress accepts it but before the
+  // embedded runner is registered. Honour that cancellation at the last
+  // possible point before dispatch instead of starting a process which PM has
+  // already superseded.
+  const beforeDispatch = activeTurns.get(rawSessionKey);
+  if (beforeDispatch?.acceptedId === acceptedId && beforeDispatch.abortedAt) {
+    activeTurns.delete(rawSessionKey);
+    logger.warn?.("[pm-channel] canceled turn before embedded dispatch");
+    return;
+  }
 
   try {
     await inbound.dispatchReply({
@@ -731,23 +751,9 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
 }
 
 async function abortActiveTurn(sessionKey) {
-  const active = activeTurns.get(sessionKey);
-  if (!active) return { aborted: false, reason: "not_active" };
   try {
     const harness = await import("openclaw/plugin-sdk/agent-harness");
-    const embeddedSessionId =
-      typeof harness.resolveActiveEmbeddedRunSessionId === "function"
-        ? await harness.resolveActiveEmbeddedRunSessionId(sessionKey)
-        : sessionKey;
-    if (typeof harness.abortAgentHarnessRun === "function") {
-      // Mark BEFORE aborting and keep the entry: runPmTurn reads abortedAt to
-      // report "gateway aborted turn" instead of "agent chose silence", then
-      // its finally block cleans the map (keyed on acceptedId).
-      active.abortedAt = Date.now();
-      await harness.abortAgentHarnessRun(embeddedSessionId);
-      return { aborted: true };
-    }
-    return { aborted: false, reason: "abort_unavailable" };
+    return await abortTrackedPmTurn({ activeTurns, sessionKey, harness });
   } catch (err) {
     return { aborted: false, reason: String(err?.message ?? err) };
   }

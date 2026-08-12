@@ -515,6 +515,12 @@ const requestTurnRoute = readFileSync(join(root, "app/api/agent/tasks/[taskId]/r
 assert(requestTurnRoute.includes("authorizePmChannelCallback"), "request-workflow-turn must reuse the PM-channel bearer auth");
 assert(requestTurnRoute.includes("task.workflow.turn_requested"), "request-workflow-turn must log an ActivityLog row");
 assert(requestTurnRoute.includes("ready_for_review_available"), "request-workflow-turn must arm ready_for_review from In Progress");
+assert(
+  requestTurnRoute.includes('status: { in: ["queued", "accepted", "streaming"] }') &&
+    requestTurnRoute.includes("alreadyActive: true") &&
+    requestTurnRoute.includes("dispatched: false"),
+  "request-workflow-turn must not supersede a still-live PM execution lane",
+);
 assert(taskNotifications.includes("request-workflow-turn"), "the standing workflow rules must advertise request-workflow-turn");
 
 // P1 wording: no Review-resume instructions survive; review_feedback returns

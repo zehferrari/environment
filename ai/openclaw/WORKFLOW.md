@@ -645,7 +645,9 @@ turn ended), POST `/api/agent/tasks/<taskId>/request-workflow-turn` with
 your PM-channel bearer to receive a fresh workflow turn. Only the task's
 current assignee may call it, the task must be in `To Do` /
 `In Progress` / `Review`, and it is rate-limited to one request per task
-per 5 minutes.
+per 5 minutes. If PM still has a live leased run for you on that task, the
+endpoint returns `ok: true`, `alreadyActive: true`, and `dispatched: false`;
+keep using the current turn. It never supersedes a live turn.
 
 ### Assignment and workflow mutations
 

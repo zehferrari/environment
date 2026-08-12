@@ -388,7 +388,9 @@ is live, request one —
 PM-channel bearer (current-assignee-only, task in To Do / In Progress /
 Review, rate-limited to one request per task per 5 minutes). Full
 contract: [`agent-interaction.md`](./agent-interaction.md) § Requesting a
-workflow turn. The task `ack` endpoint is a liveness ping only — it
+workflow turn. A live leased run makes this request an idempotent no-op
+(`alreadyActive: true`, `dispatched: false`) rather than superseding the
+current process. The task `ack` endpoint is a liveness ping only — it
 never changes status; begin work with the workflow `start` action.
 
 Monitor agents are intentionally excluded from those picker and validator
