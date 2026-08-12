@@ -334,12 +334,15 @@ function liveContextFetchBlock(args: LiveContextAccess) {
   }
   out.push(
     "LIVE PM CONTEXT — FETCH WHEN YOU NEED DEEPER HISTORY:",
-    "The RECENT block above is your PRIMARY context — the immediate conversational thread. PM also exposes loopback-only JSON endpoints for deeper history (older messages, full activity, project state). Call them when the RECENT block doesn't cover what you need. PM is reachable ONLY at 127.0.0.1; do NOT call the public browser URL for internal context fetches.",
+    "The RECENT block above is your PRIMARY context — the immediate conversational thread. PM also exposes loopback-only JSON endpoints for the bounded current working set and project state. Call them when the RECENT block doesn't cover what you need. PM is reachable ONLY at 127.0.0.1; do NOT call the public browser URL for internal context fetches.",
     "",
-    "  # Full task: deeper history, comments, archived discussion, activity, attachments:",
+    "  # Bounded current task: newest relevant comments/discussion/activity plus attachments:",
     args.grantUrls?.task
       ? `  curl -s '${args.grantUrls.task}'`
       : missingGrant,
+    args.grantUrls?.task
+      ? "  # Only if a named older fact is missing, append &history=full to that URL. Never do this as routine episode startup."
+      : "",
     "",
     args.epicId
       ? "  # Parent epic (this task lives under one; fetch only when task context is insufficient or explicitly references Epic context/attachments):"

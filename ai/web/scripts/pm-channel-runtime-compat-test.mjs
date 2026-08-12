@@ -101,5 +101,15 @@ assert.match(
   /aborted: false, reason: "active_run_not_abortable"/,
   "gateway cancellation must reject a no-op abort rather than acknowledge it",
 );
+assert.match(
+  pluginSource,
+  /path: "\/pm-channel\/steer"/,
+  "the native PM plugin must expose authenticated mid-turn checkpoint steering",
+);
+assert.match(
+  pluginSource,
+  /harness\.queueAgentHarnessMessage\(embeddedSessionId, text\)/,
+  "checkpoint steering must target the active embedded harness session",
+);
 
 console.log("pm channel runtime compatibility tests passed");

@@ -12,26 +12,53 @@
 // query filters deletedAt: null. Deleted content is invisible to agents
 // regardless of which path serves it.
 //
-// Sized for 1M-token-window callers (Claude Opus 4.7 / OpenAI gpt-5.5).
-// Older content beyond the row caps below will be omitted; if you need
-// history older than the caps, page via ?before=<isoTimestamp> (Phase 2
-// — not yet implemented).
+// The default task response is deliberately a bounded working set. Long-lived
+// tasks can accumulate hundreds of retries, chat rows and activity payloads;
+// returning all of them on every fresh execution episode makes recovery spend
+// its context window rediscovering old work. `history=full` remains available
+// for explicit historical investigation, but must never be the routine path.
 
 import { db } from "@/lib/db";
 import { effectiveCommitPrefix, effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
 import { effectiveEpicBranchName, effectiveTaskBranchName } from "@/lib/work-items/branches";
 
-// Generous caps — 99th-percentile tasks fit comfortably. PM database is
-// SQLite, all on local NVMe; reading 2k rows is sub-100ms.
-const MAX_COMMENTS = 2000;
-const MAX_LIVE_CHATS = 2000;
-const MAX_ARCHIVED_CHATS = 2000;
-const MAX_ACTIVITY = 500;
+export type TaskContextHistoryMode = "recent" | "full";
+
+const RECENT_LIMITS = {
+  comments: 12,
+  liveChats: 16,
+  archivedChats: 4,
+  activity: 20,
+  timelineBody: 4_000,
+  activityPayload: 1_500,
+  description: 12_000,
+} as const;
+
+const FULL_LIMITS = {
+  comments: 2000,
+  liveChats: 2000,
+  archivedChats: 2000,
+  activity: 500,
+  timelineBody: 24_000,
+  activityPayload: 12_000,
+  description: 60_000,
+} as const;
+
+// Epic/project serializers keep their existing generous explicit-context
+// contract. Only task history has the pathological retry amplification this
+// bounded default is intended to stop.
+const MAX_COMMENTS = FULL_LIMITS.comments;
+const MAX_LIVE_CHATS = FULL_LIMITS.liveChats;
+const MAX_ARCHIVED_CHATS = FULL_LIMITS.archivedChats;
+const API_TIMELINE_BODY_MAX = FULL_LIMITS.timelineBody;
+const API_DESCRIPTION_MAX = FULL_LIMITS.description;
+
+export function taskContextLimits(mode: TaskContextHistoryMode) {
+  return mode === "full" ? FULL_LIMITS : RECENT_LIMITS;
+}
+
 const MAX_ATTACHMENTS = 200;
 const ARCHIVE_CHAIN_DEPTH = 8;
-const API_TIMELINE_BODY_MAX = 24000;
-const API_ACTIVITY_PAYLOAD_MAX = 12000;
-const API_DESCRIPTION_MAX = 60000;
 
 type ActorLite = { username: string | null; kind: string | null; isOwner?: boolean } | null;
 
@@ -179,6 +206,8 @@ export interface TaskContextResponse {
   }>;
   meta: {
     fetchedAt: string;
+    historyMode?: TaskContextHistoryMode;
+    limits?: ReturnType<typeof taskContextLimits>;
     note: string;
     /** Present on task / epic responses to flag the recent-exchange slice. Absent on project. */
     priorityNote?: string;
@@ -187,8 +216,13 @@ export interface TaskContextResponse {
 
 export async function buildTaskContextJson(
   taskId: string,
-  opts: { attachmentGrant?: string | null } = {},
+  opts: {
+    attachmentGrant?: string | null;
+    historyMode?: TaskContextHistoryMode;
+  } = {},
 ): Promise<TaskContextResponse | null> {
+  const historyMode = opts.historyMode ?? "recent";
+  const limits = taskContextLimits(historyMode);
   const task = await db.task.findFirst({
     where: {
       id: taskId,
@@ -242,7 +276,7 @@ export async function buildTaskContextJson(
     db.comment.findMany({
       where: { taskId, deletedAt: null },
       orderBy: { createdAt: "desc" },
-      take: MAX_COMMENTS,
+      take: limits.comments,
       select: {
         id: true, createdAt: true, body: true,
         user: { select: { username: true, kind: true, isOwner: true } },
@@ -251,7 +285,7 @@ export async function buildTaskContextJson(
     db.agentChatMessage.findMany({
       where: { taskId, archiveId: null, deletedAt: null },
       orderBy: { createdAt: "desc" },
-      take: MAX_LIVE_CHATS,
+      take: limits.liveChats,
       select: {
         id: true, createdAt: true, body: true,
         targetType: true, targetLabel: true, archiveId: true,
@@ -261,7 +295,7 @@ export async function buildTaskContextJson(
     db.activityLog.findMany({
       where: { taskId },
       orderBy: { createdAt: "desc" },
-      take: MAX_ACTIVITY,
+      take: limits.activity,
       select: {
         id: true, createdAt: true, kind: true, payload: true, targetAgent: true,
         user: { select: { username: true, kind: true, isOwner: true } },
@@ -338,7 +372,7 @@ export async function buildTaskContextJson(
             deletedAt: null,
           },
           orderBy: { createdAt: "desc" },
-          take: MAX_ARCHIVED_CHATS,
+          take: limits.archivedChats,
           select: {
             id: true, createdAt: true, body: true,
             targetType: true, targetLabel: true, archiveId: true,
@@ -358,7 +392,7 @@ export async function buildTaskContextJson(
       approved_on: task.approvedOn?.toISOString() ?? null,
       approvedOn: task.approvedOn?.toISOString() ?? null,
       alert_reporter: task.alertReporter,
-      description: clipApi(task.description, API_DESCRIPTION_MAX),
+      description: clipApi(task.description, limits.description),
       branchName: effectiveTaskBranchName(task),
       commitPrefix: effectiveTaskCommitPrefix(task),
       createdAt: task.createdAt.toISOString(),
@@ -371,7 +405,7 @@ export async function buildTaskContextJson(
       id: task.project.id,
       slug: task.project.slug,
       name: task.project.name,
-      description: clipApi(task.project.description, API_DESCRIPTION_MAX),
+      description: clipApi(task.project.description, limits.description),
       readmePath: task.project.readmePath,
       repositoryPath: task.project.repositoryPath,
     },
@@ -381,7 +415,7 @@ export async function buildTaskContextJson(
           workItemKey: task.epic.workItemKey,
           title: task.epic.title,
           status: task.epic.status,
-          description: clipApi(task.epic.description, API_DESCRIPTION_MAX),
+          description: clipApi(task.epic.description, limits.description),
           branchName: effectiveEpicBranchName(task.epic),
           commitPrefix: effectiveCommitPrefix({
             commitPrefix: task.epic.commitPrefix,
@@ -405,14 +439,14 @@ export async function buildTaskContextJson(
       id: c.id,
       createdAt: c.createdAt.toISOString(),
       author: actor(c.user),
-      body: clipApi(c.body, API_TIMELINE_BODY_MAX),
+      body: clipApi(c.body, limits.timelineBody),
     })),
     discussion: [
       ...archivedChats.map((m) => ({
         id: m.id,
         createdAt: m.createdAt.toISOString(),
         sender: actor(m.sender),
-        body: clipApi(m.body, API_TIMELINE_BODY_MAX),
+        body: clipApi(m.body, limits.timelineBody),
         targetType: m.targetType,
         targetLabel: m.targetLabel,
         archived: true,
@@ -422,7 +456,7 @@ export async function buildTaskContextJson(
         id: m.id,
         createdAt: m.createdAt.toISOString(),
         sender: actor(m.sender),
-        body: clipApi(m.body, API_TIMELINE_BODY_MAX),
+        body: clipApi(m.body, limits.timelineBody),
         targetType: m.targetType,
         targetLabel: m.targetLabel,
         archived: false,
@@ -435,7 +469,7 @@ export async function buildTaskContextJson(
       kind: a.kind,
       actor: actor(a.user),
       targetAgent: a.targetAgent,
-      payload: parseActivityPayload(clipApi(a.payload, API_ACTIVITY_PAYLOAD_MAX)),
+      payload: parseActivityPayload(clipApi(a.payload, limits.activityPayload)),
     })),
     attachments: [
       ...taskAttachments.map((a) => ({
@@ -469,7 +503,7 @@ export async function buildTaskContextJson(
       id: m.id,
       createdAt: m.createdAt.toISOString(),
       sender: actor(m.sender),
-      body: clipApi(m.body, API_TIMELINE_BODY_MAX),
+      body: clipApi(m.body, limits.timelineBody),
       targetType: m.targetType,
       targetLabel: m.targetLabel,
     })),
@@ -477,11 +511,15 @@ export async function buildTaskContextJson(
       id: c.id,
       createdAt: c.createdAt.toISOString(),
       author: actor(c.user),
-      body: clipApi(c.body, API_TIMELINE_BODY_MAX),
+      body: clipApi(c.body, limits.timelineBody),
     })),
     meta: {
       fetchedAt: new Date().toISOString(),
-      note: "Soft-deleted comments / discussion / archives are filtered server-side. Discussion is oldest-first; activity is newest-first.",
+      historyMode,
+      limits,
+      note: historyMode === "full"
+        ? "Explicit full-history view. Soft-deleted rows are filtered server-side; discussion is oldest-first and activity newest-first."
+        : "Bounded recent working set. Soft-deleted rows are filtered server-side; discussion is oldest-first and activity newest-first. Add ?history=full only when older evidence is specifically required.",
       priorityNote: "currentThread + recentComments are the immediate conversational hot path. If you proposed a scope in the last few messages and the user agreed, MATCH THAT SCOPE EXACTLY — do not silently widen it. Surface a question first if you need to deviate.",
     },
   };

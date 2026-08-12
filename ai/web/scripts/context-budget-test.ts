@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import { CODE_CAPS, MONITOR_CAPS, directChatContextMessages } from "../lib/agents/context/caps";
 import { renderBudgetedTimeline, type TimelineItemForBudget } from "../lib/agents/context/budget";
 import { buildUnifiedPmTurnSystemPrompt } from "../lib/agents/pm-channel/context";
+import { taskContextLimits } from "../lib/agents/context/api/serialize";
 
 function item(n: number, body = `body ${n}`): TimelineItemForBudget {
   return {
@@ -37,6 +38,16 @@ function item(n: number, body = `body ${n}`): TimelineItemForBudget {
 
 assert(CODE_CAPS.maxRenderedTimelineChars <= 50_000, "coding packets must preserve tool-loop context headroom");
 assert(MONITOR_CAPS.maxRenderedTimelineChars <= 30_000, "monitor packets must remain smaller than coding packets");
+
+{
+  const recent = taskContextLimits("recent");
+  const full = taskContextLimits("full");
+  assert(recent.comments <= 12, "routine task reads must keep comments bounded");
+  assert(recent.liveChats <= 16, "routine task reads must keep live discussion bounded");
+  assert(recent.activity <= 20, "routine task reads must keep activity bounded");
+  assert(recent.timelineBody < full.timelineBody, "full history must remain an explicit larger view");
+  assert(full.comments > recent.comments, "history=full must preserve explicit historical access");
+}
 
 {
   const prompt = buildUnifiedPmTurnSystemPrompt({

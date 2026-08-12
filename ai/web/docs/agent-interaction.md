@@ -419,7 +419,7 @@ token; any active addressed agent can use only its own token.
 
 Mission Control now grants role-aware task workflow actions through the
 same native PM-channel turns used for task comments. Workflow turns carry
-the full task context packet, the exact required action, and a scoped
+the bounded current task context packet, the exact required action, and a scoped
 token for:
 
 ```text

@@ -46,8 +46,15 @@ YOU REPLY` block with ready-to-curl URLs.
 
 - **Fetch first, reply second.** Run the curl shown in the block to pull
   the live JSON for the task (and the epic, if the task lives under one)
-  BEFORE composing any reply. PM is reachable only over loopback at
+  BEFORE composing any reply. Task context is a bounded recent working set by
+  default; request `history=full` only when a specifically named older fact is
+  absent. Never fetch full history as routine episode startup. PM is reachable only over loopback at
   `http://127.0.0.1:3000`; never call `agents.vixi.au` or any other URL.
+- **Answer direct owner questions before long work.** If the current owner
+  comment asks for status, a blocker, or whether you are actively working,
+  post one concise, factual reply in that same surface before starting extended
+  investigation. Use the current checkpoint and bounded PM context; do not
+  spend an execution episode reconstructing history before acknowledging it.
 - The Bearer token in the block is your existing `channels.pm.token` from
   `~/.openclaw/openclaw.json` — same secret OpenClaw already uses to
   authenticate PM callbacks. There is no new token to provision.

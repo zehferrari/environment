@@ -62,6 +62,40 @@ export async function abortGatewaySession(args: {
   }
 }
 
+export async function steerGatewaySession(args: {
+  agentSlug: string;
+  gatewayPort: number;
+  sessionKey: string;
+  text: string;
+  fetchImpl?: typeof fetch;
+}) {
+  const token = await resolvePmChannelToken(args.agentSlug);
+  if (!token) return { ok: false as const, error: `missing PM channel token for ${args.agentSlug}` };
+  const f = args.fetchImpl ?? fetch;
+  try {
+    const response = await f(`http://127.0.0.1:${args.gatewayPort}/pm-channel/steer`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ sessionKey: args.sessionKey, text: args.text }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    const body = await response.text().catch(() => "");
+    if (response.ok) return { ok: true as const };
+    return {
+      ok: false as const,
+      error: clipped(body.trim() || `gateway steering returned HTTP ${response.status}`),
+    };
+  } catch (error) {
+    return {
+      ok: false as const,
+      error: clipped(error instanceof Error ? error.message : String(error)),
+    };
+  }
+}
+
 /**
  * Fence every live process superseded by `replacementRunId` before the new
  * run is delivered. Database supersession alone is not enough: the old model

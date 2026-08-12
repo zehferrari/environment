@@ -27,7 +27,7 @@ import { isAuthorizedPmChannelCallbackTarget } from "@/lib/agents/pm-channel/tar
 import { continueActionableTaskAfterReply } from "@/lib/agents/workflow/execution-continuation";
 import { recordTaskExecutionToolCycle } from "@/lib/agents/episodes/lifecycle";
 import { sealEpisodeRolloverBarrierOnTurnEnd } from "@/lib/agents/episodes/rollover";
-import { abortGatewaySession } from "@/lib/agents/pm-channel/supersession";
+import { abortGatewaySession, steerGatewaySession } from "@/lib/agents/pm-channel/supersession";
 
 export type PmChannelStreamTransportMode = "http" | "inproc" | "uds";
 
@@ -161,7 +161,46 @@ async function countTaskExecutionToolCycle(
       agentSlug: target.agentSlug,
       messageId: target.messageId,
     });
-    if (!outcome?.rolledOver) return;
+    if (!outcome) return;
+
+    const warningAt = Math.max(8, Math.floor(outcome.episode.toolCycleBudget * 2 / 3));
+    if (!outcome.rolledOver && outcome.episode.toolCycleCount === warningAt) {
+      const run = await db.pmChannelRun.findUnique({
+        where: { targetKey: pmChannelRunTargetKey(target) },
+        select: { id: true, projectId: true, gatewayPort: true, sessionKey: true },
+      });
+      const steer = run?.gatewayPort && run.sessionKey
+        ? await steerGatewaySession({
+            agentSlug: target.agentSlug,
+            gatewayPort: run.gatewayPort,
+            sessionKey: run.sessionKey,
+            text: [
+              `PM execution episode ${outcome.episode.episodeNo} is at ${outcome.episode.toolCycleCount}/${outcome.episode.toolCycleBudget} tool calls.`,
+              "Before any more broad investigation, immediately call the task workflow endpoint with action=checkpoint and this turn's existing workflow token.",
+              "Record concrete completedWork, evidence, openChecklist, one exact nextAction, and risks. Then continue only from that nextAction.",
+              "Do not fetch full task history or repeat repository/browser discovery unless the checkpoint identifies a specific missing fact.",
+            ].join(" "),
+          })
+        : { ok: false as const, error: "run has no gateway session identity" };
+      await db.activityLog.create({
+        data: {
+          projectId: run?.projectId ?? undefined,
+          taskId: target.taskId,
+          kind: "task.execution.episode.checkpoint_steer",
+          targetAgent: target.agentSlug,
+          payload: JSON.stringify({
+            runId: run?.id ?? null,
+            messageId: target.messageId,
+            episodeNo: outcome.episode.episodeNo,
+            toolCycleCount: outcome.episode.toolCycleCount,
+            toolCycleBudget: outcome.episode.toolCycleBudget,
+            steer,
+          }),
+        },
+      }).catch(() => {});
+      return;
+    }
+    if (!outcome.rolledOver) return;
 
     // The counter is a safety boundary, not a dashboard decoration. Once the
     // message spends it, settle that transport turn as `continue`, seal the

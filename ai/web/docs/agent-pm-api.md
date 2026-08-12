@@ -25,7 +25,8 @@ content has Mission Control authority.
 ## At a glance
 
 ```
-GET /api/agents/context/task/<taskId>
+GET /api/agents/context/task/<taskId>                 # bounded recent working set
+GET /api/agents/context/task/<taskId>?history=full    # explicit historical investigation
 GET /api/agents/context/epic/<epicId>
 GET /api/agents/context/project/<projectId>
 
@@ -34,7 +35,11 @@ Host:          must be 127.0.0.1, localhost, or [::1]
 ```
 
 All three return JSON. All three are **loopback-only**. All three filter
-soft-deleted rows server-side, so deleted content stays invisible.
+soft-deleted rows server-side, so deleted content stays invisible. Task reads
+default to the newest 12 comments, 16 live discussion rows, 4 archived rows,
+and 20 activity rows, with bounded bodies. `meta.historyMode` and `meta.limits`
+state the view actually returned. Use `history=full` only when an identified
+older fact is missing; it is not an episode-startup step.
 
 ## Per-turn context contract
 

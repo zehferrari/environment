@@ -30,8 +30,12 @@ export async function GET(
     return NextResponse.json({ error: "Invalid or missing agent context grant" }, { status: 401 });
   }
 
+  const historyMode = req.nextUrl.searchParams.get("history") === "full"
+    ? "full"
+    : "recent";
   const data = await buildTaskContextJson(id, {
     attachmentGrant: identity.grantId ? req.nextUrl.searchParams.get("grant") : null,
+    historyMode,
   });
   if (!data) return NextResponse.json({ error: "Task not found" }, { status: 404 });
 

@@ -156,6 +156,10 @@ every source system — Jira, Mission Control / PM, email, Telegram.
 
 - **You can help**: do the work, reply with results, sign when the
   channel calls for the signature rule.
+- **Owner asks for status or a blocker**: answer once, concisely and
+  factually, before starting a long investigation. Use the current execution
+  checkpoint and bounded live context. Do not consume a full execution episode
+  reconstructing history before acknowledging the owner.
 - **Nothing useful to add**: follow the source-specific rule. Zero
   Latency / PM uses a silent no-contribution path, so do not post a
   visible "nothing to add" comment there. Other channels may still

@@ -793,6 +793,29 @@ async function abortActiveTurn(sessionKey) {
   }
 }
 
+async function steerActiveTurn(sessionKey, text) {
+  const active = activeTurns.get(sessionKey);
+  if (!active) return { queued: false, reason: "not_active" };
+  try {
+    const harness = await import("openclaw/plugin-sdk/agent-harness");
+    if (
+      typeof harness.resolveActiveEmbeddedRunSessionId !== "function"
+      || typeof harness.queueAgentHarnessMessage !== "function"
+    ) return { queued: false, reason: "steer_unavailable" };
+
+    const embeddedSessionId = await harness.resolveActiveEmbeddedRunSessionId(
+      active.canonicalSessionKey || sessionKey,
+    );
+    if (!embeddedSessionId) return { queued: false, reason: "active_run_not_resolved" };
+    const queued = harness.queueAgentHarnessMessage(embeddedSessionId, text);
+    return queued
+      ? { queued: true }
+      : { queued: false, reason: "active_run_not_queueable" };
+  } catch (err) {
+    return { queued: false, reason: String(err?.message ?? err) };
+  }
+}
+
 async function handleIngress({ cfg, logger, req, res }) {
   if (req.method !== "POST") {
     writeJson(res, 405, { error: "Method not allowed" });
@@ -863,6 +886,32 @@ async function handleCancel({ cfg, req, res }) {
 
   const result = await abortActiveTurn(sessionKey);
   writeJson(res, 200, { ok: true, ...result });
+  return true;
+}
+
+async function handleSteer({ cfg, req, res }) {
+  if (req.method !== "POST") {
+    writeJson(res, 405, { error: "Method not allowed" });
+    return true;
+  }
+
+  const payload = safeJsonParse(await readRequestBody(req));
+  const accountId = normalizeAccountId(payload?.accountId);
+  const account = resolvePmAccount({ cfg, accountId });
+  if (!tokensEqual(authHeader(req), account.token)) {
+    writeJson(res, 401, { error: "Unauthorized" });
+    return true;
+  }
+
+  const sessionKey = typeof payload?.sessionKey === "string" ? payload.sessionKey.trim() : "";
+  const text = typeof payload?.text === "string" ? payload.text.trim() : "";
+  if (!sessionKey || !text) {
+    writeJson(res, 400, { error: "sessionKey and text are required" });
+    return true;
+  }
+
+  const result = await steerActiveTurn(sessionKey, text.slice(0, 4_000));
+  writeJson(res, result.queued ? 200 : 409, { ok: result.queued, ...result });
   return true;
 }
 
@@ -1001,6 +1050,16 @@ export default defineChannelPluginEntry({
       auth: "plugin",
       match: "exact",
       handler: (req, res) => handleCancel({
+        cfg: api.config,
+        req,
+        res,
+      }),
+    });
+    api.registerHttpRoute({
+      path: "/pm-channel/steer",
+      auth: "plugin",
+      match: "exact",
+      handler: (req, res) => handleSteer({
         cfg: api.config,
         req,
         res,
