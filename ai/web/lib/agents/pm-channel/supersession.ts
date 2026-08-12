@@ -9,7 +9,7 @@ function clipped(value: string, max = 2_000) {
   return value.length > max ? value.slice(0, max) : value;
 }
 
-async function abortGatewaySession(args: {
+export async function abortGatewaySession(args: {
   agentSlug: string;
   gatewayPort: number;
   sessionKey: string;

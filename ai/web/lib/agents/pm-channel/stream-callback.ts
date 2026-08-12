@@ -27,6 +27,7 @@ import { isAuthorizedPmChannelCallbackTarget } from "@/lib/agents/pm-channel/tar
 import { continueActionableTaskAfterReply } from "@/lib/agents/workflow/execution-continuation";
 import { recordTaskExecutionToolCycle } from "@/lib/agents/episodes/lifecycle";
 import { sealEpisodeRolloverBarrierOnTurnEnd } from "@/lib/agents/episodes/rollover";
+import { abortGatewaySession } from "@/lib/agents/pm-channel/supersession";
 
 export type PmChannelStreamTransportMode = "http" | "inproc" | "uds";
 
@@ -143,24 +144,94 @@ async function recordStreamError(target: PmChannelReplyTarget, error: string | u
  * actions are fenced and subsequent tool events are ignored by the counter,
  * so it cannot mutate the task or spend episode N+1's budget.
  *
- * ENV-121 (second review) — what this deliberately does NOT do is schedule the
- * successor. It used to arm a continuation right here, which meant episode N+1
- * was queued at the instant of the `tool:call`, before N had any checkpoint —
- * and if the fenced turn then finished without calling `checkpoint` (it has no
- * way of knowing it was fenced) the successor would be briefed from nothing.
- * The successor is armed only by a successful SEAL: the fenced turn's own final
- * checkpoint, or PM's derived one written when the turn ends
- * (sealTaskExecutionEpisodeOnTurnEnd) or when the sweeper gives up on it.
+ * ENV-121 (second review) — rollover never schedules an uncheckpointed
+ * successor. At a workflow-action boundary the agent can write its own final
+ * checkpoint. A tool callback cannot communicate that fence back into an
+ * already-running model turn, so PM immediately writes the same deterministic
+ * turn-end checkpoint, seals it, and aborts the spent process. Only that
+ * successful seal arms N+1; a crash still leaves the ordinary barrier sweeper
+ * able to repair the handoff.
  */
 async function countTaskExecutionToolCycle(
   target: Extract<PmChannelReplyTarget, { kind: "task-chat" | "task-comment" }>,
 ) {
   try {
-    await recordTaskExecutionToolCycle({
+    const outcome = await recordTaskExecutionToolCycle({
       taskId: target.taskId,
       agentSlug: target.agentSlug,
       messageId: target.messageId,
     });
+    if (!outcome?.rolledOver) return;
+
+    // The counter is a safety boundary, not a dashboard decoration. Once the
+    // message spends it, settle that transport turn as `continue`, seal the
+    // checkpoint deterministically, and abort the OpenClaw process before it
+    // can keep growing the same model context. Marking the run complete first
+    // makes the abort callback a harmless late anomaly rather than a retry of
+    // the poisoned job. The queued episode-rollover continuation is the only
+    // owner of the next turn.
+    const targetKey = pmChannelRunTargetKey(target);
+    const run = await db.pmChannelRun.findUnique({
+      where: { targetKey },
+      select: {
+        id: true,
+        projectId: true,
+        gatewayPort: true,
+        sessionKey: true,
+        status: true,
+      },
+    });
+    if (!run) return;
+    const now = new Date();
+    await db.$transaction([
+      db.pmChannelRun.updateMany({
+        where: { id: run.id, status: { in: ["queued", "accepted", "streaming"] } },
+        data: {
+          status: "completed",
+          error: null,
+          completedAt: now,
+          failedAt: null,
+          finishedAt: now,
+          finishedReason: "episode_tool_budget_exhausted",
+          lastEventAt: now,
+          disposition: "continue",
+        },
+      }),
+      db.pmChannelJob.updateMany({
+        where: { runId: run.id, status: { in: ["queued", "claimed", "accepted", "retryable"] } },
+        data: { status: "complete", completedAt: now, lastError: null },
+      }),
+    ]);
+    await sealEpisodeRolloverBarrierOnTurnEnd({
+      taskId: target.taskId,
+      agentSlug: target.agentSlug,
+      messageId: target.messageId,
+    });
+
+    let abort: { ok: boolean; error?: string } = { ok: true };
+    if (run.gatewayPort && run.sessionKey) {
+      abort = await abortGatewaySession({
+        agentSlug: target.agentSlug,
+        gatewayPort: run.gatewayPort,
+        sessionKey: run.sessionKey,
+      });
+    }
+    await db.activityLog.create({
+      data: {
+        projectId: run.projectId,
+        taskId: target.taskId,
+        kind: "task.execution.episode.tool_budget_abort",
+        targetAgent: target.agentSlug,
+        payload: JSON.stringify({
+          runId: run.id,
+          messageId: target.messageId,
+          closedEpisodeNo: outcome.episode.episodeNo,
+          successorEpisodeNo: outcome.nextEpisode?.episodeNo ?? null,
+          toolCycleBudget: outcome.episode.toolCycleBudget,
+          abort,
+        }),
+      },
+    }).catch(() => {});
   } catch (err) {
     // Budget accounting must never break the agent's stream. A lost tool cycle
     // costs accuracy; a thrown error here would cost the turn.

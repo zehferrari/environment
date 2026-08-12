@@ -125,6 +125,7 @@ async function sectionB(): Promise<void> {
       rollOverTaskExecutionEpisodeForContextPressure,
       latestTaskExecutionCheckpoint,
       recordTaskExecutionEpisodeCycle,
+      recordTaskExecutionToolCycle,
       renderEpisodeCheckpoint,
       taskExecutionEpisodeHistory,
       episodeCycleBudget,
@@ -788,22 +789,29 @@ async function sectionB(): Promise<void> {
       gateMessageId,
       "B10: the streaming turn is the one that gets fenced",
     );
-    assertEqual(
+    assert(
       gateEpisodeOne.barrierReleasedAt,
-      null,
-      "B10: no checkpoint has been written yet, so the barrier is still raised",
+      "B10: the hard tool boundary seals a deterministic checkpoint before handoff",
     );
 
-    // THE GATE. Nothing may be scheduled for the successor yet.
+    // THE GATE. A successor is scheduled only after the checkpoint is durable;
+    // the hard tool boundary performs both in that order and settles the spent
+    // process so it cannot retry the same oversized job.
     assertEqual(
       await db.pmChannelContinuation.count({ where: { taskId: gateTask.id } }),
-      0,
-      "B10: a tool-budget rollover schedules NOTHING — N+1 waits for N's checkpoint",
+      1,
+      "B10: exactly one checkpoint-backed successor is scheduled",
     );
+    const spentRun = await db.pmChannelRun.findUniqueOrThrow({
+      where: { targetKey: pmChannelRunTargetKey(gateTarget) },
+      select: { status: true, disposition: true, finishedReason: true },
+    });
+    assertEqual(spentRun.status, "completed", "B10: the spent transport turn is terminal");
+    assertEqual(spentRun.disposition, "continue", "B10: execution continues in the successor");
     assertEqual(
-      (await drainPmChannelContinuations()).dispatched,
-      0,
-      "B10: the drain cannot dispatch the successor before the checkpoint is durable",
+      spentRun.finishedReason,
+      "episode_tool_budget_exhausted",
+      "B10: the terminal reason records the hard tool boundary",
     );
     assertEqual(
       (
@@ -860,17 +868,13 @@ async function sectionB(): Promise<void> {
       "B10: the tool-fenced turn cannot take a workflow action either",
     );
 
-    // Now the checkpoint. THIS is what releases the successor.
+    // PM already consumed the barrier with its deterministic checkpoint. The
+    // old message cannot overwrite that handoff after it has been aborted.
     const gateCheckpoint = await gateWorkflow("checkpoint", {
       nextAction: "finish the barrier sweep",
       evidence: ["tool budget spent on Bash"],
     });
-    assertEqual(gateCheckpoint.status, 200, "B10: the fenced turn's final checkpoint is accepted");
-    assertEqual(
-      gateCheckpoint.body.successorScheduled,
-      true,
-      "B10: the checkpoint — and only the checkpoint — schedules the successor",
-    );
+    assertEqual(gateCheckpoint.status, 409, "B10: the aborted turn cannot overwrite the sealed checkpoint");
     const gateContinuation = await db.pmChannelContinuation.findFirstOrThrow({
       where: { taskId: gateTask.id },
       select: { action: true, status: true, messageId: true },
@@ -923,10 +927,15 @@ async function sectionB(): Promise<void> {
       where: { targetKey: pmChannelRunTargetKey(endTarget) },
       data: { status: "streaming" },
     });
+    // Exercise the lower-level crash fallback directly: the stream boundary
+    // normally hard-stops and seals immediately, but a process can die between
+    // lifecycle rollover and that seal. A later `done` must still repair it.
     for (let i = 1; i <= TOOL_BUDGET; i += 1) {
-      await applyPmChannelStreamCallback({
-        payload: { target: endTarget, event: "tool:call", toolStatus: "call", toolName: "Read" },
-        rateLimit: false,
+      await recordTaskExecutionToolCycle({
+        taskId: endTask.id,
+        projectId: barrierProject.id,
+        agentSlug: AGENT_SLUG,
+        messageId: endTurn!.messageId,
       });
     }
     assertEqual(
