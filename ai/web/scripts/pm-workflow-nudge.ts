@@ -354,7 +354,7 @@ async function main() {
     "",
     `Required action: ${requiredAction}`,
     "",
-    "Read the full PM context packet attached to this turn, including task description, comments, Action Plan, activity, and project context. Use one concise visible reply only for a plan, new progress, blocker, feedback, review finding, or necessary question.",
+    "Read the bounded current PM context attached to this turn: task state, recent comments/discussion, Action Plan, recent activity, and project context. Use history=full only when a specifically named older fact is missing. Use one concise visible reply only for a plan, new progress, blocker, feedback, review finding, or necessary question.",
   ].join("\n");
 
   const result = await sendTaskWorkflowNotification({

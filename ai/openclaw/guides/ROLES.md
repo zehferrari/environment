@@ -145,7 +145,8 @@ You **do**:
   reviewer or assignee feedback, and tasks blocked by non-actionable
   Epics (`Backlog`/`Done`).
   These PM workflow kinds normally bypass your judgment path; ai-monitor
-  sends native PM-channel workflow nudges with the full task context,
+  sends native PM-channel workflow nudges with bounded current task context
+  and an explicit full-history opt-in,
   repeats semantic nudges without destroying a healthy task/browser session,
   and pages only after the deterministic ladder is exhausted. Restarts are
   reserved for concrete PM-channel delivery/runtime failures.
