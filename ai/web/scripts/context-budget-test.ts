@@ -42,9 +42,9 @@ assert(MONITOR_CAPS.maxRenderedTimelineChars <= 30_000, "monitor packets must re
 {
   const recent = taskContextLimits("recent");
   const full = taskContextLimits("full");
-  assert(recent.comments <= 12, "routine task reads must keep comments bounded");
-  assert(recent.liveChats <= 16, "routine task reads must keep live discussion bounded");
-  assert(recent.activity <= 20, "routine task reads must keep activity bounded");
+  assert(recent.comments <= 8, "routine task reads must keep comments bounded");
+  assert(recent.liveChats <= 10, "routine task reads must keep live discussion bounded");
+  assert(recent.activity <= 12, "routine task reads must keep activity bounded");
   assert(recent.timelineBody < full.timelineBody, "full history must remain an explicit larger view");
   assert(full.comments > recent.comments, "history=full must preserve explicit historical access");
 }

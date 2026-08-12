@@ -684,7 +684,7 @@ async function main() {
     assert.equal(recoveredEpisodes[0]!.nextAction, "resume the browser verification");
     assert.equal(recoveredEpisodes[1]!.status, "open");
     assert.equal(recoveredEpisodes[1]!.sessionKey, null, "the successor has never used the poisoned session");
-    assert.equal(recoveredEpisodes[1]!.toolCycleBudget, 24, "the successor uses the tightened default ceiling");
+    assert.equal(recoveredEpisodes[1]!.toolCycleBudget, 18, "the successor uses the tightened default ceiling");
     const contextContinuation = await db.pmChannelContinuation.findFirstOrThrow({
       where: { runId: d6bSeed.id, action: CONTEXT_PRESSURE_RECOVERY_ACTION },
       select: { status: true },

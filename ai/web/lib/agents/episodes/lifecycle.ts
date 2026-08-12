@@ -55,11 +55,11 @@ export function episodeCycleBudget() {
  * for turns that stream nothing.
  */
 // PH-171 demonstrated that a browser/repository-heavy OpenAI turn can cross
-// the safe model-context threshold around tool 26 even when its initial PM
-// packet is bounded. Twenty-four leaves enough room for the 2/3 checkpoint
-// steer (at tool 16) to be acted on, then enforces a fresh-session handoff
-// before large tool results can poison the active provider turn.
-export const EPISODE_TOOL_CYCLE_BUDGET_DEFAULT = 24;
+// the safe model-context threshold around tool 26, while the smaller-window
+// Ollama fallback can precheck-fail at tool 18. Eighteen makes the 2/3
+// checkpoint steer fire at tool 12, leaves room to persist it, then fences the
+// turn before tool 18's result can poison either provider context.
+export const EPISODE_TOOL_CYCLE_BUDGET_DEFAULT = 18;
 
 export function episodeToolCycleBudget() {
   return intEnv("PM_EPISODE_MAX_TOOL_CYCLES", EPISODE_TOOL_CYCLE_BUDGET_DEFAULT, 1, 5_000);

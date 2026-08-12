@@ -25,13 +25,13 @@ import { effectiveEpicBranchName, effectiveTaskBranchName } from "@/lib/work-ite
 export type TaskContextHistoryMode = "recent" | "full";
 
 const RECENT_LIMITS = {
-  comments: 12,
-  liveChats: 16,
-  archivedChats: 4,
-  activity: 20,
-  timelineBody: 4_000,
-  activityPayload: 1_500,
-  description: 12_000,
+  comments: 8,
+  liveChats: 10,
+  archivedChats: 2,
+  activity: 12,
+  timelineBody: 3_000,
+  activityPayload: 1_000,
+  description: 8_000,
 } as const;
 
 const FULL_LIMITS = {
