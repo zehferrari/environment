@@ -751,13 +751,35 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
 
 async function abortActiveTurn(sessionKey) {
   const active = activeTurns.get(sessionKey);
-  if (!active) return { aborted: false, reason: "not_active" };
   try {
     const harness = await import("openclaw/plugin-sdk/agent-harness");
     if (
       typeof harness.resolveActiveEmbeddedRunSessionId !== "function"
       || typeof harness.abortAndDrainAgentHarnessRun !== "function"
     ) return { aborted: false, reason: "abort_unavailable" };
+
+    const drainResolvedRun = async (embeddedSessionId, resolvedSessionKey) => {
+      const drained = await harness.abortAndDrainAgentHarnessRun({
+        sessionId: embeddedSessionId,
+        sessionKey: resolvedSessionKey,
+        settleMs: 10_000,
+        forceClear: true,
+        reason: "PM channel cancellation",
+      });
+      return drained.drained || drained.forceCleared
+        ? { aborted: true, reason: drained.forceCleared ? "force_cleared" : "drained" }
+        : { aborted: false, reason: "active_run_not_drained" };
+    };
+
+    // The gateway can recover an interrupted PM session after restart before
+    // this plugin has rebuilt its process-local activeTurns map. Resolve that
+    // durable session key directly so recovered runs remain cancellable and do
+    // not occupy the lane forever while /cancel incorrectly says not_active.
+    if (!active) {
+      const recoveredSessionId = await harness.resolveActiveEmbeddedRunSessionId(sessionKey);
+      if (!recoveredSessionId) return { aborted: false, reason: "not_active" };
+      return drainResolvedRun(recoveredSessionId, sessionKey);
+    }
 
     // Mark BEFORE resolving the embedded run. runPmTurn checks this flag just
     // before dispatch, covering cancellation during inbound context assembly.
@@ -776,16 +798,7 @@ async function abortActiveTurn(sessionKey) {
         current.canonicalSessionKey || lookupKey,
       );
       if (embeddedSessionId) {
-        const drained = await harness.abortAndDrainAgentHarnessRun({
-          sessionId: embeddedSessionId,
-          sessionKey: current.canonicalSessionKey || lookupKey,
-          settleMs: 10_000,
-          forceClear: true,
-          reason: "PM channel cancellation",
-        });
-        return drained.drained || drained.forceCleared
-          ? { aborted: true, reason: drained.forceCleared ? "force_cleared" : "drained" }
-          : { aborted: false, reason: "active_run_not_drained" };
+        return drainResolvedRun(embeddedSessionId, current.canonicalSessionKey || lookupKey);
       }
       await new Promise((resolve) => setTimeout(resolve, 50));
     }

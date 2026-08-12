@@ -98,6 +98,11 @@ assert.match(
 );
 assert.match(
   pluginSource,
+  /if \(!active\) \{[\s\S]*resolveActiveEmbeddedRunSessionId\(sessionKey\)[\s\S]*drainResolvedRun\(recoveredSessionId, sessionKey\)/,
+  "restart-recovered PM runs must remain cancellable after the process-local active-turn map is lost",
+);
+assert.match(
+  pluginSource,
   /forceClear: true/,
   "gateway cancellation must force-clear an undrained session lock after its settle window",
 );
