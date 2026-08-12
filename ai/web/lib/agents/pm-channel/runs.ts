@@ -234,8 +234,8 @@ export async function cancelPmChannelRunForTarget(args: {
   if (TERMINAL_STATUSES.has(run.status as PmChannelRunStatus)) {
     return { canceled: false as const, reason: "terminal" as const, status: run.status };
   }
-  await db.$transaction([
-    db.pmChannelRun.update({
+  await db.$transaction(async (tx) => {
+    await tx.pmChannelRun.update({
       where: { id: run.id },
       data: {
         status: "cancelled",
@@ -246,17 +246,24 @@ export async function cancelPmChannelRunForTarget(args: {
         finishedReason: "cancelled",
         lastEventAt: now,
       },
-    }),
-    db.pmChannelJob.updateMany({
+    });
+    await tx.pmChannelJob.updateMany({
       where: { runId: run.id, status: { in: ["queued", "claimed", "accepted", "retryable"] } },
       data: { status: "canceled", completedAt: now, lastError: null },
-    }),
+    });
     // A canceled episode is over by human decision: never resume it.
-    db.pmChannelContinuation.updateMany({
+    await tx.pmChannelContinuation.updateMany({
       where: { runId: run.id, status: { in: ["armed", "queued", "dispatching"] } },
       data: { status: "superseded", lastError: "run canceled" },
-    }),
-    db.activityLog.create({
+    });
+    if (args.target.kind === "task-chat" || args.target.kind === "task-comment") {
+      await closeOpenTaskExecutionEpisode(tx, {
+        taskId: args.target.taskId,
+        agentSlug: args.target.agentSlug,
+        closeReason: EPISODE_CLOSE_REASON.canceled,
+      });
+    }
+    await tx.activityLog.create({
       data: {
         userId: args.actorUserId,
         kind: "pm.channel.cancel",
@@ -266,8 +273,8 @@ export async function cancelPmChannelRunForTarget(args: {
           target: args.target,
         }),
       },
-    }),
-  ]);
+    });
+  });
   return { canceled: true as const, runId: run.id };
 }
 

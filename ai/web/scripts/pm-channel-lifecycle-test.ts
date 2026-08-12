@@ -47,6 +47,7 @@ async function main() {
 
   const { db } = await import("@/lib/db");
   const {
+    cancelPmChannelRunForTarget,
     getPmChannelRunSnapshot,
     recordPmChannelRunEvent,
     recordPmChannelRunWorkflowAction,
@@ -720,7 +721,45 @@ async function main() {
     });
     assert.equal((JSON.parse(proactiveLog.payload ?? "{}") as { reason?: unknown }).reason, "completed_turn_budget");
 
-    // ---- D7: canceled runs are never retried. ----
+    // ---- D7: canceling a live task run also closes its execution episode;
+    // a canceled process must never leave a phantom open lane behind. ----
+    await db.taskExecutionEpisode.deleteMany({ where: { taskId: task.id, agentSlug } });
+    const mCancel = "lifecycle-d7-cancel-live";
+    await grantMessage(mCancel);
+    const cancelRun = await db.pmChannelRun.create({
+      data: {
+        targetKey: `task-chat:${agentSlug}:${task.id}:${mCancel}`,
+        kind: "task-chat",
+        agentSlug,
+        messageId: mCancel,
+        taskId: task.id,
+        projectId: project.id,
+        status: "streaming",
+      },
+    });
+    await db.$transaction((tx) =>
+      openTaskExecutionEpisode(tx, {
+        taskId: task.id,
+        projectId: project.id,
+        agentSlug,
+        sessionKey: "lifecycle:cancel-live",
+        messageId: mCancel,
+        runId: cancelRun.id,
+      }),
+    );
+    const cancelResult = await cancelPmChannelRunForTarget({
+      target: chatTarget(mCancel),
+      actorUserId: owner.id,
+    });
+    assert.equal(cancelResult.canceled, true);
+    const canceledEpisode = await db.taskExecutionEpisode.findFirstOrThrow({
+      where: { taskId: task.id, agentSlug, messageId: mCancel },
+      select: { status: true, closeReason: true },
+    });
+    assert.equal(canceledEpisode.status, "closed");
+    assert.equal(canceledEpisode.closeReason, EPISODE_CLOSE_REASON.canceled);
+
+    // Canceled runs are never retried.
     const mG = "lifecycle-d7";
     await db.pmChannelRun.create({
       data: {

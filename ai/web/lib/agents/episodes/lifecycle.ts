@@ -71,6 +71,7 @@ export const EPISODE_CLOSE_REASON = {
   contextPressureRecovery: "context_pressure_recovery",
   terminalAction: "episode_terminal_action",
   superseded: "superseded",
+  canceled: "canceled",
 } as const;
 
 /**
