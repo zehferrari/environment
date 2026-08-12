@@ -139,8 +139,9 @@ async function recordStreamError(target: PmChannelReplyTarget, error: string | u
  * opened and THIS message is fenced (see resolveEpisodeRolloverBarrier): from
  * here on the workflow route accepts only its final checkpoint. Nothing in the
  * stream path can stop the model mid-turn, so the barrier is what makes the
- * boundary real — the turn may keep talking, but it can no longer mutate the
- * task or bank work against episode N+1.
+ * boundary real — the turn may keep talking and finish in process, but its
+ * actions are fenced and subsequent tool events are ignored by the counter,
+ * so it cannot mutate the task or spend episode N+1's budget.
  *
  * ENV-121 (second review) — what this deliberately does NOT do is schedule the
  * successor. It used to arm a continuation right here, which meant episode N+1

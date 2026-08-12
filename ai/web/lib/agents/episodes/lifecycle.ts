@@ -539,6 +539,24 @@ export async function recordTaskExecutionToolCycle(args: {
   messageId?: string | null;
 }): Promise<EpisodeCycleOutcome | null> {
   return db.$transaction(async (tx) => {
+    // A rollover opens N+1 immediately, but N's turn can keep emitting tool
+    // events until OpenClaw reaches a natural turn boundary. Those events
+    // still belong to the fenced message that exhausted N; charging them to
+    // the unopened successor silently spends N+1 before its fresh session is
+    // dispatched. Workflow actions already consult this same barrier. Tool
+    // accounting must do so as well.
+    if (args.messageId) {
+      const fencedTurn = await tx.taskExecutionEpisode.findFirst({
+        where: {
+          taskId: args.taskId,
+          agentSlug: args.agentSlug,
+          exhaustedByMessageId: args.messageId,
+        },
+        select: { id: true },
+      });
+      if (fencedTurn) return null;
+    }
+
     const existing = await openEpisodeRow(tx, args);
     if (!existing) return null;
     const episode = summarizeEpisode(existing);

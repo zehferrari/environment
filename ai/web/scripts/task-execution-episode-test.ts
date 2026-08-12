@@ -816,6 +816,22 @@ async function sectionB(): Promise<void> {
       "B10: the successor is still bound to no session",
     );
 
+    // OpenClaw cannot be interrupted synchronously at a tool callback. The
+    // exhausted turn may emit more calls before it reaches turn end, but they
+    // still belong to episode 1 and must never pre-spend unopened episode 2.
+    await toolCall();
+    await toolCall();
+    assertEqual(
+      (
+        await db.taskExecutionEpisode.findFirstOrThrow({
+          where: { taskId: gateTask.id, episodeNo: 2 },
+          select: { toolCycleCount: true },
+        })
+      ).toolCycleCount,
+      0,
+      "B10: post-fence tool events do not spend the successor's budget",
+    );
+
     const gateWorkflow = async (action: string, extra: Record<string, unknown> = {}) => {
       const req = new NextRequest(
         `http://127.0.0.1/api/agent/tasks/${gateTask.id}/workflow`,
