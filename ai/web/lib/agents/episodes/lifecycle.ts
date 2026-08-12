@@ -54,7 +54,12 @@ export function episodeCycleBudget() {
  * budget is the real boundary and the workflow-action budget is the backstop
  * for turns that stream nothing.
  */
-export const EPISODE_TOOL_CYCLE_BUDGET_DEFAULT = 30;
+// PH-171 demonstrated that a browser/repository-heavy OpenAI turn can cross
+// the safe model-context threshold around tool 26 even when its initial PM
+// packet is bounded. Twenty-four leaves enough room for the 2/3 checkpoint
+// steer (at tool 16) to be acted on, then enforces a fresh-session handoff
+// before large tool results can poison the active provider turn.
+export const EPISODE_TOOL_CYCLE_BUDGET_DEFAULT = 24;
 
 export function episodeToolCycleBudget() {
   return intEnv("PM_EPISODE_MAX_TOOL_CYCLES", EPISODE_TOOL_CYCLE_BUDGET_DEFAULT, 1, 5_000);
