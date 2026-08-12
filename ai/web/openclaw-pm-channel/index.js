@@ -756,7 +756,7 @@ async function abortActiveTurn(sessionKey) {
     const harness = await import("openclaw/plugin-sdk/agent-harness");
     if (
       typeof harness.resolveActiveEmbeddedRunSessionId !== "function"
-      || typeof harness.abortAgentHarnessRun !== "function"
+      || typeof harness.abortAndDrainAgentHarnessRun !== "function"
     ) return { aborted: false, reason: "abort_unavailable" };
 
     // Mark BEFORE resolving the embedded run. runPmTurn checks this flag just
@@ -776,10 +776,16 @@ async function abortActiveTurn(sessionKey) {
         current.canonicalSessionKey || lookupKey,
       );
       if (embeddedSessionId) {
-        const aborted = await harness.abortAgentHarnessRun(embeddedSessionId);
-        return aborted
-          ? { aborted: true }
-          : { aborted: false, reason: "active_run_not_abortable" };
+        const drained = await harness.abortAndDrainAgentHarnessRun({
+          sessionId: embeddedSessionId,
+          sessionKey: current.canonicalSessionKey || lookupKey,
+          settleMs: 10_000,
+          forceClear: true,
+          reason: "PM channel cancellation",
+        });
+        return drained.drained || drained.forceCleared
+          ? { aborted: true, reason: drained.forceCleared ? "force_cleared" : "drained" }
+          : { aborted: false, reason: "active_run_not_drained" };
       }
       await new Promise((resolve) => setTimeout(resolve, 50));
     }

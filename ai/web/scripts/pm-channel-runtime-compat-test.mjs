@@ -93,13 +93,18 @@ assert.match(
 );
 assert.match(
   pluginSource,
-  /const aborted = await harness\.abortAgentHarnessRun\(embeddedSessionId\)/,
-  "gateway cancellation must inspect OpenClaw's actual abort result",
+  /await harness\.abortAndDrainAgentHarnessRun\(\{/,
+  "gateway cancellation must drain the OpenClaw session lane after abort",
 );
 assert.match(
   pluginSource,
-  /aborted: false, reason: "active_run_not_abortable"/,
-  "gateway cancellation must reject a no-op abort rather than acknowledge it",
+  /forceClear: true/,
+  "gateway cancellation must force-clear an undrained session lock after its settle window",
+);
+assert.match(
+  pluginSource,
+  /aborted: false, reason: "active_run_not_drained"/,
+  "gateway cancellation must reject a process fence that did not drain",
 );
 assert.match(
   pluginSource,
