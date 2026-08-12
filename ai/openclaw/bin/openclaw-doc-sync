@@ -91,7 +91,7 @@ while IFS=$'\t' read -r user role home; do
 
   ws="$home/workspace"
   ows="$home/.openclaw/workspace"
-  mkdir -p "$ws" "$ows" 2>/dev/null || true
+  mkdir -p "$ws/guides" "$ows/guides" 2>/dev/null || true
 
   # Common docs (every agent)
   copy_doc "$SHARED_USER_DOC"           "$ws/USER.md"        "$user"
@@ -102,14 +102,21 @@ while IFS=$'\t' read -r user role home; do
   copy_doc "$DOCS_ROOT/WORKFLOW.md"     "$ows/WORKFLOW.md"   "$user"
   copy_doc "$GUIDES_DIR/ROLES.md"       "$ws/ROLES.md"       "$user"
   copy_doc "$GUIDES_DIR/ROLES.md"       "$ows/ROLES.md"      "$user"
+  copy_doc "$GUIDES_DIR/ROLES.md"       "$ws/guides/ROLES.md"       "$user"
+  copy_doc "$GUIDES_DIR/ROLES.md"       "$ows/guides/ROLES.md"      "$user"
   copy_doc "$GUIDES_DIR/CODE_REPOS.md"  "$ws/CODE_REPOS.md"  "$user"
   copy_doc "$GUIDES_DIR/CODE_REPOS.md"  "$ows/CODE_REPOS.md" "$user"
+  copy_doc "$GUIDES_DIR/CODE_REPOS.md"  "$ws/guides/CODE_REPOS.md"  "$user"
+  copy_doc "$GUIDES_DIR/CODE_REPOS.md"  "$ows/guides/CODE_REPOS.md" "$user"
 
   # Monitor-only docs
   if [ "$role" = "monitor" ]; then
     copy_doc "$GUIDES_DIR/INCIDENT_HANDLING.md" "$ows/INCIDENT_HANDLING.md" "$user"
     copy_doc "$GUIDES_DIR/MONITORING.md"        "$ows/MONITORING.md"        "$user"
     copy_doc "$GUIDES_DIR/SERVICES.md"          "$ows/SERVICES.md"          "$user"
+    copy_doc "$GUIDES_DIR/INCIDENT_HANDLING.md" "$ows/guides/INCIDENT_HANDLING.md" "$user"
+    copy_doc "$GUIDES_DIR/MONITORING.md"        "$ows/guides/MONITORING.md"        "$user"
+    copy_doc "$GUIDES_DIR/SERVICES.md"          "$ows/guides/SERVICES.md"          "$user"
   fi
 
   # Remove stale TEAM_WORKFLOW.md (legacy)

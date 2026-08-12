@@ -65,10 +65,12 @@ worktree checkout, not a stale main checkout.
 | `/home/<user>/.openclaw/workspace/AGENTS.md` | same |
 | `/home/<user>/workspace/ROLES.md` | `<openclaw-root>/guides/ROLES.md` |
 | `/home/<user>/.openclaw/workspace/ROLES.md` | same |
+| `/home/<user>/{workspace,.openclaw/workspace}/guides/ROLES.md` | same; canonical-path alias used by links inside `AGENTS.md` and `WORKFLOW.md` |
 | `/home/<user>/workspace/WORKFLOW.md` | `<openclaw-root>/WORKFLOW.md` |
 | `/home/<user>/.openclaw/workspace/WORKFLOW.md` | same |
 | `/home/<user>/workspace/CODE_REPOS.md` | `<openclaw-root>/guides/CODE_REPOS.md` |
 | `/home/<user>/.openclaw/workspace/CODE_REPOS.md` | same |
+| `/home/<user>/{workspace,.openclaw/workspace}/guides/CODE_REPOS.md` | same; canonical-path alias used by linked workflow guidance |
 | `/home/<user>/.openclaw/workspace/jira/*.js` | `<openclaw-root>/skills/jira/` |
 | `/home/<user>/.openclaw/skills/google-workspace/*.js` | `<openclaw-root>/skills/google-workspace/` |
 | `/home/<user>/workspace/mail/*.js` | `<openclaw-root>/skills/local-mail/` on yoga510 |

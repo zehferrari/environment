@@ -1461,22 +1461,29 @@ def probe_agent_symlinks(cfg, registry):
     shared_user_doc = os.path.realpath(os.path.join(agent_files_root, "_shared", "USER.md"))
     user_doc_expected = shared_user_doc if os.path.exists(shared_user_doc) else os.path.join(docs_root, "USER.md")
 
-    # Common docs are copied flat to the workspace root. The canonical
+    # Common docs retain flat compatibility copies and canonical guides/
+    # aliases. The canonical
     # sources live at docs_root (for AGENTS.md, WORKFLOW.md) or
     # docs_root/guides/ (for ROLES.md, CODE_REPOS.md). The workspace copy
-    # path is always flat (e.g. ~/workspace/ROLES.md, not ~/workspace/guides/ROLES.md).
+    # paths used inside AGENTS.md/WORKFLOW.md must be probed too; otherwise the
+    # monitor reports green while agents receive ENOENT for required policy.
     guides_dir = os.path.join(docs_root, "guides")
     common_doc_specs = list(sc.get("common_docs") or [
         ("AGENTS.md", os.path.join(docs_root, "AGENTS.md")),
         ("WORKFLOW.md", os.path.join(docs_root, "WORKFLOW.md")),
         ("ROLES.md", os.path.join(guides_dir, "ROLES.md")),
+        ("guides/ROLES.md", os.path.join(guides_dir, "ROLES.md")),
         ("CODE_REPOS.md", os.path.join(guides_dir, "CODE_REPOS.md")),
+        ("guides/CODE_REPOS.md", os.path.join(guides_dir, "CODE_REPOS.md")),
         ("USER.md", user_doc_expected),
     ])
     monitor_doc_specs = list(sc.get("monitor_docs") or [
         ("INCIDENT_HANDLING.md", os.path.join(guides_dir, "INCIDENT_HANDLING.md")),
+        ("guides/INCIDENT_HANDLING.md", os.path.join(guides_dir, "INCIDENT_HANDLING.md")),
         ("MONITORING.md", os.path.join(guides_dir, "MONITORING.md")),
+        ("guides/MONITORING.md", os.path.join(guides_dir, "MONITORING.md")),
         ("SERVICES.md", os.path.join(guides_dir, "SERVICES.md")),
+        ("guides/SERVICES.md", os.path.join(guides_dir, "SERVICES.md")),
     ])
 
     def expected_doc(name):

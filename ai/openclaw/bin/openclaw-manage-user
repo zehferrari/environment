@@ -346,15 +346,16 @@ setup_doc_copies() {
   #
   # Common docs (every agent): AGENTS, WORKFLOW, guides/ROLES,
   # guides/CODE_REPOS, USER. Monitor-only: guides/INCIDENT_HANDLING,
-  # guides/MONITORING, guides/SERVICES. The guides/ files are copied
-  # flat to the workspace root (e.g. ROLES.md, not guides/ROLES.md) so
-  # agents see them at the same path they always have.
+  # guides/MONITORING, guides/SERVICES. Guide files retain the historical
+  # flat copy AND receive a guides/ alias. The source documents link through
+  # guides/... while older prompts name ROLES.md directly; both paths must be
+  # valid or a fresh episode wastes its first tool call on ENOENT recovery.
   local user="$1" role="$2"
   local home="/home/$user"
   local docs="$REPO_ROOT/ai/openclaw"
   local ws="$home/workspace"
   local ows="$home/.openclaw/workspace"
-  mkdir -p "$ws" "$ows"
+  mkdir -p "$ws/guides" "$ows/guides"
 
   copy_doc() {
     # copy_doc <src> <dst> — overwrite dst only if content differs.
@@ -384,12 +385,19 @@ setup_doc_copies() {
   copy_doc "$docs/WORKFLOW.md" "$ows/WORKFLOW.md"
   copy_doc "$docs/guides/ROLES.md"      "$ws/ROLES.md"
   copy_doc "$docs/guides/ROLES.md"      "$ows/ROLES.md"
+  copy_doc "$docs/guides/ROLES.md"      "$ws/guides/ROLES.md"
+  copy_doc "$docs/guides/ROLES.md"      "$ows/guides/ROLES.md"
   copy_doc "$docs/guides/CODE_REPOS.md" "$ws/CODE_REPOS.md"
   copy_doc "$docs/guides/CODE_REPOS.md" "$ows/CODE_REPOS.md"
+  copy_doc "$docs/guides/CODE_REPOS.md" "$ws/guides/CODE_REPOS.md"
+  copy_doc "$docs/guides/CODE_REPOS.md" "$ows/guides/CODE_REPOS.md"
   if [[ "$role" == "monitor" ]]; then
     copy_doc "$docs/guides/INCIDENT_HANDLING.md" "$ows/INCIDENT_HANDLING.md"
     copy_doc "$docs/guides/MONITORING.md"        "$ows/MONITORING.md"
     copy_doc "$docs/guides/SERVICES.md"          "$ows/SERVICES.md"
+    copy_doc "$docs/guides/INCIDENT_HANDLING.md" "$ows/guides/INCIDENT_HANDLING.md"
+    copy_doc "$docs/guides/MONITORING.md"        "$ows/guides/MONITORING.md"
+    copy_doc "$docs/guides/SERVICES.md"          "$ows/guides/SERVICES.md"
   fi
   link_doc /srv/Code "$home/Code"
   chown -h "$user:$user" "$home/Code" 2>/dev/null || true
