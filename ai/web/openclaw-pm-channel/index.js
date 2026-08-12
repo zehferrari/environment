@@ -14,7 +14,6 @@ import {
 import { createPluginRuntimeStore } from "openclaw/plugin-sdk/runtime-store";
 import { resolvePmInboundRuntime } from "./runtime-compat.js";
 import { canonicalizePmStoreSessionKey } from "./session-key.js";
-import { abortTrackedPmTurn } from "./turn-cancellation.js";
 
 const CHANNEL_ID = "pm";
 const DEFAULT_ACCOUNT_ID = "default";
@@ -751,9 +750,44 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
 }
 
 async function abortActiveTurn(sessionKey) {
+  const active = activeTurns.get(sessionKey);
+  if (!active) return { aborted: false, reason: "not_active" };
   try {
     const harness = await import("openclaw/plugin-sdk/agent-harness");
-    return await abortTrackedPmTurn({ activeTurns, sessionKey, harness });
+    if (
+      typeof harness.resolveActiveEmbeddedRunSessionId !== "function"
+      || typeof harness.abortAgentHarnessRun !== "function"
+    ) return { aborted: false, reason: "abort_unavailable" };
+
+    // Mark BEFORE resolving the embedded run. runPmTurn checks this flag just
+    // before dispatch, covering cancellation during inbound context assembly.
+    active.abortedAt = Date.now();
+    const lookupKey = active.canonicalSessionKey || sessionKey;
+
+    // The cancel request can race the embedded runner's registration by a few
+    // event-loop turns. Wait briefly for the canonical key to resolve; do not
+    // claim success merely because abortAgentHarnessRun(undefined) returned.
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const current = activeTurns.get(sessionKey);
+      if (!current || current.acceptedId !== active.acceptedId) {
+        return { aborted: true, reason: "turn_replaced_before_dispatch" };
+      }
+      const embeddedSessionId = await harness.resolveActiveEmbeddedRunSessionId(
+        current.canonicalSessionKey || lookupKey,
+      );
+      if (embeddedSessionId) {
+        const aborted = await harness.abortAgentHarnessRun(embeddedSessionId);
+        return aborted
+          ? { aborted: true }
+          : { aborted: false, reason: "active_run_not_abortable" };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
+    // No embedded run appeared during the grace window. The pre-dispatch
+    // cancellation flag remains authoritative, but report the distinct state
+    // instead of pretending an OpenClaw process was aborted.
+    return { aborted: true, reason: "canceled_before_dispatch" };
   } catch (err) {
     return { aborted: false, reason: String(err?.message ?? err) };
   }
