@@ -57,4 +57,29 @@ const installerSource = readFileSync(
 assert.match(installerSource, /async function reconcileAgentConfigLink/);
 assert.match(installerSource, /await reconcileAgentConfigLink\(/);
 
+const pluginSource = readFileSync(
+  new URL("../openclaw-pm-channel/index.js", import.meta.url),
+  "utf8",
+);
+assert.match(
+  pluginSource,
+  /onToolStart: \(toolPayload\) => stream\.toolStart\(toolPayload\)/,
+  "the native PM plugin must forward real OpenClaw tool calls to PM episode accounting",
+);
+assert.match(
+  pluginSource,
+  /allowToolLifecycleWhenProgressHidden: true/,
+  "tool accounting must remain observable even when visible tool summaries are disabled",
+);
+assert.match(
+  pluginSource,
+  /onModelSelected: \(selection\) => stream\.modelSelected\(selection\)/,
+  "the native PM plugin must report the actual selected/fallback model",
+);
+assert.match(
+  pluginSource,
+  /meta: \{ agentMeta: selectedAgentMeta \}/,
+  "stream callbacks must carry model provenance to Mission Control",
+);
+
 console.log("pm channel runtime compatibility tests passed");

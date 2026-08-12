@@ -9,6 +9,14 @@ reply chunks are POSTed back to PM at `/api/openclaw/pm-channel/stream` for the
 live browser projection; durable final replies are POSTed back at
 `/api/openclaw/pm-channel/reply`.
 
+The stream also forwards one deduplicated `tool:call` event for each OpenClaw
+tool invocation. Mission Control spends those events against the task's
+bounded execution episode so browser-heavy turns roll into a fresh, checkpoint-
+backed session before their context becomes unmanageable. Stream and durable
+reply callbacks carry the actual provider/model selected by OpenClaw, including
+fallback changes; do not infer model provenance from the agent's configured
+default.
+
 The final reply callback is the source of truth for success. A stream
 `done` only closes a successful stream after a visible reply was delivered.
 If the turn exits without a visible reply, the plugin posts a stream

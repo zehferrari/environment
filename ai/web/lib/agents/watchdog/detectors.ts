@@ -452,12 +452,21 @@ const BLOCKER_PERMISSION_ALREADY_GRANTED: WatchdogDetector = {
 const BLOCKER_CLEAR_LOOP: WatchdogDetector = {
   id: "blocker_clear_loop",
   statement:
-    "A task that has flagged and cleared a blocker repeatedly inside the window is escalated, never auto-repaired.",
+    "A task that has flagged and cleared blockers repeatedly and then stopped making progress is escalated, never auto-repaired.",
   detect: (snapshot) => {
+    const live = liveRunTaskIds(snapshot);
+    const scheduled = openContinuationTaskIds(snapshot);
     const findings: WatchdogFinding[] = [];
     for (const task of snapshot.tasks) {
       if (!isRepairableEpisode(task)) continue;
       if (task.blockerCycles < WATCHDOG_BLOCKER_LOOP_THRESHOLD) continue;
+      // Completed blocker cycles are diagnostic history, not proof that the
+      // task is stalled NOW. A clear_blocker continuation can be doing useful
+      // work while those rows remain inside the six-hour window. Escalating
+      // on every worker drain overwrote the live `running` state, re-raised the
+      // reporter alert, and made a recovered task look permanently stuck.
+      if (live.has(task.id) || scheduled.has(task.id)) continue;
+      if (idleSince(task, snapshot) < stallGrace(snapshot)) continue;
       findings.push({
         detectorId: "blocker_clear_loop",
         taskId: task.id,

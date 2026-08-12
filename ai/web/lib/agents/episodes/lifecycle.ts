@@ -54,7 +54,7 @@ export function episodeCycleBudget() {
  * budget is the real boundary and the workflow-action budget is the backstop
  * for turns that stream nothing.
  */
-export const EPISODE_TOOL_CYCLE_BUDGET_DEFAULT = 60;
+export const EPISODE_TOOL_CYCLE_BUDGET_DEFAULT = 30;
 
 export function episodeToolCycleBudget() {
   return intEnv("PM_EPISODE_MAX_TOOL_CYCLES", EPISODE_TOOL_CYCLE_BUDGET_DEFAULT, 1, 5_000);
@@ -509,10 +509,24 @@ export async function recordTaskExecutionToolCycle(args: {
     // as "no tool budget configured" rather than "instantly exhausted".
     if (episode.toolCycleBudget <= 0) return null;
 
+    // Tighten legacy/open episodes when the configured safety ceiling is
+    // lowered. Keeping the larger value copied into an old row would make a
+    // production correction apply only to brand-new tasks, precisely where a
+    // context-pressure fix is least useful.
+    const effectiveToolCycleBudget = Math.min(
+      episode.toolCycleBudget,
+      episodeToolCycleBudget(),
+    );
+
     const updated = summarizeEpisode(
       await tx.taskExecutionEpisode.update({
         where: { id: episode.id },
-        data: { toolCycleCount: { increment: 1 } },
+        data: {
+          toolCycleCount: { increment: 1 },
+          ...(effectiveToolCycleBudget !== episode.toolCycleBudget
+            ? { toolCycleBudget: effectiveToolCycleBudget }
+            : {}),
+        },
         select: EPISODE_SELECT,
       }),
     );

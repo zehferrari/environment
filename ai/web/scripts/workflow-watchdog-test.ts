@@ -371,12 +371,61 @@ for (const detector of WATCHDOG_DETECTORS) {
 // ------------------------------------------------------------------
 
 {
-  const looping = task({ blockerCycles: WATCHDOG_BLOCKER_LOOP_THRESHOLD });
+  const looping = task({
+    blockerCycles: WATCHDOG_BLOCKER_LOOP_THRESHOLD,
+    lastDurableActionAt: STALE,
+  });
   const findings = detectWatchdogFindings(snapshot({ tasks: [looping] }));
   const hits = byDetector(findings, "blocker_clear_loop");
   assertEqual(hits.length, 1, "a blocker/clear loop is detected");
   assertEqual(hits[0].repair, "escalate", "a loop is escalated, never auto-repaired");
   assertEqual(findings[0].detectorId, "blocker_clear_loop", "escalation outranks every repair");
+}
+
+{
+  const loopingButRunning = task({
+    blockerCycles: WATCHDOG_BLOCKER_LOOP_THRESHOLD + 5,
+    lastDurableActionAt: STALE,
+  });
+  const findings = detectWatchdogFindings(snapshot({
+    tasks: [loopingButRunning],
+    runs: [run({ status: "streaming", lastEventAt: NOW - MINUTE })],
+  }));
+  assertEqual(
+    byDetector(findings, "blocker_clear_loop").length,
+    0,
+    "historical blocker cycles do not mark a live resumed turn as stalled",
+  );
+}
+
+{
+  const loopingButScheduled = task({
+    blockerCycles: WATCHDOG_BLOCKER_LOOP_THRESHOLD + 5,
+    lastDurableActionAt: STALE,
+  });
+  const findings = detectWatchdogFindings(snapshot({
+    tasks: [loopingButScheduled],
+    continuations: [continuation({ status: "queued" })],
+  }));
+  assertEqual(
+    byDetector(findings, "blocker_clear_loop").length,
+    0,
+    "historical blocker cycles do not override an already scheduled recovery",
+  );
+}
+
+{
+  const recentlyCleared = task({
+    blockerCycles: WATCHDOG_BLOCKER_LOOP_THRESHOLD + 5,
+    lastDurableAction: "clear_blocker",
+    lastDurableActionAt: NOW - MINUTE,
+  });
+  const findings = detectWatchdogFindings(snapshot({ tasks: [recentlyCleared] }));
+  assertEqual(
+    byDetector(findings, "blocker_clear_loop").length,
+    0,
+    "a recent clear gets the normal stall grace before loop escalation",
+  );
 }
 
 {

@@ -212,6 +212,9 @@ function createPmStreamPublisher({ account, target, logger }) {
     return {
       partial: () => {},
       reasoning: () => {},
+      modelSelected: () => {},
+      agentMeta: () => null,
+      toolStart: async () => {},
       final: async () => {},
       done: async () => {},
       error: async () => {},
@@ -222,6 +225,9 @@ function createPmStreamPublisher({ account, target, logger }) {
   let timer = null;
   let chain = Promise.resolve();
   let lastReasoningText = "";
+  let selectedAgentMeta = null;
+  const observedToolCalls = new Set();
+  let anonymousToolCallNo = 0;
 
   const post = (body) => {
     const payload = {
@@ -229,6 +235,7 @@ function createPmStreamPublisher({ account, target, logger }) {
       channel: CHANNEL_ID,
       target,
       transportMode: streamTransport,
+      ...(selectedAgentMeta ? { meta: { agentMeta: selectedAgentMeta } } : {}),
       ...body,
     };
     if (streamTransport === "inproc" && inprocCallback) {
@@ -284,6 +291,43 @@ function createPmStreamPublisher({ account, target, logger }) {
   };
 
   return {
+    modelSelected: (selection) => {
+      if (!selection || typeof selection !== "object") return;
+      const provider = typeof selection.provider === "string" ? selection.provider.trim() : "";
+      const model = typeof selection.model === "string" ? selection.model.trim() : "";
+      if (!provider && !model) return;
+      selectedAgentMeta = {
+        ...(provider ? { provider } : {}),
+        ...(model ? { model } : {}),
+        ...(typeof selection.thinkLevel === "string" ? { thinkLevel: selection.thinkLevel } : {}),
+      };
+    },
+    agentMeta: () => selectedAgentMeta,
+    toolStart: async (payload) => {
+      if (!payload || typeof payload !== "object") return;
+      const phase = typeof payload.phase === "string" ? payload.phase : "start";
+      if (phase !== "start" && phase !== "update") return;
+      const stableId = typeof payload.toolCallId === "string" && payload.toolCallId
+        ? `call:${payload.toolCallId}`
+        : typeof payload.itemId === "string" && payload.itemId
+          ? `item:${payload.itemId}`
+          : phase === "start"
+            ? `anonymous:${++anonymousToolCallNo}`
+            : null;
+      if (!stableId || observedToolCalls.has(stableId)) return;
+      observedToolCalls.add(stableId);
+
+      // Preserve event order: reasoning emitted before the tool call must land
+      // before the tool boundary that PM uses for episode accounting.
+      await flush();
+      await post({
+        event: "tool:call",
+        toolStatus: "call",
+        toolName: typeof payload.name === "string" && payload.name.trim()
+          ? payload.name.trim()
+          : "tool",
+      });
+    },
     partial: (payload) => {
       const delta = streamPayloadDelta(payload);
       const text = streamPayloadText(payload);
@@ -338,7 +382,7 @@ function createPmStreamPublisher({ account, target, logger }) {
   };
 }
 
-async function sendPmText({ cfg, accountId, to, text, replyToId, threadId }) {
+async function sendPmText({ cfg, accountId, to, text, replyToId, threadId, agentMeta }) {
   const target = decodeTarget(to);
   const account = resolvePmAccount({ cfg, accountId });
   const callbackUrl = typeof target.callbackUrl === "string" && target.callbackUrl.trim()
@@ -349,6 +393,7 @@ async function sendPmText({ cfg, accountId, to, text, replyToId, threadId }) {
     channel: CHANNEL_ID,
     target,
     text,
+    ...(agentMeta ? { meta: { agentMeta } } : {}),
     receipt: {
       replyToId: replyToId ?? null,
       threadId: threadId ?? null,
@@ -618,6 +663,7 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
             to: encodedTarget,
             text,
             replyToId: messageId,
+            agentMeta: stream.agentMeta(),
           });
           await stream.final(text);
           visibleReplySent = true;
@@ -635,6 +681,14 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
       replyOptions: {
         sourceReplyDeliveryMode: "automatic",
         allowProgressCallbacksWhenSourceDeliverySuppressed: true,
+        // PM's bounded execution episodes count these events. Without this
+        // callback a browser-heavy turn can make hundreds of model/tool loops
+        // while its durable tool-cycle counter remains zero.
+        allowToolLifecycleWhenProgressHidden: true,
+        onToolStart: (toolPayload) => stream.toolStart(toolPayload),
+        // This is the actual selected model, including fallback changes. It is
+        // attached to stream and durable reply callbacks for provenance.
+        onModelSelected: (selection) => stream.modelSelected(selection),
         onPartialReply: (replyPayload) => stream.partial(replyPayload),
         onReasoningStream: (replyPayload) => stream.reasoning(replyPayload),
       },
