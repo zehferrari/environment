@@ -25,7 +25,10 @@ import {
 } from "@/lib/agents/ops/pm-silence";
 import { isAuthorizedPmChannelCallbackTarget } from "@/lib/agents/pm-channel/target-authorization";
 import { continueActionableTaskAfterReply } from "@/lib/agents/workflow/execution-continuation";
-import { recordTaskExecutionToolCycle } from "@/lib/agents/episodes/lifecycle";
+import {
+  episodeToolCycleBudgetForModel,
+  recordTaskExecutionToolCycle,
+} from "@/lib/agents/episodes/lifecycle";
 import { sealEpisodeRolloverBarrierOnTurnEnd } from "@/lib/agents/episodes/rollover";
 import { abortGatewaySession, steerGatewaySession } from "@/lib/agents/pm-channel/supersession";
 
@@ -156,24 +159,32 @@ async function countTaskExecutionToolCycle(
   target: Extract<PmChannelReplyTarget, { kind: "task-chat" | "task-comment" }>,
 ) {
   try {
+    const selectedRun = await db.pmChannelRun.findUnique({
+      where: { targetKey: pmChannelRunTargetKey(target) },
+      select: {
+        id: true,
+        projectId: true,
+        gatewayPort: true,
+        sessionKey: true,
+        provider: true,
+        model: true,
+      },
+    });
     const outcome = await recordTaskExecutionToolCycle({
       taskId: target.taskId,
       agentSlug: target.agentSlug,
       messageId: target.messageId,
+      toolCycleBudget: episodeToolCycleBudgetForModel(selectedRun?.provider, selectedRun?.model),
     });
     if (!outcome) return;
 
     const warningAt = Math.max(8, Math.floor(outcome.episode.toolCycleBudget * 2 / 3));
     if (!outcome.rolledOver && outcome.episode.toolCycleCount === warningAt) {
-      const run = await db.pmChannelRun.findUnique({
-        where: { targetKey: pmChannelRunTargetKey(target) },
-        select: { id: true, projectId: true, gatewayPort: true, sessionKey: true },
-      });
-      const steer = run?.gatewayPort && run.sessionKey
+      const steer = selectedRun?.gatewayPort && selectedRun.sessionKey
         ? await steerGatewaySession({
             agentSlug: target.agentSlug,
-            gatewayPort: run.gatewayPort,
-            sessionKey: run.sessionKey,
+            gatewayPort: selectedRun.gatewayPort,
+            sessionKey: selectedRun.sessionKey,
             text: [
               `PM execution episode ${outcome.episode.episodeNo} is at ${outcome.episode.toolCycleCount}/${outcome.episode.toolCycleBudget} tool calls.`,
               "Before any more broad investigation, immediately call the task workflow endpoint with action=checkpoint and this turn's existing workflow token.",
@@ -184,12 +195,12 @@ async function countTaskExecutionToolCycle(
         : { ok: false as const, error: "run has no gateway session identity" };
       await db.activityLog.create({
         data: {
-          projectId: run?.projectId ?? undefined,
+          projectId: selectedRun?.projectId ?? undefined,
           taskId: target.taskId,
           kind: "task.execution.episode.checkpoint_steer",
           targetAgent: target.agentSlug,
           payload: JSON.stringify({
-            runId: run?.id ?? null,
+            runId: selectedRun?.id ?? null,
             messageId: target.messageId,
             episodeNo: outcome.episode.episodeNo,
             toolCycleCount: outcome.episode.toolCycleCount,

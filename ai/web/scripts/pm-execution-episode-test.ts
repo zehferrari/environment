@@ -35,9 +35,12 @@ import {
   checkpointUpdateData,
   EPISODE_CLOSE_REASON,
   EPISODE_CYCLE_BUDGET_DEFAULT,
+  EPISODE_TOOL_CYCLE_BUDGET_COMPACT,
   EPISODE_TOOL_CYCLE_BUDGET_DEFAULT,
+  EPISODE_TOOL_CYCLE_BUDGET_MEDIUM,
   episodeCycleBudget,
   episodeToolCycleBudget,
+  episodeToolCycleBudgetForModel,
   renderEpisodeCheckpoint,
   summarizeEpisode,
   type TaskExecutionEpisodeSummary,
@@ -282,8 +285,16 @@ function comment(n: number, body: string): TimelineItemForBudget {
   try {
     delete process.env.PM_EPISODE_MAX_TOOL_CYCLES;
     assert.equal(episodeToolCycleBudget(), EPISODE_TOOL_CYCLE_BUDGET_DEFAULT);
+    assert.equal(episodeToolCycleBudgetForModel("openai", "gpt-5.6-sol"), EPISODE_TOOL_CYCLE_BUDGET_DEFAULT);
+    assert.equal(episodeToolCycleBudgetForModel("openai", "gpt-5.6-terra"), EPISODE_TOOL_CYCLE_BUDGET_DEFAULT);
+    assert.equal(episodeToolCycleBudgetForModel("ollama", "deepseek-v4-flash:cloud"), EPISODE_TOOL_CYCLE_BUDGET_COMPACT);
+    assert.equal(episodeToolCycleBudgetForModel("ollama", "kimi-k2.6:cloud"), EPISODE_TOOL_CYCLE_BUDGET_DEFAULT);
+    assert.equal(episodeToolCycleBudgetForModel("anthropic", "claude-opus-4-7"), EPISODE_TOOL_CYCLE_BUDGET_MEDIUM);
+    assert.equal(episodeToolCycleBudgetForModel(null, null), EPISODE_TOOL_CYCLE_BUDGET_COMPACT);
     process.env.PM_EPISODE_MAX_TOOL_CYCLES = "12";
     assert.equal(episodeToolCycleBudget(), 12);
+    assert.equal(episodeToolCycleBudgetForModel("openai", "gpt-5.6-sol"), 12, "the operator ceiling wins for every provider");
+    assert.equal(episodeToolCycleBudgetForModel("ollama", "deepseek-v4-flash:cloud"), 12);
     process.env.PM_EPISODE_MAX_TOOL_CYCLES = "0";
     assert.equal(episodeToolCycleBudget(), 1, "a zero tool budget would close every episode on its first tool call");
     process.env.PM_EPISODE_MAX_TOOL_CYCLES = "10000000";

@@ -54,15 +54,43 @@ export function episodeCycleBudget() {
  * budget is the real boundary and the workflow-action budget is the backstop
  * for turns that stream nothing.
  */
-// PH-171 demonstrated that a browser/repository-heavy OpenAI turn can cross
-// the safe model-context threshold around tool 26, while the smaller-window
-// Ollama fallback can precheck-fail at tool 18. Eighteen makes the 2/3
-// checkpoint steer fire at tool 12, leaves room to persist it, then fences the
-// turn before tool 18's result can poison either provider context.
-export const EPISODE_TOOL_CYCLE_BUDGET_DEFAULT = 18;
+// PH-171 demonstrated two materially different runtime envelopes: the current
+// OpenAI/Codex route has a 272k effective window, while DeepSeek through
+// Ollama has 128k (only 78k before the 50k compaction reserve). Keep 30 as the
+// large-window ceiling and tighten each live run from its selected provider;
+// applying the smallest fallback's limit to Sol merely creates extra startup
+// turns and repeats work without improving Sol's safety.
+export const EPISODE_TOOL_CYCLE_BUDGET_DEFAULT = 30;
+export const EPISODE_TOOL_CYCLE_BUDGET_COMPACT = 18;
+export const EPISODE_TOOL_CYCLE_BUDGET_MEDIUM = 24;
 
 export function episodeToolCycleBudget() {
   return intEnv("PM_EPISODE_MAX_TOOL_CYCLES", EPISODE_TOOL_CYCLE_BUDGET_DEFAULT, 1, 5_000);
+}
+
+/**
+ * Select the safety ceiling for the model that is actually serving this run.
+ * OpenClaw reports fallback selection before the first tool event, so a turn
+ * that falls from Sol to a smaller Ollama model is tightened immediately. The
+ * configured environment value remains the absolute operator ceiling.
+ */
+export function episodeToolCycleBudgetForModel(provider?: string | null, model?: string | null) {
+  const maximum = episodeToolCycleBudget();
+  const normalizedProvider = provider?.trim().toLowerCase() ?? "";
+  const normalizedModel = model?.trim().toLowerCase() ?? "";
+
+  if (normalizedProvider === "openai") return maximum;
+  if (normalizedProvider === "ollama" && /(?:^|\/)deepseek-v4-(?:flash|pro)(?::|$)/.test(normalizedModel)) {
+    return Math.min(maximum, EPISODE_TOOL_CYCLE_BUDGET_COMPACT);
+  }
+  if (normalizedProvider === "ollama" && /(?:^|\/)kimi-k2\.[67](?::|$)/.test(normalizedModel)) {
+    return maximum;
+  }
+  if (normalizedProvider === "anthropic" || normalizedProvider === "claude-cli" || normalizedProvider === "openrouter") {
+    return Math.min(maximum, EPISODE_TOOL_CYCLE_BUDGET_MEDIUM);
+  }
+  // Unknown selections stay safe until model provenance arrives.
+  return Math.min(maximum, EPISODE_TOOL_CYCLE_BUDGET_COMPACT);
 }
 
 export const EPISODE_STATUS = {
@@ -543,6 +571,8 @@ export async function recordTaskExecutionToolCycle(args: {
   projectId?: string | null;
   agentSlug: string;
   messageId?: string | null;
+  /** Runtime-specific ceiling derived from the model selected for this run. */
+  toolCycleBudget?: number;
 }): Promise<EpisodeCycleOutcome | null> {
   return db.$transaction(async (tx) => {
     // A rollover opens N+1 immediately, but N's turn can keep emitting tool
@@ -570,13 +600,15 @@ export async function recordTaskExecutionToolCycle(args: {
     // as "no tool budget configured" rather than "instantly exhausted".
     if (episode.toolCycleBudget <= 0) return null;
 
-    // Tighten legacy/open episodes when the configured safety ceiling is
-    // lowered. Keeping the larger value copied into an old row would make a
-    // production correction apply only to brand-new tasks, precisely where a
-    // context-pressure fix is least useful.
-    const effectiveToolCycleBudget = Math.min(
-      episode.toolCycleBudget,
-      episodeToolCycleBudget(),
+    // Reconcile an already-open episode with the model serving this tool call.
+    // This may expand a run when Sol resumes after a compact fallback, or
+    // tighten it immediately when failover selects a smaller window.
+    const effectiveToolCycleBudget = Math.max(
+      1,
+      Math.min(
+        Math.trunc(args.toolCycleBudget ?? episodeToolCycleBudget()),
+        episodeToolCycleBudget(),
+      ),
     );
 
     const updated = summarizeEpisode(
