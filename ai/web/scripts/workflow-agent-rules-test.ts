@@ -148,6 +148,11 @@ assert(
     workflowNudge.includes('"pm-action-plan-awaiting-approval": "To Do"'),
   "monitor plan recovery kinds must survive final-boundary validation for To Do tasks",
 );
+assert(
+  workflowNudge.includes('process.env.PM_ASYNC_DISPATCH_INLINE_NUDGE = "0"') &&
+    !workflowNudge.includes(".then(() => process.exit(0))"),
+  "the short-lived monitor nudge CLI must leave queued dispatch to the durable consumer instead of killing an inline claim",
+);
 
 const reviewAutomation = readFileSync(join(root, "lib/tasks/review-automation.ts"), "utf8");
 assert(

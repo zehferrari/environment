@@ -116,6 +116,14 @@ function defaultRequiredAction(status: string, kind: string | undefined): string
 }
 
 async function main() {
+  // This command is a short-lived producer. The generic enqueue path normally
+  // schedules an in-process worker nudge, but this CLI used to call
+  // process.exit(0) as soon as enqueue returned. The timer could claim the job
+  // and then die with the process, leaving every monitor recovery leased but
+  // undispatched until stale-claim recovery. Let the host-wide PM consumer be
+  // the single durable owner of CLI-generated jobs.
+  process.env.PM_ASYNC_DISPATCH_INLINE_NUDGE = "0";
+
   const args = parseArgs(process.argv.slice(2));
   if (!args.taskId || !args.agent) {
     throw new Error("Usage: pm-workflow-nudge --task-id <id> --agent <slug> [--kind <kind>] [--message-id <id>] [--required-action <text>]");
@@ -369,7 +377,9 @@ async function main() {
 }
 
 main()
-  .then(() => process.exit(0))
+  .then(async () => {
+    await db.$disconnect();
+  })
   .catch(async (err) => {
     console.error(err);
     await db.$disconnect();
