@@ -113,6 +113,7 @@
     "test:env122-comment-provenance": "tsx scripts/env122-comment-provenance-test.ts",
     "test:workflow": "tsx scripts/workflow-test-all.ts",
     "test:workflow-regression": "tsx scripts/workflow-regression-test.ts",
+    "test:orch-01-cycle": "tsx scripts/orch-01-cycle-test.ts",
     "test:workflow-regression-lifecycle": "tsx scripts/workflow-regression-lifecycle-test.ts",
     "test:workflow-regression-plan-steps": "tsx scripts/workflow-regression-plan-steps-test.ts",
     "test:workflow-regression-blocker": "tsx scripts/workflow-regression-blocker-test.ts",

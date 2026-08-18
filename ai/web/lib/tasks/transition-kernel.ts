@@ -1,6 +1,7 @@
 import type { Prisma } from "@prisma/client";
 
 import { db } from "@/lib/db";
+import { attachRowToActiveCycle } from "@/lib/tasks/workflow-cycle";
 
 export const TASK_WORKFLOW_STATUSES = [
   "Backlog",
@@ -97,6 +98,7 @@ export async function enqueueWorkflowEffects(
     aggregateVersion: number;
     transitionId?: string | null;
     effects: WorkflowEffect[];
+    workflowCycleId?: string | null;
   },
 ) {
   for (const effect of args.effects) {
@@ -107,6 +109,7 @@ export async function enqueueWorkflowEffects(
         taskId: args.taskId,
         projectId: args.projectId,
         transitionId: args.transitionId ?? null,
+        workflowCycleId: args.workflowCycleId ?? null,
         aggregateVersion: args.aggregateVersion,
         effectType: effect.type,
         payload: JSON.stringify(effect.payload),
@@ -158,7 +161,7 @@ export async function applyTaskTransition(
 
   const current = await tx.task.findUnique({
     where: { id: args.taskId },
-    select: { status: true, workflowVersion: true, deletedAt: true },
+    select: { status: true, workflowVersion: true, deletedAt: true, activeWorkflowCycleId: true },
   });
   if (!current || current.deletedAt) {
     throw new TaskTransitionRejected("Task not found.", "not_found");
@@ -220,6 +223,7 @@ export async function applyTaskTransition(
   const transition = await tx.workflowTransition.create({
     data: {
       taskId: args.taskId,
+      workflowCycleId: current.activeWorkflowCycleId,
       workflowVersion,
       intent: args.intent,
       fromStatus: args.from,
@@ -259,6 +263,7 @@ export async function applyTaskTransition(
     projectId: args.projectId,
     aggregateVersion: workflowVersion,
     transitionId: transition.id,
+    workflowCycleId: current.activeWorkflowCycleId,
     effects: [
       ...(args.effects ?? []),
       ...(dependencyRefillNeeded
