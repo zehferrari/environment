@@ -261,7 +261,7 @@ async function main() {
     );
     assert.equal(
       await db.activityLog.count({ where: { kind: "task.workflow.reconciliation_required" } }),
-      2,
+      6,
     );
 
     await runWorkflowReconciliation({ projectId: project.id, now, dryRun: false });
@@ -274,7 +274,7 @@ async function main() {
     );
     assert.equal(
       await db.activityLog.count({ where: { kind: "task.workflow.reconciliation_required" } }),
-      2,
+      6,
       "a repeated pass must not duplicate escalation audit rows",
     );
 

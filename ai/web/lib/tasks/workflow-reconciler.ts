@@ -16,7 +16,16 @@ export type WorkflowReconciliationKind =
   | "review_lease_missing"
   | "review_completion_missing"
   | "done_repository_incomplete"
-  | "cancellation_unacknowledged";
+  | "cancellation_unacknowledged"
+  // ORCH-08 procedure-aware detectors
+  | "in_progress_no_open_cycle"
+  | "review_no_active_cycle"
+  | "review_no_lease"
+  | "accepted_review_no_finalization_procedure"
+  | "finalization_completed_no_done_transition"
+  | "multiple_open_cycles"
+  | "procedure_step_waiting_on_terminal_job"
+  | "done_cycle_incomplete";
 
 export type WorkflowReconciliationFinding = {
   kind: WorkflowReconciliationKind;
@@ -41,6 +50,10 @@ export type WorkflowReconciliationReport = {
     repositoryByPhase: Record<string, number>;
     executionByState: Record<string, number>;
     cancellationPending: number;
+    // ORCH-08 procedure-aware metrics
+    cyclesByStatus: Record<string, number>;
+    proceduresByStatus: Record<string, number>;
+    procedureStepsByStatus: Record<string, number>;
   };
 };
 
@@ -141,8 +154,12 @@ export async function runWorkflowReconciliation(options: {
       ...(options.projectId ? { projectId: options.projectId } : {}),
       OR: [
         { status: { in: ["Review", "Done"] } },
+        { status: { in: ["In Progress", "To Do"] } },
         { repositoryRun: { is: { phase: { in: ["validating", "review_ready", "finalizing"] } } } },
         { workflowOutbox: { some: { status: { in: ["queued", "dispatching", "failed"] } } } },
+        { activeWorkflowCycleId: { not: null } },
+        { workflowCycles: { some: { status: "open" } } },
+        { procedureRuns: { some: { status: { in: ["queued", "running", "operational_error"] } } } },
       ],
     },
     take: limit,
@@ -152,6 +169,7 @@ export async function runWorkflowReconciliation(options: {
       epicId: true,
       status: true,
       workflowVersion: true,
+      activeWorkflowCycleId: true,
       repositoryRun: {
         select: {
           id: true,
@@ -191,6 +209,25 @@ export async function runWorkflowReconciliation(options: {
           leaseExpiresAt: true,
           updatedAt: true,
           lastError: true,
+        },
+      },
+      workflowCycles: {
+        where: { status: "open" },
+        select: { id: true, sequence: true, status: true, outcome: true },
+      },
+      procedureRuns: {
+        where: { status: { in: ["queued", "running", "operational_error"] } },
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          type: true,
+          status: true,
+          currentStep: true,
+          lastError: true,
+          steps: {
+            where: { status: "waiting_callback" },
+            select: { id: true, name: true, status: true, output: true, availableAt: true },
+          },
         },
       },
     },
@@ -353,6 +390,145 @@ export async function runWorkflowReconciliation(options: {
         error: null,
       });
     }
+
+    // --- ORCH-08 procedure-aware detectors -------------------------------
+    // In Progress with no open cycle (invariant 5: one open cycle per task).
+    if (task.status === "In Progress" && task.activeWorkflowCycleId === null && task.workflowCycles.length === 0) {
+      add({
+        kind: "in_progress_no_open_cycle",
+        taskId: task.id,
+        rowId: task.id,
+        detail: "task is In Progress with no open workflow cycle",
+        repair: "escalate",
+        repaired: false,
+        error: null,
+      });
+    }
+
+    // More than one open cycle (invariant 5).
+    if (task.workflowCycles.length > 1) {
+      add({
+        kind: "multiple_open_cycles",
+        taskId: task.id,
+        rowId: task.workflowCycles[0].id,
+        detail: `task has ${task.workflowCycles.length} open workflow cycles (invariant: at most one)`,
+        repair: "escalate",
+        repaired: false,
+        error: null,
+      });
+    }
+
+    // Review with no active cycle.
+    if (task.status === "Review" && task.activeWorkflowCycleId === null) {
+      add({
+        kind: "review_no_active_cycle",
+        taskId: task.id,
+        rowId: task.id,
+        detail: "task is in Review with no active workflow cycle",
+        repair: "escalate",
+        repaired: false,
+        error: null,
+      });
+    }
+
+    // Review with no immutable review lease.
+    if (task.status === "Review" && repository?.phase === "review_ready") {
+      const awaiting = task.reviewRuns.some((run) => run.status === "awaiting_review" || run.status === "accepted");
+      if (!awaiting) {
+        add({
+          kind: "review_no_lease",
+          taskId: task.id,
+          rowId: repository.id,
+          detail: "task is in Review with a review-ready repository but no active or accepted review lease",
+          repair: "escalate",
+          repaired: false,
+          error: null,
+        });
+      }
+    }
+
+    // Accepted review with no finalization procedure.
+    if (task.status === "Review" && task.reviewRuns.some((run) => run.status === "accepted")) {
+      const hasFinalizationProc = task.procedureRuns.some((p) => p.type === "finalize_accepted_review");
+      if (!hasFinalizationProc) {
+        add({
+          kind: "accepted_review_no_finalization_procedure",
+          taskId: task.id,
+          rowId: task.id,
+          detail: "review was accepted but no finalization procedure is running",
+          repair: "escalate",
+          repaired: false,
+          error: null,
+        });
+      }
+    }
+
+    // Finalization completed (repository phase) but task still in Review.
+    // Escalate (do not auto-complete) — the existing review_completion_missing
+    // detector handles the evidence-gated complete_review repair.
+    if (
+      task.status === "Review" &&
+      repository?.phase === "completed" &&
+      repository.updatedAt.getTime() <= staleBefore.getTime() &&
+      task.reviewRuns.some((run) => run.status === "accepted")
+    ) {
+      // Only fire if the existing review_completion_missing detector did NOT
+      // fire (i.e. no verified Epic merge evidence). The existing detector
+      // handles the safe auto-complete; this one just escalates.
+      const hasMergeEvidence = verifiedEpicMerge({
+        taskId: task.id,
+        epicId: task.epicId,
+        candidateSha: repository.candidateSha ?? "",
+        activity: task.activity,
+      });
+      if (!hasMergeEvidence) {
+        add({
+          kind: "finalization_completed_no_done_transition",
+          taskId: task.id,
+          rowId: repository.id,
+          detail: "repository finalization completed but the Review-to-Done transition is missing and no Epic merge evidence was found",
+          repair: "escalate",
+          repaired: false,
+          error: null,
+        });
+      }
+    }
+
+    // Done while cycle/review state is incomplete.
+    if (task.status === "Done") {
+      const openCycles = task.workflowCycles.length;
+      const acceptedLeases = task.reviewRuns.filter((r) => r.status === "accepted" || r.status === "completed");
+      if (openCycles > 0 || acceptedLeases.length === 0) {
+        add({
+          kind: "done_cycle_incomplete",
+          taskId: task.id,
+          rowId: task.id,
+          detail: openCycles > 0
+            ? `task is Done with ${openCycles} open cycle(s)`
+            : "task is Done with no accepted/completed review lease",
+          repair: "escalate",
+          repaired: false,
+          error: null,
+        });
+      }
+    }
+
+    // Procedure step waiting on a missing/terminal job.
+    for (const proc of task.procedureRuns) {
+      for (const step of proc.steps) {
+        if (step.status === "waiting_callback" && step.availableAt.getTime() <= staleBefore.getTime()) {
+          add({
+            kind: "procedure_step_waiting_on_terminal_job",
+            taskId: task.id,
+            rowId: step.id,
+            detail: `procedure step ${proc.type}:${step.name} is waiting for a callback that has not arrived within the grace period`,
+            repair: "escalate",
+            repaired: false,
+            error: null,
+          });
+        }
+      }
+    }
   }
 
   const cancellationRows = await db.pmChannelRun.findMany({
@@ -379,7 +555,7 @@ export async function runWorkflowReconciliation(options: {
     });
   }
 
-  const [outboxGroups, repositoryGroups, executionGroups, cancellationPending] = await Promise.all([
+  const [outboxGroups, repositoryGroups, executionGroups, cancellationPending, cycleGroups, procedureGroups, procedureStepGroups] = await Promise.all([
     db.workflowOutbox.groupBy({
       by: ["status"],
       where: options.projectId ? { projectId: options.projectId } : undefined,
@@ -401,6 +577,19 @@ export async function runWorkflowReconciliation(options: {
         cancellationAcknowledgedAt: null,
         ...(options.projectId ? { projectId: options.projectId } : {}),
       },
+    }),
+    // ORCH-08 procedure-aware metrics
+    db.taskWorkflowCycle.groupBy({
+      by: ["status"],
+      _count: { _all: true },
+    }),
+    db.taskProcedureRun.groupBy({
+      by: ["status"],
+      _count: { _all: true },
+    }),
+    db.taskProcedureStep.groupBy({
+      by: ["status"],
+      _count: { _all: true },
     }),
   ]);
 
@@ -527,6 +716,9 @@ export async function runWorkflowReconciliation(options: {
       repositoryByPhase: Object.fromEntries(repositoryGroups.map((row) => [row.phase, row._count._all])),
       executionByState: Object.fromEntries(executionGroups.map((row) => [row.state, row._count._all])),
       cancellationPending,
+      cyclesByStatus: Object.fromEntries(cycleGroups.map((row) => [row.status, row._count._all])),
+      proceduresByStatus: Object.fromEntries(procedureGroups.map((row) => [row.status, row._count._all])),
+      procedureStepsByStatus: Object.fromEntries(procedureStepGroups.map((row) => [row.status, row._count._all])),
     },
   };
 }
