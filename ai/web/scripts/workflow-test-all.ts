@@ -29,6 +29,7 @@ const SUITES: readonly string[] = [
   "test:workflow-transition-kernel",
   // Orchestration project (ORCH-01..ORCH-10).
   "test:orch-01-cycle",
+  "test:orch-02-orchestrator",
   "test:workflow-reconciler",
   "test:workflow-agent-rules",
   "test:repository-workflow",
