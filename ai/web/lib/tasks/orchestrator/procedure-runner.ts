@@ -79,6 +79,9 @@ export type ProcedureCallback = {
   jobId: string;
   candidateSha?: string | null;
   baseSha?: string | null;
+  // Additional callback data (e.g. validationOutcome, error) stored in the
+  // step output for the next handler to consume.
+  data?: Record<string, unknown>;
 };
 
 export async function applyProcedureCallback(callback: ProcedureCallback): Promise<{ applied: boolean; reason: string }> {
@@ -130,11 +133,12 @@ export async function applyProcedureCallback(callback: ProcedureCallback): Promi
     return { applied: false, reason: `Step is in ${step.status}, not waiting_callback.` };
   }
   // Mark the step completed; the runner picks up the next step on the next
-  // poll. The callback's evidence (candidateSha, baseSha) is stored in step
-  // output for the next step's handler to consume.
+  // poll. The callback's evidence (candidateSha, baseSha, validationOutcome,
+  // error) is stored in step output for the next step's handler to consume.
   const output: Record<string, unknown> = { jobId: callback.jobId };
   if (callback.candidateSha !== undefined) output.candidateSha = callback.candidateSha;
   if (callback.baseSha !== undefined) output.baseSha = callback.baseSha;
+  if (callback.data) Object.assign(output, callback.data);
   await db.taskProcedureStep.update({
     where: { id: step.id },
     data: {

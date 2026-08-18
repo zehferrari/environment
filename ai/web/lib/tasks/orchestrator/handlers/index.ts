@@ -7,6 +7,7 @@
 
 import { registerPrepareTodoTaskHandlers } from "@/lib/tasks/orchestrator/handlers/prepare-todo-task";
 import { registerStartImplementationCycleHandlers } from "@/lib/tasks/orchestrator/handlers/start-implementation-cycle";
+import { registerSubmitCandidateForReviewHandlers } from "@/lib/tasks/orchestrator/handlers/submit-candidate-for-review";
 
 let registered = false;
 
@@ -15,7 +16,8 @@ export function registerAllProcedureHandlers(): void {
   registered = true;
   registerPrepareTodoTaskHandlers();
   registerStartImplementationCycleHandlers();
-  // ORCH-06..07 will add their registrations here.
+  registerSubmitCandidateForReviewHandlers();
+  // ORCH-07 will add its registrations here.
 }
 
 // Auto-register on import so the procedure runner finds handlers without

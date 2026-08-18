@@ -156,19 +156,19 @@ export function decideCommand(
     }
 
     case "submit_for_review": {
-      // In Progress -> Review (via the submit_candidate_for_review procedure,
-      // ORCH-06). The cycle operation is "update" — the candidate SHA is
-      // recorded on the active cycle. The procedure runs validation and only
-      // then moves to Review; the decision here declares the INTENT, the
-      // procedure engine owns the ordered steps.
-      // For non-code tasks, the procedure short-circuits to Review directly.
+      // Stays In Progress. The submit_candidate_for_review procedure (ORCH-06)
+      // owns the ordered steps: freeze execution, prepare candidate, run
+      // validation, apply result, create review lease, THEN move to Review.
+      // The decision here only declares the INTENT and starts the procedure;
+      // the status change happens in step 6 (enter_review) via a mechanical
+      // repository_validation_succeeded callback, not here.
       const effects: WorkflowEffect[] = [
-        { type: "board_touch", key: "board-review-ready", payload: {} },
+        { type: "board_touch", key: "board-review-submission", payload: {} },
       ];
       return {
         fromStatus: "In Progress",
-        toStatus: "Review",
-        kernelIntent: "submit_review",
+        toStatus: "In Progress",
+        kernelIntent: "operator_override",
         cycleOperation: "update",
         procedureType: "submit_candidate_for_review",
         effects,
