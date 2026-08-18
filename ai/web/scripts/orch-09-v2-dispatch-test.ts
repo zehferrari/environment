@@ -58,7 +58,8 @@ async function main() {
 
     // --- Test 4: the route's tryV2CanaryMutation is called INSIDE action
     // handlers (after safety gates), not before them. Verify the route source
-    // has the function and that it's NOT called before the rollover barrier.
+    // has the function, that it never returns early (fire-and-forget), and
+    // that shadow/canary both compute only (no V2 mutations).
     const routeSource = await import("node:fs").then((fs) => fs.readFileSync(
       path.join(process.cwd(), "app/api/agent/tasks/[taskId]/workflow/route.ts"),
       "utf8",
@@ -69,6 +70,13 @@ async function main() {
     assert.ok(routeSource.includes("ACTION_TO_INTENT"), "route has action-to-intent mapping");
     // Shadow mode must NOT call submitWorkflowCommand — only compute.
     assert.ok(routeSource.includes("Do NOT call submitWorkflowCommand"), "shadow mode explicitly avoids mutations");
+    // Canary mode also computes only (no V2 transition execution).
+    assert.ok(routeSource.includes("Canary mode: same as shadow"), "canary mode also computes only");
+    // No early returns from V2 canary — all calls are fire-and-forget.
+    assert.ok(!routeSource.includes("if (v2StartResult) return"), "no early return from V2 start");
+    assert.ok(!routeSource.includes("if (v2ReviewResult) return"), "no early return from V2 review");
+    assert.ok(!routeSource.includes("if (v2FeedbackResult) return"), "no early return from V2 feedback");
+    assert.ok(!routeSource.includes("if (v2DoneResult) return"), "no early return from V2 done");
     // The V2 canary is called AFTER the rollover barrier, not before it.
     const rolloverIdx = routeSource.indexOf("THE ROLLOVER BARRIER");
     const firstCanaryCall = routeSource.indexOf("tryV2CanaryMutation(action");
@@ -77,7 +85,6 @@ async function main() {
     // Verify all 5 key actions have V2 canary calls inside their handlers.
     const actionBlocks = ["approve_plan", "start", "ready_for_review", "review_feedback", "review_done"];
     for (const act of actionBlocks) {
-      // Some actions share a block (e.g. ready_for_review || submit_review).
       const actionIdx = routeSource.indexOf(`action === "${act}"`);
       assert.ok(actionIdx > 0, `${act} action block exists`);
       const nextCanary = routeSource.indexOf("tryV2CanaryMutation(action", actionIdx);

@@ -130,13 +130,18 @@ async function prepareCandidate(ctx: StepHandlerContext): Promise<StepHandlerRes
     );
     return { status: "completed", output: { codeTouching: false, candidateSha } };
   }
-  // Code task: the candidate SHA should already be set by the assignee's
-  // ready_for_review action (via the existing review-handoff). Read it from
-  // the repository run. If not set, this is an operational error.
-  const candidateSha = task.repositoryRun?.candidateSha ?? null;
+  // Code task: read the candidate SHA from the procedure input (command
+  // payload) first, then fall back to the repository run. The procedure
+  // input carries the validated context from the route's tryV2CanaryMutation
+  // call, which may include a candidateSha that was not yet persisted to
+  // TaskRepositoryRun (e.g. when the legacy handoff hasn't run yet).
+  const procRun = await db.taskProcedureRun.findUniqueOrThrow({ where: { id: ctx.procedureRunId }, select: { input: true } });
+  let procInput: Record<string, unknown> | null = null;
+  if (procRun.input) { try { procInput = JSON.parse(procRun.input); } catch { /* ignore */ } }
+  const candidateSha = (procInput?.candidateSha as string) ?? task.repositoryRun?.candidateSha ?? null;
   const baseSha = task.repositoryRun?.baseSha ?? null;
   if (!candidateSha) {
-    return { status: "failed", error: "No candidate SHA recorded on the repository run.", retryable: true };
+    return { status: "failed", error: "No candidate SHA available from procedure input or repository run.", retryable: true };
   }
   // Update the cycle with the candidate SHA.
   await db.$transaction((tx) =>
@@ -261,7 +266,7 @@ async function runValidation(ctx: StepHandlerContext): Promise<StepHandlerResult
     lastError: null,
     incrementAttempt: true,
   });
-  return { status: "waiting_callback", jobId, output: { candidateSha: task.repositoryRun?.candidateSha, branchName } };
+  return { status: "waiting_callback", jobId, output: { candidateSha: task.repositoryRun?.candidateSha, baseSha: task.repositoryRun?.baseSha, branchName } };
 }
 
 // --- Step 4: apply_validation_result ------------------------------------

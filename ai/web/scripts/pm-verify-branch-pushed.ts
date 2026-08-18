@@ -1015,7 +1015,11 @@ async function main() {
     if (existingRun) {
       const runStatus = await db.reviewRun.findUniqueOrThrow({ where: { id: existingRun.id }, select: { status: true } });
       if (["accepted", "changes_requested", "completed"].includes(runStatus.status)) {
-        existingRun = null; // don't mutate a decided lease — create a new one
+        // The active cycle's lease is already decided — reject this verifier
+        // job. It is either stale or a duplicate for a cycle that has already
+        // concluded. Do NOT create an unbound validation row.
+        console.error(`[pm-verify] rejecting verifier job ${job.jobId}: active cycle ${task?.activeWorkflowCycleId} has a decided lease (${runStatus.status})`);
+        return;
       }
     }
     const reviewRun = existingRun
@@ -1036,6 +1040,7 @@ async function main() {
       : await db.reviewRun.create({
           data: {
             taskId: job.taskId,
+            workflowCycleId: task?.activeWorkflowCycleId ?? null,
             candidateSha,
             baseSha: job.baseSha ?? null,
             repoTouched: !noChangeCandidate && !checkpointBaseline,

@@ -203,77 +203,56 @@ async function tryV2CanaryMutation(
     return null;
   }
 
-  if (!shouldRunV2Effects(task.project.slug)) return null;
-
-  const { submitWorkflowCommand } = await import("@/lib/tasks/orchestrator");
-  const result = await submitWorkflowCommand(command);
-  const status = mapV2ResultToHttpStatus(result.status);
-  const body: Record<string, unknown> = {
-    ok: result.status === "accepted" || result.status === "replayed",
-    taskId: task.id,
-    action,
-    v2: true,
-    orchestratorStatus: result.status,
-  };
-  if ("transitionId" in result && result.transitionId) body.transitionId = result.transitionId;
-  if ("workflowVersion" in result) body.workflowVersion = result.workflowVersion;
-  if ("procedureId" in result && result.procedureId) body.procedureId = result.procedureId;
-  if ("cycleId" in result && result.cycleId) body.cycleId = result.cycleId;
-  if ("reason" in result) body.reason = result.reason;
-
-  switch (action) {
-    case "review_done":
-      if (result.status === "accepted") {
-        body.status = "Review";
-        body.finalizing = true;
-        body.instruction = "Review accepted. Repository finalization is in progress.";
+  // Canary mode: same as shadow — compute and record only. The legacy path
+  // remains authoritative for all mutations. The V2 procedure engine runs
+  // additively (worktree prep, notifications) but does not replace the
+  // legacy transition until phase E (PM_ORCHESTRATOR_V2_PROJECTS=* with
+  // legacy paths removed).
+  if (shouldRunV2Effects(task.project.slug)) {
+    try {
+      const { loadTaskState, authorizeCommand, runGuards, decideCommand } = await import("@/lib/tasks/orchestrator");
+      const state = await loadTaskState(task.id);
+      if (state) {
+        const auth = authorizeCommand(state, command);
+        const guardResult = runGuards(state, command);
+        let v2DecisionStatus = "computed";
+        let v2DecisionToStatus: string | null = null;
+        try {
+          const decision = decideCommand(state, command, auth);
+          if (!("status" in decision)) {
+            v2DecisionToStatus = decision.toStatus;
+          } else {
+            v2DecisionStatus = `invalid: ${decision.reason}`;
+          }
+        } catch (error) {
+          v2DecisionStatus = `error: ${error instanceof Error ? error.message : String(error)}`;
+        }
+        await db.activityLog.create({
+          data: {
+            projectId: task.projectId,
+            taskId: task.id,
+            userId: agentUser.id,
+            kind: "task.workflow.v2_canary",
+            payload: JSON.stringify({
+              action,
+              intent,
+              authAllowed: auth.allowed,
+              authReason: auth.reason,
+              guardOk: guardResult.ok,
+              guardReason: guardResult.ok ? null : guardResult.reason,
+              v2DecisionStatus,
+              v2DecisionToStatus,
+              legacyStatus: task.status,
+            }),
+          },
+        });
       }
-      break;
-    case "approve_plan":
-      if (result.status === "accepted") {
-        body.status = task.status === "Backlog" ? "To Do" : task.status;
-        body.approved = true;
-      }
-      break;
-    case "start":
-      if (result.status === "accepted") {
-        body.status = "In Progress";
-        body.worktreePath = validatedContext.worktreePath ?? null;
-        body.branchName = validatedContext.branchName ?? null;
-      }
-      break;
-    case "ready_for_review":
-    case "submit_review":
-      if (result.status === "accepted") {
-        body.status = "In Progress";
-        body.instruction = "Repository validation is in progress.";
-      }
-      break;
-    case "review_feedback":
-      if (result.status === "accepted") {
-        body.status = "To Do";
-      }
-      break;
+    } catch (error) {
+      console.error("[pm] V2 canary compute failed:", error);
+    }
   }
 
-  revalidateTaskShell(task.id);
-  revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
-  revalidatePath(`/projects/${task.project.slug}`);
-  publishBoardTouch(task.projectId);
-
-  return NextResponse.json(body, { status });
-}
-
-function mapV2ResultToHttpStatus(status: string): number {
-  switch (status) {
-    case "replayed": return 200;
-    case "accepted": return 202;
-    case "stale": return 409;
-    case "forbidden": return 403;
-    case "invalid": return 422;
-    case "operational": return 503;
-    default: return 500;
-  }
+  return null;
 }
 
 const ACTIONS = [
@@ -885,13 +864,11 @@ async function handleTaskWorkflowAction(
       return NextResponse.json({ error: message }, { status: 409 });
     }
 
-    // ORCH-09/10: V2 canary mutation — AFTER worktree prep + WIP + prerequisite
-    // checks, BEFORE legacy mutation.
-    const v2StartResult = await tryV2CanaryMutation(action, task, agentUser, agent.role, messageId, comment, {
+    // ORCH-09/10: V2 canary compute (fire-and-forget, no early return).
+    await tryV2CanaryMutation(action, task, agentUser, agent.role, messageId, comment, {
       worktreePath: worktree.required ? worktree.worktreePath : null,
       branchName: worktree.required ? worktree.branchName : null,
-    });
-    if (v2StartResult) return v2StartResult;
+    }).catch((error) => console.error("[pm] V2 canary compute failed:", error));
 
     // ENV-118 (review): the status move, the Epic promotion and the
     // continuation-outbox arm commit together. A crash anywhere in here leaves
@@ -1061,11 +1038,15 @@ async function handleTaskWorkflowAction(
         },
       });
     }
-    // ORCH-09/10: V2 canary mutation — AFTER plan validation, BEFORE legacy mutation.
-    const v2Result = await tryV2CanaryMutation(action, task, agentUser, agent.role, messageId, comment, {
+    // ORCH-09/10: V2 canary dual-write. Both shadow and canary modes compute
+    // the V2 decision and record a comparison activity. Neither mode executes
+    // V2 transitions — the legacy path remains authoritative for all
+    // mutations (transition, ActionPlan approval, checklist, auto-start).
+    // The V2 procedure engine runs additively (worktree prep, notifications)
+    // but does not replace the legacy transition until phase E.
+    await tryV2CanaryMutation(action, task, agentUser, agent.role, messageId, comment, {
       actionPlanId: structuredPlan.id,
-    });
-    if (v2Result) return v2Result;
+    }).catch((error) => console.error("[pm] V2 canary compute failed:", error));
     await runWorkflowActionAtomically(
       { taskId: task.id, agentSlug: agent.slug, messageId, action, taskState: moveToTodo ? "To Do" : task.status },
       async (tx) => {
@@ -1477,12 +1458,10 @@ async function handleTaskWorkflowAction(
       reviewCommentId = created.id;
     }
 
-    // ORCH-09/10: V2 canary mutation — AFTER checklist validation + comment,
-    // BEFORE legacy review handoff.
-    const v2ReviewResult = await tryV2CanaryMutation(action, task, agentUser, agent.role, messageId, comment, {
+    // ORCH-09/10: V2 canary compute (fire-and-forget, no early return).
+    await tryV2CanaryMutation(action, task, agentUser, agent.role, messageId, comment, {
       candidateSha: task.repositoryRun?.candidateSha ?? null,
-    });
-    if (v2ReviewResult) return v2ReviewResult;
+    }).catch((error) => console.error("[pm] V2 canary compute failed:", error));
 
     // Code work remains In Progress while the role-resolved Monitor Agent
     // validates it. The handoff itself moves only validated work to Review.
@@ -1561,9 +1540,8 @@ async function handleTaskWorkflowAction(
         },
       });
     }
-    // ORCH-09/10: V2 canary mutation — AFTER reviewer auth + comment, BEFORE legacy mutation.
-    const v2FeedbackResult = await tryV2CanaryMutation(action, task, agentUser, agent.role, messageId, comment, {});
-    if (v2FeedbackResult) return v2FeedbackResult;
+    // ORCH-09/10: V2 canary compute (fire-and-forget, no early return).
+    await tryV2CanaryMutation(action, task, agentUser, agent.role, messageId, comment, {}).catch((error) => console.error("[pm] V2 canary compute failed:", error));
     const created = (await runWorkflowActionAtomically(
       { taskId: task.id, agentSlug: agent.slug, messageId, action, taskState: "To Do" },
       async (tx) => {
@@ -1645,12 +1623,10 @@ async function handleTaskWorkflowAction(
     }
     if (task.status !== "Review") return NextResponse.json({ error: "Task must be in Review before Done" }, { status: 409 });
 
-    // ORCH-09/10: V2 canary mutation — AFTER reviewer auth + status check,
-    // BEFORE legacy finalization.
-    const v2DoneResult = await tryV2CanaryMutation(action, task, agentUser, agent.role, messageId, comment, {
+    // ORCH-09/10: V2 canary compute (fire-and-forget, no early return).
+    await tryV2CanaryMutation(action, task, agentUser, agent.role, messageId, comment, {
       candidateSha: task.repositoryRun?.candidateSha ?? null,
-    });
-    if (v2DoneResult) return v2DoneResult;
+    }).catch((error) => console.error("[pm] V2 canary compute failed:", error));
 
     const completion = await completeReviewedTaskAndAssignNext({
       taskId: task.id,

@@ -234,25 +234,13 @@ export function decideCommand(
 
     case "request_review_changes": {
       // Review -> To Do (front). Cycle operation "close" with
-      // changes_requested outcome. The procedure (ORCH-07) sends one
-      // consolidated reviewer comment to the assignee. The lease is marked
-      // changes_requested (immutable) by the execute transaction.
+      // changes_requested outcome. The procedure (ORCH-07) sends the
+      // consolidated reviewer comment to the assignee. The decision does NOT
+      // enqueue a notification — that would duplicate the procedure's
+      // wakeAssigneeWithFeedback step.
       const effects: WorkflowEffect[] = [
         { type: "board_touch", key: "board-review-feedback", payload: {} },
       ];
-      if (state.assigneeId) {
-        effects.push({
-          type: "task_notification",
-          key: `review-feedback:${state.assigneeId}`,
-          payload: {
-            taskId: state.id,
-            targetUserId: state.assigneeId,
-            actor: command.actor,
-            reason: "review_feedback",
-            body: "The reviewer requested changes. The task returned to the front of To Do.",
-          },
-        });
-      }
       return {
         fromStatus: "Review",
         toStatus: "To Do",
