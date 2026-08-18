@@ -1,29 +1,43 @@
-// ORCH-10 — Feature flags for incremental orchestrator rollout.
+// ORCH-09/10 — Feature flags for the V2 orchestrator comparison probe.
 //
-// Phases (§17):
-//   Phase A: schema and dual-write (ORCH-01) — always on.
-//   Phase B: shadow decisions — PM_ORCHESTRATOR_V2_SHADOW=1. For each
-//     current workflow action, compute the V2 decision and record a bounded
-//     comparison activity/metric without running V2 effects.
-//   Phase C: procedure canary — PM_ORCHESTRATOR_V2_PROJECTS=<slug1>,<slug2>.
-//     Enable procedures for the allowlisted projects.
-//   Phase D: production project canary — add a low-risk production project.
-//   Phase E: default on and contract — remove legacy paths.
+// CURRENT STATE (as of this implementation):
+//   The V2 orchestrator is a COMPUTE-ONLY comparison probe. Both shadow and
+//   canary modes compute the V2 decision (authorize + guard + decide) and
+//   record a comparison activity alongside the actual legacy result. Neither
+//   mode executes V2 transitions or procedures. The legacy path remains
+//   authoritative for all mutations.
 //
-// These flags gate the orchestrator's submitWorkflowCommand so the legacy
-// paths remain authoritative until the flags are enabled. The procedure
-// runner and cycle dual-write (ORCH-01) are always active — they are
-// additive and do not change existing behavior.
+// Flag semantics:
+//   PM_ORCHESTRATOR_V2_SHADOW=1: enable the comparison probe for ALL
+//     projects. The probe computes the V2 prediction before the legacy
+//     mutation and records a task.workflow.v2_shadow activity after the
+//     legacy completes, with the predicted vs actual status and an explicit
+//     matches/differences payload.
+//   PM_ORCHESTRATOR_V2_PROJECTS=<slug1>,<slug2>: enable the comparison probe
+//     for the allowlisted projects only. Same behavior as shadow — compute
+//     and record, no V2 mutations. The activity kind is v2_canary.
+//     "*" enables the probe for all projects. This is NOT Phase E — no V2
+//     transitions are executed. It is a comparison probe that produces
+//     rollout evidence.
+//   No flags set: no probe, zero overhead.
+//
+// FUTURE PHASES (not yet implemented):
+//   Phase C: effectful procedure canary — V2 procedures own worktree prep
+//     and notifications for allowlisted projects. Requires completing
+//     BranchVerifyJob callback correlation (procedure/step/cycle IDs).
+//   Phase E: V2 owns transitions — legacy paths removed. Requires all
+//     entry points migrated and all safety gates replicated in the V2
+//     orchestrator.
 
-/** Shadow mode: compute V2 decisions alongside legacy paths for comparison. */
+/** Shadow mode: enable the comparison probe for all projects. */
 export function orchestratorShadowEnabled(): boolean {
   return process.env.PM_ORCHESTRATOR_V2_SHADOW === "1";
 }
 
 /**
- * Project allowlist for the procedure canary. When set, only tasks in the
- * listed project slugs use the V2 procedure engine for their workflow
- * transitions. Other projects continue using the legacy paths.
+ * Project allowlist for the comparison probe. When set, the probe runs
+ * for the allowlisted projects. This is NOT Phase E — no V2 transitions
+ * are executed.
  */
 export function orchestratorV2Projects(): Set<string> {
   const raw = process.env.PM_ORCHESTRATOR_V2_PROJECTS ?? "";
@@ -32,10 +46,8 @@ export function orchestratorV2Projects(): Set<string> {
 }
 
 /**
- * Check if a project is in the V2 canary allowlist. When the allowlist is
- * empty, V2 is NOT enabled for any project (legacy paths remain
- * authoritative). When the allowlist contains "*", V2 is enabled for all
- * projects (phase E: default on).
+ * Check if a project is in the V2 comparison probe allowlist.
+ * "*" enables the probe for all projects.
  */
 export function isV2EnabledForProject(projectSlug: string): boolean {
   const projects = orchestratorV2Projects();
@@ -45,26 +57,20 @@ export function isV2EnabledForProject(projectSlug: string): boolean {
 }
 
 /**
- * Check if the orchestrator should run V2 effects for a given project, or
- * just shadow (compute + compare without effects).
- *
- * In shadow mode (PM_ORCHESTRATOR_V2_SHADOW=1), V2 decisions are computed
- * and recorded as comparison activities, but legacy paths remain
- * authoritative.
- *
- * In canary mode (PM_ORCHESTRATOR_V2_PROJECTS set), V2 effects run for
- * allowlisted projects only.
- */
-export function shouldRunV2Effects(projectSlug: string): boolean {
-  if (orchestratorShadowEnabled()) return false;
-  return isV2EnabledForProject(projectSlug);
-}
-
-/**
- * Should the orchestrator compute a V2 decision (shadow or canary)?
- * Returns true if either shadow mode or canary mode is active for this
- * project.
+ * Check if the V2 comparison probe should compute a decision for this
+ * project. Returns true if either shadow mode or canary mode is active.
+ * The probe is COMPUTE-ONLY — it never executes V2 transitions.
  */
 export function shouldComputeV2Decision(projectSlug: string): boolean {
   return orchestratorShadowEnabled() || isV2EnabledForProject(projectSlug);
+}
+
+/**
+ * Check if the V2 comparison probe should record a canary activity (vs
+ * shadow activity). Both modes compute only; the difference is the
+ * activity kind and the project scoping.
+ */
+export function shouldRunV2Effects(projectSlug: string): boolean {
+  if (orchestratorShadowEnabled()) return false; // shadow records v2_shadow, not v2_canary
+  return isV2EnabledForProject(projectSlug);
 }

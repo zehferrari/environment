@@ -30,6 +30,13 @@ export interface BranchVerifyJob {
   projectSlug: string;
   repositoryPath: string;
   branchName: string;
+  // ORCH-06/R4: procedure correlation. The verifier callback uses these to
+  // route the result back to the correct procedure step via
+  // applyProcedureCallback. Optional for backward compatibility with jobs
+  // queued by older PM builds.
+  procedureRunId?: string;
+  procedureStepId?: string;
+  workflowCycleId?: string | null;
   // Effective deployment PR target branch at enqueue time. Optional so jobs
   // queued by older PM builds can resolve origin/HEAD safely.
   baseBranch?: string | null;

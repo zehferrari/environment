@@ -96,20 +96,42 @@ const ACTION_TO_INTENT: Partial<Record<WorkflowAction, TaskWorkflowIntent>> = {
   review_done: "accept_review",
 };
 
-// ORCH-09/10: V2 canary mutation. Called INSIDE each action handler, AFTER
-// all safety gates have passed and the legacy path has computed its validated
-// state (worktree path, candidate SHA, etc.). This function:
-//   - Shadow mode: computes the V2 decision (authorize + guard + decide)
-//     WITHOUT executing, records a comparison activity, returns null so the
-//     legacy mutation runs.
-//   - Canary mode: calls submitWorkflowCommand with the real data, returns
-//     a NextResponse so the legacy mutation is skipped.
-//   - No flags: returns null immediately (legacy path runs unchanged).
+// ORCH-09/10: V2 comparison probe. Called INSIDE each action handler, AFTER
+// all safety gates have passed. This is a COMPUTE-ONLY probe — it never calls
+// submitWorkflowCommand and never returns early. The legacy path remains
+// authoritative for all mutations.
 //
-// The `validatedContext` carries data the V2 command needs that was already
-// computed by the legacy validation (e.g. worktreePath, candidateSha,
-// actionPlanId). This ensures V2 does not bypass any safety gate.
-async function tryV2CanaryMutation(
+// The probe works in two phases:
+//   1. computeV2Prediction: called BEFORE the legacy mutation, computes the
+//      V2 decision (authorize + guard + decide) and returns a prediction
+//      object. This is fire-and-forget — errors are logged, not thrown.
+//   2. recordV2Comparison: called AFTER the legacy mutation completes,
+//      persists the prediction alongside the actual legacy result (status,
+//      workflowVersion) and an explicit matches/differences payload.
+//
+// Flag semantics:
+//   PM_ORCHESTRATOR_V2_SHADOW=1: compute + record for ALL projects.
+//   PM_ORCHESTRATOR_V2_PROJECTS=<slugs>: compute + record for allowlisted
+//     projects only. This is NOT Phase E — no V2 transitions are executed.
+//     It is a comparison probe that produces rollout evidence.
+//   No flags: no probe, zero overhead.
+
+type V2Prediction = {
+  action: WorkflowAction;
+  intent: TaskWorkflowIntent;
+  authAllowed: boolean;
+  authReason: string;
+  guardOk: boolean;
+  guardReason: string | null;
+  v2DecisionStatus: string;
+  v2DecisionToStatus: string | null;
+  predictedFromStatus: string;
+  predictedToStatus: string | null;
+  legacyStatusBefore: string;
+  workflowVersionBefore: number;
+} | null;
+
+async function computeV2Prediction(
   action: WorkflowAction,
   task: { id: string; projectId: string; status: string; workflowVersion: number; activeWorkflowCycleId: string | null; project: { slug: string } },
   agentUser: { id: string; username: string },
@@ -122,11 +144,11 @@ async function tryV2CanaryMutation(
     branchName?: string | null;
     actionPlanId?: string | null;
   },
-): Promise<NextResponse | null> {
+): Promise<V2Prediction> {
   const intent = ACTION_TO_INTENT[action];
   if (!intent) return null;
 
-  const { shouldComputeV2Decision, shouldRunV2Effects, orchestratorShadowEnabled } = await import("@/lib/tasks/orchestrator/flags");
+  const { shouldComputeV2Decision } = await import("@/lib/tasks/orchestrator/flags");
   if (!shouldComputeV2Decision(task.project.slug)) return null;
 
   const command: TaskWorkflowCommand = {
@@ -156,103 +178,106 @@ async function tryV2CanaryMutation(
     },
   };
 
-  // Shadow mode: compute the V2 decision WITHOUT executing. Record a
-  // comparison activity. Do NOT call submitWorkflowCommand (which mutates).
-  if (orchestratorShadowEnabled()) {
+  try {
+    const { loadTaskState, authorizeCommand, runGuards, decideCommand } = await import("@/lib/tasks/orchestrator");
+    const state = await loadTaskState(task.id);
+    if (!state) return null;
+    const auth = authorizeCommand(state, command);
+    const guardResult = runGuards(state, command);
+    let v2DecisionStatus = "computed";
+    let v2DecisionToStatus: string | null = null;
+    let predictedFromStatus = state.status;
+    let predictedToStatus: string | null = null;
     try {
-      const { loadTaskState, authorizeCommand, runGuards, decideCommand } = await import("@/lib/tasks/orchestrator");
-      const state = await loadTaskState(task.id);
-      if (state) {
-        const auth = authorizeCommand(state, command);
-        const guardResult = runGuards(state, command);
-        let v2DecisionStatus = "computed";
-        let v2DecisionToStatus: string | null = null;
-        try {
-          const decision = decideCommand(state, command, auth);
-          if (!("status" in decision)) {
-            v2DecisionToStatus = decision.toStatus;
-          } else {
-            v2DecisionStatus = `invalid: ${decision.reason}`;
-          }
-        } catch (error) {
-          v2DecisionStatus = `error: ${error instanceof Error ? error.message : String(error)}`;
-        }
-        await db.activityLog.create({
-          data: {
-            projectId: task.projectId,
-            taskId: task.id,
-            userId: agentUser.id,
-            kind: "task.workflow.v2_shadow",
-            payload: JSON.stringify({
-              action,
-              intent,
-              authAllowed: auth.allowed,
-              authReason: auth.reason,
-              guardOk: guardResult.ok,
-              guardReason: guardResult.ok ? null : guardResult.reason,
-              v2DecisionStatus,
-              v2DecisionToStatus,
-              legacyStatus: task.status,
-            }),
-          },
-        });
+      const decision = decideCommand(state, command, auth);
+      if (!("status" in decision)) {
+        v2DecisionToStatus = decision.toStatus;
+        predictedToStatus = decision.toStatus;
+      } else {
+        v2DecisionStatus = `invalid: ${decision.reason}`;
       }
     } catch (error) {
-      console.error("[pm] V2 shadow compute failed:", error);
+      v2DecisionStatus = `error: ${error instanceof Error ? error.message : String(error)}`;
     }
+    return {
+      action,
+      intent,
+      authAllowed: auth.allowed,
+      authReason: auth.reason,
+      guardOk: guardResult.ok,
+      guardReason: guardResult.ok ? null : guardResult.reason,
+      v2DecisionStatus,
+      v2DecisionToStatus,
+      predictedFromStatus,
+      predictedToStatus,
+      legacyStatusBefore: task.status,
+      workflowVersionBefore: task.workflowVersion,
+    };
+  } catch (error) {
+    console.error("[pm] V2 comparison probe compute failed:", error);
     return null;
   }
+}
 
-  // Canary mode: same as shadow — compute and record only. The legacy path
-  // remains authoritative for all mutations. The V2 procedure engine runs
-  // additively (worktree prep, notifications) but does not replace the
-  // legacy transition until phase E (PM_ORCHESTRATOR_V2_PROJECTS=* with
-  // legacy paths removed).
-  if (shouldRunV2Effects(task.project.slug)) {
-    try {
-      const { loadTaskState, authorizeCommand, runGuards, decideCommand } = await import("@/lib/tasks/orchestrator");
-      const state = await loadTaskState(task.id);
-      if (state) {
-        const auth = authorizeCommand(state, command);
-        const guardResult = runGuards(state, command);
-        let v2DecisionStatus = "computed";
-        let v2DecisionToStatus: string | null = null;
-        try {
-          const decision = decideCommand(state, command, auth);
-          if (!("status" in decision)) {
-            v2DecisionToStatus = decision.toStatus;
-          } else {
-            v2DecisionStatus = `invalid: ${decision.reason}`;
-          }
-        } catch (error) {
-          v2DecisionStatus = `error: ${error instanceof Error ? error.message : String(error)}`;
-        }
-        await db.activityLog.create({
-          data: {
-            projectId: task.projectId,
-            taskId: task.id,
-            userId: agentUser.id,
-            kind: "task.workflow.v2_canary",
-            payload: JSON.stringify({
-              action,
-              intent,
-              authAllowed: auth.allowed,
-              authReason: auth.reason,
-              guardOk: guardResult.ok,
-              guardReason: guardResult.ok ? null : guardResult.reason,
-              v2DecisionStatus,
-              v2DecisionToStatus,
-              legacyStatus: task.status,
-            }),
-          },
-        });
-      }
-    } catch (error) {
-      console.error("[pm] V2 canary compute failed:", error);
-    }
+async function recordV2Comparison(
+  prediction: V2Prediction,
+  task: { id: string; projectId: string; project: { slug: string } },
+  agentUserId: string,
+  legacyResult: { status: string; workflowVersion: number; ok: boolean; error?: string | null },
+): Promise<void> {
+  if (!prediction) return;
+  const { orchestratorShadowEnabled, shouldRunV2Effects } = await import("@/lib/tasks/orchestrator/flags");
+  const isShadow = orchestratorShadowEnabled();
+  const isCanary = shouldRunV2Effects(task.project.slug);
+  if (!isShadow && !isCanary) return;
+
+  // Compare the V2 prediction against the actual legacy result.
+  const actualToStatus = legacyResult.status;
+  const predictedToStatus = prediction.predictedToStatus;
+  const statusMatches = predictedToStatus === actualToStatus;
+  const versionAdvanced = legacyResult.workflowVersion > prediction.workflowVersionBefore;
+  const differences: string[] = [];
+  if (!statusMatches && predictedToStatus) {
+    differences.push(`V2 predicted ${predictedToStatus}, legacy produced ${actualToStatus}`);
+  }
+  if (!legacyResult.ok) {
+    differences.push(`legacy failed: ${legacyResult.error ?? "unknown"}`);
+  }
+  if (!prediction.authAllowed) {
+    differences.push(`V2 auth denied: ${prediction.authReason}`);
+  }
+  if (!prediction.guardOk) {
+    differences.push(`V2 guard failed: ${prediction.guardReason}`);
   }
 
-  return null;
+  const kind = isShadow ? "task.workflow.v2_shadow" : "task.workflow.v2_canary";
+  await db.activityLog.create({
+    data: {
+      projectId: task.projectId,
+      taskId: task.id,
+      userId: agentUserId,
+      kind,
+      payload: JSON.stringify({
+        action: prediction.action,
+        intent: prediction.intent,
+        v2AuthAllowed: prediction.authAllowed,
+        v2AuthReason: prediction.authReason,
+        v2GuardOk: prediction.guardOk,
+        v2GuardReason: prediction.guardReason,
+        v2DecisionStatus: prediction.v2DecisionStatus,
+        v2PredictedToStatus: predictedToStatus,
+        legacyStatusBefore: prediction.legacyStatusBefore,
+        legacyStatusAfter: actualToStatus,
+        legacyWorkflowVersionBefore: prediction.workflowVersionBefore,
+        legacyWorkflowVersionAfter: legacyResult.workflowVersion,
+        legacyOk: legacyResult.ok,
+        legacyError: legacyResult.error ?? null,
+        statusMatches,
+        versionAdvanced,
+        differences: differences.length > 0 ? differences : null,
+      }),
+    },
+  }).catch((error) => console.error("[pm] V2 comparison record failed:", error));
 }
 
 const ACTIONS = [
@@ -571,11 +596,12 @@ async function handleTaskWorkflowAction(
   const canSetDone = canSetTaskDoneForActor(task, agent.user.id);
   const isAssignee = task.assigneeId === agent.user.id;
 
-  // ORCH-09/10: V2 canary dispatch is handled INSIDE each action block, AFTER
+  // ORCH-09/10: V2 comparison probe is handled INSIDE each action block, AFTER
   // all safety gates (episode rollover, plan validation, coding-role, WIP,
-  // worktree preparation) have passed. The V2 path replaces the MUTATION, not
-  // the validation. Shadow mode computes the V2 decision without running
-  // effects and records a comparison activity. See tryV2CanaryMutation().
+  // worktree preparation) have passed. The probe computes the V2 decision
+  // (authorize + guard + decide) WITHOUT executing, and records a comparison
+  // activity alongside the actual legacy result. See computeV2Prediction()
+  // and recordV2Comparison().
 
   // ENV-121 (review) — THE ROLLOVER BARRIER.
   //
@@ -864,11 +890,11 @@ async function handleTaskWorkflowAction(
       return NextResponse.json({ error: message }, { status: 409 });
     }
 
-    // ORCH-09/10: V2 canary compute (fire-and-forget, no early return).
-    await tryV2CanaryMutation(action, task, agentUser, agent.role, messageId, comment, {
+    // ORCH-09/10: V2 comparison probe — compute prediction BEFORE legacy.
+    const v2StartPrediction = await computeV2Prediction(action, task, agentUser, agent.role, messageId, comment, {
       worktreePath: worktree.required ? worktree.worktreePath : null,
       branchName: worktree.required ? worktree.branchName : null,
-    }).catch((error) => console.error("[pm] V2 canary compute failed:", error));
+    }).catch(() => null);
 
     // ENV-118 (review): the status move, the Epic promotion and the
     // continuation-outbox arm commit together. A crash anywhere in here leaves
@@ -899,6 +925,8 @@ async function handleTaskWorkflowAction(
     publishBoardTouch(task.projectId);
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
     revalidatePath(`/projects/${task.project.slug}`);
+    const taskAfterStart = await db.task.findUniqueOrThrow({ where: { id: task.id }, select: { status: true, workflowVersion: true } });
+    await recordV2Comparison(v2StartPrediction, task, agentUser.id, { status: taskAfterStart.status, workflowVersion: taskAfterStart.workflowVersion, ok: true });
     return NextResponse.json({
       ok: true,
       taskId: task.id,
@@ -1038,15 +1066,11 @@ async function handleTaskWorkflowAction(
         },
       });
     }
-    // ORCH-09/10: V2 canary dual-write. Both shadow and canary modes compute
-    // the V2 decision and record a comparison activity. Neither mode executes
-    // V2 transitions — the legacy path remains authoritative for all
-    // mutations (transition, ActionPlan approval, checklist, auto-start).
-    // The V2 procedure engine runs additively (worktree prep, notifications)
-    // but does not replace the legacy transition until phase E.
-    await tryV2CanaryMutation(action, task, agentUser, agent.role, messageId, comment, {
+    // ORCH-09/10: V2 comparison probe — compute prediction BEFORE legacy,
+    // record comparison AFTER. Fire-and-forget, no early return.
+    const v2Prediction = await computeV2Prediction(action, task, agentUser, agent.role, messageId, comment, {
       actionPlanId: structuredPlan.id,
-    }).catch((error) => console.error("[pm] V2 canary compute failed:", error));
+    }).catch(() => null);
     await runWorkflowActionAtomically(
       { taskId: task.id, agentSlug: agent.slug, messageId, action, taskState: moveToTodo ? "To Do" : task.status },
       async (tx) => {
@@ -1191,11 +1215,15 @@ async function handleTaskWorkflowAction(
     revalidateTaskShell(task.id);
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
     revalidatePath(`/projects/${task.project.slug}`);
+    const approveStatus = startedAfterApproval ? "In Progress" : moveToTodo ? "To Do" : task.status;
+    // Record V2 comparison AFTER legacy completes.
+    const taskAfterApprove = await db.task.findUniqueOrThrow({ where: { id: task.id }, select: { status: true, workflowVersion: true } });
+    await recordV2Comparison(v2Prediction, task, agentUser.id, { status: taskAfterApprove.status, workflowVersion: taskAfterApprove.workflowVersion, ok: true });
     return NextResponse.json({
       ok: true,
       taskId: task.id,
       approved: true,
-      status: startedAfterApproval ? "In Progress" : moveToTodo ? "To Do" : task.status,
+      status: approveStatus,
       repositoryPhase: startedAfterApproval ? "active" : reservation?.phase ?? null,
       worktreePath: null,
       branchName: reservation?.branchName ?? null,
@@ -1458,10 +1486,10 @@ async function handleTaskWorkflowAction(
       reviewCommentId = created.id;
     }
 
-    // ORCH-09/10: V2 canary compute (fire-and-forget, no early return).
-    await tryV2CanaryMutation(action, task, agentUser, agent.role, messageId, comment, {
+    // ORCH-09/10: V2 comparison probe — compute prediction BEFORE legacy handoff.
+    const v2ReviewPrediction = await computeV2Prediction(action, task, agentUser, agent.role, messageId, comment, {
       candidateSha: task.repositoryRun?.candidateSha ?? null,
-    }).catch((error) => console.error("[pm] V2 canary compute failed:", error));
+    }).catch(() => null);
 
     // Code work remains In Progress while the role-resolved Monitor Agent
     // validates it. The handoff itself moves only validated work to Review.
@@ -1491,6 +1519,8 @@ async function handleTaskWorkflowAction(
     }
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
     revalidatePath(`/projects/${task.project.slug}`);
+    const taskAfterReview = await db.task.findUniqueOrThrow({ where: { id: task.id }, select: { status: true, workflowVersion: true } });
+    await recordV2Comparison(v2ReviewPrediction, task, agentUser.id, { status: taskAfterReview.status, workflowVersion: taskAfterReview.workflowVersion, ok: handoff.repositoryPhase !== "operational_error", error: handoff.error });
     return NextResponse.json({
       ok: true,
       taskId: task.id,
@@ -1540,8 +1570,8 @@ async function handleTaskWorkflowAction(
         },
       });
     }
-    // ORCH-09/10: V2 canary compute (fire-and-forget, no early return).
-    await tryV2CanaryMutation(action, task, agentUser, agent.role, messageId, comment, {}).catch((error) => console.error("[pm] V2 canary compute failed:", error));
+    // ORCH-09/10: V2 comparison probe — compute prediction BEFORE legacy.
+    const v2FeedbackPrediction = await computeV2Prediction(action, task, agentUser, agent.role, messageId, comment, {}).catch(() => null);
     const created = (await runWorkflowActionAtomically(
       { taskId: task.id, agentSlug: agent.slug, messageId, action, taskState: "To Do" },
       async (tx) => {
@@ -1610,6 +1640,8 @@ async function handleTaskWorkflowAction(
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
     revalidatePath(`/projects/${task.project.slug}`);
     publishBoardTouch(task.projectId);
+    const taskAfterFeedback = await db.task.findUniqueOrThrow({ where: { id: task.id }, select: { status: true, workflowVersion: true } });
+    await recordV2Comparison(v2FeedbackPrediction, task, agentUser.id, { status: taskAfterFeedback.status, workflowVersion: taskAfterFeedback.workflowVersion, ok: true });
     return NextResponse.json({ ok: true, taskId: task.id, status: "To Do", commentId: created.id });
   }
 
@@ -1623,10 +1655,10 @@ async function handleTaskWorkflowAction(
     }
     if (task.status !== "Review") return NextResponse.json({ error: "Task must be in Review before Done" }, { status: 409 });
 
-    // ORCH-09/10: V2 canary compute (fire-and-forget, no early return).
-    await tryV2CanaryMutation(action, task, agentUser, agent.role, messageId, comment, {
+    // ORCH-09/10: V2 comparison probe — compute prediction BEFORE legacy.
+    const v2DonePrediction = await computeV2Prediction(action, task, agentUser, agent.role, messageId, comment, {
       candidateSha: task.repositoryRun?.candidateSha ?? null,
-    }).catch((error) => console.error("[pm] V2 canary compute failed:", error));
+    }).catch(() => null);
 
     const completion = await completeReviewedTaskAndAssignNext({
       taskId: task.id,
@@ -1641,6 +1673,8 @@ async function handleTaskWorkflowAction(
       },
     });
     if (!completion.completed) {
+      const taskAfterDoneFail = await db.task.findUniqueOrThrow({ where: { id: task.id }, select: { status: true, workflowVersion: true } });
+      await recordV2Comparison(v2DonePrediction, task, agentUser.id, { status: taskAfterDoneFail.status, workflowVersion: taskAfterDoneFail.workflowVersion, ok: false, error: completion.reason });
       return NextResponse.json({ error: `Could not complete task: ${completion.reason}` }, { status: 409 });
     }
     revalidateTaskShell(task.id);
@@ -1650,6 +1684,8 @@ async function handleTaskWorkflowAction(
       revalidatePath(`/projects/${task.project.slug}/tasks/${next.id}`);
     }
     revalidatePath(`/projects/${task.project.slug}`);
+    const taskAfterDone = await db.task.findUniqueOrThrow({ where: { id: task.id }, select: { status: true, workflowVersion: true } });
+    await recordV2Comparison(v2DonePrediction, task, agentUser.id, { status: taskAfterDone.status, workflowVersion: taskAfterDone.workflowVersion, ok: true });
     return NextResponse.json({
       ok: true,
       taskId: task.id,

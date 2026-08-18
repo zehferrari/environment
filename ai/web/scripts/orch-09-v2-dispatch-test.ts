@@ -56,43 +56,39 @@ async function main() {
     delete process.env.PM_ORCHESTRATOR_V2_SHADOW;
     console.log("[v2-dispatch] shadow mode → compute but no effects PASS");
 
-    // --- Test 4: the route's tryV2CanaryMutation is called INSIDE action
-    // handlers (after safety gates), not before them. Verify the route source
-    // has the function, that it never returns early (fire-and-forget), and
-    // that shadow/canary both compute only (no V2 mutations).
+    // --- Test 4: the route uses computeV2Prediction + recordV2Comparison
+    // (two-phase comparison probe), never calls submitWorkflowCommand, and
+    // never returns early from a V2 call.
     const routeSource = await import("node:fs").then((fs) => fs.readFileSync(
       path.join(process.cwd(), "app/api/agent/tasks/[taskId]/workflow/route.ts"),
       "utf8",
     ));
-    assert.ok(routeSource.includes("tryV2CanaryMutation"), "route has tryV2CanaryMutation");
+    assert.ok(routeSource.includes("computeV2Prediction"), "route has computeV2Prediction");
+    assert.ok(routeSource.includes("recordV2Comparison"), "route has recordV2Comparison");
     assert.ok(!routeSource.includes("tryV2Dispatch"), "old tryV2Dispatch is removed");
-    assert.ok(routeSource.includes("shouldComputeV2Decision"), "route checks V2 flags");
-    assert.ok(routeSource.includes("ACTION_TO_INTENT"), "route has action-to-intent mapping");
-    // Shadow mode must NOT call submitWorkflowCommand — only compute.
-    assert.ok(routeSource.includes("Do NOT call submitWorkflowCommand"), "shadow mode explicitly avoids mutations");
-    // Canary mode also computes only (no V2 transition execution).
-    assert.ok(routeSource.includes("Canary mode: same as shadow"), "canary mode also computes only");
-    // No early returns from V2 canary — all calls are fire-and-forget.
+    assert.ok(!routeSource.includes("tryV2CanaryMutation"), "old tryV2CanaryMutation is removed");
+    assert.ok(!routeSource.match(/await\s+submitWorkflowCommand\(/), "route never calls submitWorkflowCommand as a function call");
+    // No early returns from V2 calls.
     assert.ok(!routeSource.includes("if (v2StartResult) return"), "no early return from V2 start");
     assert.ok(!routeSource.includes("if (v2ReviewResult) return"), "no early return from V2 review");
     assert.ok(!routeSource.includes("if (v2FeedbackResult) return"), "no early return from V2 feedback");
     assert.ok(!routeSource.includes("if (v2DoneResult) return"), "no early return from V2 done");
-    // The V2 canary is called AFTER the rollover barrier, not before it.
+    // The probe is called AFTER the rollover barrier.
     const rolloverIdx = routeSource.indexOf("THE ROLLOVER BARRIER");
-    const firstCanaryCall = routeSource.indexOf("tryV2CanaryMutation(action");
+    const firstComputeCall = routeSource.indexOf("await computeV2Prediction(action");
     assert.ok(rolloverIdx > 0, "rollover barrier exists");
-    assert.ok(firstCanaryCall > rolloverIdx, "first V2 canary call is AFTER the rollover barrier");
-    // Verify all 5 key actions have V2 canary calls inside their handlers.
+    assert.ok(firstComputeCall > rolloverIdx, "first V2 compute call is AFTER the rollover barrier");
+    // All 5 key actions have compute + record calls.
     const actionBlocks = ["approve_plan", "start", "ready_for_review", "review_feedback", "review_done"];
     for (const act of actionBlocks) {
       const actionIdx = routeSource.indexOf(`action === "${act}"`);
       assert.ok(actionIdx > 0, `${act} action block exists`);
-      const nextCanary = routeSource.indexOf("tryV2CanaryMutation(action", actionIdx);
+      const nextCompute = routeSource.indexOf("computeV2Prediction(", actionIdx);
       const nextAction = routeSource.indexOf("\n  if (action === ", actionIdx + 1);
-      assert.ok(nextCanary > actionIdx && (nextAction < 0 || nextCanary < nextAction),
-        `${act} action block has a V2 canary call before the next action`);
+      assert.ok(nextCompute > actionIdx && (nextAction < 0 || nextCompute < nextAction),
+        `${act} action block has a computeV2Prediction call before the next action`);
     }
-    console.log("[v2-dispatch] route V2 canary placement PASS");
+    console.log("[v2-dispatch] route two-phase comparison probe PASS");
 
     console.log("[v2-dispatch] PASS — V2 dispatch integration verified");
   } finally {

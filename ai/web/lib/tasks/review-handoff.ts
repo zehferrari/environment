@@ -54,14 +54,16 @@ async function applyValidationCallbackToProcedure(
     orderBy: { updatedAt: "desc" },
     select: { id: true, procedureRunId: true, output: true },
   });
-  if (!step) return; // no procedure waiting — legacy path only
+  if (!step) return;
   let jobId = "unknown";
   let expectedCandidateSha: string | null = null;
+  let expectedBaseSha: string | null = null;
   if (step.output) {
     try {
       const parsed = JSON.parse(step.output) as Record<string, unknown>;
       if (typeof parsed.jobId === "string") jobId = parsed.jobId;
       if (typeof parsed.candidateSha === "string") expectedCandidateSha = parsed.candidateSha;
+      if (typeof parsed.baseSha === "string") expectedBaseSha = parsed.baseSha;
     } catch { /* ignore */ }
   }
   const procRun = await db.taskProcedureRun.findUnique({
@@ -77,6 +79,7 @@ async function applyValidationCallbackToProcedure(
     workflowCycleId: procRun.workflowCycleId,
     jobId,
     candidateSha: candidateSha ?? expectedCandidateSha,
+    baseSha: expectedBaseSha, // R3: provide baseSha from step output
     data: { validationOutcome, error: error ?? undefined },
   });
 }

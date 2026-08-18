@@ -1016,8 +1016,23 @@ async function main() {
       const runStatus = await db.reviewRun.findUniqueOrThrow({ where: { id: existingRun.id }, select: { status: true } });
       if (["accepted", "changes_requested", "completed"].includes(runStatus.status)) {
         // The active cycle's lease is already decided — reject this verifier
-        // job. It is either stale or a duplicate for a cycle that has already
-        // concluded. Do NOT create an unbound validation row.
+        // job durably. Record an activity row so the reconciler can detect
+        // stale jobs and the operator can investigate. Do NOT create an
+        // unbound validation row or mutate the decided lease.
+        await db.activityLog.create({
+          data: {
+            projectId: job.projectId,
+            taskId: job.taskId,
+            kind: "pm.repo.verify.rejected_decided_lease",
+            payload: JSON.stringify({
+              jobId: job.jobId,
+              workflowCycleId: task?.activeWorkflowCycleId ?? null,
+              leaseStatus: runStatus.status,
+              candidateSha,
+              reason: "verifier job arrived for a cycle whose lease is already decided",
+            }),
+          },
+        });
         console.error(`[pm-verify] rejecting verifier job ${job.jobId}: active cycle ${task?.activeWorkflowCycleId} has a decided lease (${runStatus.status})`);
         return;
       }
