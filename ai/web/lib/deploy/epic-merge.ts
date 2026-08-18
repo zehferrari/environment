@@ -90,6 +90,9 @@ export type EpicMergeJob =
       requestedByUserId: string;
       requestedByUsername: string;
       candidateSha: string;
+      procedureRunId?: string;
+      procedureStepId?: string;
+      workflowCycleId?: string | null;
       attempt?: number;
       enqueuedAt: string;
     }
@@ -161,6 +164,9 @@ export async function enqueueTaskReviewFinalization(args: {
   requestedByUserId: string;
   requestedByUsername: string;
   candidateSha: string;
+  procedureRunId?: string;
+  procedureStepId?: string;
+  workflowCycleId?: string | null;
 }) {
   const job: Extract<EpicMergeJob, { kind: "finalize" }> = {
     kind: "finalize",
@@ -170,6 +176,9 @@ export async function enqueueTaskReviewFinalization(args: {
     requestedByUserId: args.requestedByUserId,
     requestedByUsername: args.requestedByUsername,
     candidateSha: args.candidateSha,
+    procedureRunId: args.procedureRunId,
+    procedureStepId: args.procedureStepId,
+    workflowCycleId: args.workflowCycleId,
     enqueuedAt: new Date().toISOString(),
   };
   const target = path.join(EPIC_MERGE_DIR, jobFileName(job));
@@ -1525,6 +1534,7 @@ async function executeFinalizeJob(
       id: true,
       title: true,
       status: true,
+      activeWorkflowCycleId: true,
       projectId: true,
       workItemKey: true,
       branchName: true,
@@ -1561,9 +1571,77 @@ async function executeFinalizeJob(
       },
     },
   });
-  if (!task || task.status !== "Review") {
+  if (!task) {
+    return { taskId: job.taskId, outcome: "skipped" as const, note: "task no longer exists" };
+  }
+  if (job.workflowCycleId !== undefined && task.activeWorkflowCycleId !== job.workflowCycleId) {
+    const reason = "finalization job no longer belongs to the task's active workflow cycle";
+    await db.activityLog.create({
+      data: {
+        projectId: task.projectId,
+        taskId: task.id,
+        kind: "pm.repo.finalize.rejected_stale_cycle",
+        payload: JSON.stringify({
+          jobId: job.jobId,
+          procedureRunId: job.procedureRunId ?? null,
+          procedureStepId: job.procedureStepId ?? null,
+          jobWorkflowCycleId: job.workflowCycleId,
+          activeWorkflowCycleId: task.activeWorkflowCycleId,
+          reason,
+        }),
+      },
+    });
+    if (job.procedureRunId && job.procedureStepId) {
+      const run = await db.taskProcedureRun.findFirst({
+        where: {
+          id: job.procedureRunId,
+          taskId: job.taskId,
+          workflowCycleId: job.workflowCycleId,
+          status: { in: ["queued", "running"] },
+        },
+        select: { id: true },
+      });
+      if (run) {
+        const completedAt = new Date();
+        await db.$transaction([
+          db.taskProcedureStep.updateMany({
+            where: {
+              procedureRunId: run.id,
+              status: { in: ["pending", "running", "failed", "waiting_callback"] },
+            },
+            data: {
+              status: "completed",
+              completedAt,
+              leaseOwner: null,
+              leaseExpiresAt: null,
+              output: JSON.stringify({ superseded: true, reason, jobId: job.jobId }),
+            },
+          }),
+          db.taskProcedureRun.update({
+            where: { id: run.id },
+            data: {
+              status: "completed",
+              completedAt,
+              currentStep: null,
+              output: JSON.stringify({ superseded: true, reason, jobId: job.jobId }),
+            },
+          }),
+        ]);
+      }
+    }
+    return { taskId: job.taskId, outcome: "skipped" as const, note: "stale workflow cycle" };
+  }
+  if (task.status !== "Review") {
     return { taskId: job.taskId, outcome: "skipped" as const, note: "task is no longer in Review" };
   }
+  const procedureCallback = job.procedureRunId && job.procedureStepId && job.workflowCycleId !== undefined
+    ? {
+        procedureRunId: job.procedureRunId,
+        procedureStepId: job.procedureStepId,
+        workflowCycleId: job.workflowCycleId,
+        jobId: job.jobId,
+      }
+    : undefined;
   const repositoryPath = task.project.repositoryPath;
   const taskBranch = effectiveTaskBranchName(task);
   const repoTouched = task.repositoryRun?.repoTouched === true;
@@ -1577,6 +1655,15 @@ async function executeFinalizeJob(
       error: "No active Monitor Agent is available to finalize the reviewed repository branch.",
       preserveValidationOutcome: true,
     });
+    const { applyFinalizationCallbackToProcedure } = await import("@/lib/tasks/review-automation");
+    await applyFinalizationCallbackToProcedure(
+      task.id,
+      job.candidateSha,
+      false,
+      null,
+      "No active Monitor Agent is available to finalize the reviewed repository branch.",
+      procedureCallback,
+    ).catch((error) => console.error("[pm] procedure finalization callback failed:", task.id, error));
     return { taskId: task.id, outcome: "operational-error" as const };
   }
   const actor = { id: monitor.id, username: monitor.username, kind: "agent" as const };
@@ -1612,6 +1699,10 @@ async function executeFinalizeJob(
           isGenerated: true,
         },
       });
+      const { applyFinalizationCallbackToProcedure } = await import("@/lib/tasks/review-automation");
+      await applyFinalizationCallbackToProcedure(task.id, candidateSha ?? null, false, null, reason, procedureCallback).catch((error) =>
+        console.error("[pm] procedure finalization callback failed:", task.id, error),
+      );
       return { taskId: task.id, outcome: "operational-error" as const, reason, attempt };
     }
     await db.comment.create({
@@ -1623,7 +1714,17 @@ async function executeFinalizeJob(
         isGenerated: true,
       },
     });
-    await failTaskReviewValidation({ taskId: task.id, actor, error: reason, candidateSha });
+    const { applyFinalizationCallbackToProcedure } = await import("@/lib/tasks/review-automation");
+    await applyFinalizationCallbackToProcedure(task.id, candidateSha ?? null, false, null, reason, procedureCallback).catch((error) =>
+      console.error("[pm] procedure finalization callback failed:", task.id, error),
+    );
+    await failTaskReviewValidation({
+      taskId: task.id,
+      actor,
+      error: reason,
+      candidateSha,
+      applyProcedureCallback: false,
+    });
     return { taskId: task.id, outcome: "action-required" as const, reason };
   };
 
@@ -1757,20 +1858,28 @@ async function executeFinalizeJob(
   });
   if (completion.completed) {
     await db.reviewRun.updateMany({
-      where: {
-        taskId: task.id,
-        candidateSha: validatedCandidateSha,
-        status: "accepted",
-      },
+      where: task.activeWorkflowCycleId
+        ? { workflowCycleId: task.activeWorkflowCycleId, candidateSha: validatedCandidateSha, status: "accepted" }
+        : { taskId: task.id, workflowCycleId: null, candidateSha: validatedCandidateSha, status: "accepted" },
       data: { status: "completed" },
     });
     // ORCH-07/P0-4: apply the finalization callback to the procedure engine
     // so the finalize_accepted_review procedure can continue to
     // verify_finalization → complete_review → Done.
     const { applyFinalizationCallbackToProcedure } = await import("@/lib/tasks/review-automation");
-    await applyFinalizationCallbackToProcedure(task.id, validatedCandidateSha, true).catch((error) =>
+    await applyFinalizationCallbackToProcedure(task.id, validatedCandidateSha, true, null, undefined, procedureCallback).catch((error) =>
       console.error("[pm] procedure finalization callback failed:", task.id, error),
     );
+  } else {
+    const { applyFinalizationCallbackToProcedure } = await import("@/lib/tasks/review-automation");
+    await applyFinalizationCallbackToProcedure(
+      task.id,
+      validatedCandidateSha,
+      false,
+      null,
+      completion.reason,
+      procedureCallback,
+    ).catch((error) => console.error("[pm] procedure finalization callback failed:", task.id, error));
   }
   publishBoardTouch(task.projectId);
   return {

@@ -40,6 +40,11 @@ import type {
 
 const EXECUTE_TRANSACTION_TIMEOUT_MS = 15_000;
 
+function isPrismaUniqueConstraintError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error
+    && (error as { code?: unknown }).code === "P2002";
+}
+
 function toKernelEffect(effect: OrchestrationDecision["effects"][number]): KernelWorkflowEffect {
   return {
     type: effect.type,
@@ -209,27 +214,47 @@ export async function executeWorkflowCommand(
           // P1-5: check for an existing non-terminal procedure of the same
           // type for this cycle. If one exists, reuse it instead of creating
           // a duplicate (invariant 6: one active procedure per type/cycle).
+          const activeProcedureWhere: Prisma.TaskProcedureRunWhereInput = {
+            taskId: command.taskId,
+            type: decision.procedureType,
+            workflowCycleId: cycleId,
+            status: { in: ["queued", "running"] },
+          };
           const existing = await tx.taskProcedureRun.findFirst({
             where: {
-              taskId: command.taskId,
-              type: decision.procedureType,
-              status: { in: ["queued", "running"] },
-              ...(cycleId ? { workflowCycleId: cycleId } : {}),
+              ...activeProcedureWhere,
             },
             orderBy: { createdAt: "desc" },
             select: { id: true },
           });
+          let procedureReused = existing !== null;
           if (existing) {
             procedureId = existing.id;
           } else {
-            const created = await createProcedureRun(tx, {
-              taskId: command.taskId,
-              workflowCycleId: cycleId,
-              triggerTransitionId: transitionId ?? command.idempotencyKey,
-              type: decision.procedureType,
-              input: command.payload ?? null,
-            });
-            procedureId = created.procedureRunId;
+            try {
+              const created = await createProcedureRun(tx, {
+                taskId: command.taskId,
+                workflowCycleId: cycleId,
+                triggerTransitionId: transitionId ?? command.idempotencyKey,
+                type: decision.procedureType,
+                input: command.payload ?? null,
+              });
+              procedureId = created.procedureRunId;
+            } catch (error) {
+              if (!isPrismaUniqueConstraintError(error)) throw error;
+              // The database partial unique indexes are the final arbiter.
+              // If another dispatcher won between our read and create, reuse
+              // that durable run instead of turning a safe duplicate into a
+              // 503. A missing winner means this was a different constraint.
+              const winner = await tx.taskProcedureRun.findFirst({
+                where: activeProcedureWhere,
+                orderBy: { createdAt: "desc" },
+                select: { id: true },
+              });
+              if (!winner) throw error;
+              procedureId = winner.id;
+              procedureReused = true;
+            }
           }
           await tx.activityLog.create({
             data: {
@@ -244,7 +269,7 @@ export async function executeWorkflowCommand(
                 transitionId,
                 workflowVersion,
                 intent: command.intent,
-                reused: existing !== null,
+                reused: procedureReused,
               }),
             },
           });

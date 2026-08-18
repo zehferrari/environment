@@ -2,7 +2,8 @@
 //
 // Verifies that:
 //   - With no flags set, the V2 dispatch is a no-op (legacy path runs).
-//   - With PM_ORCHESTRATOR_V2_PROJECTS set, the V2 path handles the action.
+//   - With PM_ORCHESTRATOR_V2_PROJECTS set, V2 records canary comparison
+//     evidence while the legacy path remains authoritative.
 //   - With PM_ORCHESTRATOR_V2_SHADOW=1, V2 computes but legacy remains
 //     authoritative.
 
@@ -31,20 +32,20 @@ async function main() {
   process.env.DATABASE_URL = dbUrl;
   try {
     // Import after DATABASE_URL is set.
-    const { shouldComputeV2Decision, shouldRunV2Effects, orchestratorShadowEnabled } = await import("@/lib/tasks/orchestrator/flags");
+    const { shouldComputeV2Decision, shouldRecordV2CanaryComparison, orchestratorShadowEnabled } = await import("@/lib/tasks/orchestrator/flags");
 
     // --- Test 1: no flags → V2 not active ------------------------------
     delete process.env.PM_ORCHESTRATOR_V2_SHADOW;
     delete process.env.PM_ORCHESTRATOR_V2_PROJECTS;
     assert.equal(shouldComputeV2Decision("any-project"), false, "V2 not active without flags");
-    assert.equal(shouldRunV2Effects("any-project"), false, "V2 effects not run without flags");
+    assert.equal(shouldRecordV2CanaryComparison("any-project"), false, "canary comparison is not recorded without flags");
     console.log("[v2-dispatch] no flags → V2 inactive PASS");
 
     // --- Test 2: canary mode → V2 active for allowlisted project ------
     process.env.PM_ORCHESTRATOR_V2_PROJECTS = "test-project";
     assert.equal(shouldComputeV2Decision("test-project"), true, "V2 active for canary project");
-    assert.equal(shouldRunV2Effects("test-project"), true, "V2 effects run for canary project");
-    assert.equal(shouldRunV2Effects("other-project"), false, "V2 effects do not run for non-canary");
+    assert.equal(shouldRecordV2CanaryComparison("test-project"), true, "canary comparison is recorded for allowlisted project");
+    assert.equal(shouldRecordV2CanaryComparison("other-project"), false, "canary comparison is not recorded outside allowlist");
     delete process.env.PM_ORCHESTRATOR_V2_PROJECTS;
     console.log("[v2-dispatch] canary mode → V2 active PASS");
 
@@ -52,7 +53,7 @@ async function main() {
     process.env.PM_ORCHESTRATOR_V2_SHADOW = "1";
     assert.equal(orchestratorShadowEnabled(), true, "shadow enabled");
     assert.equal(shouldComputeV2Decision("any-project"), true, "V2 computes in shadow mode");
-    assert.equal(shouldRunV2Effects("any-project"), false, "V2 effects do not run in shadow mode");
+    assert.equal(shouldRecordV2CanaryComparison("any-project"), false, "shadow activity takes precedence over canary activity");
     delete process.env.PM_ORCHESTRATOR_V2_SHADOW;
     console.log("[v2-dispatch] shadow mode → compute but no effects PASS");
 
@@ -73,6 +74,22 @@ async function main() {
     assert.ok(!routeSource.includes("if (v2ReviewResult) return"), "no early return from V2 review");
     assert.ok(!routeSource.includes("if (v2FeedbackResult) return"), "no early return from V2 feedback");
     assert.ok(!routeSource.includes("if (v2DoneResult) return"), "no early return from V2 done");
+    const finalizeHelper = routeSource.slice(
+      routeSource.indexOf("async function recordV2ComparisonAfterLegacy"),
+      routeSource.indexOf("async function runLegacyMutationWithV2Comparison"),
+    );
+    assert.ok(finalizeHelper.indexOf("if (!prediction) return") >= 0, "comparison finalizer has a no-probe fast path");
+    assert.ok(
+      finalizeHelper.indexOf("if (!prediction) return") < finalizeHelper.indexOf("db.task.findUnique"),
+      "no-flags path returns before the post-mutation database query",
+    );
+    assert.ok(finalizeHelper.includes("V2 comparison finalization failed"), "comparison finalization is fail-soft");
+    assert.ok(routeSource.includes("matches: differences.length === 0"), "comparison records an explicit overall match result");
+    assert.ok(routeSource.includes("differences,"), "comparison always records a differences array");
+    assert.ok(
+      routeSource.indexOf("if (!auth.allowed)") < routeSource.indexOf("const decision = decideCommand"),
+      "V2 decision is not computed after authorization or guard rejection",
+    );
     // The probe is called AFTER the rollover barrier.
     const rolloverIdx = routeSource.indexOf("THE ROLLOVER BARRIER");
     const firstComputeCall = routeSource.indexOf("await computeV2Prediction(action");
@@ -90,7 +107,7 @@ async function main() {
     }
     console.log("[v2-dispatch] route two-phase comparison probe PASS");
 
-    console.log("[v2-dispatch] PASS — V2 dispatch integration verified");
+    console.log("[v2-dispatch] PASS — V2 comparison integration verified");
   } finally {
     await cleanup();
   }

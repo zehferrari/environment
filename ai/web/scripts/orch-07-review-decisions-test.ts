@@ -42,6 +42,7 @@ async function main() {
     const { registerStartImplementationCycleHandlers } = await import("@/lib/tasks/orchestrator/handlers/start-implementation-cycle");
     const { registerPrepareTodoTaskHandlers } = await import("@/lib/tasks/orchestrator/handlers/prepare-todo-task");
     const { openTaskWorkflowCycle, closeTaskWorkflowCycle } = await import("@/lib/tasks/workflow-cycle");
+    const { completeReviewedTaskAndAssignNext } = await import("@/lib/tasks/review-automation");
 
     registerPrepareTodoTaskHandlers();
     registerStartImplementationCycleHandlers();
@@ -204,6 +205,92 @@ async function main() {
     });
     assert.equal(accept3Replay.status, "replayed", "duplicate accept is replayed (idempotent)");
     console.log("[orch07] accepted lease not reused PASS");
+
+    // --- Test 6: same-SHA finalization uses the active cycle lease ------
+    const repositoryProject = await db.project.create({
+      data: { slug: "orch07-cycle-fence", name: "Cycle-fenced finalization", repositoryPath: "/srv/Code/orch07-cycle-fence" },
+    });
+    const task4 = await db.task.create({
+      data: {
+        projectId: repositoryProject.id,
+        title: "Same SHA finalization",
+        status: "Review",
+        workflowVersion: 1,
+        assigneeId: assigneeUser.id,
+        actingManagerId: reviewerUser.id,
+        reporterId: owner.id,
+        approvedOn: new Date(),
+        approvedById: owner.id,
+      },
+    });
+    await db.$transaction((tx) => openTaskWorkflowCycle(tx, { taskId: task4.id, openedWorkflowVersion: 1 }));
+    const historicalCycle = await db.taskWorkflowCycle.findFirstOrThrow({ where: { taskId: task4.id, status: "open" } });
+    await db.$transaction((tx) => closeTaskWorkflowCycle(tx, { taskId: task4.id, outcome: "changes_requested", candidateSha: "shared-final-sha" }));
+    await db.$transaction((tx) => openTaskWorkflowCycle(tx, { taskId: task4.id, openedWorkflowVersion: 1 }));
+    const activeCycle = await db.taskWorkflowCycle.findFirstOrThrow({ where: { taskId: task4.id, status: "open" } });
+    await db.reviewRun.create({
+      data: {
+        taskId: task4.id,
+        workflowCycleId: activeCycle.id,
+        candidateSha: "shared-final-sha",
+        repoTouched: true,
+        validationOutcome: "valid",
+        status: "accepted",
+        reviewerId: reviewerUser.id,
+        reviewedAt: new Date(),
+      },
+    });
+    // Insert the historical lease later so a task+SHA "latest row" lookup
+    // would select the wrong reviewer. Cycle scoping must still choose active.
+    await db.reviewRun.create({
+      data: {
+        taskId: task4.id,
+        workflowCycleId: historicalCycle.id,
+        candidateSha: "shared-final-sha",
+        repoTouched: true,
+        validationOutcome: "valid",
+        status: "accepted",
+        reviewerId: owner.id,
+        reviewedAt: new Date(),
+      },
+    });
+    await db.taskRepositoryRun.create({
+      data: {
+        taskId: task4.id,
+        workflowCycleId: activeCycle.id,
+        phase: "completed",
+        candidateSha: "shared-final-sha",
+        reviewedSha: "shared-final-sha",
+        repoTouched: true,
+        validationOutcome: "valid",
+      },
+    });
+    const cycleFencedCompletion = await completeReviewedTaskAndAssignNext({
+      taskId: task4.id,
+      actor: { id: monitorUser.id, username: monitorUser.username, kind: "agent" },
+      via: "orch07-cycle-fence",
+      repositoryFinalized: true,
+    });
+    assert.equal(cycleFencedCompletion.completed, true, "active cycle accepted lease authorizes finalization");
+    const cycleFencedDone = await db.workflowTransition.findFirstOrThrow({
+      where: { taskId: task4.id, toStatus: "Done" },
+      select: { actorUserId: true },
+    });
+    assert.equal(cycleFencedDone.actorUserId, reviewerUser.id, "Done is attributed to the active cycle reviewer");
+    console.log("[orch07] same-SHA finalization is active-cycle fenced PASS");
+
+    // --- Test 7: finalization spool preserves procedure correlation ----
+    const { readFileSync } = await import("node:fs");
+    const decisionSource = readFileSync(path.join(process.cwd(), "lib/tasks/orchestrator/handlers/review-decisions.ts"), "utf8");
+    const drainSource = readFileSync(path.join(process.cwd(), "lib/tasks/workflow-outbox-drain.ts"), "utf8");
+    const mergeSource = readFileSync(path.join(process.cwd(), "lib/deploy/epic-merge.ts"), "utf8");
+    const automationSource = readFileSync(path.join(process.cwd(), "lib/tasks/review-automation.ts"), "utf8");
+    assert.ok(decisionSource.includes("procedureStepId: ctx.stepId"), "finalization effect carries exact step id");
+    assert.ok(drainSource.includes("procedureStepId:"), "outbox drain preserves finalization step id");
+    assert.ok(mergeSource.includes("pm.repo.finalize.rejected_stale_cycle"), "finalizer rejects stale-cycle jobs");
+    assert.ok(mergeSource.includes("applyProcedureCallback: false"), "finalization failure does not invoke validation callback fallback");
+    assert.ok(automationSource.includes("id: callback.procedureStepId"), "finalization callback selects exact step");
+    console.log("[orch07] finalization callback correlation contract PASS");
 
     console.log("[orch07] PASS — all review feedback + finalization assertions held");
   } finally {

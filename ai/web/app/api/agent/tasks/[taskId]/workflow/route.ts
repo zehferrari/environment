@@ -131,6 +131,25 @@ type V2Prediction = {
   workflowVersionBefore: number;
 } | null;
 
+type V2ComparisonTask = {
+  id: string;
+  projectId: string;
+  status: string;
+  workflowVersion: number;
+  project: { slug: string };
+};
+
+type WorkflowCapture = {
+  action?: WorkflowAction;
+  taskId?: string;
+  agentSlug?: string;
+  v2Comparison?: {
+    prediction: V2Prediction;
+    task: V2ComparisonTask;
+    agentUserId: string;
+  };
+};
+
 async function computeV2Prediction(
   action: WorkflowAction,
   task: { id: string; projectId: string; status: string; workflowVersion: number; activeWorkflowCycleId: string | null; project: { slug: string } },
@@ -188,16 +207,22 @@ async function computeV2Prediction(
     let v2DecisionToStatus: string | null = null;
     let predictedFromStatus = state.status;
     let predictedToStatus: string | null = null;
-    try {
-      const decision = decideCommand(state, command, auth);
-      if (!("status" in decision)) {
-        v2DecisionToStatus = decision.toStatus;
-        predictedToStatus = decision.toStatus;
-      } else {
-        v2DecisionStatus = `invalid: ${decision.reason}`;
+    if (!auth.allowed) {
+      v2DecisionStatus = `skipped: authorization denied (${auth.reason})`;
+    } else if (!guardResult.ok) {
+      v2DecisionStatus = `skipped: guard failed (${guardResult.reason})`;
+    } else {
+      try {
+        const decision = decideCommand(state, command, auth);
+        if (!("status" in decision)) {
+          v2DecisionToStatus = decision.toStatus;
+          predictedToStatus = decision.toStatus;
+        } else {
+          v2DecisionStatus = `invalid: ${decision.reason}`;
+        }
+      } catch (error) {
+        v2DecisionStatus = `error: ${error instanceof Error ? error.message : String(error)}`;
       }
-    } catch (error) {
-      v2DecisionStatus = `error: ${error instanceof Error ? error.message : String(error)}`;
     }
     return {
       action,
@@ -226,18 +251,20 @@ async function recordV2Comparison(
   legacyResult: { status: string; workflowVersion: number; ok: boolean; error?: string | null },
 ): Promise<void> {
   if (!prediction) return;
-  const { orchestratorShadowEnabled, shouldRunV2Effects } = await import("@/lib/tasks/orchestrator/flags");
+  const { orchestratorShadowEnabled, shouldRecordV2CanaryComparison } = await import("@/lib/tasks/orchestrator/flags");
   const isShadow = orchestratorShadowEnabled();
-  const isCanary = shouldRunV2Effects(task.project.slug);
+  const isCanary = shouldRecordV2CanaryComparison(task.project.slug);
   if (!isShadow && !isCanary) return;
 
   // Compare the V2 prediction against the actual legacy result.
   const actualToStatus = legacyResult.status;
   const predictedToStatus = prediction.predictedToStatus;
-  const statusMatches = predictedToStatus === actualToStatus;
+  const statusMatches = predictedToStatus !== null && predictedToStatus === actualToStatus;
   const versionAdvanced = legacyResult.workflowVersion > prediction.workflowVersionBefore;
   const differences: string[] = [];
-  if (!statusMatches && predictedToStatus) {
+  if (predictedToStatus === null) {
+    differences.push(`V2 produced no executable prediction (${prediction.v2DecisionStatus})`);
+  } else if (!statusMatches) {
     differences.push(`V2 predicted ${predictedToStatus}, legacy produced ${actualToStatus}`);
   }
   if (!legacyResult.ok) {
@@ -274,10 +301,59 @@ async function recordV2Comparison(
         legacyError: legacyResult.error ?? null,
         statusMatches,
         versionAdvanced,
-        differences: differences.length > 0 ? differences : null,
+        matches: differences.length === 0,
+        differences,
       }),
     },
-  }).catch((error) => console.error("[pm] V2 comparison record failed:", error));
+  });
+}
+
+/**
+ * Finish a comparison without ever changing the legacy action's result.
+ * The null check deliberately precedes the database read so a deployment
+ * with no rollout flags pays no post-mutation query cost.
+ */
+async function recordV2ComparisonAfterLegacy(
+  prediction: V2Prediction,
+  task: { id: string; projectId: string; status: string; workflowVersion: number; project: { slug: string } },
+  agentUserId: string,
+  outcome: { ok: boolean; error?: string | null },
+): Promise<void> {
+  if (!prediction) return;
+  try {
+    const current = await db.task.findUnique({
+      where: { id: task.id },
+      select: { status: true, workflowVersion: true },
+    });
+    await recordV2Comparison(prediction, task, agentUserId, {
+      status: current?.status ?? task.status,
+      workflowVersion: current?.workflowVersion ?? task.workflowVersion,
+      ...outcome,
+    });
+  } catch (error) {
+    // Comparison telemetry is observational. It must never turn an already
+    // committed legacy mutation into an apparent API failure and retry.
+    console.error("[pm] V2 comparison finalization failed:", error);
+  }
+}
+
+async function runLegacyMutationWithV2Comparison<T>(
+  prediction: V2Prediction,
+  task: { id: string; projectId: string; status: string; workflowVersion: number; project: { slug: string } },
+  agentUserId: string,
+  mutate: () => Promise<T>,
+  onFailureRecorded?: () => void,
+): Promise<T> {
+  try {
+    return await mutate();
+  } catch (error) {
+    await recordV2ComparisonAfterLegacy(prediction, task, agentUserId, {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    onFailureRecorded?.();
+    throw error;
+  }
 }
 
 const ACTIONS = [
@@ -371,7 +447,7 @@ async function moveTaskStatus(args: {
 async function handleTaskWorkflowAction(
   req: NextRequest,
   ctx: { params: Promise<{ taskId: string }> },
-  captured: { action?: WorkflowAction; taskId?: string; agentSlug?: string },
+  captured: WorkflowCapture,
 ) {
   const { taskId } = await ctx.params;
   captured.taskId = taskId;
@@ -895,14 +971,16 @@ async function handleTaskWorkflowAction(
       worktreePath: worktree.required ? worktree.worktreePath : null,
       branchName: worktree.required ? worktree.branchName : null,
     }).catch(() => null);
+    captured.v2Comparison = { prediction: v2StartPrediction, task, agentUserId: agentUser.id };
 
     // ENV-118 (review): the status move, the Epic promotion and the
     // continuation-outbox arm commit together. A crash anywhere in here leaves
     // the task in To Do, which the agent can simply retry — never In Progress
     // with nobody scheduled to work it.
-    await runWorkflowActionAtomically(
-      { taskId: task.id, agentSlug: agent.slug, messageId, action, taskState: "In Progress" },
-      async (tx) => {
+    await runLegacyMutationWithV2Comparison(v2StartPrediction, task, agentUser.id, () =>
+      runWorkflowActionAtomically(
+        { taskId: task.id, agentSlug: agent.slug, messageId, action, taskState: "In Progress" },
+        async (tx) => {
         await moveTaskStatus({
           taskId: task.id,
           projectId: task.projectId,
@@ -919,14 +997,16 @@ async function handleTaskWorkflowAction(
           actorId: agentUser.id,
           via: "agent-workflow",
         });
-      },
+        },
+      ),
+      () => { captured.v2Comparison = undefined; },
     );
     revalidateTaskShell(task.id);
     publishBoardTouch(task.projectId);
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
     revalidatePath(`/projects/${task.project.slug}`);
-    const taskAfterStart = await db.task.findUniqueOrThrow({ where: { id: task.id }, select: { status: true, workflowVersion: true } });
-    await recordV2Comparison(v2StartPrediction, task, agentUser.id, { status: taskAfterStart.status, workflowVersion: taskAfterStart.workflowVersion, ok: true });
+    await recordV2ComparisonAfterLegacy(v2StartPrediction, task, agentUser.id, { ok: true });
+    captured.v2Comparison = undefined;
     return NextResponse.json({
       ok: true,
       taskId: task.id,
@@ -1071,9 +1151,11 @@ async function handleTaskWorkflowAction(
     const v2Prediction = await computeV2Prediction(action, task, agentUser, agent.role, messageId, comment, {
       actionPlanId: structuredPlan.id,
     }).catch(() => null);
-    await runWorkflowActionAtomically(
-      { taskId: task.id, agentSlug: agent.slug, messageId, action, taskState: moveToTodo ? "To Do" : task.status },
-      async (tx) => {
+    captured.v2Comparison = { prediction: v2Prediction, task, agentUserId: agentUser.id };
+    await runLegacyMutationWithV2Comparison(v2Prediction, task, agentUser.id, () =>
+      runWorkflowActionAtomically(
+        { taskId: task.id, agentSlug: agent.slug, messageId, action, taskState: moveToTodo ? "To Do" : task.status },
+        async (tx) => {
         if (moveToTodo) {
           await applyTaskTransition(tx, {
             taskId: task.id,
@@ -1157,7 +1239,9 @@ async function handleTaskWorkflowAction(
           approvedById: agent.user!.id,
           client: tx,
         });
-      },
+        },
+      ),
+      () => { captured.v2Comparison = undefined; },
     );
     let startedAfterApproval = false;
     if (task.assigneeId) {
@@ -1217,8 +1301,8 @@ async function handleTaskWorkflowAction(
     revalidatePath(`/projects/${task.project.slug}`);
     const approveStatus = startedAfterApproval ? "In Progress" : moveToTodo ? "To Do" : task.status;
     // Record V2 comparison AFTER legacy completes.
-    const taskAfterApprove = await db.task.findUniqueOrThrow({ where: { id: task.id }, select: { status: true, workflowVersion: true } });
-    await recordV2Comparison(v2Prediction, task, agentUser.id, { status: taskAfterApprove.status, workflowVersion: taskAfterApprove.workflowVersion, ok: true });
+    await recordV2ComparisonAfterLegacy(v2Prediction, task, agentUser.id, { ok: true });
+    captured.v2Comparison = undefined;
     return NextResponse.json({
       ok: true,
       taskId: task.id,
@@ -1490,23 +1574,32 @@ async function handleTaskWorkflowAction(
     const v2ReviewPrediction = await computeV2Prediction(action, task, agentUser, agent.role, messageId, comment, {
       candidateSha: task.repositoryRun?.candidateSha ?? null,
     }).catch(() => null);
+    captured.v2Comparison = { prediction: v2ReviewPrediction, task, agentUserId: agentUser.id };
 
     // Code work remains In Progress while the role-resolved Monitor Agent
     // validates it. The handoff itself moves only validated work to Review.
-    const handoff = await runTaskReviewHandoff({
-      taskId: task.id,
-      actor,
-      via: "ready-for-review",
-      movedFromStatus: task.status,
-      assigneeNote: comment || null,
-      workflowAction: {
+    const handoff = await runLegacyMutationWithV2Comparison(v2ReviewPrediction, task, agentUser.id, () =>
+      runTaskReviewHandoff({
         taskId: task.id,
-        agentSlug: agent.slug,
-        messageId,
-        action,
-      },
-    });
+        actor,
+        via: "ready-for-review",
+        movedFromStatus: task.status,
+        assigneeNote: comment || null,
+        workflowAction: {
+          taskId: task.id,
+          agentSlug: agent.slug,
+          messageId,
+          action,
+        },
+      }),
+      () => { captured.v2Comparison = undefined; },
+    );
     if (handoff.error) {
+      await recordV2ComparisonAfterLegacy(v2ReviewPrediction, task, agentUser.id, {
+        ok: false,
+        error: handoff.error,
+      });
+      captured.v2Comparison = undefined;
       return NextResponse.json({
         error: handoff.error,
         taskId: task.id,
@@ -1519,8 +1612,8 @@ async function handleTaskWorkflowAction(
     }
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
     revalidatePath(`/projects/${task.project.slug}`);
-    const taskAfterReview = await db.task.findUniqueOrThrow({ where: { id: task.id }, select: { status: true, workflowVersion: true } });
-    await recordV2Comparison(v2ReviewPrediction, task, agentUser.id, { status: taskAfterReview.status, workflowVersion: taskAfterReview.workflowVersion, ok: handoff.repositoryPhase !== "operational_error", error: handoff.error });
+    await recordV2ComparisonAfterLegacy(v2ReviewPrediction, task, agentUser.id, { ok: true });
+    captured.v2Comparison = undefined;
     return NextResponse.json({
       ok: true,
       taskId: task.id,
@@ -1572,9 +1665,11 @@ async function handleTaskWorkflowAction(
     }
     // ORCH-09/10: V2 comparison probe — compute prediction BEFORE legacy.
     const v2FeedbackPrediction = await computeV2Prediction(action, task, agentUser, agent.role, messageId, comment, {}).catch(() => null);
-    const created = (await runWorkflowActionAtomically(
-      { taskId: task.id, agentSlug: agent.slug, messageId, action, taskState: "To Do" },
-      async (tx) => {
+    captured.v2Comparison = { prediction: v2FeedbackPrediction, task, agentUserId: agentUser.id };
+    const created = (await runLegacyMutationWithV2Comparison(v2FeedbackPrediction, task, agentUser.id, () =>
+      runWorkflowActionAtomically(
+        { taskId: task.id, agentSlug: agent.slug, messageId, action, taskState: "To Do" },
+        async (tx) => {
         const row = await tx.comment.create({
           data: { taskId: task.id, userId: agent.user!.id, body: comment, authorAgentSlug: agent.slug, commentKind: "agent_reply", isGenerated: false, runId: run.id, provider: run.provider, model: run.model },
           select: { id: true },
@@ -1627,7 +1722,9 @@ async function handleTaskWorkflowAction(
         },
       });
       return row;
-      },
+        },
+      ),
+      () => { captured.v2Comparison = undefined; },
     )).value;
     await sendTaskCommentNotifications({
       taskId: task.id,
@@ -1640,8 +1737,8 @@ async function handleTaskWorkflowAction(
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
     revalidatePath(`/projects/${task.project.slug}`);
     publishBoardTouch(task.projectId);
-    const taskAfterFeedback = await db.task.findUniqueOrThrow({ where: { id: task.id }, select: { status: true, workflowVersion: true } });
-    await recordV2Comparison(v2FeedbackPrediction, task, agentUser.id, { status: taskAfterFeedback.status, workflowVersion: taskAfterFeedback.workflowVersion, ok: true });
+    await recordV2ComparisonAfterLegacy(v2FeedbackPrediction, task, agentUser.id, { ok: true });
+    captured.v2Comparison = undefined;
     return NextResponse.json({ ok: true, taskId: task.id, status: "To Do", commentId: created.id });
   }
 
@@ -1659,22 +1756,26 @@ async function handleTaskWorkflowAction(
     const v2DonePrediction = await computeV2Prediction(action, task, agentUser, agent.role, messageId, comment, {
       candidateSha: task.repositoryRun?.candidateSha ?? null,
     }).catch(() => null);
+    captured.v2Comparison = { prediction: v2DonePrediction, task, agentUserId: agentUser.id };
 
-    const completion = await completeReviewedTaskAndAssignNext({
-      taskId: task.id,
-      actor,
-      via: "agent-workflow",
-      requireReviewerUserId: agent.user.id,
-      workflowAction: {
+    const completion = await runLegacyMutationWithV2Comparison(v2DonePrediction, task, agentUser.id, () =>
+      completeReviewedTaskAndAssignNext({
         taskId: task.id,
-        agentSlug: agent.slug,
-        messageId,
-        action,
-      },
-    });
+        actor,
+        via: "agent-workflow",
+        requireReviewerUserId: agentUser.id,
+        workflowAction: {
+          taskId: task.id,
+          agentSlug: agent.slug,
+          messageId,
+          action,
+        },
+      }),
+      () => { captured.v2Comparison = undefined; },
+    );
     if (!completion.completed) {
-      const taskAfterDoneFail = await db.task.findUniqueOrThrow({ where: { id: task.id }, select: { status: true, workflowVersion: true } });
-      await recordV2Comparison(v2DonePrediction, task, agentUser.id, { status: taskAfterDoneFail.status, workflowVersion: taskAfterDoneFail.workflowVersion, ok: false, error: completion.reason });
+      await recordV2ComparisonAfterLegacy(v2DonePrediction, task, agentUser.id, { ok: false, error: completion.reason });
+      captured.v2Comparison = undefined;
       return NextResponse.json({ error: `Could not complete task: ${completion.reason}` }, { status: 409 });
     }
     revalidateTaskShell(task.id);
@@ -1684,8 +1785,8 @@ async function handleTaskWorkflowAction(
       revalidatePath(`/projects/${task.project.slug}/tasks/${next.id}`);
     }
     revalidatePath(`/projects/${task.project.slug}`);
-    const taskAfterDone = await db.task.findUniqueOrThrow({ where: { id: task.id }, select: { status: true, workflowVersion: true } });
-    await recordV2Comparison(v2DonePrediction, task, agentUser.id, { status: taskAfterDone.status, workflowVersion: taskAfterDone.workflowVersion, ok: true });
+    await recordV2ComparisonAfterLegacy(v2DonePrediction, task, agentUser.id, { ok: true });
+    captured.v2Comparison = undefined;
     return NextResponse.json({
       ok: true,
       taskId: task.id,
@@ -2587,8 +2688,21 @@ export async function POST(
   req: NextRequest,
   ctx: { params: Promise<{ taskId: string }> },
 ) {
-  const captured: { action?: WorkflowAction; taskId?: string; agentSlug?: string } = {};
-  const response = await handleTaskWorkflowAction(req, ctx, captured);
+  const captured: WorkflowCapture = {};
+  let response: NextResponse;
+  try {
+    response = await handleTaskWorkflowAction(req, ctx, captured);
+  } catch (error) {
+    const pending = captured.v2Comparison;
+    if (pending) {
+      await recordV2ComparisonAfterLegacy(pending.prediction, pending.task, pending.agentUserId, {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      captured.v2Comparison = undefined;
+    }
+    throw error;
+  }
   if (!response.ok || !captured.action) return response;
 
   let body: Record<string, unknown>;

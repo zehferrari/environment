@@ -201,7 +201,7 @@ async function finalizeRepository(ctx: StepHandlerContext): Promise<StepHandlerR
         requestedByUsername: task.assignee?.username ?? "procedure-engine",
         candidateSha,
         procedureRunId: ctx.procedureRunId,
-        stepId: ctx.stepId,
+        procedureStepId: ctx.stepId,
         workflowCycleId: task.activeWorkflowCycleId,
       },
     }],

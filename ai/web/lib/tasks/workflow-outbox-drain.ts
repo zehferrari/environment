@@ -62,6 +62,13 @@ async function dispatch(row: OutboxRow) {
       requestedByUserId: String(payload.requestedByUserId),
       requestedByUsername: String(payload.requestedByUsername),
       candidateSha: String(payload.candidateSha),
+      procedureRunId: typeof payload.procedureRunId === "string" ? payload.procedureRunId : undefined,
+      procedureStepId: typeof payload.procedureStepId === "string"
+        ? payload.procedureStepId
+        : typeof payload.stepId === "string" ? payload.stepId : undefined,
+      workflowCycleId: typeof payload.workflowCycleId === "string" || payload.workflowCycleId === null
+        ? payload.workflowCycleId
+        : undefined,
     });
     if (result.blockedByFailedJob) {
       throw new Error("A failed repository finalization spool job requires operator recovery.");

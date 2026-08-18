@@ -51,6 +51,7 @@ import {
   completeTaskReviewHandoffAfterValidation,
   failTaskReviewValidation,
   recordTaskReviewOperationalError,
+  type RepositoryProcedureCallback,
 } from "@/lib/tasks/review-handoff";
 import { resolveActiveMonitorAgent, updateTaskRepositoryState } from "@/lib/tasks/repository-state";
 import {
@@ -95,6 +96,56 @@ type RebuildResult =
   | { attempted: false; reason: string }
   | { attempted: true; ok: true; target: string; log: string }
   | { attempted: true; ok: false; target: string; error: string; log: string };
+
+function procedureCallbackForJob(job: BranchVerifyJob): RepositoryProcedureCallback | undefined {
+  if (!job.procedureRunId || !job.procedureStepId || job.workflowCycleId === undefined) return undefined;
+  return {
+    procedureRunId: job.procedureRunId,
+    procedureStepId: job.procedureStepId,
+    workflowCycleId: job.workflowCycleId,
+    jobId: job.jobId,
+    baseSha: job.baseSha ?? null,
+  };
+}
+
+async function supersedeCorrelatedProcedure(job: BranchVerifyJob, reason: string): Promise<void> {
+  if (!job.procedureRunId || !job.procedureStepId || job.workflowCycleId === undefined) return;
+  const run = await db.taskProcedureRun.findFirst({
+    where: {
+      id: job.procedureRunId,
+      taskId: job.taskId,
+      workflowCycleId: job.workflowCycleId,
+      status: { in: ["queued", "running"] },
+    },
+    select: { id: true },
+  });
+  if (!run) return;
+  const completedAt = new Date();
+  await db.$transaction([
+    db.taskProcedureStep.updateMany({
+      where: {
+        procedureRunId: run.id,
+        status: { in: ["pending", "running", "failed", "waiting_callback"] },
+      },
+      data: {
+        status: "completed",
+        completedAt,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        output: JSON.stringify({ superseded: true, reason, jobId: job.jobId }),
+      },
+    }),
+    db.taskProcedureRun.update({
+      where: { id: run.id },
+      data: {
+        status: "completed",
+        completedAt,
+        currentStep: null,
+        output: JSON.stringify({ superseded: true, reason, jobId: job.jobId }),
+      },
+    }),
+  ]);
+}
 
 type CommitResult =
   | { ok: true; created: false; sha: null }
@@ -829,6 +880,38 @@ async function main() {
     unlinkSync(jobFile);
     return;
   }
+  const taskCycle = await db.task.findUnique({
+    where: { id: job.taskId },
+    select: { activeWorkflowCycleId: true },
+  });
+  if (!taskCycle) {
+    console.error(`[pm-verify] dropping verifier job ${job.jobId}: task ${job.taskId} no longer exists`);
+    unlinkSync(jobFile);
+    return;
+  }
+  if (job.workflowCycleId !== undefined && taskCycle?.activeWorkflowCycleId !== job.workflowCycleId) {
+    const reason = "verifier job no longer belongs to the task's active workflow cycle";
+    await db.activityLog.create({
+      data: {
+        projectId: job.projectId,
+        taskId: job.taskId,
+        userId: actor.id,
+        kind: "pm.repo.verify.rejected_stale_cycle",
+        payload: JSON.stringify({
+          jobId: job.jobId,
+          procedureRunId: job.procedureRunId ?? null,
+          procedureStepId: job.procedureStepId ?? null,
+          jobWorkflowCycleId: job.workflowCycleId,
+          activeWorkflowCycleId: taskCycle?.activeWorkflowCycleId ?? null,
+          reason,
+        }),
+      },
+    });
+    await supersedeCorrelatedProcedure(job, reason);
+    console.error(`[pm-verify] rejecting stale verifier job ${job.jobId}: job cycle ${job.workflowCycleId ?? "null"}, active cycle ${taskCycle?.activeWorkflowCycleId ?? "null"}`);
+    unlinkSync(jobFile);
+    return;
+  }
   // P6 local-only mode: an Epic child is verified on its LOCAL ref against the
   // Epic integration branch and never pushed, even when the job predates the
   // epicBranch field (epicChild alone forces the no-push rule).
@@ -865,6 +948,8 @@ async function main() {
       taskId: job.taskId,
       actor,
       error: body,
+      candidateSha: job.previousCandidateSha ?? null,
+      procedureCallback: procedureCallbackForJob(job),
     });
     console.log(JSON.stringify({ ok: false, taskId: job.taskId, branch: job.branchName, protectedBranch: true }, null, 2));
     unlinkSync(jobFile);
@@ -908,6 +993,8 @@ async function main() {
         taskId: job.taskId,
         actor,
         error: body,
+        candidateSha: job.previousCandidateSha ?? null,
+        procedureCallback: procedureCallbackForJob(job),
       });
       console.log(JSON.stringify({ ok: false, validationError: body }, null, 2));
     }
@@ -1000,14 +1087,13 @@ async function main() {
     // review evidence. If the task has an active cycle, use its review run.
     // If not, create a new one. Never mutate a decided (accepted/
     // changes_requested/completed) historical lease.
-    const task = await db.task.findUnique({
-      where: { id: job.taskId },
-      select: { activeWorkflowCycleId: true },
-    });
+    const workflowCycleId = job.workflowCycleId !== undefined
+      ? job.workflowCycleId
+      : taskCycle?.activeWorkflowCycleId ?? null;
     let existingRun: { id: string } | null = null;
-    if (task?.activeWorkflowCycleId) {
+    if (workflowCycleId) {
       existingRun = await db.reviewRun.findUnique({
-        where: { workflowCycleId: task.activeWorkflowCycleId },
+        where: { workflowCycleId },
         select: { id: true },
       });
     }
@@ -1026,14 +1112,16 @@ async function main() {
             kind: "pm.repo.verify.rejected_decided_lease",
             payload: JSON.stringify({
               jobId: job.jobId,
-              workflowCycleId: task?.activeWorkflowCycleId ?? null,
+              workflowCycleId,
               leaseStatus: runStatus.status,
               candidateSha,
               reason: "verifier job arrived for a cycle whose lease is already decided",
             }),
           },
         });
-        console.error(`[pm-verify] rejecting verifier job ${job.jobId}: active cycle ${task?.activeWorkflowCycleId} has a decided lease (${runStatus.status})`);
+        await supersedeCorrelatedProcedure(job, "verifier job arrived for a cycle whose lease is already decided");
+        console.error(`[pm-verify] rejecting verifier job ${job.jobId}: cycle ${workflowCycleId} has a decided lease (${runStatus.status})`);
+        unlinkSync(jobFile);
         return;
       }
     }
@@ -1055,7 +1143,7 @@ async function main() {
       : await db.reviewRun.create({
           data: {
             taskId: job.taskId,
-            workflowCycleId: task?.activeWorkflowCycleId ?? null,
+            workflowCycleId,
             candidateSha,
             baseSha: job.baseSha ?? null,
             repoTouched: !noChangeCandidate && !checkpointBaseline,
@@ -1228,6 +1316,7 @@ async function main() {
         .filter(Boolean)
         .join(" ") || baseBody,
       repoTouched: !noChangeCandidate && !checkpointBaseline,
+      procedureCallback: procedureCallbackForJob(job),
     });
   } else {
     await failTaskReviewValidation({
@@ -1235,6 +1324,7 @@ async function main() {
       actor,
       error: body,
       candidateSha,
+      procedureCallback: procedureCallbackForJob(job),
     });
   }
 

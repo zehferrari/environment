@@ -23,8 +23,9 @@
 //
 // FUTURE PHASES (not yet implemented):
 //   Phase C: effectful procedure canary — V2 procedures own worktree prep
-//     and notifications for allowlisted projects. Requires completing
-//     BranchVerifyJob callback correlation (procedure/step/cycle IDs).
+//     and notifications for allowlisted projects. Repository validation and
+//     finalization jobs already carry procedure/step/cycle correlation; this
+//     phase still requires rollout ownership and compensation verification.
 //   Phase E: V2 owns transitions — legacy paths removed. Requires all
 //     entry points migrated and all safety gates replicated in the V2
 //     orchestrator.
@@ -70,7 +71,7 @@ export function shouldComputeV2Decision(projectSlug: string): boolean {
  * shadow activity). Both modes compute only; the difference is the
  * activity kind and the project scoping.
  */
-export function shouldRunV2Effects(projectSlug: string): boolean {
+export function shouldRecordV2CanaryComparison(projectSlug: string): boolean {
   if (orchestratorShadowEnabled()) return false; // shadow records v2_shadow, not v2_canary
   return isV2EnabledForProject(projectSlug);
 }

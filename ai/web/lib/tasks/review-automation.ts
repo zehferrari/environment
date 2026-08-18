@@ -14,6 +14,13 @@ import {
 import { repositoryFinalizationOwnsTask } from "@/lib/tasks/repository-finalization";
 import { recordWorkflowActionExecutionState } from "@/lib/agents/watchdog/transitions";
 
+export type FinalizationProcedureCallback = {
+  procedureRunId: string;
+  procedureStepId: string;
+  workflowCycleId: string | null;
+  jobId: string;
+};
+
 // ORCH-07/P0-4: apply a finalization callback to a waiting procedure step.
 // Called after the legacy finalization completes. If a procedure step is in
 // waiting_callback for this task, applies the callback so the procedure
@@ -24,38 +31,88 @@ export async function applyFinalizationCallbackToProcedure(
   ok: boolean,
   mergeSha?: string | null,
   error?: string,
+  callback?: FinalizationProcedureCallback,
 ): Promise<void> {
-  const step = await db.taskProcedureStep.findFirst({
-    where: {
-      status: "waiting_callback",
-      procedureRun: { taskId },
-    },
-    orderBy: { updatedAt: "desc" },
-    select: { id: true, procedureRunId: true, output: true },
-  });
-  if (!step) return; // no procedure waiting — legacy path only
-  let jobId = "unknown";
+  const step = callback
+    ? await db.taskProcedureStep.findFirst({
+        where: {
+          id: callback.procedureStepId,
+          procedureRunId: callback.procedureRunId,
+          procedureRun: { taskId },
+        },
+        select: {
+          id: true,
+          procedureRunId: true,
+          output: true,
+          procedureRun: { select: { taskId: true, workflowCycleId: true } },
+        },
+      })
+    : await db.taskProcedureStep.findFirst({
+        where: {
+          status: "waiting_callback",
+          procedureRun: { taskId },
+        },
+        orderBy: { updatedAt: "desc" },
+        select: {
+          id: true,
+          procedureRunId: true,
+          output: true,
+          procedureRun: { select: { taskId: true, workflowCycleId: true } },
+        },
+      });
+  if (!step) {
+    if (callback) {
+      const task = await db.task.findUnique({ where: { id: taskId }, select: { projectId: true } });
+      if (task) {
+        await db.activityLog.create({
+          data: {
+            projectId: task.projectId,
+            taskId,
+            kind: "task.workflow.procedure_callback_rejected",
+            payload: JSON.stringify({ ...callback, candidateSha, reason: "Exact finalization procedure step not found for callback." }),
+          },
+        });
+      }
+    }
+    return;
+  }
+  let jobId = callback?.jobId ?? "unknown";
   if (step.output) {
     try {
       const parsed = JSON.parse(step.output) as Record<string, unknown>;
-      if (typeof parsed.jobId === "string") jobId = parsed.jobId;
+      if (!callback && typeof parsed.jobId === "string") jobId = parsed.jobId;
     } catch { /* ignore */ }
   }
-  const procRun = await db.taskProcedureRun.findUnique({
-    where: { id: step.procedureRunId },
-    select: { taskId: true, workflowCycleId: true },
-  });
-  if (!procRun) return;
   const { applyProcedureCallback } = await import("@/lib/tasks/orchestrator/procedure-runner");
-  await applyProcedureCallback({
+  const result = await applyProcedureCallback({
     procedureRunId: step.procedureRunId,
     stepId: step.id,
-    taskId: procRun.taskId,
-    workflowCycleId: procRun.workflowCycleId,
+    taskId: step.procedureRun.taskId,
+    workflowCycleId: callback?.workflowCycleId ?? step.procedureRun.workflowCycleId,
     jobId,
     candidateSha,
     data: { finalizationOk: ok, mergeSha: mergeSha ?? undefined, error: error ?? undefined },
   });
+  if (!result.applied) {
+    const task = await db.task.findUnique({ where: { id: taskId }, select: { projectId: true } });
+    if (task) {
+      await db.activityLog.create({
+        data: {
+          projectId: task.projectId,
+          taskId,
+          kind: "task.workflow.procedure_callback_rejected",
+          payload: JSON.stringify({
+            procedureRunId: step.procedureRunId,
+            procedureStepId: step.id,
+            workflowCycleId: callback?.workflowCycleId ?? step.procedureRun.workflowCycleId,
+            jobId,
+            candidateSha,
+            reason: result.reason,
+          }),
+        },
+      });
+    }
+  }
 }
 
 type Actor = {
@@ -95,6 +152,7 @@ export async function completeReviewedTaskAndAssignNext(args: {
       title: true,
       status: true,
       workflowVersion: true,
+      activeWorkflowCycleId: true,
       projectId: true,
       epicId: true,
       assigneeId: true,
@@ -140,7 +198,9 @@ export async function completeReviewedTaskAndAssignNext(args: {
       return { completed: false as const, reason: "repository_candidate_missing" as const };
     }
     const acceptedReview = await db.reviewRun.findFirst({
-      where: { taskId: task.id, candidateSha: acceptedCandidate },
+      where: task.activeWorkflowCycleId
+        ? { workflowCycleId: task.activeWorkflowCycleId, candidateSha: acceptedCandidate }
+        : { taskId: task.id, workflowCycleId: null, candidateSha: acceptedCandidate },
       orderBy: { createdAt: "desc" },
       select: {
         id: true,
@@ -192,7 +252,9 @@ export async function completeReviewedTaskAndAssignNext(args: {
         return { completed: false as const, reason: "repository_candidate_missing" as const };
       }
       const acceptedReview = await db.reviewRun.findFirst({
-        where: { taskId: task.id, candidateSha: acceptedCandidate },
+        where: task.activeWorkflowCycleId
+          ? { workflowCycleId: task.activeWorkflowCycleId, candidateSha: acceptedCandidate }
+          : { taskId: task.id, workflowCycleId: null, candidateSha: acceptedCandidate },
         orderBy: { createdAt: "desc" },
         select: { id: true, status: true, validationOutcome: true },
       });
@@ -246,6 +308,7 @@ export async function completeReviewedTaskAndAssignNext(args: {
                 requestedByUserId: args.actor.id,
                 requestedByUsername: args.actor.username,
                 candidateSha: acceptedCandidate,
+                workflowCycleId: task.activeWorkflowCycleId,
               },
             },
             { type: "board_touch", key: `board-finalization-retry:${acceptedCandidate}:r${retryVersion}`, payload: {} },
@@ -297,7 +360,9 @@ export async function completeReviewedTaskAndAssignNext(args: {
         return { completed: false as const, reason: "repository_candidate_missing" as const };
       }
       const reviewRun = await db.reviewRun.findFirst({
-        where: { taskId: task.id, candidateSha },
+        where: task.activeWorkflowCycleId
+          ? { workflowCycleId: task.activeWorkflowCycleId, candidateSha }
+          : { taskId: task.id, workflowCycleId: null, candidateSha },
         orderBy: { createdAt: "desc" },
         select: { id: true, status: true },
       });
@@ -349,6 +414,7 @@ export async function completeReviewedTaskAndAssignNext(args: {
                 requestedByUserId: args.actor.id,
                 requestedByUsername: args.actor.username,
                 candidateSha,
+                workflowCycleId: task.activeWorkflowCycleId,
               },
             },
             { type: "board_touch", key: `board-finalizing:${candidateSha}`, payload: {} },

@@ -188,8 +188,12 @@ async function main() {
     const task4 = await db.task.create({ data: { projectId: project.id, title: "Proc task 4", status: "To Do", approvedOn: new Date(), approvedById: owner.id } });
     clearStepHandlerRegistry();
     const run4 = await makeProcedureRunOnTask(task4.id, ["callback_step", "next_step"]);
-    registerStepHandler("prepare_todo_task", "callback_step", async (ctx) => {
-      return { status: "waiting_callback", jobId: "job-123", output: { started: true } };
+    registerStepHandler("prepare_todo_task", "callback_step", async () => {
+      return {
+        status: "waiting_callback",
+        jobId: "job-123",
+        output: { started: true, candidateSha: "sha-1", baseSha: "base-1" },
+      };
     });
     registerStepHandler("prepare_todo_task", "next_step", async () => { return { status: "completed" }; });
     // Run to get callback_step into waiting_callback.
@@ -197,7 +201,20 @@ async function main() {
     const step4 = await db.taskProcedureStep.findFirst({ where: { procedureRunId: run4.procedureRunId, name: "callback_step" } });
     assert.ok(step4);
     assert.equal(step4.status, "waiting_callback", "step is waiting for callback");
-    // Apply the callback.
+    // External evidence must match both candidate and base SHA. This proves
+    // the callback fence is not merely comparing stored values to themselves.
+    const cbWrongBase = await applyProcedureCallback({
+      procedureRunId: run4.procedureRunId,
+      stepId: step4.id,
+      taskId: task4.id,
+      workflowCycleId: null,
+      jobId: "job-123",
+      candidateSha: "sha-1",
+      baseSha: "different-base",
+    });
+    assert.equal(cbWrongBase.applied, false, "callback with wrong base SHA is rejected");
+    assert.match(cbWrongBase.reason, /base sha mismatch/i);
+    // Apply the correctly correlated callback.
     const cb1 = await applyProcedureCallback({
       procedureRunId: run4.procedureRunId,
       stepId: step4.id,
@@ -205,6 +222,7 @@ async function main() {
       workflowCycleId: null,
       jobId: "job-123",
       candidateSha: "sha-1",
+      baseSha: "base-1",
     });
     assert.equal(cb1.applied, true, "first callback applied");
     // Apply the SAME callback again — should be idempotent.
@@ -215,6 +233,7 @@ async function main() {
       workflowCycleId: null,
       jobId: "job-123",
       candidateSha: "sha-1",
+      baseSha: "base-1",
     });
     assert.equal(cb2.applied, true, "duplicate callback is idempotent (replayed)");
     assert.ok(/already completed/i.test(cb2.reason), `reason mentions already completed; got ${cb2.reason}`);
@@ -301,6 +320,85 @@ async function main() {
     const inputParsed = JSON.parse(run7.input);
     assert.equal(inputParsed.worktreePath, "/srv/Code/wt");
     console.log("[orch03] createProcedureRun ordered steps PASS");
+
+    // --- Test 8: database enforces one active run per scope/type --------
+    const task8 = await db.task.create({
+      data: { projectId: project.id, title: "Procedure uniqueness", status: "To Do", approvedOn: new Date(), approvedById: owner.id },
+    });
+    const cycle8 = await db.taskWorkflowCycle.create({
+      data: { taskId: task8.id, sequence: 1, openedWorkflowVersion: 1 },
+    });
+    const firstCycleRun = await db.taskProcedureRun.create({
+      data: {
+        taskId: task8.id,
+        workflowCycleId: cycle8.id,
+        triggerTransitionId: "orch03:unique:cycle:1",
+        type: "start_implementation_cycle",
+        status: "queued",
+      },
+    });
+    await assert.rejects(
+      db.taskProcedureRun.create({
+        data: {
+          taskId: task8.id,
+          workflowCycleId: cycle8.id,
+          triggerTransitionId: "orch03:unique:cycle:2",
+          type: "start_implementation_cycle",
+          status: "running",
+        },
+      }),
+      (error: unknown) => typeof error === "object" && error !== null && "code" in error
+        && (error as { code?: unknown }).code === "P2002",
+      "cycle-scoped partial unique index rejects a second active run",
+    );
+    await db.taskProcedureRun.update({
+      where: { id: firstCycleRun.id },
+      data: { status: "completed", completedAt: new Date() },
+    });
+    await db.taskProcedureRun.create({
+      data: {
+        taskId: task8.id,
+        workflowCycleId: cycle8.id,
+        triggerTransitionId: "orch03:unique:cycle:3",
+        type: "start_implementation_cycle",
+        status: "queued",
+      },
+    });
+
+    const task9 = await db.task.create({
+      data: { projectId: project.id, title: "Planning uniqueness", status: "Backlog" },
+    });
+    await db.taskProcedureRun.create({
+      data: {
+        taskId: task9.id,
+        workflowCycleId: null,
+        triggerTransitionId: "orch03:unique:planning:1",
+        type: "prepare_todo_task",
+        status: "queued",
+      },
+    });
+    await assert.rejects(
+      db.taskProcedureRun.create({
+        data: {
+          taskId: task9.id,
+          workflowCycleId: null,
+          triggerTransitionId: "orch03:unique:planning:2",
+          type: "prepare_todo_task",
+          status: "running",
+        },
+      }),
+      (error: unknown) => typeof error === "object" && error !== null && "code" in error
+        && (error as { code?: unknown }).code === "P2002",
+      "task-scoped planning partial unique index rejects a second active run",
+    );
+    console.log("[orch03] active procedure partial unique indexes PASS");
+
+    const { readFileSync } = await import("node:fs");
+    const executeSource = readFileSync(path.join(process.cwd(), "lib/tasks/orchestrator/execute.ts"), "utf8");
+    assert.ok(executeSource.includes('code === "P2002"'), "executor recognizes database uniqueness races");
+    assert.ok(executeSource.includes("const winner = await tx.taskProcedureRun.findFirst"), "executor recovers the winning active procedure");
+    assert.ok(executeSource.includes("workflowCycleId: cycleId"), "executor scopes null and non-null cycles exactly");
+    console.log("[orch03] executor uniqueness-race recovery contract PASS");
 
     console.log("[orch03] PASS — all procedure engine assertions held");
   } finally {

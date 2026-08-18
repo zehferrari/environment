@@ -239,6 +239,20 @@ async function main() {
     assert.ok(/cycle id mismatch/i.test(cbOld.reason));
     console.log("[orch06] callback from older cycle rejected PASS");
 
+    // --- Test 6: verifier correlation is carried end-to-end ------------
+    const { readFileSync } = await import("node:fs");
+    const handlerSource = readFileSync(path.join(process.cwd(), "lib/tasks/orchestrator/handlers/submit-candidate-for-review.ts"), "utf8");
+    const verifierSource = readFileSync(path.join(process.cwd(), "scripts/pm-verify-branch-pushed.ts"), "utf8");
+    const handoffSource = readFileSync(path.join(process.cwd(), "lib/tasks/review-handoff.ts"), "utf8");
+    assert.ok(handlerSource.includes("procedureRunId: ctx.procedureRunId"), "validation job carries procedure run id");
+    assert.ok(handlerSource.includes("procedureStepId: ctx.stepId"), "validation job carries procedure step id");
+    assert.ok(handlerSource.includes("workflowCycleId: ctx.workflowCycleId"), "validation job carries workflow cycle id");
+    assert.ok(verifierSource.includes("pm.repo.verify.rejected_stale_cycle"), "verifier durably rejects stale-cycle jobs");
+    assert.ok(verifierSource.includes("procedureCallback: procedureCallbackForJob(job)"), "verifier forwards exact callback correlation");
+    assert.ok(handoffSource.includes("id: callback.procedureStepId"), "callback adapter selects the exact step");
+    assert.ok(handoffSource.includes("jobId = callback?.jobId"), "callback adapter uses verifier-supplied job identity");
+    console.log("[orch06] verifier callback correlation contract PASS");
+
     console.log("[orch06] PASS — all submit_candidate_for_review + V23-36 assertions held");
   } finally {
     await cleanup();
