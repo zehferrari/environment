@@ -122,6 +122,7 @@
     "test:orch-07-review-decisions": "tsx scripts/orch-07-review-decisions-test.ts",
     "test:orch-08-reconciler": "tsx scripts/orch-08-reconciler-test.ts",
     "test:orch-09-entry-point": "tsx scripts/orch-09-entry-point-test.ts",
+    "test:orch-10-rollout-flags": "tsx scripts/orch-10-rollout-flags-test.ts",
     "test:workflow-regression-lifecycle": "tsx scripts/workflow-regression-lifecycle-test.ts",
     "test:workflow-regression-plan-steps": "tsx scripts/workflow-regression-plan-steps-test.ts",
     "test:workflow-regression-blocker": "tsx scripts/workflow-regression-blocker-test.ts",

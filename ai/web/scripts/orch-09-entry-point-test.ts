@@ -10,8 +10,8 @@
 
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, readFileSync } from "node:fs/promises";
-import { readFileSync as readFileSyncSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -31,7 +31,7 @@ async function freshDb(): Promise<{ dbUrl: string; cleanup: () => Promise<void> 
 
 async function main() {
   // --- Test 1: boundary test passes (structural guard) ----------------
-  const boundarySource = readFileSyncSync(
+  const boundarySource = readFileSync(
     path.join(process.cwd(), "scripts", "workflow-boundary-test.ts"),
     "utf8",
   );
