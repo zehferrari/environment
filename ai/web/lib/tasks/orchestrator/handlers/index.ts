@@ -6,6 +6,7 @@
 // each of its steps. This barrel ensures they are all called exactly once.
 
 import { registerPrepareTodoTaskHandlers } from "@/lib/tasks/orchestrator/handlers/prepare-todo-task";
+import { registerStartImplementationCycleHandlers } from "@/lib/tasks/orchestrator/handlers/start-implementation-cycle";
 
 let registered = false;
 
@@ -13,7 +14,8 @@ export function registerAllProcedureHandlers(): void {
   if (registered) return;
   registered = true;
   registerPrepareTodoTaskHandlers();
-  // ORCH-05..07 will add their registrations here.
+  registerStartImplementationCycleHandlers();
+  // ORCH-06..07 will add their registrations here.
 }
 
 // Auto-register on import so the procedure runner finds handlers without
