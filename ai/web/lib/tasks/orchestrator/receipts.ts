@@ -73,7 +73,7 @@ export type FingerprintInput = {
   procedureRunId: string | null;
   jobId: string | null;
   normalizedPayload: string | null;
-  normalizedEvidenceIds: string[] | null;
+  normalizedEvidence: string | null;
   source: string;
   messageId: string | null;
 };
@@ -96,10 +96,11 @@ export function buildFingerprintInput(command: TaskWorkflowCommand): Fingerprint
     ? canonicalize(command.payload)
     : null;
 
-  // Normalized evidence IDs: sorted array of keys whose values look like
-  // identifiers (string | number), or null if no evidence.
-  const evidenceKeys = Object.keys(evidence).sort();
-  const normalizedEvidenceIds = evidenceKeys.length > 0 ? evidenceKeys : null;
+  // Normalized evidence: sorted-key canonical JSON of the full evidence
+  // object, or null if no evidence. This includes both keys and values so
+  // that commands with different evidence (e.g. different candidateSha,
+  // baseSha, leaseId) produce different fingerprints.
+  const normalizedEvidence = Object.keys(evidence).length > 0 ? canonicalize(evidence) : null;
 
   return {
     taskId: command.taskId,
@@ -112,7 +113,7 @@ export function buildFingerprintInput(command: TaskWorkflowCommand): Fingerprint
     procedureRunId,
     jobId,
     normalizedPayload,
-    normalizedEvidenceIds,
+        normalizedEvidence,
     source: command.source,
     messageId: command.messageId ?? null,
   };

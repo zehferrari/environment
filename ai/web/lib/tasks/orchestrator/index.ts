@@ -19,6 +19,7 @@ import { runGuards } from "@/lib/tasks/orchestrator/guards";
 import { decideCommand } from "@/lib/tasks/orchestrator/decide";
 import { executeWorkflowCommand } from "@/lib/tasks/orchestrator/execute";
 import { computeRequestFingerprint } from "@/lib/tasks/orchestrator/receipts";
+import { resolveEngineOwnership, stampCycleEngine, ENGINE_ORCHESTRATOR_V2 } from "@/lib/tasks/orchestrator/ownership";
 import { resolveReviewOwnerIdFromSnapshot } from "@/lib/tasks/orchestrator/authorize";
 import type {
   OrchestrationDecision,
@@ -123,6 +124,29 @@ export async function submitWorkflowCommand(command: TaskWorkflowCommand): Promi
     return { status: "invalid", reason: "Task not found." };
   }
 
+  // --- Engine ownership resolution (Phase E §3.2) ----------------------
+  // Resolve durable engine ownership BEFORE any writes. This gate runs
+  // before guards, decision, and execution so a rejection never mutates.
+  // For Phase E step 1, no tasks are pinned to V2 (the admission flag is
+  // off), so legacy-owned tasks pass through. A V2-owned task that
+  // disagrees with its active cycle is rejected here as an invariant
+  // violation — never heuristically resolved.
+  //
+  // The gate is permissive for legacy: the orchestrator is the current
+  // mutation path for all tasks, and legacy ownership simply means "not
+  // yet migrated." Hard rejection of legacy tasks belongs to Phase E
+  // step 8 (authoritative adapter), not step 1.
+  const ownership = await resolveEngineOwnership(db, command.taskId);
+  if (!ownership.ok) {
+    return { status: "forbidden", reason: ownership.reason };
+  }
+  // V2-owned tasks: stamp cycle engine when opening a new cycle.
+  // Legacy-owned tasks: pass through without gating.
+  if (ownership.engine === ENGINE_ORCHESTRATOR_V2 && command.workflowCycleId === null) {
+    // Cycle stamping happens inside execute.ts when the cycle is opened,
+    // but we resolve ownership here to reject invariant violations early.
+  }
+
   // --- Idempotency replay check (before guards, per kernel semantics) ----
   // TaskWorkflowCommandReceipt is the single replay authority (Phase E §6).
   // The ActivityLog substring scan (payload contains idempotencyKey) is
@@ -130,6 +154,11 @@ export async function submitWorkflowCommand(command: TaskWorkflowCommand): Promi
   // exact-correlation check and cannot reliably reconstruct the original
   // response. The receipt stores the serialized OrchestratorResult projection
   // so an exact replay returns an identical response.
+  //
+  // Pre-receipt fallback: the WorkflowTransition lookup is retained for
+  // transitions committed before the receipt migration. Every existing
+  // transition has an idempotencyKey and no receipt, so without this
+  // fallback replays across the legacy drain window would re-execute.
   const existingReceipt = await db.taskWorkflowCommandReceipt.findUnique({
     where: {
       taskId_idempotencyKey: {
@@ -142,12 +171,43 @@ export async function submitWorkflowCommand(command: TaskWorkflowCommand): Promi
   if (existingReceipt) {
     const fingerprint = computeRequestFingerprint(command);
     if (existingReceipt.requestFingerprint === fingerprint) {
-      // Exact replay — return the stored result.
+      // Exact replay — return the stored result with replay status.
       const stored = JSON.parse(existingReceipt.result) as OrchestratorResult;
+      if (stored.status === "accepted") {
+        return { status: "replayed", transitionId: stored.transitionId, workflowVersion: stored.workflowVersion, procedureId: stored.procedureId ?? null };
+      }
       return stored;
     }
     // Same key, different payload — idempotency conflict (domain error, not HTTP status).
     return { status: "invalid", reason: "idempotency_conflict: idempotency key reused with different payload." };
+  }
+  // Legacy fallback 1: transitions committed before the receipt migration.
+  const existingTransition = await db.workflowTransition.findUnique({
+    where: {
+      taskId_idempotencyKey: {
+        taskId: command.taskId,
+        idempotencyKey: command.idempotencyKey,
+      },
+    },
+    select: { id: true, workflowVersion: true },
+  });
+  if (existingTransition) {
+    return { status: "replayed", transitionId: existingTransition.id, workflowVersion: existingTransition.workflowVersion, procedureId: null };
+  }
+  // Legacy fallback 2: no-op decisions (accept_review, checkpoint, etc.)
+  // create an ActivityLog row instead of a WorkflowTransition. Until receipt
+  // creation is wired into the execution path (Phase E step 2), this fallback
+  // is required so no-op replays don't fall through to authorization.
+  const existingActivity = await db.activityLog.findFirst({
+    where: {
+      taskId: command.taskId,
+      kind: { startsWith: "task.workflow." },
+      payload: { contains: command.idempotencyKey },
+    },
+    select: { id: true },
+  });
+  if (existingActivity) {
+    return { status: "replayed", transitionId: existingActivity.id, workflowVersion: state.workflowVersion, procedureId: null };
   }
 
   // --- Authorize ---------------------------------------------------------
