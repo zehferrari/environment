@@ -89,12 +89,19 @@ async function wakeAssigneeWithFeedback(ctx: StepHandlerContext): Promise<StepHa
       projectId: true,
       assigneeId: true,
       assignee: { select: { id: true, username: true } },
-      reviewRuns: { where: { status: "changes_requested" }, orderBy: { updatedAt: "desc" }, take: 1, select: { id: true, candidateSha: true } },
+      reviewRuns: { where: { status: "changes_requested" }, orderBy: { updatedAt: "desc" }, take: 1, select: { id: true, candidateSha: true, reviewerId: true } },
     },
   });
   if (!task || !task.assigneeId || !task.assignee) {
     return { status: "completed", output: { skipped: true, reason: "no_assignee" } };
   }
+  // A6: include the reviewer's actual comment in the feedback notification.
+  // The comment was passed as evidence in the command and recorded in the
+  // procedure run's input.
+  const procRun = await db.taskProcedureRun.findUniqueOrThrow({ where: { id: ctx.procedureRunId }, select: { input: true } });
+  let procInput: Record<string, unknown> | null = null;
+  if (procRun.input) { try { procInput = JSON.parse(procRun.input); } catch { /* ignore */ } }
+  const reviewerComment = (procInput?.comment as string) ?? null;
   await enqueueWorkflowEffects(db, {
     taskId: task.id,
     projectId: task.projectId,
@@ -109,9 +116,10 @@ async function wakeAssigneeWithFeedback(ctx: StepHandlerContext): Promise<StepHa
         reason: "review_feedback",
         body: [
           `The reviewer requested changes on "${task.title}".`,
+          reviewerComment ? `Reviewer feedback:\n${reviewerComment}` : null,
           "The task returned to the front of To Do. Address the feedback, start the task again, and resubmit for review.",
           "Do not create a new branch — PM will revalidate the existing worktree.",
-        ].join("\n"),
+        ].filter(Boolean).join("\n"),
       },
     }],
   });

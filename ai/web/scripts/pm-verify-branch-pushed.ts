@@ -994,13 +994,30 @@ async function main() {
   let postValidationDirty: string | null = null;
   let postValidationHead: string | null = null;
   if (gitVerifiedOk && candidateSha) {
-    // Look up an existing review run for this candidate, or create a new one.
-    // The legacy unique (taskId, candidateSha) was removed; use findFirst +
-    // create/update instead of upsert.
-    const existingRun = await db.reviewRun.findFirst({
-      where: { taskId: job.taskId, candidateSha },
-      orderBy: { createdAt: "desc" },
+    // B5 fix: select the review run by the ACTIVE workflow cycle, not by
+    // (taskId, candidateSha). The same candidate SHA may appear in multiple
+    // cycles (V23-36); resetting a historical decided lease would destroy
+    // review evidence. If the task has an active cycle, use its review run.
+    // If not, create a new one. Never mutate a decided (accepted/
+    // changes_requested/completed) historical lease.
+    const task = await db.task.findUnique({
+      where: { id: job.taskId },
+      select: { activeWorkflowCycleId: true },
     });
+    let existingRun: { id: string } | null = null;
+    if (task?.activeWorkflowCycleId) {
+      existingRun = await db.reviewRun.findUnique({
+        where: { workflowCycleId: task.activeWorkflowCycleId },
+        select: { id: true },
+      });
+    }
+    // Only reuse if the existing run is NOT in a decided state.
+    if (existingRun) {
+      const runStatus = await db.reviewRun.findUniqueOrThrow({ where: { id: existingRun.id }, select: { status: true } });
+      if (["accepted", "changes_requested", "completed"].includes(runStatus.status)) {
+        existingRun = null; // don't mutate a decided lease — create a new one
+      }
+    }
     const reviewRun = existingRun
       ? await db.reviewRun.update({
           where: { id: existingRun.id },

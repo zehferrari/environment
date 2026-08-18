@@ -159,6 +159,14 @@ export async function executeWorkflowCommand(
           }
         }
 
+        // --- Set openedByTransitionId on the cycle (A5) ----------------
+        if (decision.cycleOperation === "open" && cycleId && transitionId) {
+          await tx.taskWorkflowCycle.update({
+            where: { id: cycleId },
+            data: { openedByTransitionId: transitionId },
+          });
+        }
+
         // --- Close cycle AFTER transition (P1-7 fix) ---------------------
         if (decision.cycleOperation === "close") {
           const closed = await closeTaskWorkflowCycle(tx, {

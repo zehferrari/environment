@@ -56,23 +56,36 @@ async function main() {
     delete process.env.PM_ORCHESTRATOR_V2_SHADOW;
     console.log("[v2-dispatch] shadow mode → compute but no effects PASS");
 
-    // --- Test 4: the route's ACTION_TO_INTENT mapping covers key actions
-    // Verify the mapping exists by checking the route module exports.
-    // We can't easily call the route handler in a test, but we can verify
-    // the flags module is imported by the route.
+    // --- Test 4: the route's tryV2CanaryMutation is called INSIDE action
+    // handlers (after safety gates), not before them. Verify the route source
+    // has the function and that it's NOT called before the rollover barrier.
     const routeSource = await import("node:fs").then((fs) => fs.readFileSync(
       path.join(process.cwd(), "app/api/agent/tasks/[taskId]/workflow/route.ts"),
       "utf8",
     ));
-    assert.ok(routeSource.includes("tryV2Dispatch"), "route has tryV2Dispatch");
+    assert.ok(routeSource.includes("tryV2CanaryMutation"), "route has tryV2CanaryMutation");
+    assert.ok(!routeSource.includes("tryV2Dispatch"), "old tryV2Dispatch is removed");
     assert.ok(routeSource.includes("shouldComputeV2Decision"), "route checks V2 flags");
     assert.ok(routeSource.includes("ACTION_TO_INTENT"), "route has action-to-intent mapping");
-    assert.ok(routeSource.includes("approve_plan: \"approve_plan\""), "approve_plan mapped");
-    assert.ok(routeSource.includes("start: \"start_implementation\""), "start mapped");
-    assert.ok(routeSource.includes("ready_for_review: \"submit_for_review\""), "ready_for_review mapped");
-    assert.ok(routeSource.includes("review_feedback: \"request_review_changes\""), "review_feedback mapped");
-    assert.ok(routeSource.includes("review_done: \"accept_review\""), "review_done mapped");
-    console.log("[v2-dispatch] route ACTION_TO_INTENT mapping PASS");
+    // Shadow mode must NOT call submitWorkflowCommand — only compute.
+    assert.ok(routeSource.includes("Do NOT call submitWorkflowCommand"), "shadow mode explicitly avoids mutations");
+    // The V2 canary is called AFTER the rollover barrier, not before it.
+    const rolloverIdx = routeSource.indexOf("THE ROLLOVER BARRIER");
+    const firstCanaryCall = routeSource.indexOf("tryV2CanaryMutation(action");
+    assert.ok(rolloverIdx > 0, "rollover barrier exists");
+    assert.ok(firstCanaryCall > rolloverIdx, "first V2 canary call is AFTER the rollover barrier");
+    // Verify all 5 key actions have V2 canary calls inside their handlers.
+    const actionBlocks = ["approve_plan", "start", "ready_for_review", "review_feedback", "review_done"];
+    for (const act of actionBlocks) {
+      // Some actions share a block (e.g. ready_for_review || submit_review).
+      const actionIdx = routeSource.indexOf(`action === "${act}"`);
+      assert.ok(actionIdx > 0, `${act} action block exists`);
+      const nextCanary = routeSource.indexOf("tryV2CanaryMutation(action", actionIdx);
+      const nextAction = routeSource.indexOf("\n  if (action === ", actionIdx + 1);
+      assert.ok(nextCanary > actionIdx && (nextAction < 0 || nextCanary < nextAction),
+        `${act} action block has a V2 canary call before the next action`);
+    }
+    console.log("[v2-dispatch] route V2 canary placement PASS");
 
     console.log("[v2-dispatch] PASS — V2 dispatch integration verified");
   } finally {

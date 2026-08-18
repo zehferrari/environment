@@ -204,14 +204,14 @@ export function runGuards(
       return runGuardsChain([
         guardStatus(state, command.intent, ["Review"]),
         guardCyclePrecondition(state, command.intent, command.workflowCycleId),
-        guardReviewLease(state, "request_review_changes"),
+        guardReviewLease(state, "request_review_changes", state.activeReviewRun?.candidateSha),
       ]);
 
     case "accept_review":
       return runGuardsChain([
         guardStatus(state, command.intent, ["Review"]),
         guardCyclePrecondition(state, command.intent, command.workflowCycleId),
-        guardReviewLease(state, "accept_review"),
+        guardReviewLease(state, "accept_review", state.activeReviewRun?.candidateSha),
       ]);
 
     case "repository_finalization_succeeded":

@@ -132,18 +132,18 @@ export async function applyProcedureCallback(callback: ProcedureCallback): Promi
   if (step.output) {
     try {
       const parsed = JSON.parse(step.output) as Record<string, unknown>;
-      if (typeof parsed.candidateSha === "string") {
-        expectedCandidateSha = parsed.candidateSha;
-        // Preserve the expected SHA for the next handler by keeping it in
-        // the output unless the callback provides a new one.
-      }
+      if (typeof parsed.candidateSha === "string") expectedCandidateSha = parsed.candidateSha;
+      if (typeof parsed.baseSha === "string") expectedBaseSha = parsed.baseSha;
     } catch { /* ignore */ }
   }
-  // If the callback provides a candidateSha, it must match the expected one
-  // (if set). This prevents a stale callback from a different candidate.
   if (callback.candidateSha !== undefined && callback.candidateSha !== null
     && expectedCandidateSha && callback.candidateSha !== expectedCandidateSha) {
     return { applied: false, reason: `Candidate SHA mismatch: callback has ${callback.candidateSha}, expected ${expectedCandidateSha}.` };
+  }
+  // A3: also check baseSha if both expected and callback values are present.
+  if (callback.baseSha !== undefined && callback.baseSha !== null
+    && expectedBaseSha && callback.baseSha !== expectedBaseSha) {
+    return { applied: false, reason: `Base SHA mismatch: callback has ${callback.baseSha}, expected ${expectedBaseSha}.` };
   }
   // Idempotent: a duplicate callback for an already-completed step is a no-op.
   if (step.status === "completed") {

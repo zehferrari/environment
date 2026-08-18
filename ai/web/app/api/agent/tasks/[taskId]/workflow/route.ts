@@ -81,7 +81,7 @@ import {
   sealEpisodeRolloverBarrier,
 } from "@/lib/agents/episodes/rollover";
 import { recordWorkflowActionExecutionState } from "@/lib/agents/watchdog/transitions";
-import type { TaskWorkflowCommand, TaskWorkflowIntent, WorkflowActor } from "@/lib/tasks/orchestrator/types";
+import type { TaskWorkflowCommand, TaskWorkflowIntent } from "@/lib/tasks/orchestrator/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -96,80 +96,116 @@ const ACTION_TO_INTENT: Partial<Record<WorkflowAction, TaskWorkflowIntent>> = {
   review_done: "accept_review",
 };
 
-// ORCH-09/10: V2 dispatch. For V2-enabled projects, translate the legacy
-// action to a TaskWorkflowCommand and call submitWorkflowCommand. Returns
-// a NextResponse if V2 handled the action, or null to fall through to the
-// legacy path.
-async function tryV2Dispatch(
+// ORCH-09/10: V2 canary mutation. Called INSIDE each action handler, AFTER
+// all safety gates have passed and the legacy path has computed its validated
+// state (worktree path, candidate SHA, etc.). This function:
+//   - Shadow mode: computes the V2 decision (authorize + guard + decide)
+//     WITHOUT executing, records a comparison activity, returns null so the
+//     legacy mutation runs.
+//   - Canary mode: calls submitWorkflowCommand with the real data, returns
+//     a NextResponse so the legacy mutation is skipped.
+//   - No flags: returns null immediately (legacy path runs unchanged).
+//
+// The `validatedContext` carries data the V2 command needs that was already
+// computed by the legacy validation (e.g. worktreePath, candidateSha,
+// actionPlanId). This ensures V2 does not bypass any safety gate.
+async function tryV2CanaryMutation(
   action: WorkflowAction,
-  task: { id: string; projectId: string; status: string; workflowVersion: number; activeWorkflowCycleId: string | null; assigneeId: string | null; project: { slug: string } },
-  agent: { slug: string; role: string; user: { id: string; username: string } },
+  task: { id: string; projectId: string; status: string; workflowVersion: number; activeWorkflowCycleId: string | null; project: { slug: string } },
   agentUser: { id: string; username: string },
-  payload: Record<string, unknown>,
+  agentRole: string,
   messageId: string,
   comment: string,
+  validatedContext: {
+    candidateSha?: string | null;
+    worktreePath?: string | null;
+    branchName?: string | null;
+    actionPlanId?: string | null;
+  },
 ): Promise<NextResponse | null> {
   const intent = ACTION_TO_INTENT[action];
-  if (!intent) return null; // action not mapped to V2
+  if (!intent) return null;
 
   const { shouldComputeV2Decision, shouldRunV2Effects, orchestratorShadowEnabled } = await import("@/lib/tasks/orchestrator/flags");
   if (!shouldComputeV2Decision(task.project.slug)) return null;
 
-  const { submitWorkflowCommand } = await import("@/lib/tasks/orchestrator");
-  const actor: WorkflowActor = {
-    id: agentUser.id,
-    kind: "agent",
-    username: agentUser.username,
-    role: agent.role === "monitor" ? "monitor" : isAssigneeForTask(task, agentUser.id) ? "assignee" : undefined,
-  };
-
-  // Build the command from the legacy action + payload.
   const command: TaskWorkflowCommand = {
     taskId: task.id,
     intent,
-    actor,
+    actor: {
+      id: agentUser.id,
+      kind: "agent",
+      username: agentUser.username,
+      role: agentRole === "monitor" ? "monitor" : undefined,
+    },
     expectedWorkflowVersion: task.workflowVersion,
     workflowCycleId: task.activeWorkflowCycleId ?? undefined,
     idempotencyKey: `${action}:${messageId}`,
     source: "agent-workflow-v2",
     messageId,
-    evidence: { comment: comment || undefined, legacyAction: action },
-    payload: {
-      candidateSha: typeof payload.repoTouched === "boolean" ? undefined : undefined,
+    evidence: {
       comment: comment || undefined,
-      assignee: typeof payload.assignee === "string" ? payload.assignee : undefined,
+      legacyAction: action,
+      ...(validatedContext.actionPlanId ? { actionPlanId: validatedContext.actionPlanId } : {}),
+    },
+    payload: {
+      candidateSha: validatedContext.candidateSha ?? undefined,
+      comment: comment || undefined,
+      worktreePath: validatedContext.worktreePath ?? undefined,
+      branchName: validatedContext.branchName ?? undefined,
     },
   };
 
-  // In shadow mode, compute the V2 decision but DON'T run effects — the
-  // legacy path below remains authoritative.
+  // Shadow mode: compute the V2 decision WITHOUT executing. Record a
+  // comparison activity. Do NOT call submitWorkflowCommand (which mutates).
   if (orchestratorShadowEnabled()) {
     try {
-      const result = await submitWorkflowCommand(command);
-      // Record the shadow comparison as an activity for observability.
-      await db.activityLog.create({
-        data: {
-          projectId: task.projectId,
-          taskId: task.id,
-          userId: agentUser.id,
-          kind: "task.workflow.v2_shadow",
-          payload: JSON.stringify({
-            action,
-            intent,
-            v2Status: result.status,
-            v2Reason: "reason" in result ? result.reason : null,
-          }),
-        },
-      });
+      const { loadTaskState, authorizeCommand, runGuards, decideCommand } = await import("@/lib/tasks/orchestrator");
+      const state = await loadTaskState(task.id);
+      if (state) {
+        const auth = authorizeCommand(state, command);
+        const guardResult = runGuards(state, command);
+        let v2DecisionStatus = "computed";
+        let v2DecisionToStatus: string | null = null;
+        try {
+          const decision = decideCommand(state, command, auth);
+          if (!("status" in decision)) {
+            v2DecisionToStatus = decision.toStatus;
+          } else {
+            v2DecisionStatus = `invalid: ${decision.reason}`;
+          }
+        } catch (error) {
+          v2DecisionStatus = `error: ${error instanceof Error ? error.message : String(error)}`;
+        }
+        await db.activityLog.create({
+          data: {
+            projectId: task.projectId,
+            taskId: task.id,
+            userId: agentUser.id,
+            kind: "task.workflow.v2_shadow",
+            payload: JSON.stringify({
+              action,
+              intent,
+              authAllowed: auth.allowed,
+              authReason: auth.reason,
+              guardOk: guardResult.ok,
+              guardReason: guardResult.ok ? null : guardResult.reason,
+              v2DecisionStatus,
+              v2DecisionToStatus,
+              legacyStatus: task.status,
+            }),
+          },
+        });
+      }
     } catch (error) {
-      console.error("[pm] V2 shadow dispatch failed:", error);
+      console.error("[pm] V2 shadow compute failed:", error);
     }
-    return null; // fall through to legacy
+    return null;
   }
 
-  // Canary mode: V2 effects run for allowlisted projects.
   if (!shouldRunV2Effects(task.project.slug)) return null;
 
+  const { submitWorkflowCommand } = await import("@/lib/tasks/orchestrator");
   const result = await submitWorkflowCommand(command);
   const status = mapV2ResultToHttpStatus(result.status);
   const body: Record<string, unknown> = {
@@ -185,15 +221,12 @@ async function tryV2Dispatch(
   if ("cycleId" in result && result.cycleId) body.cycleId = result.cycleId;
   if ("reason" in result) body.reason = result.reason;
 
-  // Action-specific response fields. Using a switch to avoid `if (action ===`
-  // patterns that would confuse the workflow-agent-rules static test's block
-  // boundary detection.
   switch (action) {
     case "review_done":
       if (result.status === "accepted") {
         body.status = "Review";
         body.finalizing = true;
-        body.instruction = "Review accepted. Repository finalization is in progress. The task will move to Done when the repository runner completes.";
+        body.instruction = "Review accepted. Repository finalization is in progress.";
       }
       break;
     case "approve_plan":
@@ -205,16 +238,15 @@ async function tryV2Dispatch(
     case "start":
       if (result.status === "accepted") {
         body.status = "In Progress";
-        const repo = await db.taskRepositoryRun.findUnique({ where: { taskId: task.id }, select: { worktreePath: true, branchName: true } });
-        body.worktreePath = repo?.worktreePath ?? null;
-        body.branchName = repo?.branchName ?? null;
+        body.worktreePath = validatedContext.worktreePath ?? null;
+        body.branchName = validatedContext.branchName ?? null;
       }
       break;
     case "ready_for_review":
     case "submit_review":
       if (result.status === "accepted") {
         body.status = "In Progress";
-        body.instruction = "Repository validation is in progress. The task will move to Review when validation completes.";
+        body.instruction = "Repository validation is in progress.";
       }
       break;
     case "review_feedback":
@@ -224,7 +256,6 @@ async function tryV2Dispatch(
       break;
   }
 
-  // Revalidate paths (the legacy path does this too).
   revalidateTaskShell(task.id);
   revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
   revalidatePath(`/projects/${task.project.slug}`);
@@ -243,10 +274,6 @@ function mapV2ResultToHttpStatus(status: string): number {
     case "operational": return 503;
     default: return 500;
   }
-}
-
-function isAssigneeForTask(task: { assigneeId: string | null }, userId: string): boolean {
-  return task.assigneeId === userId;
 }
 
 const ACTIONS = [
@@ -565,12 +592,11 @@ async function handleTaskWorkflowAction(
   const canSetDone = canSetTaskDoneForActor(task, agent.user.id);
   const isAssignee = task.assigneeId === agent.user.id;
 
-  // ORCH-09/10: V2 orchestrator dispatch. For V2-enabled projects (canary
-  // allowlist or shadow mode), translate the legacy action to a typed
-  // TaskWorkflowCommand and call submitWorkflowCommand. If V2 handles it,
-  // return early. Otherwise fall through to the legacy path below.
-  const v2Result = await tryV2Dispatch(action, task, agent as { slug: string; role: string; user: { id: string; username: string } }, agentUser, payload, messageId, comment);
-  if (v2Result) return v2Result;
+  // ORCH-09/10: V2 canary dispatch is handled INSIDE each action block, AFTER
+  // all safety gates (episode rollover, plan validation, coding-role, WIP,
+  // worktree preparation) have passed. The V2 path replaces the MUTATION, not
+  // the validation. Shadow mode computes the V2 decision without running
+  // effects and records a comparison activity. See tryV2CanaryMutation().
 
   // ENV-121 (review) — THE ROLLOVER BARRIER.
   //
@@ -859,6 +885,14 @@ async function handleTaskWorkflowAction(
       return NextResponse.json({ error: message }, { status: 409 });
     }
 
+    // ORCH-09/10: V2 canary mutation — AFTER worktree prep + WIP + prerequisite
+    // checks, BEFORE legacy mutation.
+    const v2StartResult = await tryV2CanaryMutation(action, task, agentUser, agent.role, messageId, comment, {
+      worktreePath: worktree.required ? worktree.worktreePath : null,
+      branchName: worktree.required ? worktree.branchName : null,
+    });
+    if (v2StartResult) return v2StartResult;
+
     // ENV-118 (review): the status move, the Epic promotion and the
     // continuation-outbox arm commit together. A crash anywhere in here leaves
     // the task in To Do, which the agent can simply retry — never In Progress
@@ -1027,6 +1061,11 @@ async function handleTaskWorkflowAction(
         },
       });
     }
+    // ORCH-09/10: V2 canary mutation — AFTER plan validation, BEFORE legacy mutation.
+    const v2Result = await tryV2CanaryMutation(action, task, agentUser, agent.role, messageId, comment, {
+      actionPlanId: structuredPlan.id,
+    });
+    if (v2Result) return v2Result;
     await runWorkflowActionAtomically(
       { taskId: task.id, agentSlug: agent.slug, messageId, action, taskState: moveToTodo ? "To Do" : task.status },
       async (tx) => {
@@ -1438,6 +1477,13 @@ async function handleTaskWorkflowAction(
       reviewCommentId = created.id;
     }
 
+    // ORCH-09/10: V2 canary mutation — AFTER checklist validation + comment,
+    // BEFORE legacy review handoff.
+    const v2ReviewResult = await tryV2CanaryMutation(action, task, agentUser, agent.role, messageId, comment, {
+      candidateSha: task.repositoryRun?.candidateSha ?? null,
+    });
+    if (v2ReviewResult) return v2ReviewResult;
+
     // Code work remains In Progress while the role-resolved Monitor Agent
     // validates it. The handoff itself moves only validated work to Review.
     const handoff = await runTaskReviewHandoff({
@@ -1515,6 +1561,9 @@ async function handleTaskWorkflowAction(
         },
       });
     }
+    // ORCH-09/10: V2 canary mutation — AFTER reviewer auth + comment, BEFORE legacy mutation.
+    const v2FeedbackResult = await tryV2CanaryMutation(action, task, agentUser, agent.role, messageId, comment, {});
+    if (v2FeedbackResult) return v2FeedbackResult;
     const created = (await runWorkflowActionAtomically(
       { taskId: task.id, agentSlug: agent.slug, messageId, action, taskState: "To Do" },
       async (tx) => {
@@ -1595,6 +1644,13 @@ async function handleTaskWorkflowAction(
       }, { status: 403 });
     }
     if (task.status !== "Review") return NextResponse.json({ error: "Task must be in Review before Done" }, { status: 409 });
+
+    // ORCH-09/10: V2 canary mutation — AFTER reviewer auth + status check,
+    // BEFORE legacy finalization.
+    const v2DoneResult = await tryV2CanaryMutation(action, task, agentUser, agent.role, messageId, comment, {
+      candidateSha: task.repositoryRun?.candidateSha ?? null,
+    });
+    if (v2DoneResult) return v2DoneResult;
 
     const completion = await completeReviewedTaskAndAssignNext({
       taskId: task.id,
