@@ -1764,6 +1764,13 @@ async function executeFinalizeJob(
       },
       data: { status: "completed" },
     });
+    // ORCH-07/P0-4: apply the finalization callback to the procedure engine
+    // so the finalize_accepted_review procedure can continue to
+    // verify_finalization → complete_review → Done.
+    const { applyFinalizationCallbackToProcedure } = await import("@/lib/tasks/review-automation");
+    await applyFinalizationCallbackToProcedure(task.id, validatedCandidateSha, true).catch((error) =>
+      console.error("[pm] procedure finalization callback failed:", task.id, error),
+    );
   }
   publishBoardTouch(task.projectId);
   return {

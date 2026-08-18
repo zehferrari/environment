@@ -92,11 +92,44 @@ async function revalidateWorktree(ctx: StepHandlerContext): Promise<StepHandlerR
       ? error.message
       : error instanceof Error ? error.message : String(error);
     const retryable = !(error instanceof TaskWorktreeError);
-    // Record the operational error on the repository state.
+    // P1-8: record the operational error on the repository state. If the
+    // failure is terminal (non-retryable), compensate by moving the task
+    // back to To Do with explicit evidence — never leave the task silently
+    // In Progress with a broken worktree.
     await updateTaskRepositoryState(ctx.taskId, {
       phase: "operational_error",
       lastError: `Worktree revalidation failed: ${message}`,
     });
+    if (!retryable) {
+      // Terminal worktree failure — compensate back to To Do via the kernel.
+      try {
+        const task = await db.task.findUniqueOrThrow({ where: { id: ctx.taskId }, select: { projectId: true, status: true, workflowVersion: true } });
+        if (task.status === "In Progress") {
+          const { applyTaskTransition } = await import("@/lib/tasks/transition-kernel");
+          const { closeTaskWorkflowCycle } = await import("@/lib/tasks/workflow-cycle");
+          await db.$transaction(async (tx) => {
+            await applyTaskTransition(tx, {
+              taskId: ctx.taskId,
+              projectId: task.projectId,
+              intent: "operator_override",
+              from: "In Progress",
+              to: "To Do",
+              source: "procedure-start-compensation",
+              idempotencyKey: `start-compensation:${ctx.procedureRunId}`,
+              rank: "front",
+              evidence: { worktreeRevalidationFailed: true, error: message, mechanical: true },
+            });
+            await closeTaskWorkflowCycle(tx, {
+              taskId: ctx.taskId,
+              outcome: "abandoned",
+              candidateSha: null,
+            });
+          });
+        }
+      } catch (compensationError) {
+        console.error("[pm] start compensation failed:", ctx.taskId, compensationError);
+      }
+    }
     return { status: "failed", error: `Worktree revalidation failed: ${message}`, retryable };
   }
 }

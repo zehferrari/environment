@@ -169,7 +169,7 @@ async function main() {
     // Use a project with a repositoryPath so the task is treated as code-touching.
     const project4 = await db.project.create({ data: { slug: "orch06-4", name: "Code project", repositoryPath: "/srv/Code/test-repo-4" } });
     const task4 = await db.task.create({
-      data: { projectId: project4.id, title: "Validation fail task", status: "In Progress", workflowVersion: 1, assigneeId: assigneeUser.id, actingManagerId: reviewerUser.id, reporterId: owner.id, approvedOn: new Date(), approvedById: owner.id },
+      data: { projectId: project4.id, title: "Validation fail task", status: "In Progress", workflowVersion: 1, workItemKey: "TEST-4", assigneeId: assigneeUser.id, actingManagerId: reviewerUser.id, reporterId: owner.id, approvedOn: new Date(), approvedById: owner.id },
     });
     await db.$transaction((tx) => openTaskWorkflowCycle(tx, { taskId: task4.id, openedWorkflowVersion: 1 }));
     const cycle4 = await db.taskWorkflowCycle.findFirstOrThrow({ where: { taskId: task4.id, status: "open" } });

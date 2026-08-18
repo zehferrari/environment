@@ -54,6 +54,8 @@ async function dispatch(row: OutboxRow) {
     return;
   }
   if (row.effectType === "review_finalize") {
+    // ORCH-07/P0-4: preserve procedure context so the finalization callback
+    // can route back to the procedure engine.
     const result = await enqueueTaskReviewFinalization({
       taskId: String(payload.taskId),
       projectId: String(payload.projectId),

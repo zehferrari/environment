@@ -235,7 +235,8 @@ export function decideCommand(
     case "request_review_changes": {
       // Review -> To Do (front). Cycle operation "close" with
       // changes_requested outcome. The procedure (ORCH-07) sends one
-      // consolidated reviewer comment to the assignee.
+      // consolidated reviewer comment to the assignee. The lease is marked
+      // changes_requested (immutable) by the execute transaction.
       const effects: WorkflowEffect[] = [
         { type: "board_touch", key: "board-review-feedback", payload: {} },
       ];

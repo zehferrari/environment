@@ -34,6 +34,53 @@ import {
   type RepositoryValidationOutcome,
 } from "@/lib/tasks/repository-state";
 
+// ORCH-06/P0-4: apply a validation callback to a waiting procedure step.
+// Called after the legacy validation handoff completes/fails. If a procedure
+// step is in waiting_callback for this task, applies the callback so the
+// procedure engine can continue (create review lease → enter Review → wake
+// reviewer, or close cycle → return to To Do → feedback).
+async function applyValidationCallbackToProcedure(
+  taskId: string,
+  candidateSha: string | null,
+  outcome: "valid" | "invalid",
+  validationOutcome: string,
+  error?: string,
+): Promise<void> {
+  const step = await db.taskProcedureStep.findFirst({
+    where: {
+      status: "waiting_callback",
+      procedureRun: { taskId },
+    },
+    orderBy: { updatedAt: "desc" },
+    select: { id: true, procedureRunId: true, output: true },
+  });
+  if (!step) return; // no procedure waiting — legacy path only
+  let jobId = "unknown";
+  let expectedCandidateSha: string | null = null;
+  if (step.output) {
+    try {
+      const parsed = JSON.parse(step.output) as Record<string, unknown>;
+      if (typeof parsed.jobId === "string") jobId = parsed.jobId;
+      if (typeof parsed.candidateSha === "string") expectedCandidateSha = parsed.candidateSha;
+    } catch { /* ignore */ }
+  }
+  const procRun = await db.taskProcedureRun.findUnique({
+    where: { id: step.procedureRunId },
+    select: { taskId: true, workflowCycleId: true },
+  });
+  if (!procRun) return;
+  const { applyProcedureCallback } = await import("@/lib/tasks/orchestrator/procedure-runner");
+  await applyProcedureCallback({
+    procedureRunId: step.procedureRunId,
+    stepId: step.id,
+    taskId: procRun.taskId,
+    workflowCycleId: procRun.workflowCycleId,
+    jobId,
+    candidateSha: candidateSha ?? expectedCandidateSha,
+    data: { validationOutcome, error: error ?? undefined },
+  });
+}
+
 type Actor = {
   id: string;
   kind: "human" | "agent";
@@ -288,11 +335,17 @@ export async function completeTaskReviewHandoffAfterValidation(args: {
   validationSummary?: string | null;
   repoTouched?: boolean;
 }) {
-  return moveToReviewAndDispatch({
+  const result = await moveToReviewAndDispatch({
     ...args,
     via: "monitor-repository-validation",
     repoTouched: args.repoTouched ?? true,
   });
+  // ORCH-06/P0-4: if a procedure step is waiting for a validation callback,
+  // apply it so the procedure engine can continue.
+  await applyValidationCallbackToProcedure(args.taskId, args.candidateSha, "valid", args.validationOutcome).catch((error) =>
+    console.error("[pm] procedure validation callback (success) failed:", args.taskId, error),
+  );
+  return result;
 }
 
 export async function failTaskReviewValidation(args: {
@@ -301,6 +354,12 @@ export async function failTaskReviewValidation(args: {
   error: string;
   candidateSha?: string | null;
 }) {
+  // ORCH-06/P0-4: if a procedure step is waiting for a validation callback,
+  // apply it with the failure outcome so the procedure engine can handle
+  // the validation failure path.
+  await applyValidationCallbackToProcedure(args.taskId, args.candidateSha ?? null, "invalid", "invalid", args.error).catch((error) =>
+    console.error("[pm] procedure validation callback (failure) failed:", args.taskId, error),
+  );
   const task = await loadHandoffTask(args.taskId);
   if (!task) return { status: "To Do" as const };
 

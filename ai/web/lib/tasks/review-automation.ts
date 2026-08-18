@@ -14,6 +14,50 @@ import {
 import { repositoryFinalizationOwnsTask } from "@/lib/tasks/repository-finalization";
 import { recordWorkflowActionExecutionState } from "@/lib/agents/watchdog/transitions";
 
+// ORCH-07/P0-4: apply a finalization callback to a waiting procedure step.
+// Called after the legacy finalization completes. If a procedure step is in
+// waiting_callback for this task, applies the callback so the procedure
+// engine can continue (verify_finalization → complete_review → Done).
+export async function applyFinalizationCallbackToProcedure(
+  taskId: string,
+  candidateSha: string | null,
+  ok: boolean,
+  mergeSha?: string | null,
+  error?: string,
+): Promise<void> {
+  const step = await db.taskProcedureStep.findFirst({
+    where: {
+      status: "waiting_callback",
+      procedureRun: { taskId },
+    },
+    orderBy: { updatedAt: "desc" },
+    select: { id: true, procedureRunId: true, output: true },
+  });
+  if (!step) return; // no procedure waiting — legacy path only
+  let jobId = "unknown";
+  if (step.output) {
+    try {
+      const parsed = JSON.parse(step.output) as Record<string, unknown>;
+      if (typeof parsed.jobId === "string") jobId = parsed.jobId;
+    } catch { /* ignore */ }
+  }
+  const procRun = await db.taskProcedureRun.findUnique({
+    where: { id: step.procedureRunId },
+    select: { taskId: true, workflowCycleId: true },
+  });
+  if (!procRun) return;
+  const { applyProcedureCallback } = await import("@/lib/tasks/orchestrator/procedure-runner");
+  await applyProcedureCallback({
+    procedureRunId: step.procedureRunId,
+    stepId: step.id,
+    taskId: procRun.taskId,
+    workflowCycleId: procRun.workflowCycleId,
+    jobId,
+    candidateSha,
+    data: { finalizationOk: ok, mergeSha: mergeSha ?? undefined, error: error ?? undefined },
+  });
+}
+
 type Actor = {
   id: string;
   username: string;

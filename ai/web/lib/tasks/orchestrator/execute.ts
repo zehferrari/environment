@@ -66,33 +66,22 @@ export async function executeWorkflowCommand(
   try {
     return await db.$transaction(
       async (tx) => {
-        // --- Idempotency replay check ------------------------------------
-        // The transition kernel already deduplicates by idempotencyKey. We
-        // also need to handle no-op decisions (status unchanged) which don't
-        // go through the kernel. For now, only kernel-going decisions are
-        // replay-protected; no-op decisions are activity-log only.
         const isNoOp = decision.fromStatus === decision.toStatus && decision.kernelIntent === "operator_override";
 
-        // --- Cycle operation ---------------------------------------------
+        // --- Cycle operation (open/update BEFORE transition, close AFTER) --
+        // P1-7 fix: closing the cycle clears Task.activeWorkflowCycleId,
+        // which would make the subsequent kernel transition get
+        // workflowCycleId = null. So we open/update before the transition,
+        // but close AFTER the transition writes, then pass the transition
+        // ID to closeTaskWorkflowCycle.
         let cycleId: string | null = null;
         if (decision.cycleOperation === "open") {
-          // Open a new cycle. The openedWorkflowVersion is the version we
-          // are about to write. The transition kernel will increment
-          // workflowVersion; we pass command.expectedWorkflowVersion + 1.
           const cycle = await openTaskWorkflowCycle(tx, {
             taskId: command.taskId,
             openedWorkflowVersion: command.expectedWorkflowVersion + 1,
             baseSha: (command.evidence?.baseSha as string | undefined) ?? null,
           });
           cycleId = cycle.id;
-        } else if (decision.cycleOperation === "close") {
-          const closed = await closeTaskWorkflowCycle(tx, {
-            taskId: command.taskId,
-            outcome: decision.cycleOutcome ?? "abandoned",
-            closedWorkflowVersion: command.expectedWorkflowVersion + 1,
-            candidateSha: (command.evidence?.candidateSha as string | undefined) ?? null,
-          });
-          cycleId = closed?.id ?? null;
         } else if (decision.cycleOperation === "update") {
           const updated = await updateTaskWorkflowCycleCandidate(tx, {
             taskId: command.taskId,
@@ -100,22 +89,23 @@ export async function executeWorkflowCommand(
             baseSha: (command.evidence?.baseSha as string | undefined),
           });
           cycleId = updated?.id ?? null;
-        } else {
-          // Read the active cycle id for the procedure row.
+        } else if (decision.cycleOperation === "none") {
           const task = await tx.task.findUnique({
             where: { id: command.taskId },
             select: { activeWorkflowCycleId: true },
           });
           cycleId = task?.activeWorkflowCycleId ?? null;
         }
+        // "close" is deferred until after the transition kernel writes.
 
         // --- Transition kernel (single status writer) --------------------
         let transitionId: string | null = null;
         let workflowVersion = command.expectedWorkflowVersion;
         if (!isNoOp && isTaskWorkflowStatus(decision.fromStatus) && isTaskWorkflowStatus(decision.toStatus)) {
+          const task = await tx.task.findUniqueOrThrow({ where: { id: command.taskId }, select: { projectId: true } });
           const result = await applyTaskTransition(tx, {
             taskId: command.taskId,
-            projectId: (await tx.task.findUniqueOrThrow({ where: { id: command.taskId }, select: { projectId: true } })).projectId,
+            projectId: task.projectId,
             actorUserId: decision.decisionActorId,
             intent: decision.kernelIntent,
             from: decision.fromStatus,
@@ -134,10 +124,7 @@ export async function executeWorkflowCommand(
             return { status: "replayed", transitionId, workflowVersion, procedureId: null };
           }
         } else {
-          // No-op decision: record an activity row for auditability without
-          // a status change. This covers checkpoint, raise_blocker,
-          // request_plan_changes, accept_review (which stays in Review until
-          // finalization), etc.
+          // No-op decision: record an activity row for auditability.
           const task = await tx.task.findUniqueOrThrow({
             where: { id: command.taskId },
             select: { projectId: true },
@@ -161,8 +148,6 @@ export async function executeWorkflowCommand(
               }),
             },
           });
-          // Enqueue effects for no-op decisions too (e.g. plan-changes
-          // notification, review-accepted board touch).
           if (decision.effects.length > 0) {
             await enqueueWorkflowEffects(tx, {
               taskId: command.taskId,
@@ -174,43 +159,19 @@ export async function executeWorkflowCommand(
           }
         }
 
-        // --- Procedure row (real TaskProcedureRun + steps, ORCH-03) -----
-        let procedureId: string | null = null;
-        if (decision.procedureType) {
-          const task = await tx.task.findUniqueOrThrow({
-            where: { id: command.taskId },
-            select: { projectId: true },
-          });
-          const created = await createProcedureRun(tx, {
+        // --- Close cycle AFTER transition (P1-7 fix) ---------------------
+        if (decision.cycleOperation === "close") {
+          const closed = await closeTaskWorkflowCycle(tx, {
             taskId: command.taskId,
-            workflowCycleId: cycleId,
-            triggerTransitionId: transitionId ?? command.idempotencyKey,
-            type: decision.procedureType,
-            input: command.payload ?? null,
+            outcome: decision.cycleOutcome ?? "abandoned",
+            closedWorkflowVersion: workflowVersion,
+            closedByTransitionId: transitionId,
+            candidateSha: (command.evidence?.candidateSha as string | undefined) ?? null,
           });
-          procedureId = created.procedureRunId;
-          await tx.activityLog.create({
-            data: {
-              projectId: task.projectId,
-              taskId: command.taskId,
-              userId: decision.decisionActorId,
-              kind: `task.workflow.procedure_scheduled`,
-              payload: JSON.stringify({
-                procedureType: decision.procedureType,
-                procedureRunId: procedureId,
-                cycleId,
-                transitionId,
-                workflowVersion,
-                intent: command.intent,
-              }),
-            },
-          });
+          cycleId = closed?.id ?? cycleId;
         }
 
         // --- Review lease mutation (invariant 8: immutable decision) ------
-        // For request_review_changes: mark the lease changes_requested.
-        // For accept_review: mark the lease accepted.
-        // The lease is immutable after this — a new cycle creates a new lease.
         if (command.intent === "request_review_changes" || command.intent === "accept_review") {
           const lease = await tx.reviewRun.findFirst({
             where: { taskId: command.taskId, status: "awaiting_review" },
@@ -228,6 +189,57 @@ export async function executeWorkflowCommand(
               },
             });
           }
+        }
+
+        // --- Procedure row (P1-5: upsert, one active per type/cycle) -----
+        let procedureId: string | null = null;
+        if (decision.procedureType) {
+          const task = await tx.task.findUniqueOrThrow({
+            where: { id: command.taskId },
+            select: { projectId: true },
+          });
+          // P1-5: check for an existing non-terminal procedure of the same
+          // type for this cycle. If one exists, reuse it instead of creating
+          // a duplicate (invariant 6: one active procedure per type/cycle).
+          const existing = await tx.taskProcedureRun.findFirst({
+            where: {
+              taskId: command.taskId,
+              type: decision.procedureType,
+              status: { in: ["queued", "running"] },
+              ...(cycleId ? { workflowCycleId: cycleId } : {}),
+            },
+            orderBy: { createdAt: "desc" },
+            select: { id: true },
+          });
+          if (existing) {
+            procedureId = existing.id;
+          } else {
+            const created = await createProcedureRun(tx, {
+              taskId: command.taskId,
+              workflowCycleId: cycleId,
+              triggerTransitionId: transitionId ?? command.idempotencyKey,
+              type: decision.procedureType,
+              input: command.payload ?? null,
+            });
+            procedureId = created.procedureRunId;
+          }
+          await tx.activityLog.create({
+            data: {
+              projectId: task.projectId,
+              taskId: command.taskId,
+              userId: decision.decisionActorId,
+              kind: `task.workflow.procedure_scheduled`,
+              payload: JSON.stringify({
+                procedureType: decision.procedureType,
+                procedureRunId: procedureId,
+                cycleId,
+                transitionId,
+                workflowVersion,
+                intent: command.intent,
+                reused: existing !== null,
+              }),
+            },
+          });
         }
 
         return { status: "accepted", transitionId: transitionId ?? command.idempotencyKey, workflowVersion, procedureId, cycleId };

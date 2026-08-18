@@ -32,7 +32,7 @@
 // half-states.
 
 import { db } from "@/lib/db";
-import { updateTaskWorkflowCycleCandidate, closeTaskWorkflowCycle } from "@/lib/tasks/workflow-cycle";
+import { closeTaskWorkflowCycle, updateTaskWorkflowCycleCandidate } from "@/lib/tasks/workflow-cycle";
 import { updateTaskRepositoryState } from "@/lib/tasks/repository-state";
 import { enqueueWorkflowEffects, applyTaskTransition } from "@/lib/tasks/transition-kernel";
 import { resolveReviewOwnerIdFromSnapshot } from "@/lib/tasks/orchestrator/authorize";
@@ -40,6 +40,11 @@ import { registerStepHandler } from "@/lib/tasks/orchestrator/procedure-runner";
 import type { StepHandlerResult, StepHandlerContext } from "@/lib/tasks/orchestrator/procedure-runner";
 import type { TaskProcedureType } from "@/lib/tasks/orchestrator/types";
 import { submitWorkflowCommand } from "@/lib/tasks/orchestrator";
+import { resolveEffectiveProjectSettings } from "@/lib/settings/effective";
+import { resolveValidationProfileSnapshot } from "@/lib/tasks/validation-profile";
+import { effectiveTaskBranchName, effectiveEpicBranchName } from "@/lib/work-items/branches";
+import { effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
+import type { BranchVerifyJob } from "@/lib/deploy/branch-verify";
 
 const PROCEDURE_TYPE: TaskProcedureType = "submit_candidate_for_review";
 
@@ -145,10 +150,9 @@ async function prepareCandidate(ctx: StepHandlerContext): Promise<StepHandlerRes
 }
 
 // --- Step 3: run_validation ---------------------------------------------
-// Enqueue the branch verifier. Enter waiting_callback. The callback must
-// include procedure ID, step ID, task ID, cycle ID, job ID, and expected
-// candidate/base SHA. For non-code tasks, skip validation and proceed
-// directly to create_review_lease.
+// Enqueue the branch verifier with a COMPLETE BranchVerifyJob including all
+// required repository, project, identity, requester, and validation-profile
+// fields. Enter waiting_callback. For non-code tasks, skip validation.
 async function runValidation(ctx: StepHandlerContext): Promise<StepHandlerResult> {
   const prevStep = await db.taskProcedureStep.findFirst({
     where: { procedureRunId: ctx.procedureRunId, name: "prepare_candidate" },
@@ -165,24 +169,79 @@ async function runValidation(ctx: StepHandlerContext): Promise<StepHandlerResult
   if (candidateOutput?.codeTouching === false) {
     return { status: "completed", output: { skipped: true, reason: "non_code_task", validationOutcome: "valid" } };
   }
-  // Code task: enqueue the branch verifier via the outbox. The existing
-  // review-handoff.ts already enqueues branch_verify effects; here we
-  // enqueue it as a procedure step that waits for a callback.
+  // Code task: build a complete BranchVerifyJob with all required fields.
   const task = await db.task.findUnique({
     where: { id: ctx.taskId },
     select: {
       id: true,
+      title: true,
+      description: true,
       projectId: true,
-      repositoryRun: { select: { branchName: true, baseSha: true, candidateSha: true, worktreePath: true } },
+      epicId: true,
+      workItemKey: true,
+      branchName: true,
+      commitPrefix: true,
+      assigneeId: true,
+      assignee: { select: { id: true, username: true, agent: { select: { slug: true } } } },
+      project: {
+        select: {
+          slug: true,
+          repositoryPath: true,
+          defaultGitUserName: true,
+          defaultGitUserEmail: true,
+          deploymentPrTargetBranch: true,
+        },
+      },
+      epic: { select: { workItemKey: true, branchName: true, commitPrefix: true, status: true, actingManagerId: true } },
+      repositoryRun: { select: { branchName: true, baseSha: true, candidateSha: true, worktreePath: true, attempt: true } },
     },
   });
-  if (!task?.repositoryRun?.candidateSha) {
-    return { status: "failed", error: "No candidate SHA for validation.", retryable: false };
+  if (!task?.project.repositoryPath) {
+    return { status: "failed", error: "Task has no repository path for validation.", retryable: false };
   }
-  // Enqueue a branch_verify outbox effect. The outbox drain enqueues the
-  // actual verifier job. The callback will come back via
-  // applyProcedureCallback.
+  const branchName = task.repositoryRun?.branchName ?? effectiveTaskBranchName(task);
+  if (!branchName) {
+    return { status: "failed", error: "No effective branch name for validation.", retryable: false };
+  }
+  // Resolve effective settings for git identity and base branch.
+  const effectiveSettings = await resolveEffectiveProjectSettings({
+    id: task.projectId,
+    defaultGitUserName: task.project.defaultGitUserName,
+    defaultGitUserEmail: task.project.defaultGitUserEmail,
+    deploymentProductionBranch: null,
+    deploymentPrTargetBranch: task.project.deploymentPrTargetBranch,
+  });
+  const validationProfile = await resolveValidationProfileSnapshot(task.projectId);
   const jobId = `proc-val-${ctx.procedureRunId}-${Date.now()}`;
+  const job: BranchVerifyJob = {
+    jobId,
+    taskId: task.id,
+    projectId: task.projectId,
+    projectSlug: task.project.slug,
+    repositoryPath: task.project.repositoryPath,
+    branchName,
+    baseBranch: effectiveSettings.deployment.prTargetBranch.value,
+    epicChild: Boolean(task.epicId),
+    epicBranch: task.epic ? effectiveEpicBranchName(task.epic) : null,
+    commitPrefix: effectiveTaskCommitPrefix(task),
+    expectedGitUserName: effectiveSettings.gitIdentity.name.value,
+    expectedGitUserEmail: effectiveSettings.gitIdentity.email.value,
+    taskTitle: task.title,
+    taskDescription: task.description,
+    assigneeNote: null,
+    baseSha: task.repositoryRun?.baseSha ?? null,
+    previousCandidateSha: task.repositoryRun?.candidateSha ?? null,
+    monitorUserId: undefined,
+    monitorAgentSlug: undefined,
+    attempt: (task.repositoryRun?.attempt ?? 0) + 1,
+    requestedByAgentSlug: task.assignee?.agent?.slug ?? "procedure-engine",
+    requestedByUserId: task.assigneeId ?? "procedure-engine",
+    requestedAt: new Date().toISOString(),
+    validationProfile,
+  };
+  // Enqueue the branch_verify outbox effect. The outbox drain enqueues the
+  // actual verifier job file. The verifier callback will come back via
+  // applyProcedureCallback.
   await enqueueWorkflowEffects(db, {
     taskId: task.id,
     projectId: task.projectId,
@@ -190,25 +249,19 @@ async function runValidation(ctx: StepHandlerContext): Promise<StepHandlerResult
     effects: [{
       type: "branch_verify",
       key: `procedure-validation:${jobId}`,
-      payload: {
-        job: {
-          jobId,
-          taskId: task.id,
-          projectId: task.projectId,
-          branchName: task.repositoryRun.branchName,
-          baseSha: task.repositoryRun.baseSha,
-          candidateSha: task.repositoryRun.candidateSha,
-          worktreePath: task.repositoryRun.worktreePath,
-          procedureRunId: ctx.procedureRunId,
-          stepId: ctx.stepId,
-          workflowCycleId: ctx.workflowCycleId,
-        },
-      },
+      payload: { job: job as unknown as Record<string, unknown> },
     }],
   });
-  // Enter waiting_callback. The verifier callback will apply via
-  // applyProcedureCallback with the jobId.
-  return { status: "waiting_callback", jobId, output: { candidateSha: task.repositoryRun.candidateSha } };
+  // Update repository state to validating.
+  await updateTaskRepositoryState(task.id, {
+    phase: "validating",
+    branchName,
+    repoTouched: true,
+    validationOutcome: null,
+    lastError: null,
+    incrementAttempt: true,
+  });
+  return { status: "waiting_callback", jobId, output: { candidateSha: task.repositoryRun?.candidateSha, branchName } };
 }
 
 // --- Step 4: apply_validation_result ------------------------------------
@@ -365,8 +418,8 @@ async function createReviewLease(ctx: StepHandlerContext): Promise<StepHandlerRe
     epic: task.epic ? { status: task.epic.status, actingManagerId: task.epic.actingManagerId } : null,
   });
   const validationOutcome = (validationOutput?.validationOutcome as string) ?? "valid";
-  // Create the immutable ReviewRun for this cycle. The @@unique on
-  // workflowCycleId ensures one lease per cycle.
+  // P1-6: persist the resolved reviewer on the lease so the guard can
+  // verify reviewer identity at decision time.
   await db.reviewRun.upsert({
     where: { workflowCycleId: task.activeWorkflowCycleId },
     create: {
@@ -390,7 +443,11 @@ async function createReviewLease(ctx: StepHandlerContext): Promise<StepHandlerRe
       invalidatedReason: null,
     },
   });
-  return { status: "completed", output: { reviewRunCreated: true, candidateSha, reviewerId } };
+  // P1-6: the resolved reviewer is stored in the step output for the guard
+  // and wake_reviewer to consume, NOT on the ReviewRun.reviewerId field —
+  // that field is the DECISION actor, set only when the reviewer accepts or
+  // requests changes (by execute.ts).
+  return { status: "completed", output: { reviewRunCreated: true, candidateSha, resolvedReviewerId: reviewerId } };
 }
 
 // --- Step 6: enter_review -----------------------------------------------

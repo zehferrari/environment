@@ -103,6 +103,7 @@ export function guardCyclePrecondition(
 export function guardReviewLease(
   state: TaskStateSnapshot,
   intent: "accept_review" | "request_review_changes",
+  expectedCandidateSha?: string | null,
 ): GuardResult {
   const lease = state.activeReviewRun;
   if (!lease) {
@@ -117,6 +118,14 @@ export function guardReviewLease(
       ok: false,
       status: "stale",
       reason: `Intent ${intent} requires an awaiting_review lease, but the lease is ${lease.status}.`,
+    };
+  }
+  // P1-6: verify the candidate SHA matches if the command provides one.
+  if (expectedCandidateSha && lease.candidateSha !== expectedCandidateSha) {
+    return {
+      ok: false,
+      status: "stale",
+      reason: `Intent ${intent} targets candidate ${expectedCandidateSha}, but the lease candidate is ${lease.candidateSha}.`,
     };
   }
   return { ok: true };
@@ -159,7 +168,15 @@ export function runGuards(
       return guardStatus(state, command.intent, ["Backlog", "To Do"]);
 
     case "start_implementation":
-      return guardCyclePrecondition(state, command.intent, command.workflowCycleId);
+      // P1-8: start_implementation requires an approved plan, no blockers,
+      // and no active cycle. The WIP check is enforced by the legacy
+      // move-status/auto-start code; the orchestrator guard covers the
+      // cycle + plan + blocker preconditions.
+      return runGuardsChain([
+        guardStatus(state, command.intent, ["To Do"]),
+        guardApprovedPlan(state, command.intent),
+        guardCyclePrecondition(state, command.intent, command.workflowCycleId),
+      ]);
 
     case "checkpoint":
       return runGuardsChain([
