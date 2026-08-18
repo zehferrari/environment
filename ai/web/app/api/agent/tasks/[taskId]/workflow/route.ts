@@ -81,9 +81,163 @@ import {
   sealEpisodeRolloverBarrier,
 } from "@/lib/agents/episodes/rollover";
 import { recordWorkflowActionExecutionState } from "@/lib/agents/watchdog/transitions";
+import type { TaskWorkflowCommand, TaskWorkflowIntent, WorkflowActor } from "@/lib/tasks/orchestrator/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+// ORCH-09/10: Map legacy workflow actions to orchestrator intents.
+const ACTION_TO_INTENT: Partial<Record<WorkflowAction, TaskWorkflowIntent>> = {
+  approve_plan: "approve_plan",
+  start: "start_implementation",
+  ready_for_review: "submit_for_review",
+  submit_review: "submit_for_review",
+  review_feedback: "request_review_changes",
+  review_done: "accept_review",
+};
+
+// ORCH-09/10: V2 dispatch. For V2-enabled projects, translate the legacy
+// action to a TaskWorkflowCommand and call submitWorkflowCommand. Returns
+// a NextResponse if V2 handled the action, or null to fall through to the
+// legacy path.
+async function tryV2Dispatch(
+  action: WorkflowAction,
+  task: { id: string; projectId: string; status: string; workflowVersion: number; activeWorkflowCycleId: string | null; assigneeId: string | null; project: { slug: string } },
+  agent: { slug: string; role: string; user: { id: string; username: string } },
+  agentUser: { id: string; username: string },
+  payload: Record<string, unknown>,
+  messageId: string,
+  comment: string,
+): Promise<NextResponse | null> {
+  const intent = ACTION_TO_INTENT[action];
+  if (!intent) return null; // action not mapped to V2
+
+  const { shouldComputeV2Decision, shouldRunV2Effects, orchestratorShadowEnabled } = await import("@/lib/tasks/orchestrator/flags");
+  if (!shouldComputeV2Decision(task.project.slug)) return null;
+
+  const { submitWorkflowCommand } = await import("@/lib/tasks/orchestrator");
+  const actor: WorkflowActor = {
+    id: agentUser.id,
+    kind: "agent",
+    username: agentUser.username,
+    role: agent.role === "monitor" ? "monitor" : isAssigneeForTask(task, agentUser.id) ? "assignee" : undefined,
+  };
+
+  // Build the command from the legacy action + payload.
+  const command: TaskWorkflowCommand = {
+    taskId: task.id,
+    intent,
+    actor,
+    expectedWorkflowVersion: task.workflowVersion,
+    workflowCycleId: task.activeWorkflowCycleId ?? undefined,
+    idempotencyKey: `${action}:${messageId}`,
+    source: "agent-workflow-v2",
+    messageId,
+    evidence: { comment: comment || undefined, legacyAction: action },
+    payload: {
+      candidateSha: typeof payload.repoTouched === "boolean" ? undefined : undefined,
+      comment: comment || undefined,
+      assignee: typeof payload.assignee === "string" ? payload.assignee : undefined,
+    },
+  };
+
+  // In shadow mode, compute the V2 decision but DON'T run effects — the
+  // legacy path below remains authoritative.
+  if (orchestratorShadowEnabled()) {
+    try {
+      const result = await submitWorkflowCommand(command);
+      // Record the shadow comparison as an activity for observability.
+      await db.activityLog.create({
+        data: {
+          projectId: task.projectId,
+          taskId: task.id,
+          userId: agentUser.id,
+          kind: "task.workflow.v2_shadow",
+          payload: JSON.stringify({
+            action,
+            intent,
+            v2Status: result.status,
+            v2Reason: "reason" in result ? result.reason : null,
+          }),
+        },
+      });
+    } catch (error) {
+      console.error("[pm] V2 shadow dispatch failed:", error);
+    }
+    return null; // fall through to legacy
+  }
+
+  // Canary mode: V2 effects run for allowlisted projects.
+  if (!shouldRunV2Effects(task.project.slug)) return null;
+
+  const result = await submitWorkflowCommand(command);
+  const status = mapV2ResultToHttpStatus(result.status);
+  const body: Record<string, unknown> = {
+    ok: result.status === "accepted" || result.status === "replayed",
+    taskId: task.id,
+    action,
+    v2: true,
+    orchestratorStatus: result.status,
+  };
+  if ("transitionId" in result && result.transitionId) body.transitionId = result.transitionId;
+  if ("workflowVersion" in result) body.workflowVersion = result.workflowVersion;
+  if ("procedureId" in result && result.procedureId) body.procedureId = result.procedureId;
+  if ("cycleId" in result && result.cycleId) body.cycleId = result.cycleId;
+  if ("reason" in result) body.reason = result.reason;
+
+  // For accepted review (which stays in Review until finalization), tell
+  // the agent the same thing the legacy path would.
+  if (action === "review_done" && result.status === "accepted") {
+    body.status = "Review";
+    body.finalizing = true;
+    body.instruction = "Review accepted. Repository finalization is in progress. The task will move to Done when the repository runner completes.";
+  }
+  // For approve_plan, include the status the legacy path would return.
+  if (action === "approve_plan" && result.status === "accepted") {
+    body.status = task.status === "Backlog" ? "To Do" : task.status;
+    body.approved = true;
+  }
+  // For start, include the worktree path if available.
+  if (action === "start" && result.status === "accepted") {
+    body.status = "In Progress";
+    const repo = await db.taskRepositoryRun.findUnique({ where: { taskId: task.id }, select: { worktreePath: true, branchName: true } });
+    body.worktreePath = repo?.worktreePath ?? null;
+    body.branchName = repo?.branchName ?? null;
+  }
+  // For ready_for_review, include the status.
+  if ((action === "ready_for_review" || action === "submit_review") && result.status === "accepted") {
+    body.status = "In Progress"; // stays In Progress until validation completes
+    body.instruction = "Repository validation is in progress. The task will move to Review when validation completes.";
+  }
+  // For review_feedback, include the status.
+  if (action === "review_feedback" && result.status === "accepted") {
+    body.status = "To Do";
+  }
+
+  // Revalidate paths (the legacy path does this too).
+  revalidateTaskShell(task.id);
+  revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
+  revalidatePath(`/projects/${task.project.slug}`);
+  publishBoardTouch(task.projectId);
+
+  return NextResponse.json(body, { status });
+}
+
+function mapV2ResultToHttpStatus(status: string): number {
+  switch (status) {
+    case "replayed": return 200;
+    case "accepted": return 202;
+    case "stale": return 409;
+    case "forbidden": return 403;
+    case "invalid": return 422;
+    case "operational": return 503;
+    default: return 500;
+  }
+}
+
+function isAssigneeForTask(task: { assigneeId: string | null }, userId: string): boolean {
+  return task.assigneeId === userId;
+}
 
 const ACTIONS = [
   "start",
@@ -327,6 +481,7 @@ async function handleTaskWorkflowAction(
         branchName: true,
         commitPrefix: true,
         workItemKey: true,
+        activeWorkflowCycleId: true,
         deletedAt: true,
         blockedById: true,
         blockedBy: {
@@ -399,6 +554,13 @@ async function handleTaskWorkflowAction(
   const isReviewer = reviewerId === agent.user.id;
   const canSetDone = canSetTaskDoneForActor(task, agent.user.id);
   const isAssignee = task.assigneeId === agent.user.id;
+
+  // ORCH-09/10: V2 orchestrator dispatch. For V2-enabled projects (canary
+  // allowlist or shadow mode), translate the legacy action to a typed
+  // TaskWorkflowCommand and call submitWorkflowCommand. If V2 handles it,
+  // return early. Otherwise fall through to the legacy path below.
+  const v2Result = await tryV2Dispatch(action, task, agent as { slug: string; role: string; user: { id: string; username: string } }, agentUser, payload, messageId, comment);
+  if (v2Result) return v2Result;
 
   // ENV-121 (review) — THE ROLLOVER BARRIER.
   //
