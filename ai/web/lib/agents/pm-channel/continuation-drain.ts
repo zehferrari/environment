@@ -14,6 +14,7 @@ import {
   formalBlockerNeedsExternalInput,
 } from "@/lib/tasks/formal-blocker";
 import { WATCHDOG_CONTINUATION_ACTION } from "@/lib/agents/watchdog/repairs";
+import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 
 const MAX_CONTINUATION_ATTEMPTS = 3;
 const DRAIN_BATCH = 10;
@@ -53,8 +54,10 @@ async function settle(
 /**
  * Decide whether this continuation still deserves a turn, and enqueue one if
  * so. Preconditions mirror the reply-time helper: the task must still be an
- * active, In-Progress, agent-assigned repository episode with no external
- * blocker and no competing run.
+ * active implementer or reviewer episode with no competing run. Implementer
+ * continuations additionally require the active repository phase and no
+ * external blocker; reviewer continuations are owned by the resolved Review
+ * actor and must not inherit an assignee's stale blocker/worktree gate.
  */
 async function dispatchContinuation(row: ContinuationRow): Promise<"dispatched" | "superseded" | "failed"> {
   if (!row.taskId) {
@@ -70,16 +73,15 @@ async function dispatchContinuation(row: ContinuationRow): Promise<"dispatched" 
       status: true,
       projectId: true,
       assigneeId: true,
+      actingManagerId: true,
+      reporterId: true,
       deletedAt: true,
       repositoryRun: { select: { phase: true } },
+      epic: { select: { status: true, actingManagerId: true } },
     },
   });
-  if (!task || task.deletedAt || task.status !== "In Progress" || !task.assigneeId) {
-    await settle(row.id, "superseded", { lastError: "task is no longer an active execution episode" });
-    return "superseded";
-  }
-  if (task.repositoryRun && task.repositoryRun.phase !== "active") {
-    await settle(row.id, "superseded", { lastError: "repository run is no longer active" });
+  if (!task || task.deletedAt) {
+    await settle(row.id, "superseded", { lastError: "task is no longer available" });
     return "superseded";
   }
 
@@ -87,8 +89,22 @@ async function dispatchContinuation(row: ContinuationRow): Promise<"dispatched" 
     where: { slug: row.agentSlug },
     select: { user: { select: { id: true } } },
   });
-  if (!agent?.user || agent.user.id !== task.assigneeId) {
-    await settle(row.id, "superseded", { lastError: "continuation agent no longer owns the task" });
+  if (!agent?.user) {
+    await settle(row.id, "superseded", { lastError: "continuation agent is no longer active" });
+    return "superseded";
+  }
+
+  const implementationEpisode = task.status === "In Progress"
+    && Boolean(task.assigneeId)
+    && agent.user.id === task.assigneeId;
+  const reviewEpisode = task.status === "Review"
+    && agent.user.id === resolveReviewOwnerId(task);
+  if (!implementationEpisode && !reviewEpisode) {
+    await settle(row.id, "superseded", { lastError: "continuation agent no longer owns this workflow phase" });
+    return "superseded";
+  }
+  if (implementationEpisode && task.repositoryRun && task.repositoryRun.phase !== "active") {
+    await settle(row.id, "superseded", { lastError: "repository run is no longer active" });
     return "superseded";
   }
 
@@ -108,7 +124,7 @@ async function dispatchContinuation(row: ContinuationRow): Promise<"dispatched" 
     select: { taskId: true, kind: true, payload: true, createdAt: true },
   });
   const activeBlocker = activeFormalBlockerStatesByTask(lifecycleRows).get(task.id) ?? null;
-  if (activeBlocker && formalBlockerNeedsExternalInput(activeBlocker)) {
+  if (implementationEpisode && activeBlocker && formalBlockerNeedsExternalInput(activeBlocker)) {
     await settle(row.id, "superseded", { lastError: "a formal blocker is waiting on external input" });
     return "superseded";
   }
@@ -143,10 +159,16 @@ async function dispatchContinuation(row: ContinuationRow): Promise<"dispatched" 
   const isWatchdogRecovery = row.action === WATCHDOG_CONTINUATION_ACTION;
   const continuation = await sendTaskWorkflowNotification({
     taskId: task.id,
-    targetUserId: task.assigneeId,
+    targetUserId: agent.user.id,
     actor: { id: agent.user.id, kind: "agent", username: row.agentSlug },
     reason: "monitor_recovery",
-    body: isContextPressureRecovery
+    body: reviewEpisode
+      ? [
+          `Your previous review episode on "${task.title}" spent its bounded budget and was closed. This is the next reviewer episode in a fresh session.`,
+          "Continue from the EXECUTION EPISODE BRIEF and the exact validated candidate; do not repeat evidence already captured in the brief.",
+          "Finish this review with action=review_done if the candidate is acceptable, or action=review_feedback with one consolidated actionable comment. Do not stop at a progress comment.",
+        ].join("\n")
+      : isContextPressureRecovery
       ? [
           `Your previous execution session for "${task.title}" reached an unrecoverable context limit. PM closed only that bounded episode and queued this fresh session from its durable checkpoint.`,
           "Use the EXECUTION EPISODE BRIEF above as the handover: start at its next exact action, verify current task state before repeating a side effect, and retrieve older detail only through the scoped grant URLs when needed.",

@@ -59,6 +59,11 @@ import { getTaskGitChanges, getTaskGitFileDiff } from "@/lib/tasks/git-changes";
 import { createChecklistAndDelegatableTasksFromPlan } from "@/lib/tasks/action-plan-store";
 import { moveTaskStatus as transitionTaskStatus } from "@/lib/tasks/move-status";
 import { reserveTaskRepositoryState } from "@/lib/tasks/repository-state";
+import {
+  REPOSITORY_FINALIZATION_FENCE_MESSAGE,
+  repositoryFinalizationFenceSelect,
+  repositoryFinalizationOwnsTask,
+} from "@/lib/tasks/repository-finalization";
 import { effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
 import {
   applyTaskTransition,
@@ -230,7 +235,7 @@ async function updateTask(formData: FormData) {
       blockedBy: { select: { workItemKey: true } },
       approvedOn: true,
       workItemKey: true,
-      repositoryRun: { select: { phase: true } },
+      repositoryRun: { select: repositoryFinalizationFenceSelect },
       project: {
         select: {
           slug: true,
@@ -284,8 +289,8 @@ async function updateTask(formData: FormData) {
 
   // Status (workflow-validated, recomputes rank like the board move)
   if (newStatus !== "" && newStatus !== task.status) {
-    if (task.repositoryRun?.phase === "finalizing") {
-      throw new Error("Repository finalization is running; wait for it to complete before changing status.");
+    if (repositoryFinalizationOwnsTask(task.repositoryRun)) {
+      throw new Error(REPOSITORY_FINALIZATION_FENCE_MESSAGE);
     }
     if (newStatus === "In Progress") {
       if (newBranch !== task.branchName || newEpicId !== task.epicId) {

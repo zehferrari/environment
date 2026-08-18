@@ -30,7 +30,9 @@ import {
   isPmTerminalFailureText,
   isSilentPmReplyText,
   isTransientPmProgressText,
+  modelFallbackActivityText,
 } from "@/lib/agents/ops/pm-silence";
+import { recordModelFallbackActivityForTarget } from "@/lib/agents/ops/model-fallback-activity";
 import { notifyHumanOfAgentReply } from "@/lib/push/notify-reply";
 import { revalidateTaskReplyScope, revalidateTaskShell } from "@/lib/tasks/cache";
 import { revalidateEpicReplyScope } from "@/lib/epics/cache";
@@ -372,6 +374,28 @@ export async function POST(req: NextRequest) {
       persisted: false,
       runStatus: run?.status ?? "failed",
     });
+  }
+
+  // Provider fallback notices are operational telemetry. They are not an
+  // agent contribution and must not settle the live run: record one deduped
+  // Activity and wait for the actual model reply (or normal timeout/retry).
+  const fallbackMessage = modelFallbackActivityText(body);
+  if (fallbackMessage) {
+    const provenance = extractRunProvenance(payload);
+    await persistRunProvenance(target, provenance);
+    const run = await db.pmChannelRun.findUnique({
+      where: { targetKey: pmChannelRunTargetKey(target) },
+      select: { id: true, provider: true, model: true },
+    });
+    const fallback = await recordModelFallbackActivityForTarget({
+      target,
+      message: fallbackMessage,
+      driver: "openclaw-pm-channel",
+      runId: run?.id,
+      provider: run?.provider ?? provenance.provider,
+      model: run?.model ?? provenance.model,
+    });
+    return NextResponse.json(fallback.body, { status: fallback.status });
   }
 
   if (await pmChannelTargetHasDurableReply(target)) {

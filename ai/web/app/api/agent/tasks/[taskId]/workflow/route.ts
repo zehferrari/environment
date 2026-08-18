@@ -9,8 +9,8 @@ import { workflowActionResult } from "@/lib/agents/workflow/action-effect";
 import { verifyTaskWorkflowToken } from "@/lib/agents/workflow/token/task";
 import {
   canApproveActionPlanForActor,
+  canSetTaskDoneForActor,
   epicAllowsAgentAction,
-  resolveDoneOwnerId,
   resolveReviewOwnerId,
 } from "@/lib/tasks/workflow-actors";
 import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation";
@@ -22,6 +22,11 @@ import {
 } from "@/lib/tasks/action-plan-store";
 import { findInProgressStartConflict, startApprovedTodoTaskIfIdle } from "@/lib/tasks/auto-start";
 import { runTaskReviewHandoff } from "@/lib/tasks/review-handoff";
+import {
+  REPOSITORY_FINALIZATION_FENCE_MESSAGE,
+  repositoryFinalizationFenceSelect,
+  repositoryFinalizationOwnsTask,
+} from "@/lib/tasks/repository-finalization";
 import { createSubTaskItem, deleteSubTaskItem, normalizeSubTaskKind, setSubTaskCompletion } from "@/lib/tasks/subtasks";
 import { effectiveEpicBranchName, effectiveTaskBranchName } from "@/lib/work-items/branches";
 import { publishBoardTouch } from "@/lib/pm/board-events";
@@ -253,6 +258,16 @@ async function handleTaskWorkflowAction(
   }))) {
     return NextResponse.json({ error: "Workflow grant is no longer authorized" }, { status: 403 });
   }
+  // Tool-budget exhaustion deliberately settles the transport run before it
+  // aborts the oversized gateway turn. The episode barrier still owns the
+  // message after that settlement and must be allowed to return its precise
+  // checkpoint-only fence; otherwise this generic terminal-run guard masks it
+  // with a bare 409 and the agent never learns that the episode rolled over.
+  const rolloverBarrier = await resolveEpisodeRolloverBarrier({
+    taskId,
+    agentSlug: grantAgentSlug,
+    messageId,
+  });
   const matchingRun = await db.pmChannelRun.findFirst({
     where: { taskId, agentSlug: grantAgentSlug, messageId },
     orderBy: { createdAt: "desc" },
@@ -264,7 +279,8 @@ async function handleTaskWorkflowAction(
   if (
     matchingRun &&
     !["queued", "accepted", "streaming"].includes(matchingRun.status) &&
-    !exactIdempotentReplay
+    !exactIdempotentReplay &&
+    !rolloverBarrier
   ) {
     return NextResponse.json(
       { error: `Workflow grant belongs to a ${matchingRun.status} run and is fenced from further actions` },
@@ -337,7 +353,12 @@ async function handleTaskWorkflowAction(
             },
           },
         },
-        repositoryRun: { select: { phase: true, worktreePath: true, baseSha: true } },
+        repositoryRun: {
+          select: {
+            ...repositoryFinalizationFenceSelect,
+            worktreePath: true,
+          },
+        },
         project: {
           select: {
             slug: true,
@@ -375,9 +396,8 @@ async function handleTaskWorkflowAction(
     username: agentUser.username,
   };
   const reviewerId = resolveReviewOwnerId(task);
-  const doneOwnerId = resolveDoneOwnerId(task);
   const isReviewer = reviewerId === agent.user.id;
-  const canSetDone = doneOwnerId === agent.user.id;
+  const canSetDone = canSetTaskDoneForActor(task, agent.user.id);
   const isAssignee = task.assigneeId === agent.user.id;
 
   // ENV-121 (review) — THE ROLLOVER BARRIER.
@@ -392,11 +412,6 @@ async function handleTaskWorkflowAction(
   // exhausted message may write exactly ONE final structured checkpoint, onto
   // the episode it exhausted, and is then done. PM dispatches the successor in
   // a fresh session briefed from that checkpoint.
-  const rolloverBarrier = await resolveEpisodeRolloverBarrier({
-    taskId: task.id,
-    agentSlug: agent.slug,
-    messageId,
-  });
   if (rolloverBarrier) {
     const barrierEpisode = {
       episodeNo: rolloverBarrier.episode.episodeNo,
@@ -1296,9 +1311,9 @@ async function handleTaskWorkflowAction(
   if (action === "review_feedback") {
     if (!isReviewer) return NextResponse.json({ error: "Only the resolved reviewer can leave workflow feedback" }, { status: 403 });
     if (task.status !== "Review") return NextResponse.json({ error: "Task must be in Review for review feedback" }, { status: 409 });
-    if (task.repositoryRun?.phase === "finalizing") {
+    if (repositoryFinalizationOwnsTask(task.repositoryRun)) {
       return NextResponse.json({
-        error: "Repository finalization is already running; review feedback can no longer reopen this submission.",
+        error: REPOSITORY_FINALIZATION_FENCE_MESSAGE,
       }, { status: 409 });
     }
     if (!comment || comment.length > 8000) {

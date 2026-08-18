@@ -144,9 +144,12 @@ export async function isAuthorizedPmChannelDispatchTarget(
   });
   if (
     !run
-    || run.status === "cancelled"
-    || run.status === "failed"
-    || run.status === "completed"
+    // A delayed file-drop envelope may outlive the run generation that
+    // published it. Only the pre-dispatch handoff and its narrow accepted
+    // race window are valid here; resurrecting a failed/superseded/timed-out
+    // run can collide with the current task/agent lane and starve every newer
+    // turn behind SQLite's active-lane unique index.
+    || !["queued", "accepted"].includes(run.status)
     || !runMatchesDispatch(run, args)
   ) {
     return false;

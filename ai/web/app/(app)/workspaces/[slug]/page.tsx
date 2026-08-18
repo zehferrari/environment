@@ -15,6 +15,11 @@ import { revalidateTaskShell } from "@/lib/tasks/cache";
 import { ensureTaskCodeWorktree, TaskWorktreeError } from "@/lib/tasks/worktree-claim";
 import { activeFormalBlockersByTask } from "@/lib/tasks/formal-blocker";
 import {
+  REPOSITORY_FINALIZATION_FENCE_MESSAGE,
+  repositoryFinalizationFenceSelect,
+  repositoryFinalizationOwnsTask,
+} from "@/lib/tasks/repository-finalization";
+import {
   transitionTask,
   type TaskTransitionIntent,
   type TaskWorkflowStatus,
@@ -137,7 +142,7 @@ async function moveTask(
       approvedOn: true,
       deletedAt: true,
       epicId: true,
-      repositoryRun: { select: { phase: true } },
+      repositoryRun: { select: repositoryFinalizationFenceSelect },
       project: { select: { slug: true, onlyReportersCanApproveActionPlans: true, onlyReportersCanSetTasksDone: true } },
       epic: { select: { status: true, actingManagerId: true } },
     },
@@ -186,11 +191,11 @@ async function moveTask(
     return { ok: true };
   }
 
-  if (current.repositoryRun?.phase === "finalizing") {
+  if (repositoryFinalizationOwnsTask(current.repositoryRun)) {
     return {
       ok: false,
       code: "EXPLICIT_USER_ACTION_REQUIRED",
-      message: "Repository finalization is running; wait for it to complete before changing status.",
+      message: REPOSITORY_FINALIZATION_FENCE_MESSAGE,
     };
   }
 
@@ -226,7 +231,7 @@ async function moveTask(
     }
   }
 
-  if (current.status === "Review" && status === "Done" && (actor.isOwner || actor.kind === "agent")) {
+  if (current.status === "Review" && status === "Done") {
     const actorUser = await db.user.findUnique({ where: { id: actor.id }, select: { username: true } });
     const completion = await completeReviewedTaskAndAssignNext({
       taskId,

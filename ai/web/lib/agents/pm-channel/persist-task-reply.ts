@@ -4,6 +4,8 @@
 
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
+import { isPmTerminalFailureText, modelFallbackActivityText } from "@/lib/agents/ops/pm-silence";
+import { recordModelFallbackActivity } from "@/lib/agents/ops/model-fallback-activity";
 import type { PmChannelReplyTarget } from "@/lib/agents/pm-channel/openclaw";
 import { pmChannelRunTargetKey } from "@/lib/agents/pm-channel/bus";
 import { normalizeDiscussionReplySections } from "@/lib/agents/chat/discussion-reply-format";
@@ -86,6 +88,16 @@ export async function persistTaskReply(
     return { status: 403, body: { error: "Agent not active" } };
   }
 
+  // Defense in depth for callers that bypass the HTTP callback classifier:
+  // runtime failures are never a durable human-visible contribution.
+  if (isPmTerminalFailureText(body)) {
+    return {
+      status: 200,
+      body: { ok: true, terminalFailure: true, persisted: false },
+      streamText: "",
+    };
+  }
+
   const origin = await resolveTaskReplyOrigin({
     messageId: target.messageId,
     taskId: target.taskId,
@@ -139,6 +151,27 @@ export async function persistTaskReply(
   const runId = runProvenance?.id ?? null;
   const runProvider = runProvenance?.provider ?? null;
   const runModel = runProvenance?.model ?? null;
+
+  const fallbackMessage = modelFallbackActivityText(persistedBody);
+  if (fallbackMessage) {
+    const activity = await recordModelFallbackActivity({
+      agentUserId: agentUser.id,
+      agentSlug: target.agentSlug,
+      projectId: original.projectId,
+      taskId: target.taskId,
+      messageId: target.messageId,
+      message: fallbackMessage,
+      driver: "openclaw-pm-channel",
+      runId,
+      provider: runProvider,
+      model: runModel,
+    });
+    return {
+      status: 200,
+      body: { ok: true, modelFallback: true, ...activity },
+      streamText: "",
+    };
+  }
 
   const reply = await db.$transaction(async (tx) => {
     if (origin.channel === "comment") {

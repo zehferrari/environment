@@ -1773,6 +1773,28 @@ def _pm_latest_comment_by(conn, task_id, user_id, since_s):
     return None
 
 
+def _pm_repository_finalization_owns_task(row):
+    """Return true after one immutable repository candidate was accepted.
+
+    Operational cleanup failures retain reviewedSha. They are operator-owned
+    finalization state, not informal reviewer feedback and not permission to
+    reopen implementation.
+    """
+    values = dict(row)
+    phase = values.get("repositoryPhase")
+    if phase not in ("finalizing", "operational_error", "completed"):
+        return False
+    accepted_candidate = (
+        values.get("repositoryCandidateSha")
+        if values.get("repositoryRepoTouched") == 1
+        else values.get("repositoryBaseSha")
+    )
+    return bool(
+        accepted_candidate
+        and values.get("repositoryReviewedSha") == accepted_candidate
+    )
+
+
 def _pm_latest_blocker_activity(conn, task_id):
     try:
         return conn.execute(
@@ -2069,6 +2091,11 @@ def probe_pm_workflow(cfg, registry):
               e.status AS epicStatus,
               e.statusChangedAt AS epicStatusChangedAt,
               e.actingManagerId AS epicManagerId,
+              tr.phase AS repositoryPhase,
+              tr.repo_touched AS repositoryRepoTouched,
+              tr.base_sha AS repositoryBaseSha,
+              tr.candidate_sha AS repositoryCandidateSha,
+              tr.reviewed_sha AS repositoryReviewedSha,
               (
                 SELECT owner.username
                 FROM User owner
@@ -2088,6 +2115,7 @@ def probe_pm_workflow(cfg, registry):
             LEFT JOIN Epic e ON e.id = t.epicId
             LEFT JOIN User er ON er.id = e.actingManagerId
             LEFT JOIN Agent era ON era.id = er.agentId
+            LEFT JOIN task_repository_runs tr ON tr.task_id = t.id
             WHERE t.deletedAt IS NULL
               AND p.deletedAt IS NULL
               AND t.parentTaskId IS NULL
@@ -2520,6 +2548,13 @@ def probe_pm_workflow(cfg, registry):
                 continue
 
             if status == "Review":
+                # Once reviewedSha records acceptance, repository finalization
+                # owns the Task even if cleanup moved the repository phase to
+                # operational_error. A reviewer comment describing that error
+                # is not implementation feedback; waking review_feedback here
+                # would invalidate a candidate PM may already have merged.
+                if _pm_repository_finalization_owns_task(row):
+                    continue
                 status_s = _parse_pm_ts(row["statusChangedAt"])
                 feedback = _pm_latest_comment_by(conn, row["id"], reviewer_id, status_s)
                 if feedback and row["assigneeId"] and assignee_slug:

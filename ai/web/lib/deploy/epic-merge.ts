@@ -1575,6 +1575,7 @@ async function executeFinalizeJob(
     await recordTaskReviewOperationalError({
       taskId: task.id,
       error: "No active Monitor Agent is available to finalize the reviewed repository branch.",
+      preserveValidationOutcome: true,
     });
     return { taskId: task.id, outcome: "operational-error" as const };
   }
@@ -1582,7 +1583,12 @@ async function executeFinalizeJob(
 
   const fail = async (reason: string, operational = false) => {
     if (operational) {
-      await recordTaskReviewOperationalError({ taskId: task.id, actor, error: reason });
+      await recordTaskReviewOperationalError({
+        taskId: task.id,
+        actor,
+        error: reason,
+        preserveValidationOutcome: true,
+      });
       const attempt = job.attempt ?? 0;
       if (attempt < 2) {
         await enqueueEpicMergeJob({

@@ -952,6 +952,15 @@ Live monitor ticks must be single-instance locked. `--dry-run` and
 `--probe-only` must not write monitor state, otherwise debugging can
 accidentally suppress recovery or duplicate nudges.
 
+An accepted repository review keeps ownership of the Task across
+`finalizing`, `operational_error`, and the short completed-before-Done window.
+The durable `reviewedSha` is the fence: reviewer comments describing cleanup
+or publication failures are not implementation feedback, and the semantic
+monitor must not turn them into `review_feedback` or wake a fresh review loop.
+After an operator fixes the reported cause, retry `review_done` for the same
+immutable candidate; never send an already merged Epic child back through
+`ready_for_review`.
+
 **Replicating on a new AI server:**
 
 - Keep host secrets and literal runtime users out of git.

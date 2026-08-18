@@ -20,7 +20,7 @@
 //
 //   E1  the fixture itself is intact and carries no secrets
 //   E2  the sequence seeds into a throwaway database, row for row
-//   E3  the outage turn: a compaction failure is retried, never settled complete
+//   E3  the outage turn: a compaction failure retires its poisoned episode
 //   E4  the abandoned lease is now reaped by the watchdog, not by a human
 //   E5  a blocker round is fail-soft: the task waits, it does not fail
 //   E6  the invariant checker can see the outage shape in the replayed history
@@ -763,11 +763,10 @@ async function main(): Promise<void> {
     // and then did nothing with the turn — the run stayed non-terminal, and the
     // work only resumed because a human posted a comment 28 minutes later.
     //
-    // What must happen now: the same error text is CLASSIFIED as a retryable
-    // turn failure, the turn is put back on its own retry ladder with a rotated
-    // session (re-entering the overflowed one would overflow again), the run is
-    // marked failed rather than complete, durable progress is untouched, and
-    // the ladder is bounded so a repeating failure escalates instead of looping.
+      // What must happen now: the same error text is CLASSIFIED as a retryable
+      // turn failure, but task execution never replays the poisoned transport
+      // turn. PM closes that bounded episode, opens exactly one fresh successor,
+      // marks the old run failed rather than complete, and preserves durable work.
     // ------------------------------------------------------------------
     {
       const c: ScenarioCase = report.case("E3", "the outage's compaction failure is retried, never settled complete");
@@ -807,44 +806,61 @@ async function main(): Promise<void> {
 
       const before = await db.pmChannelJob.findFirstOrThrow({
         where: { run: { targetKey } },
-        select: { id: true, payload: true, attemptCount: true },
+        select: { id: true, attemptCount: true },
       });
       c.assertEqual(before.attemptCount, 1, "the claim counted as the turn's first attempt");
-      const sessionBefore = (JSON.parse(before.payload) as { sessionKey?: string }).sessionKey;
       const progressBefore = await readTaskProgress(db, seededTask.id);
 
       const first = await retryOrFailPmChannelJobForTurnFailure({
         targetKey,
         error: outage.error,
       });
-      c.assertEqual(first, "retried", "the compaction failure is retried, not failed outright");
+      c.assertEqual(first, "retried", "task execution continues through a fresh episode");
 
       const jobs = await db.pmChannelJob.findMany({ where: { run: { targetKey } } });
-      c.assertEqual(jobs.length, 1, "the retry reuses ONE job — the turn is continued, not duplicated");
-      c.assertEqual(jobs[0].id, before.id, "it is the same job row, so turn identity survives");
-      c.assertEqual(jobs[0].status, "retryable", "the turn is scheduled to run again");
-      const sessionAfter = (JSON.parse(jobs[0].payload) as { sessionKey?: string }).sessionKey;
-      c.assert(
-        sessionAfter && sessionAfter !== sessionBefore,
-        "the retry rotates the session — the overflowed one would overflow again",
-      );
+      c.assertEqual(jobs.length, 1, "the poisoned turn is not duplicated");
+      c.assertEqual(jobs[0].id, before.id, "the historical turn identity remains auditable");
+      c.assertEqual(jobs[0].status, "failed", "the poisoned transport job is never replayed");
 
       const run = await db.pmChannelRun.findUniqueOrThrow({
         where: { targetKey },
-        select: { status: true, disposition: true, completedAt: true },
+        select: { status: true, disposition: true, completedAt: true, finishedReason: true },
       });
-      c.assertEqual(run.status, "queued", "the dead turn remains non-terminal while retry is pending");
+      c.assertEqual(run.status, "failed", "the dead transport turn settles terminally");
       c.assertEqual(
         run.disposition,
         "continue",
-        "and records an explicit continuation disposition",
+        "while the task execution records an explicit continuation disposition",
+      );
+      c.assertEqual(
+        run.finishedReason,
+        "context_pressure_episode_recovered",
+        "the cause and recovery path are auditable",
       );
       c.assertEqual(run.completedAt, null, "nothing about it claims completion");
+
+      const recoveredEpisodes = await db.taskExecutionEpisode.findMany({
+        where: { taskId: seededTask.id, agentSlug: world.agentSlug },
+        orderBy: { episodeNo: "desc" },
+        take: 2,
+      });
+      c.assertEqual(recoveredEpisodes.length, 2, "one successor episode was opened");
+      c.assertEqual(recoveredEpisodes[0].status, "open", "the successor is ready to resume work");
+      c.assertEqual(recoveredEpisodes[0].sessionKey, null, "it inherits no poisoned session");
+      c.assertEqual(
+        recoveredEpisodes[1].closeReason,
+        "context_pressure_recovery",
+        "the poisoned episode records why it was retired",
+      );
+      const recoveryContinuations = await db.pmChannelContinuation.findMany({
+        where: { run: { targetKey }, action: "context_pressure_recovery" },
+      });
+      c.assertEqual(recoveryContinuations.length, 1, "exactly one durable recovery turn is queued");
 
       // Fail-soft means the WORK is untouched. Everything durable the task had
       // banked over three weeks has to survive an interrupted turn.
       const progressAfter = await readTaskProgress(db, seededTask.id);
-      c.assertEqual(progressAfter.status, "In Progress", "the task keeps its status across the retry");
+      c.assertEqual(progressAfter.status, "In Progress", "the task keeps its status across recovery");
       c.assertEqual(
         progressAfter.checklist,
         meta.rowCounts.subTasks,
@@ -853,42 +869,7 @@ async function main(): Promise<void> {
       c.assertEqual(
         progressAfter.comments,
         progressBefore.comments,
-        "no durable comment was invented or lost by the retry",
-      );
-
-      // Bounded: a repeating compaction failure escalates instead of looping,
-      // which is the difference between fail-soft and fail-forever. The second
-      // attempt is claimed for real too — the backoff is rewound rather than
-      // waited out, because the bound under test is the attempt COUNT, not the
-      // delay.
-      await db.pmChannelJob.update({
-        where: { id: before.id },
-        data: { availableAt: new Date(Date.now() - MINUTE_MS) },
-      });
-      const claimedSecond = await claimNextPmChannelJob("replay-e3-worker");
-      c.assert(claimedSecond, "the retried turn is claimable again");
-      c.assertEqual(claimedSecond!.attemptCount, 2, "the retry is the turn's second attempt");
-
-      const second = await retryOrFailPmChannelJobForTurnFailure({
-        targetKey,
-        error: outage.error,
-      });
-      c.assertEqual(second, "exhausted", "the ladder is bounded");
-      const exhausted = await db.pmChannelRun.findUniqueOrThrow({
-        where: { targetKey },
-        select: { disposition: true, finishedReason: true },
-      });
-      c.assertEqual(exhausted.disposition, "failed", "exhaustion records the failed disposition");
-      c.assertEqual(
-        exhausted.finishedReason,
-        "turn_failure_exhausted",
-        "the terminal reason names the exhausted ladder, so the cause is auditable",
-      );
-      const stillIntact = await readTaskProgress(db, seededTask.id);
-      c.assertEqual(
-        stillIntact.checklist,
-        meta.rowCounts.subTasks,
-        "escalation does not discard banked progress either",
+        "no durable comment was invented or lost by recovery",
       );
     }
 

@@ -12,7 +12,8 @@ import {
   pmChannelRunTargetKey,
   recordPmChannelRunQueued,
 } from "@/lib/agents/pm-channel/runs";
-import { publishPmChannelStreamEventDurably } from "@/lib/agents/pm-channel/stream-log";
+import { publishPmChannelStreamEvent } from "@/lib/agents/pm-channel/stream";
+import { enqueuePmChannelStreamDurability } from "@/lib/agents/pm-channel/stream-log";
 import {
   rollbackDispatchedMessageId,
   rotateAgentSessionBinding,
@@ -212,12 +213,18 @@ async function appendAndPublishStatus(args: {
   runStatus: "queued" | "accepted" | "completed" | "failed" | "timed_out" | "cancelled" | "superseded";
   error?: string | null;
 }) {
-  publishPmChannelStreamEventDurably({
+  const input = {
     target: args.payload.replyTarget,
-    event: "status",
+    event: "status" as const,
     runStatus: args.runStatus,
     error: args.error ?? undefined,
-  });
+  };
+  // Publishing remains immediate for in-process subscribers, but callers
+  // must not return/disconnect their Prisma client until the durable frame is
+  // stored. The old fire-and-forget helper left short-lived CLI producers
+  // (`pm-workflow-nudge`) retrying forever against a disconnected engine.
+  publishPmChannelStreamEvent(input);
+  await enqueuePmChannelStreamDurability(input);
 }
 
 export async function enqueueOpenClawPmChannelTurn(
@@ -378,7 +385,65 @@ export async function claimNextPmChannelJob(workerId: string) {
   });
 }
 
+/**
+ * Reconcile the job half of already-terminal runs.
+ *
+ * Run settlement and job settlement historically happened in separate paths.
+ * A crash or an older writer could therefore leave an `accepted`/`claimed`
+ * job attached to a failed, timed-out, cancelled, or superseded run. The
+ * file-drop envelope for that job remains durable and can arrive much later;
+ * unless the job is terminal too, it keeps trying to resurrect a dead run and
+ * can monopolise the active task/agent lane.
+ */
+export async function settleTerminalRunPmChannelJobs(now = new Date()) {
+  const [completed, failed, canceled] = await db.$transaction([
+    db.pmChannelJob.updateMany({
+      where: {
+        status: { in: ["queued", "claimed", "accepted", "retryable"] },
+        run: { status: "completed" },
+      },
+      data: {
+        status: "complete",
+        claimedBy: null,
+        claimedAt: null,
+        completedAt: now,
+        lastError: null,
+      },
+    }),
+    db.pmChannelJob.updateMany({
+      where: {
+        status: { in: ["queued", "claimed", "accepted", "retryable"] },
+        run: { status: { in: ["failed", "timed_out"] } },
+      },
+      data: {
+        status: "failed",
+        claimedBy: null,
+        claimedAt: null,
+        completedAt: now,
+        lastError: "run was already terminal before job settlement",
+      },
+    }),
+    db.pmChannelJob.updateMany({
+      where: {
+        status: { in: ["queued", "claimed", "accepted", "retryable"] },
+        run: { status: { in: ["cancelled", "superseded"] } },
+      },
+      data: {
+        status: "canceled",
+        claimedBy: null,
+        claimedAt: null,
+        completedAt: now,
+        lastError: "run was already cancelled or superseded before job settlement",
+      },
+    }),
+  ]);
+  return completed.count + failed.count + canceled.count;
+}
+
 export async function requeueStaleClaimedPmChannelJobs(now = new Date()) {
+  // Repair terminal-run orphans before considering lease recovery. They are
+  // not retry candidates, regardless of job age or attempt count.
+  await settleTerminalRunPmChannelJobs(now);
   const staleClaimedBefore = new Date(now.getTime() - claimTimeoutMs());
   // Dispatch claims should be short, but an accepted gateway turn is already
   // executing and may legitimately spend many minutes in tools before its
@@ -472,18 +537,10 @@ export async function runPmChannelJob(job: NonNullable<Awaited<ReturnType<typeof
     where: { id: job.runId },
     select: { status: true },
   });
-  if (currentRun?.status === "cancelled") {
-    await db.pmChannelJob.update({
-      where: { id: job.id },
-      data: {
-        status: "canceled",
-        claimedBy: null,
-        claimedAt: null,
-        completedAt: new Date(),
-        lastError: null,
-      },
-    });
-    await appendAndPublishStatus({ payload, runStatus: "cancelled" });
+  // The run may have been superseded after this worker claimed its job. Never
+  // dispatch a terminal or already-accepted generation a second time.
+  if (!currentRun || currentRun.status !== "queued") {
+    await settleTerminalRunPmChannelJobs();
     return { ok: true, status: 200, driver: "openclaw-pm-channel" } satisfies SendPmChannelTurnResult;
   }
   // Jobs are durable and may outlive a policy change. Re-check human
@@ -986,5 +1043,7 @@ export async function pmChannelQueueStats() {
 export async function appendPmChannelCompletionEvent(target: unknown) {
   const parsed = parsePmChannelReplyTarget(target);
   if (!parsed) return;
-  publishPmChannelStreamEventDurably({ target: parsed, event: "done", runStatus: "completed" });
+  const input = { target: parsed, event: "done" as const, runStatus: "completed" as const };
+  publishPmChannelStreamEvent(input);
+  await enqueuePmChannelStreamDurability(input);
 }

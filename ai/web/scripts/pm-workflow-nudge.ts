@@ -4,6 +4,10 @@ import {
   type TaskWorkflowNotificationReason,
 } from "@/lib/agents/workflow/notifications/task";
 import { startApprovedTodoTaskIfIdle } from "@/lib/tasks/auto-start";
+import {
+  repositoryFinalizationFenceSelect,
+  repositoryFinalizationOwnsTask,
+} from "@/lib/tasks/repository-finalization";
 
 type Args = {
   taskId?: string;
@@ -139,6 +143,7 @@ async function main() {
         statusChangedAt: true,
         approvedOn: true,
         deletedAt: true,
+        repositoryRun: { select: repositoryFinalizationFenceSelect },
         project: { select: { slug: true } },
         assignee: { select: { agent: { select: { slug: true } } } },
         actingManager: { select: { agent: { select: { slug: true } } } },
@@ -180,6 +185,18 @@ async function main() {
       kind: args.kind,
       status: task.status,
       reason: `incident-stale-task-is-${task.status}`,
+    });
+    return;
+  }
+
+  if (args.kind?.startsWith("pm-review-") && repositoryFinalizationOwnsTask(task.repositoryRun)) {
+    skip({
+      taskId: task.id,
+      project: task.project.slug,
+      agent: args.agent,
+      kind: args.kind,
+      status: task.status,
+      reason: "accepted-repository-finalization-owns-review",
     });
     return;
   }

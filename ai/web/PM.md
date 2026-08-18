@@ -879,7 +879,11 @@ Concrete finalization failure:
 
 Operational failure retries twice after the initial attempt. After three total
 attempts the Task remains `Review`, phase `operational_error`, with reporter
-alert/evidence for operator recovery.
+alert/evidence for operator recovery. The accepted `reviewedSha` and immutable
+`ReviewRun` remain authoritative: `review_feedback`, board moves, and fallback
+review nudges may not reopen the Task. Once the operator fixes the reported
+cause, the resolved Done owner retries `review_done`; PM requeues finalization
+for that same candidate without sending the branch through validation again.
 
 ## Epic queue behavior
 

@@ -28,6 +28,28 @@ export function resolveDoneOwnerId(task: ReviewOwnerTask): string | null {
   return resolveReviewOwnerId(task);
 }
 
+/**
+ * Done is a review decision, never a generic agent/admin capability. Keep the
+ * full decision-owner set here so every transport reaches the same boundary:
+ * task reporter, task acting manager, and the actionable Epic acting manager
+ * (the resolved reviewer fallback). Projects with the reporter-only policy
+ * deliberately narrow that set to the reporter.
+ */
+export function canSetTaskDoneForActor(
+  task: ReviewOwnerTask,
+  actorId: string,
+): boolean {
+  if (task.project?.onlyReportersCanSetTasksDone) {
+    return actorId === task.reporterId;
+  }
+  return actorId === task.reporterId
+    || actorId === task.actingManagerId
+    || (
+      isActionableEpicStatus(task.epic?.status)
+      && actorId === task.epic?.actingManagerId
+    );
+}
+
 export function canApproveActionPlanForActor(
   task: ReviewOwnerTask,
   actorId: string,

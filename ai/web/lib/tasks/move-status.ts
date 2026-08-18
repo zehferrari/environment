@@ -30,6 +30,11 @@ import {
 } from "@/lib/tasks/transition-kernel";
 import { drainWorkflowOutbox } from "@/lib/tasks/workflow-outbox-drain";
 import { unresolvedTaskPrerequisites } from "@/lib/tasks/blocking";
+import {
+  REPOSITORY_FINALIZATION_FENCE_MESSAGE,
+  repositoryFinalizationFenceSelect,
+  repositoryFinalizationOwnsTask,
+} from "@/lib/tasks/repository-finalization";
 
 const TASK_STATUSES: readonly string[] = [
   "Backlog",
@@ -93,7 +98,7 @@ export async function moveTaskStatus(
       },
       branchName: true,
       workItemKey: true,
-      repositoryRun: { select: { phase: true } },
+      repositoryRun: { select: repositoryFinalizationFenceSelect },
       epic: { select: { status: true, actingManagerId: true, branchName: true, workItemKey: true } },
     },
   });
@@ -138,11 +143,11 @@ export async function moveTaskStatus(
     return { ok: true };
   }
 
-  if (current.repositoryRun?.phase === "finalizing") {
+  if (repositoryFinalizationOwnsTask(current.repositoryRun)) {
     return {
       ok: false,
       code: "EXPLICIT_USER_ACTION_REQUIRED",
-      message: "Repository finalization is running; wait for it to complete before changing status.",
+      message: REPOSITORY_FINALIZATION_FENCE_MESSAGE,
     };
   }
 
@@ -211,7 +216,7 @@ export async function moveTaskStatus(
     }
   }
 
-  if (current.status === "Review" && status === "Done" && (actor.isOwner || actor.kind === "agent")) {
+  if (current.status === "Review" && status === "Done") {
     const actorUser = await db.user.findUnique({
       where: { id: actor.id },
       select: { username: true },

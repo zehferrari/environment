@@ -21,6 +21,7 @@
 import { db } from "@/lib/db";
 import { effectiveCommitPrefix, effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
 import { effectiveEpicBranchName, effectiveTaskBranchName } from "@/lib/work-items/branches";
+import { isActionableEpicStatus } from "@/lib/tasks/workflow-actors";
 
 export type TaskContextHistoryMode = "recent" | "full";
 
@@ -272,6 +273,10 @@ export async function buildTaskContextJson(
   });
   if (!task) return null;
 
+  const resolvedReviewer = task.actingManager
+    ?? (isActionableEpicStatus(task.epic?.status) ? task.epic?.actingManager ?? null : null)
+    ?? task.reporter;
+
   const [comments, liveChats, activity, taskAttachments, epicAttachments] = await Promise.all([
     db.comment.findMany({
       where: { taskId, deletedAt: null },
@@ -398,7 +403,7 @@ export async function buildTaskContextJson(
       createdAt: task.createdAt.toISOString(),
       updatedAt: task.updatedAt.toISOString(),
       assignee: actor(task.assignee),
-      reviewer: actor(task.actingManager),
+      reviewer: actor(resolvedReviewer),
       reporter: actor(task.reporter),
     },
     project: {

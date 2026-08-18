@@ -118,6 +118,9 @@ TELEGRAM_LOG_WINDOW = "-10min"
 PUBLIC_DEV_HEALTH_URL = "https://dev.vixi.au/webhooks/health"
 PUBLIC_DEV_HEALTH_UA = "Mozilla/5.0"
 WATCH_EXPIRY_WARN_HOURS = 24
+MODEL_AUTH_REFRESH_WARN_SECONDS = 7 * 24 * 60 * 60
+OPENCLAW_BINARY = "/usr/local/bin/openclaw"
+RUNUSER_BINARY = "/usr/sbin/runuser"
 REMEDIATION_ENABLED = True  # Auto-restart failed services
 REMEDIATION_COOLDOWN_SECONDS = 120  # Don't restart same service within 2 minutes
 REMEDIATION_LOG_FILE = Path("/var/log/openclaw-remediation.log")
@@ -511,65 +514,164 @@ def check_telegram(user, openclaw_cfg):
     check_recent_telegram_logs(user)
 
 
-def check_openai_auth(user):
-    auth_path = Path(f"/home/{user}/.openclaw/agents/main/agent/auth.json")
-    if not auth_path.exists():
-        emit("OK", f"{user}: no OpenAI auth file (not using OpenAI OAuth)")
-        return
-    try:
-        auth_data = load_json_file(auth_path)
-    except Exception as exc:
-        emit("FAIL", f"{user}: unable to parse auth file ({trim(str(exc))})")
-        return
-    if not auth_data:
-        emit("OK", f"{user}: auth file is empty (no OAuth providers)")
-        return
+def json_object_with_key(text, required_key):
+    """Extract one JSON object from CLI output that may include plugin notices.
 
-    for provider, cred in auth_data.items():
-        if not isinstance(cred, dict) or cred.get("type") != "oauth":
+    OpenClaw can print ANSI-coloured plugin discovery warnings before its JSON
+    document. Never log the raw output here: model-status JSON may include
+    credential-bearing provider metadata.
+    """
+    decoder = json.JSONDecoder()
+    for pos, char in enumerate(text or ""):
+        if char != "{":
             continue
-
-        expires_ms = cred.get("expires")
-        if not expires_ms:
-            emit("WARN", f"{user}: {provider} OAuth entry has no expiry field")
-            continue
-
         try:
-            expires_dt = datetime.fromtimestamp(int(expires_ms) / 1000, timezone.utc)
-        except Exception:
-            emit("FAIL", f"{user}: {provider} OAuth expiry is not a valid timestamp")
+            value, _end = decoder.raw_decode(text[pos:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict) and required_key in value:
+            return value
+    return None
+
+
+def run_as_user(user, home, argv, timeout=20):
+    return run(
+        [RUNUSER_BINARY, "-u", user, "--", "env", f"HOME={home}", *argv],
+        timeout=timeout,
+    )
+
+
+def model_providers_in_use(status):
+    models = [status.get("defaultModel"), *(status.get("fallbacks") or [])]
+    return {
+        model.split("/", 1)[0]
+        for model in models
+        if isinstance(model, str) and "/" in model
+    }
+
+
+def check_native_claude_auth(user, home):
+    claude_binary = Path(home) / ".local" / "bin" / "claude"
+    if not claude_binary.exists():
+        emit("FAIL", f"{user}: claude-cli is in the active model chain but {claude_binary} is missing")
+        return False
+
+    rc, out, _err = run_as_user(
+        user,
+        home,
+        [str(claude_binary), "auth", "status"],
+        timeout=20,
+    )
+    native_status = json_object_with_key(out, "loggedIn") if rc == 0 else None
+    if not native_status or native_status.get("loggedIn") is not True:
+        emit(
+            "FAIL",
+            f"{user}: Claude CLI login is unavailable — run `claude auth login`, then "
+            "`openclaw models auth login --provider anthropic --method cli --force`",
+        )
+        return False
+
+    credential_path = Path(home) / ".claude" / ".credentials.json"
+    try:
+        oauth = (load_json_file(credential_path) or {}).get("claudeAiOauth") or {}
+    except Exception as exc:
+        emit("FAIL", f"{user}: unable to inspect Claude renewal metadata ({trim(str(exc))})")
+        return False
+
+    if not (oauth.get("refreshToken") or "").strip():
+        emit("FAIL", f"{user}: Claude CLI is logged in but has no renewable refresh token")
+        return False
+
+    refresh_expires_ms = oauth.get("refreshTokenExpiresAt")
+    if not refresh_expires_ms:
+        emit("WARN", f"{user}: Claude CLI refresh token has no recorded expiry")
+        return True
+    try:
+        refresh_expires = datetime.fromtimestamp(
+            int(refresh_expires_ms) / 1000,
+            timezone.utc,
+        )
+    except Exception:
+        emit("FAIL", f"{user}: Claude CLI refresh-token expiry is invalid")
+        return False
+
+    remaining = (refresh_expires - datetime.now(timezone.utc)).total_seconds()
+    if remaining <= 0:
+        emit("FAIL", f"{user}: Claude CLI refresh token expired — browser re-authentication is required")
+        return False
+    if remaining <= MODEL_AUTH_REFRESH_WARN_SECONDS:
+        emit(
+            "WARN",
+            f"{user}: Claude CLI refresh token expires in {remaining / 86400:.1f}d "
+            f"({refresh_expires.isoformat()}) — renew before it lapses",
+        )
+        return True
+
+    emit(
+        "OK",
+        f"{user}: Claude CLI login is renewable; refresh credential valid for "
+        f"{remaining / 86400:.1f}d ({refresh_expires.isoformat()})",
+    )
+    return True
+
+
+def check_model_auth(user, home):
+    """Inspect the current SQLite-backed auth store and native CLI routes.
+
+    The former check read only `auth.json`, which OpenClaw no longer uses. It
+    therefore reported a healthy-looking "no auth file" while an active
+    claude-cli profile had been expired for weeks.
+    """
+    rc, out, _err = run_as_user(
+        user,
+        home,
+        [OPENCLAW_BINARY, "models", "status", "--json"],
+        timeout=30,
+    )
+    status = json_object_with_key(out, "configPath") if rc == 0 else None
+    if not status:
+        emit("FAIL", f"{user}: unable to inspect active OpenClaw model authentication")
+        return
+
+    auth = status.get("auth") or {}
+    active_providers = model_providers_in_use(status)
+    missing = set(auth.get("missingProvidersInUse") or [])
+    for provider in sorted(active_providers & missing):
+        emit("FAIL", f"{user}: active model provider {provider} has no usable credential")
+
+    provider_status = {
+        item.get("provider"): item
+        for item in ((auth.get("oauth") or {}).get("providers") or [])
+        if isinstance(item, dict) and item.get("provider")
+    }
+
+    for provider in sorted(active_providers - missing):
+        if provider == "claude-cli":
+            check_native_claude_auth(user, home)
             continue
 
-        now = datetime.now(timezone.utc)
-        remaining = (expires_dt - now).total_seconds()
-
-        if remaining <= 0:
-            days_ago = -remaining / 86400
-            access_token = (cred.get("access") or "").strip()
-            has_refresh = bool((cred.get("refresh") or "").strip())
-            # Try a lightweight API probe to see if the token still works
-            probe_ok = False
-            if access_token:
-                try:
-                    status, data, body = http_json(
-                        "https://api.openai.com/v1/models?limit=1",
-                        headers={"Authorization": f"Bearer {access_token}", "User-Agent": PUBLIC_DEV_HEALTH_UA},
-                        timeout=10,
-                    )
-                    probe_ok = status == 200
-                except Exception:
-                    pass
-
-            if probe_ok:
-                emit("WARN", f"{user}: {provider} OAuth file expired {days_ago:.0f}d ago but API probe succeeded (runtime refresh working)")
-            elif has_refresh:
-                emit("FAIL", f"{user}: {provider} OAuth expired {days_ago:.0f}d ago; API probe failed (refresh token may be stale — re-authenticate)")
-            else:
-                emit("FAIL", f"{user}: {provider} OAuth expired {days_ago:.0f}d ago with no refresh token")
-        elif remaining < 3600:
-            emit("WARN", f"{user}: {provider} OAuth expires in {remaining / 60:.0f} minutes")
+        item = provider_status.get(provider)
+        if not item:
+            # Providers with environment/plugin-owned credentials need not
+            # appear in oauth.providers; missingProvidersInUse is authoritative.
+            emit("OK", f"{user}: active model provider {provider} has usable runtime auth")
+            continue
+        state = item.get("status") or "unknown"
+        expires_ms = item.get("expiresAt")
+        expiry = ""
+        if expires_ms:
+            try:
+                expiry = datetime.fromtimestamp(int(expires_ms) / 1000, timezone.utc).isoformat()
+            except Exception:
+                expiry = "invalid expiry"
+        if state == "expired":
+            emit("FAIL", f"{user}: active model provider {provider} OAuth expired ({expiry or 'unknown expiry'})")
+        elif state == "expiring":
+            emit("WARN", f"{user}: active model provider {provider} OAuth is expiring ({expiry or 'unknown expiry'})")
+        elif state in {"ok", "static"}:
+            emit("OK", f"{user}: active model provider {provider} auth is {state}")
         else:
-            emit("OK", f"{user}: {provider} OAuth valid until {expires_dt.isoformat()}")
+            emit("WARN", f"{user}: active model provider {provider} auth status is {state}")
 
 
 def check_bitbucket(user, user_cfg, workspace, repo):
@@ -1006,8 +1108,10 @@ def main():
             check_telegram(user, openclaw_cfg)
         if integrations.get("gmail"):
             check_google(user, openclaw_cfg)
-        if integrations.get("openaiAuth"):
-            check_openai_auth(user)
+        # Inspect the providers the configured default/fallback chain can
+        # actually select. This covers SQLite-backed OpenAI OAuth and native
+        # claude-cli renewal state regardless of legacy integration flags.
+        check_model_auth(user, user_cfg["home"])
         # Outbound API token checks are only meaningful for coding agents
         # (who actually call Jira/Bitbucket). The monitor agent may have
         # integrations.jira/bitbucket=true to gate its inbound RECEIVERS

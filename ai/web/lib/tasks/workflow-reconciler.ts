@@ -12,6 +12,7 @@ export type WorkflowReconciliationKind =
   | "outbox_delivery_failed"
   | "repository_effect_missing"
   | "repository_projection_stale"
+  | "review_handoff_missing"
   | "review_lease_missing"
   | "review_completion_missing"
   | "done_repository_incomplete"
@@ -140,7 +141,7 @@ export async function runWorkflowReconciliation(options: {
       ...(options.projectId ? { projectId: options.projectId } : {}),
       OR: [
         { status: { in: ["Review", "Done"] } },
-        { repositoryRun: { is: { phase: { in: ["validating", "finalizing"] } } } },
+        { repositoryRun: { is: { phase: { in: ["validating", "review_ready", "finalizing"] } } } },
         { workflowOutbox: { some: { status: { in: ["queued", "dispatching", "failed"] } } } },
       ],
     },
@@ -257,6 +258,38 @@ export async function runWorkflowReconciliation(options: {
           rowId: effect.id,
           detail: `${effectType} was projected, but repository state remained ${repository.phase}`,
           repair: "requeue",
+          repaired: false,
+          error: null,
+        });
+      }
+    }
+
+    // A successful verifier projection must leave In Progress. If it does
+    // not, replay the already-recorded branch verification effect so the
+    // current worktree/candidate is checked again before PM retries the
+    // handoff. This is safer than inventing a Review transition from stale
+    // repository metadata and catches candidate-key replay bugs like V23-36.
+    if (
+      task.status === "In Progress"
+      && repository?.phase === "review_ready"
+      && repository.updatedAt.getTime() <= staleBefore.getTime()
+      && Boolean(repository.candidateSha)
+      && (repository.validationOutcome === "valid" || repository.validationOutcome === "valid_with_warning")
+    ) {
+      const verifyEffect = task.workflowOutbox.find((row) => row.effectType === "branch_verify");
+      // A recently queued/dispatched/completed verifier may still be
+      // projecting its result. Observe the normal stale grace before taking
+      // another action; only a missing effect is immediately irrecoverable.
+      if (!verifyEffect || (
+        verifyEffect.status === "completed"
+        && verifyEffect.updatedAt.getTime() <= staleBefore.getTime()
+      )) {
+        add({
+          kind: "review_handoff_missing",
+          taskId: task.id,
+          rowId: verifyEffect?.id ?? repository.id,
+          detail: "repository validation passed, but the task remained In Progress instead of entering Review",
+          repair: verifyEffect ? "requeue" : "escalate",
           repaired: false,
           error: null,
         });

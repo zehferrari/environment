@@ -208,7 +208,12 @@ async function moveToReviewAndDispatch(args: {
         from: "In Progress",
         to: "Review",
         source: args.via,
-        idempotencyKey: `review-ready:${reviewCandidateSha ?? `nonrepo-v${task.workflowVersion + 1}`}`,
+        // Candidate identity is immutable, but a candidate may legitimately
+        // enter a NEW review cycle after finalization failed and the task was
+        // returned through To Do/In Progress. Scope idempotency to this
+        // workflow edge, not forever to the SHA, while concurrent callbacks
+        // for the same edge still collapse onto one transition.
+        idempotencyKey: `review-ready:${reviewCandidateSha ?? "nonrepo"}:v${task.workflowVersion + 1}`,
         evidence: { validationOutcome: args.validationOutcome, candidateSha: reviewCandidateSha },
         taskData: { alertReporter: false },
         effects,
@@ -373,6 +378,7 @@ export async function recordTaskReviewOperationalError(args: {
   taskId: string;
   actor?: Actor | null;
   error: string;
+  preserveValidationOutcome?: boolean;
 }) {
   const task = await loadHandoffTask(args.taskId);
   if (!task) return;
@@ -392,7 +398,7 @@ export async function recordTaskReviewOperationalError(args: {
     });
     await updateTaskRepositoryState(task.id, {
       phase: "operational_error",
-      validationOutcome: "operational_error",
+      ...(args.preserveValidationOutcome ? {} : { validationOutcome: "operational_error" as const }),
       lastError: args.error,
     }, tx);
     await enqueueWorkflowEffects(tx, {

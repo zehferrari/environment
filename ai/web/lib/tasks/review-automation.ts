@@ -1,5 +1,5 @@
 import { db } from "@/lib/db";
-import { resolveDoneOwnerId, resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
+import { canSetTaskDoneForActor, resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { assignOpenEpicTasks, type EpicTaskAssignment } from "@/lib/epics/assignment";
 import {
   applyTaskTransition,
@@ -11,6 +11,8 @@ import {
   applyPmChannelRunWorkflowAction,
   type PmChannelWorkflowActionArgs,
 } from "@/lib/agents/pm-channel/runs";
+import { repositoryFinalizationOwnsTask } from "@/lib/tasks/repository-finalization";
+import { recordWorkflowActionExecutionState } from "@/lib/agents/watchdog/transitions";
 
 type Actor = {
   id: string;
@@ -70,6 +72,8 @@ export async function completeReviewedTaskAndAssignNext(args: {
           baseSha: true,
           candidateSha: true,
           reviewedSha: true,
+          validationOutcome: true,
+          version: true,
         },
       },
     },
@@ -78,8 +82,54 @@ export async function completeReviewedTaskAndAssignNext(args: {
   if (task.status !== "Review") return { completed: false as const, reason: "not_review" as const };
 
   const reviewerId = resolveReviewOwnerId(task);
-  const doneOwnerId = resolveDoneOwnerId(task);
-  if (args.requireReviewerUserId && doneOwnerId !== args.requireReviewerUserId) {
+  let completionActor = args.actor;
+
+  // Repository publication/cleanup is mechanical work, not review authority.
+  // Recover the accepted review principal so a monitor executing cleanup can
+  // never become the author of the eventual Done transition.
+  if (args.repositoryFinalized && task.project.repositoryPath && task.repositoryRun) {
+    const acceptedCandidate = task.repositoryRun.reviewedSha
+      ?? (task.repositoryRun.repoTouched
+        ? task.repositoryRun.candidateSha
+        : task.repositoryRun.baseSha);
+    if (!acceptedCandidate) {
+      return { completed: false as const, reason: "repository_candidate_missing" as const };
+    }
+    const acceptedReview = await db.reviewRun.findUnique({
+      where: { taskId_candidateSha: { taskId: task.id, candidateSha: acceptedCandidate } },
+      select: {
+        status: true,
+        reviewerId: true,
+      },
+    });
+    if (
+      !acceptedReview
+      || (acceptedReview.status !== "accepted" && acceptedReview.status !== "completed")
+      || !acceptedReview.reviewerId
+    ) {
+      return { completed: false as const, reason: "candidate_not_accepted" as const };
+    }
+    const acceptedReviewer = await db.user.findUnique({
+      where: { id: acceptedReview.reviewerId },
+      select: { id: true, username: true, kind: true },
+    });
+    if (
+      !acceptedReviewer
+      || (acceptedReviewer.kind !== "human" && acceptedReviewer.kind !== "agent")
+    ) {
+      return { completed: false as const, reason: "candidate_not_accepted" as const };
+    }
+    completionActor = {
+      id: acceptedReviewer.id,
+      username: acceptedReviewer.username,
+      kind: acceptedReviewer.kind,
+    };
+  }
+
+  if (!canSetTaskDoneForActor(task, completionActor.id)) {
+    return { completed: false as const, reason: "not_reviewer" as const };
+  }
+  if (args.requireReviewerUserId && completionActor.id !== args.requireReviewerUserId) {
     return { completed: false as const, reason: "not_reviewer" as const };
   }
 
@@ -88,7 +138,108 @@ export async function completeReviewedTaskAndAssignNext(args: {
   // and removes the local worktree. The runner calls this function again with
   // repositoryFinalized=true to perform the actual Done transition.
   if (task.project.repositoryPath && task.repositoryRun && !args.repositoryFinalized) {
-    if (task.repositoryRun?.phase !== "review_ready" && task.repositoryRun?.phase !== "finalizing") {
+    const acceptedCandidate = task.repositoryRun.repoTouched
+      ? task.repositoryRun.candidateSha
+      : task.repositoryRun.baseSha;
+    if (task.repositoryRun.phase === "operational_error" && repositoryFinalizationOwnsTask(task.repositoryRun)) {
+      if (!acceptedCandidate) {
+        return { completed: false as const, reason: "repository_candidate_missing" as const };
+      }
+      const acceptedReview = await db.reviewRun.findUnique({
+        where: { taskId_candidateSha: { taskId: task.id, candidateSha: acceptedCandidate } },
+        select: { id: true, status: true, validationOutcome: true },
+      });
+      if (!acceptedReview || acceptedReview.status !== "accepted") {
+        return { completed: false as const, reason: "candidate_not_accepted" as const };
+      }
+      const retryVersion = task.repositoryRun.version + 1;
+      const retryQueued = await db.$transaction(async (tx) => {
+        const claimed = await tx.taskRepositoryRun.updateMany({
+          where: {
+            taskId: task.id,
+            phase: "operational_error",
+            version: task.repositoryRun!.version,
+            reviewedSha: acceptedCandidate,
+          },
+          data: {
+            phase: "finalizing",
+            validationOutcome: acceptedReview.validationOutcome === "valid_with_warning"
+              ? "valid_with_warning"
+              : "valid",
+            lastError: null,
+            version: { increment: 1 },
+          },
+        });
+        if (claimed.count !== 1) return false;
+        await tx.activityLog.create({
+          data: {
+            projectId: task.projectId,
+            taskId: task.id,
+            userId: args.actor.id,
+            kind: "task.review.finalization_retry",
+            payload: JSON.stringify({
+              via: args.via,
+              reviewRunId: acceptedReview.id,
+              candidateSha: acceptedCandidate,
+              repositoryVersion: retryVersion,
+            }),
+          },
+        });
+        await enqueueWorkflowEffects(tx, {
+          taskId: task.id,
+          projectId: task.projectId,
+          aggregateVersion: task.workflowVersion,
+          effects: [
+            {
+              type: "review_finalize",
+              key: `review-finalize-retry:${acceptedCandidate}:r${retryVersion}`,
+              payload: {
+                taskId: task.id,
+                projectId: task.projectId,
+                requestedByUserId: args.actor.id,
+                requestedByUsername: args.actor.username,
+                candidateSha: acceptedCandidate,
+              },
+            },
+            { type: "board_touch", key: `board-finalization-retry:${acceptedCandidate}:r${retryVersion}`, payload: {} },
+          ],
+        });
+        if (args.workflowAction) {
+          await applyPmChannelRunWorkflowAction(tx, {
+            ...args.workflowAction,
+            taskState: "Review",
+          });
+        }
+        return true;
+      });
+      if (retryQueued) {
+        await drainWorkflowOutbox({ limit: 2 }).catch((error) =>
+          console.error("[pm] finalization retry outbox drain deferred:", task.id, error),
+        );
+      } else {
+        const currentRepository = await db.taskRepositoryRun.findUnique({
+          where: { taskId: task.id },
+          select: { phase: true, reviewedSha: true },
+        });
+        if (
+          !currentRepository ||
+          currentRepository.reviewedSha !== acceptedCandidate ||
+          (currentRepository.phase !== "finalizing" && currentRepository.phase !== "completed")
+        ) {
+          return { completed: false as const, reason: "finalization_retry_conflict" as const };
+        }
+      }
+      return {
+        completed: true as const,
+        finalizing: true as const,
+        status: "Review" as const,
+        taskId: task.id,
+        projectSlug: task.project.slug,
+        nextTask: null,
+        nextTasks: [],
+      };
+    }
+    if (task.repositoryRun.phase !== "review_ready" && task.repositoryRun.phase !== "finalizing") {
       return { completed: false as const, reason: "repository_not_ready" as const };
     }
     if (task.repositoryRun.phase !== "finalizing") {
@@ -194,7 +345,7 @@ export async function completeReviewedTaskAndAssignNext(args: {
     const transition = await applyTaskTransition(tx, {
       taskId: task.id,
       projectId: task.projectId,
-      actorUserId: args.actor.id,
+      actorUserId: completionActor.id,
       intent: "accept_review",
       from: "Review",
       to: "Done",
@@ -204,7 +355,10 @@ export async function completeReviewedTaskAndAssignNext(args: {
         commentId: args.commentId ?? null,
         repositoryFinalized: args.repositoryFinalized ?? false,
         reviewedSha: task.repositoryRun?.reviewedSha ?? null,
+        finalizedByUserId: args.repositoryFinalized ? args.actor.id : null,
+        finalizedByUsername: args.repositoryFinalized ? args.actor.username : null,
       },
+      taskData: { alertReporter: false },
     });
 
     let nextAssignments: EpicTaskAssignment[] = [];
@@ -217,7 +371,7 @@ export async function completeReviewedTaskAndAssignNext(args: {
       const assignment = await assignOpenEpicTasks(tx, {
         epicId: task.epicId,
         projectId: task.projectId,
-        actorUserId: args.actor.id,
+        actorUserId: completionActor.id,
         excludeUserIds: [reviewerId, task.reporterId, task.epic?.actingManagerId],
         via: args.via,
       });
@@ -230,7 +384,7 @@ export async function completeReviewedTaskAndAssignNext(args: {
         data: {
           projectId: task.projectId,
           taskId: task.id,
-          userId: args.actor.id,
+          userId: completionActor.id,
           kind: "task.workflow.next_assignment_skipped",
           payload: JSON.stringify({
             reason: skipReason,
@@ -273,7 +427,7 @@ export async function completeReviewedTaskAndAssignNext(args: {
           await tx.activityLog.create({
             data: {
               projectId: task.projectId,
-              userId: args.actor.id,
+              userId: completionActor.id,
               kind: "epic.status",
               payload: JSON.stringify({
                 epicId: task.epicId,
@@ -309,10 +463,10 @@ export async function completeReviewedTaskAndAssignNext(args: {
         payload: {
           taskId: assigned.task.id,
           targetUserId: assigned.worker.id,
-          actor: args.actor,
+          actor: completionActor,
           reason: "todo_start_required",
           body: [
-            `Previous epic task "${task.title}" was accepted by @${args.actor.username}.`,
+            `Previous epic task "${task.title}" was accepted by @${completionActor.username}.`,
             `Next task "${assigned.task.title}" is now assigned to you in To Do.`,
             assigned.approvedPlan
               ? "Its Action Plan is already approved: move the task to In Progress through the workflow endpoint and start immediately."
@@ -332,10 +486,10 @@ export async function completeReviewedTaskAndAssignNext(args: {
         payload: {
           taskId: task.id,
           targetUserId: task.assigneeId,
-          actor: args.actor,
+          actor: completionActor,
           reason: "review_done",
           body: [
-            `Task "${task.title}" was reviewed and moved to Done by @${args.actor.username}.`,
+            `Task "${task.title}" was reviewed and moved to Done by @${completionActor.username}.`,
             "No further action is required unless the task is reopened.",
           ].join("\n"),
         },
@@ -359,6 +513,12 @@ export async function completeReviewedTaskAndAssignNext(args: {
   await drainWorkflowOutbox({ limit: completion.effectCount }).catch((error) =>
     console.error("[pm] completion workflow outbox drain deferred:", task.id, error),
   );
+  await recordWorkflowActionExecutionState({
+    taskId: task.id,
+    projectId: task.projectId,
+    action: "review_done",
+    status: "Done",
+  });
 
   const nextTasks = completion.nextAssignments.map((assigned) => ({
     id: assigned.task.id,

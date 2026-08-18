@@ -83,6 +83,22 @@ async function main() {
     assert.equal(queued.ok, true);
     assert.equal(queued.status, 202);
 
+    const queuedRun = await db.pmChannelRun.findUniqueOrThrow({
+      where: { targetKey },
+      select: {
+        id: true,
+        streamEvents: { orderBy: { seq: "asc" }, select: { kind: true, payload: true } },
+      },
+    });
+    assert.equal(
+      queuedRun.streamEvents.some((event) => {
+        if (event.kind !== "status") return false;
+        return (JSON.parse(event.payload) as { runStatus?: string }).runStatus === "queued";
+      }),
+      true,
+      "enqueue must durably persist its queued frame before a short-lived producer disconnects Prisma",
+    );
+
     const outcome = await runPmChannelWorkerOnce(`test:${nonce}`);
     assert.equal(outcome.claimed, true);
     if (outcome.claimed) assert.equal(outcome.ok, true);
@@ -153,6 +169,18 @@ async function main() {
     const tamperedOutcome = await handler.handle(tampered);
     assert.equal(tamperedOutcome.kind, "skipped-unauthorized", "bus payload must match the durable dispatch job");
     assert.equal(delivered.length, 1, "a tampered envelope must never reach the agent");
+
+    // A durable file-drop can arrive after a newer generation superseded the
+    // run that published it. It must be fenced before dispatch even when its
+    // stale job still says accepted — the production failure this guards used
+    // to resurrect the dead run and collide with the active-lane index.
+    await db.$transaction([
+      db.pmChannelRun.update({ where: { id: run.id }, data: { status: "superseded" } }),
+      db.pmChannelJob.update({ where: { runId: run.id }, data: { status: "accepted" } }),
+    ]);
+    const staleOutcome = await handler.handle(envelope);
+    assert.equal(staleOutcome.kind, "skipped-unauthorized", "a terminal run's delayed envelope is fenced");
+    assert.equal(delivered.length, 1, "a stale durable envelope never reaches the agent");
 
     // A non-owner's source message is not a valid bus origin even when its
     // target/run/job fields are otherwise correct.

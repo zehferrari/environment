@@ -30,6 +30,8 @@ const SUITES: readonly string[] = [
   "test:workflow-reconciler",
   "test:workflow-agent-rules",
   "test:repository-workflow",
+  "test:review-handoff-cycle",
+  "test:review-finalization-retry",
   "test:epic-completion-review",
   // Watchdog family.
   "test:workflow-watchdog",
@@ -39,6 +41,7 @@ const SUITES: readonly string[] = [
   "test:pm-execution-episode",
   "test:task-execution-episode",
   "test:pm-channel-lifecycle",
+  "test:agent-system-messages",
   "test:pm-channel-lease-lifecycle",
   // Blockers, plans, comment provenance.
   "test:formal-blocker-validation",

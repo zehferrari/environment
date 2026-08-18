@@ -54,6 +54,17 @@ the entry-point overview.
   (ISO `YYYY-MM-DD`, shown once at token creation), `openclaw-integrity-check`
   fails past the date and warns within 14 days — surfacing renewal *before*
   the API starts returning 401s instead of after.
+- **Active model authentication and Claude renewal**: every integrity tick
+  reads `openclaw models status --json`, so it checks the current SQLite-backed
+  profile store instead of the retired `auth.json`. Only providers reachable
+  from the active default/fallback chain can alert; an old unused profile does
+  not make an agent unhealthy. For `claude-cli`, the native Claude login owns
+  renewal: normal Claude use rotates its short-lived access token through the
+  refresh token in `~/.claude/.credentials.json`. The integrity check verifies
+  that native login and refresh token, warns seven days before the refresh
+  credential expires, and fails immediately if the CLI is logged out or the
+  credential can no longer renew. Recovery is `claude auth login`, followed by
+  `openclaw models auth login --provider anthropic --method cli --force`.
 - **Agent doc drift**. `probe_agent_symlinks` checks every enabled agent's
   `~/.openclaw/openclaw.json` resolves to
   `/srv/agents/openclaw/<agent>/openclaw.json` (the home config stays a

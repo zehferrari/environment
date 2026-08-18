@@ -94,8 +94,11 @@ async function main(): Promise<void> {
     const { db, runs, continuations, transactionalAction, actionEffect, episodes } = boot;
 
     const { runWorkflowWatchdog } = await import("@/lib/agents/watchdog/run");
-    const { WATCHDOG_CONTINUATION_ACTION, watchdogRecoveryBudget } = await import(
+    const { WATCHDOG_CONTINUATION_ACTION } = await import(
       "@/lib/agents/watchdog/repairs"
+    );
+    const { CONTEXT_PRESSURE_RECOVERY_ACTION } = await import(
+      "@/lib/agents/pm-channel/continuations"
     );
     const { WATCHDOG_STALL_GRACE_MS } = await import("@/lib/agents/watchdog/detectors");
     const { WORKFLOW_RUN_LEASE_TTL_MS, evaluateWorkflowInvariants } = await import(
@@ -545,17 +548,15 @@ async function main(): Promise<void> {
     }
 
     // ------------------------------------------------------------------
-    // C4 — a retry follows a context-compaction failure.
+    // C4 — a fresh execution episode follows a context-compaction failure.
     //
     // A turn whose context overflowed produced no outcome, but it is NOT a
     // failed task: the work is still valid and the agent must re-enter. The
     // contract has four parts and this case asserts all of them —
-    //   * the retry is a CONTINUATION of the same execution (one run, one job,
-    //     one open continuation), never a second independent turn;
-    //   * the prior run reads as failed/superseded, never as complete;
+    //   * the poisoned transport run and job end failed, never complete;
+    //   * the bounded execution episode rolls over exactly once;
     //   * durable progress (status, checklist, episode cycles) survives;
-    //   * the retry is BOUNDED — a second compaction failure exhausts the
-    //     ladder and surfaces as interrupted execution instead of looping.
+    //   * one continuation resumes the task in a genuinely fresh session.
     //
     // Driven the way the reply route drives it: the compaction notice is
     // classified as a terminal failure and replayed as an `error` event, never
@@ -595,7 +596,7 @@ async function main(): Promise<void> {
       await claimOwnJob(`${SUITE}-c4:1`);
       await acceptDispatch(turn.target);
 
-      // Real progress banked before the overflow: it must survive the retry.
+      // Real progress banked before the overflow: it must survive recovery.
       const seeded = await turn.post("add_subtask", { subtaskText: "C4 step banked before overflow" });
       c.assertEqual(seeded.status, 200, "the pre-overflow action was accepted");
 
@@ -606,131 +607,75 @@ async function main(): Promise<void> {
         error: COMPACTION_FAILURE,
       });
 
-      const retriedRun = await runFor(task.id, turn.messageId);
-      const retriedJob = await jobFor(run.id);
-      c.assertEqual(retriedJob.status, "retryable", "a compaction failure is retried, not failed outright");
+      const recoveredRun = await runFor(task.id, turn.messageId);
+      const recoveredJob = await jobFor(run.id);
+      c.assertEqual(recoveredJob.status, "failed", "the poisoned transport turn is never replayed");
       c.assertIncludes(
-        retriedJob.lastError,
+        recoveredJob.lastError,
         "auto-compaction could not recover",
-        "and the retry records the real reason",
+        "and the terminal transport row records the real reason",
       );
       c.assert(
-        retriedRun.status !== "completed",
+        recoveredRun.status !== "completed",
         "the overflowed run is never reported as a completion",
       );
-      c.assertEqual(retriedRun.status, "queued", "it reads as queued while the retry is pending");
-      c.assertEqual(retriedRun.finishedAt, null, "the execution is explicitly not finished");
-
-      const midRetry = await readRunState(db, { taskId: task.id });
+      c.assertEqual(recoveredRun.status, "failed", "the poisoned run ends terminally");
       c.assertEqual(
-        midRetry.runs.length,
+        recoveredRun.finishedReason,
+        "context_pressure_episode_recovered",
+        "the terminal reason records that execution continued in a fresh episode",
+      );
+      c.assertEqual(recoveredRun.disposition, "continue", "the task execution itself continues");
+
+      const midRecovery = await readRunState(db, { taskId: task.id });
+      c.assertEqual(
+        midRecovery.runs.length,
         1,
-        "the retry continues the SAME execution: no second run was minted",
+        "recovery does not mint a second run before the durable continuation drains",
       );
       c.assertEqual(
-        midRetry.open.length,
+        midRecovery.open.length,
         1,
-        "exactly one continuation is open — the outbox did not double the retry",
+        "exactly one fresh-episode continuation is open",
       );
-
-      // The retry starts cold. Re-entering a session that has proven it cannot
-      // compact would just overflow again.
-      const binding = await db.agentSessionBinding.findFirstOrThrow({
-        where: { agentSlug: AGENT_SLUG, scopeType: "task", scopeId: task.id },
-      });
-      c.assertIncludes(
-        binding.openclawSessionKey,
-        ":recovery:",
-        "the poisoned session was rotated away before the retry",
-      );
-      c.assert(
-        retriedRun.sessionKey !== sessionBefore,
-        "and the run now points at the rotated session",
+      c.assertEqual(
+        midRecovery.open[0]!.action,
+        CONTEXT_PRESSURE_RECOVERY_ACTION,
+        "the continuation names the context-pressure handoff",
       );
 
       const preserved = await readTaskProgress(db, task.id);
-      c.assertEqual(preserved.status, "In Progress", "the task keeps its status across the retry");
+      c.assertEqual(preserved.status, "In Progress", "the task keeps its status across recovery");
       c.assertEqual(preserved.checklist, 1, "the checklist banked before the overflow survives");
-      const episode = await episodes.latestTaskExecutionCheckpoint({
-        taskId: task.id,
-        agentSlug: AGENT_SLUG,
+      const recoveredEpisodes = await db.taskExecutionEpisode.findMany({
+        where: { taskId: task.id, agentSlug: AGENT_SLUG },
+        orderBy: { episodeNo: "asc" },
       });
-      c.assertEqual(episode?.cycleCount, 1, "and so does the episode's observed progress");
+      c.assertEqual(recoveredEpisodes.length, 2, "the poisoned episode has exactly one successor");
+      c.assertEqual(
+        recoveredEpisodes[0]!.closeReason,
+        "context_pressure_recovery",
+        "the old episode records why it was retired",
+      );
+      c.assertEqual(recoveredEpisodes[0]!.cycleCount, 1, "its observed progress remains durable");
+      c.assertEqual(recoveredEpisodes[1]!.sessionKey, null, "the successor inherits no poisoned session");
 
-      // --- failure 2: it happens again ------------------------------------
-      // The worker re-claims the retryable job and the gateway accepts it, so
-      // the second failure arrives on a live run exactly as the first did.
-      await claimOwnJob(`${SUITE}-c4:2`);
-      await acceptDispatch(turn.target);
-      await runs.recordPmChannelRunEvent({
-        target: turn.target,
-        event: "error",
-        error: COMPACTION_FAILURE,
+      const drained = await drainPmChannelContinuations();
+      c.assert(drained.dispatched >= 1, "the fresh-episode continuation is dispatchable");
+      const resumed = await readRunState(db, { taskId: task.id });
+      c.assertEqual(
+        resumed.active.length,
+        1,
+        "exactly one fresh execution turn owns the task after recovery",
+      );
+      const resumedRun = await db.pmChannelRun.findFirstOrThrow({
+        where: { taskId: task.id, status: { in: ["queued", "accepted", "streaming"] } },
+        orderBy: { createdAt: "desc" },
+        select: { sessionKey: true },
       });
-
-      const exhausted = await runFor(task.id, turn.messageId);
-      c.assertEqual(
-        (await jobFor(run.id)).status,
-        "failed",
-        "the ladder is bounded — a repeating compaction failure does not loop forever",
-      );
-      c.assertEqual(exhausted.status, "failed", "the run ends terminally");
-      c.assertEqual(
-        exhausted.finishedReason,
-        "turn_failure_exhausted",
-        "the terminal reason names the exhausted ladder, not a finished piece of work",
-      );
-      c.assertEqual(exhausted.disposition, "failed", "WFI-005: exhaustion records a disposition");
-      const afterExhaustion = await readRunState(db, { taskId: task.id });
-      c.assertEqual(
-        afterExhaustion.runs.length,
-        1,
-        "still one run: a compaction loop never multiplies executions",
-      );
-      c.assertEqual(
-        afterExhaustion.open.length,
-        0,
-        "an exhausted turn leaves nothing armed — it escalates instead of retrying",
-      );
-      c.assertEqual(
-        (await readTaskProgress(db, task.id)).checklist,
-        1,
-        "and exhaustion does not discard banked progress",
-      );
-
-      // --- and it surfaces as interrupted execution -----------------------
-      // A stall is only a stall once time has passed: the watchdog will not
-      // push a turn at a task whose last durable action is seconds old.
-      await ageRun(exhausted.id, LONG_DEAD_MS);
-      const pass = await runWorkflowWatchdog({ projectId: scope.projectId });
-      c.assertEqual(pass.errors.length, 0, `the watchdog pass reported no errors: ${pass.errors.join("; ")}`);
-
-      const surfaced = await readTaskProgress(db, task.id);
-      c.assertEqual(
-        surfaced.executionState?.state,
-        "stalled",
-        "the operator strip shows interrupted execution rather than silence",
-      );
-      c.assertEqual(
-        surfaced.executionState?.reasonCode,
-        "no_active_run",
-        "with a reason an operator can act on",
-      );
-      c.assertEqual(
-        surfaced.executionState?.recoveryAction,
-        "new run queued",
-        "and PM's own recovery rendered beside it",
-      );
-      const recovery = await db.taskExecutionState.findUniqueOrThrow({ where: { taskId: task.id } });
-      c.assertEqual(recovery.recoveryCount, 1, "the recovery itself is budgeted, not unlimited");
       c.assert(
-        recovery.recoveryCount <= watchdogRecoveryBudget(),
-        "and stays inside the watchdog's per-window budget",
-      );
-      c.assertEqual(
-        (await readRunState(db, { taskId: task.id })).open.length,
-        1,
-        "exactly one recovery turn was scheduled once the bounded retries ran out",
+        resumedRun.sessionKey !== sessionBefore,
+        "the successor is dispatched in a fresh session",
       );
     }
 

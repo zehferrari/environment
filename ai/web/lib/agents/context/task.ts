@@ -18,6 +18,7 @@ import {
   executionStateLines,
   renderExecutionState,
 } from "@/lib/agents/watchdog/state";
+import { isActionableEpicStatus } from "@/lib/tasks/workflow-actors";
 
 // Context-packet caps live in ./caps.ts and are resolved per-recipient
 // from agent.role. Coding agents (can_modify_code=true) get the 1M-token
@@ -531,6 +532,7 @@ export async function buildTaskAgentContextPacket(args: {
       },
       assignee: { select: { username: true, kind: true } },
       actingManager: { select: { username: true, kind: true } },
+      reporter: { select: { username: true, kind: true } },
       blockedBy: {
         select: {
           workItemKey: true,
@@ -630,6 +632,12 @@ export async function buildTaskAgentContextPacket(args: {
     },
   });
 
+  const resolvedReviewer = task
+    ? task.actingManager
+      ?? (isActionableEpicStatus(task.epic?.status) ? task.epic?.actingManager ?? null : null)
+      ?? task.reporter
+    : null;
+
   const basePacket: AgentContextPacket = {
     scope: {
       type: "task",
@@ -663,7 +671,7 @@ export async function buildTaskAgentContextPacket(args: {
             createdAt: formatDate(task.createdAt)!,
             updatedAt: formatDate(task.updatedAt)!,
             assignee: actorLabel(task.assignee),
-            reviewer: actorLabel(task.actingManager),
+            reviewer: actorLabel(resolvedReviewer),
             prerequisites: visiblePrerequisiteLabels(task),
             executionState: task.executionState
               ? executionStateLines(renderExecutionState(task.executionState))

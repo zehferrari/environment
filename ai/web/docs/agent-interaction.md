@@ -490,6 +490,11 @@ Allowed actions are `submit_plan`, `start`, `checkpoint`, `publish_checkpoint`, 
 - `review_done` — reviewer-only acceptance. Repository-backed tasks remain
   in Review with repository phase `finalizing` until publication/merge,
   remote verification, and local cleanup succeed; only then are they Done.
+  If cleanup exhausts its operational retries, the accepted candidate remains
+  fenced in `operational_error`. After the operator fixes the cause, retry
+  `review_done`; PM resumes finalization for the same `reviewedSha`. Do not use
+  `review_feedback`, restart implementation, or resubmit an already accepted
+  branch to recover an operational finalization failure.
 - `triage_to_todo` — reviewer-only Backlog → To Do promotion. It queues
   the task but assigns nobody, and the Action Plan approval gate still
   applies before execution; tasks under an Epic can be triaged only

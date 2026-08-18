@@ -489,6 +489,56 @@ async function sectionB(): Promise<void> {
       "a drained outbox does not re-dispatch",
     );
 
+    // ---- B5b: reviewer episode rollover stays in the reviewer lane ----
+    // Review turns use the same bounded episode machinery as implementation
+    // turns. Their successor must be authorized by the resolved reviewer,
+    // not rejected by the In Progress/assignee-only execution gate.
+    const reviewTask = await db.task.create({
+      data: {
+        projectId: project.id,
+        title: "Bounded reviewer episode",
+        status: "Review",
+        actingManagerId: agentUser.id,
+        reporterId: owner.id,
+      },
+    });
+    const reviewSource = await recordPmChannelRunQueued({
+      target: {
+        kind: "task-comment",
+        agentSlug: AGENT_SLUG,
+        taskId: reviewTask.id,
+        messageId: "effect-review-rollover",
+      },
+      kind: "task-comment",
+      projectId: project.id,
+    });
+    if (!reviewSource) fail("could not seed the reviewer rollover source run");
+    await db.pmChannelRun.update({
+      where: { id: reviewSource.id },
+      data: { status: "completed", completedAt: new Date(), disposition: "continue" },
+    });
+    await db.pmChannelContinuation.create({
+      data: {
+        runId: reviewSource.id,
+        agentSlug: AGENT_SLUG,
+        projectId: project.id,
+        taskId: reviewTask.id,
+        messageId: "effect-review-rollover",
+        action: "episode_rollover",
+        status: "queued",
+      },
+    });
+    const reviewDrain = await drainPmChannelContinuations();
+    assertEqual(reviewDrain.dispatched, 1, "a resolved reviewer receives its next bounded review episode");
+    assertEqual(reviewDrain.superseded, 0, "the Review status does not supersede a reviewer rollover");
+    assertEqual(
+      await db.pmChannelContinuation.count({
+        where: { runId: reviewSource.id, status: "dispatched" },
+      }),
+      1,
+      "the reviewer rollover is durably marked dispatched",
+    );
+
     // ---- B6: an episode-terminal action settles and supersedes ----
     const b6 = await seedRun("effect-b6");
     await recordAction({

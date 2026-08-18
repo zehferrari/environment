@@ -555,13 +555,18 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
   // so PM sessions land under `agent:<agentId>:pm:*`.
   const sessionKey = canonicalizePmStoreSessionKey({ agentId, requestKey: rawSessionKey });
   const registeredTurn = activeTurns.get(rawSessionKey);
-  if (registeredTurn?.acceptedId === acceptedId) {
-    // The PM run stores/sends the raw correlation key, while OpenClaw indexes
-    // the embedded run by this canonical agent-scoped key. Cancellation must
-    // retain both identities or it can acknowledge a no-op abort while the
-    // superseded model keeps running.
-    registeredTurn.canonicalSessionKey = sessionKey;
+  if (!registeredTurn || registeredTurn.acceptedId !== acceptedId) {
+    // Another ingress generation displaced this callback before it even
+    // finished assembling context. Never let an orphaned setImmediate launch
+    // a model behind the replacement run's cancellation fence.
+    logger.warn?.("[pm-channel] discarded displaced turn before context assembly");
+    return;
   }
+  // The PM run stores/sends the raw correlation key, while OpenClaw indexes
+  // the embedded run by this canonical agent-scoped key. Cancellation must
+  // retain both identities or it can acknowledge a no-op abort while the
+  // superseded model keeps running.
+  registeredTurn.canonicalSessionKey = sessionKey;
   const messageId = typeof payload.messageId === "string" && payload.messageId
     ? payload.messageId
     : payload.replyTarget.messageId ?? randomUUID();
@@ -654,7 +659,11 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
   // possible point before dispatch instead of starting a process which PM has
   // already superseded.
   const beforeDispatch = activeTurns.get(rawSessionKey);
-  if (beforeDispatch?.acceptedId === acceptedId && beforeDispatch.abortedAt) {
+  if (!beforeDispatch || beforeDispatch.acceptedId !== acceptedId) {
+    logger.warn?.("[pm-channel] discarded displaced turn before embedded dispatch");
+    return;
+  }
+  if (beforeDispatch.abortedAt) {
     activeTurns.delete(rawSessionKey);
     logger.warn?.("[pm-channel] canceled turn before embedded dispatch");
     return;
@@ -856,11 +865,26 @@ async function handleIngress({ cfg, logger, req, res }) {
     return true;
   }
 
+  const rawSessionKey = payload.sessionKey.trim();
+  if (activeTurns.has(rawSessionKey)) {
+    // Multiple episode notifications can race on the same durable session
+    // key. Replacing this map entry used to make /cancel target the newcomer
+    // while the displaced setImmediate launched later as an invisible second
+    // writer. Keep the first generation authoritative; PM treats this 409 as
+    // retryable and dispatches the replacement after cancellation drains it.
+    writeJson(res, 409, {
+      error: "PM session already has an accepted turn",
+      reason: "session_busy",
+      sessionKey: rawSessionKey,
+    });
+    return true;
+  }
+
   const acceptedId = randomUUID();
   // Register the turn so the cancel endpoint can find and abort it (the map
   // was previously never populated, making /pm-channel/cancel dead code).
   // runPmTurn's finally removes the entry once this acceptedId settles.
-  activeTurns.set(payload.sessionKey.trim(), { acceptedId, abortedAt: null });
+  activeTurns.set(rawSessionKey, { acceptedId, abortedAt: null });
   setImmediate(() => {
     runPmTurn({ cfg, payload, accountId, logger, acceptedId }).catch((err) => {
       logger.error?.(`[pm-channel] turn ${acceptedId} failed: ${String(err)}`);

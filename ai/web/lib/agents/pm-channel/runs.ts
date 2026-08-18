@@ -576,26 +576,32 @@ export async function recordPmChannelRunDispatch(args: {
   const provider = ok ? (args.result.provider ?? null) : null;
   const model = ok ? (args.result.model ?? null) : null;
   await record(
-    () => db.pmChannelRun.update({
-      where: { targetKey: pmChannelRunTargetKey(args.target) },
-      data: {
-        httpStatus: args.result.status ?? null,
-        driver: args.result.transportMode
-          ? `openclaw-pm-channel:${args.result.transportMode}`
-          : "openclaw-pm-channel",
-        status: ok ? "accepted" : "failed",
-        error: ok ? null : clippedError(args.result.error),
-        acceptedAt: ok ? now : null,
-        failedAt: ok ? null : now,
-        leaseExpiresAt,
-        heartbeatAt: ok ? now : null,
-        finishedAt: ok ? null : now,
-        finishedReason: ok ? null : clippedError(args.result.error) ?? "dispatch_failed",
-        lastEventAt: now,
-        ...(provider !== null ? { provider } : {}),
-        ...(model !== null ? { model } : {}),
+    () => db.pmChannelRun.updateMany({
+      where: {
+        targetKey: pmChannelRunTargetKey(args.target),
+        // Dispatch results are allowed to settle only the generation that is
+        // still awaiting/holding this handoff. A delayed file-drop result for
+        // a terminal generation must never resurrect it into the active lane.
+        status: { in: ["queued", "accepted"] },
       },
-    }),
+      data: {
+          httpStatus: args.result.status ?? null,
+          driver: args.result.transportMode
+            ? `openclaw-pm-channel:${args.result.transportMode}`
+            : "openclaw-pm-channel",
+          status: ok ? "accepted" : "failed",
+          error: ok ? null : clippedError(args.result.error),
+          acceptedAt: ok ? now : null,
+          failedAt: ok ? null : now,
+          leaseExpiresAt,
+          heartbeatAt: ok ? now : null,
+          finishedAt: ok ? null : now,
+          finishedReason: ok ? null : clippedError(args.result.error) ?? "dispatch_failed",
+          lastEventAt: now,
+          ...(provider !== null ? { provider } : {}),
+          ...(model !== null ? { model } : {}),
+        },
+      }),
     "dispatch run state",
   );
 }

@@ -88,6 +88,21 @@ assert.match(
 );
 assert.match(
   pluginSource,
+  /if \(!registeredTurn \|\| registeredTurn\.acceptedId !== acceptedId\)/,
+  "a displaced ingress callback must not survive long enough to launch a stale model turn",
+);
+assert.match(
+  pluginSource,
+  /if \(!beforeDispatch \|\| beforeDispatch\.acceptedId !== acceptedId\)/,
+  "the final pre-dispatch fence must reject a generation displaced during context assembly",
+);
+assert.match(
+  pluginSource,
+  /if \(activeTurns\.has\(rawSessionKey\)\)[\s\S]*reason: "session_busy"/,
+  "ingress must not overwrite the cancellation identity for a live session generation",
+);
+assert.match(
+  pluginSource,
   /current\.canonicalSessionKey \|\| lookupKey/,
   "gateway cancellation must resolve the canonical key rather than the raw PM key",
 );

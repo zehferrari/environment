@@ -525,6 +525,35 @@ class PmRecoveryTest(unittest.TestCase):
         )
         self.assertEqual(response["id"], "comment-assignee")
 
+    def test_accepted_operational_finalization_is_not_review_feedback(self):
+        self.assertTrue(
+            self.monitor._pm_repository_finalization_owns_task({
+                "repositoryPhase": "operational_error",
+                "repositoryRepoTouched": 1,
+                "repositoryBaseSha": "base",
+                "repositoryCandidateSha": "candidate",
+                "repositoryReviewedSha": "candidate",
+            })
+        )
+        self.assertFalse(
+            self.monitor._pm_repository_finalization_owns_task({
+                "repositoryPhase": "operational_error",
+                "repositoryRepoTouched": 1,
+                "repositoryBaseSha": "base",
+                "repositoryCandidateSha": "candidate",
+                "repositoryReviewedSha": None,
+            })
+        )
+        self.assertFalse(
+            self.monitor._pm_repository_finalization_owns_task({
+                "repositoryPhase": "review_ready",
+                "repositoryRepoTouched": 1,
+                "repositoryBaseSha": "base",
+                "repositoryCandidateSha": "candidate",
+                "repositoryReviewedSha": None,
+            })
+        )
+
     def test_closed_epic_review_targets_human_reporter(self):
         target = self.monitor._pm_closed_epic_human_target({
             "epicStatus": "Done",

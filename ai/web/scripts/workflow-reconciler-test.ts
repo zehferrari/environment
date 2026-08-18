@@ -55,6 +55,34 @@ async function main() {
       },
     });
 
+    const missingHandoff = await db.task.create({
+      data: { projectId: project.id, title: "Validated candidate missing Review handoff", status: "In Progress" },
+    });
+    const handoffCandidate = "c".repeat(40);
+    await db.taskRepositoryRun.create({
+      data: {
+        taskId: missingHandoff.id,
+        phase: "review_ready",
+        repoTouched: true,
+        candidateSha: handoffCandidate,
+        validationOutcome: "valid",
+        updatedAt: stale,
+      },
+    });
+    const handoffEffect = await db.workflowOutbox.create({
+      data: {
+        taskId: missingHandoff.id,
+        projectId: project.id,
+        aggregateVersion: 0,
+        effectType: "branch_verify",
+        payload: JSON.stringify({ job: { jobId: "review-handoff-test" } }),
+        dedupeKey: "review-handoff-test",
+        status: "completed",
+        completedAt: stale,
+        updatedAt: stale,
+      },
+    });
+
     const missingLease = await db.task.create({
       data: { projectId: project.id, title: "Review without candidate lease", status: "Review" },
     });
@@ -86,6 +114,7 @@ async function main() {
         title: "Merged candidate missing Done transition",
         status: "Review",
         branchName: "reconcile-child",
+        actingManagerId: monitor.id,
       },
     });
     await db.task.create({
@@ -141,6 +170,7 @@ async function main() {
         title: "Completed repository without merge evidence",
         status: "Review",
         branchName: "unverified-child",
+        actingManagerId: monitor.id,
       },
     });
     const unverifiedCandidate = "b".repeat(40);
@@ -170,6 +200,11 @@ async function main() {
 
     const dry = await runWorkflowReconciliation({ projectId: project.id, now, dryRun: true });
     assert(dry.findings.some((row) => row.kind === "repository_projection_stale" && row.taskId === validating.id));
+    assert(dry.findings.some((row) =>
+      row.kind === "review_handoff_missing"
+      && row.taskId === missingHandoff.id
+      && row.repair === "requeue",
+    ));
     assert(dry.findings.some((row) => row.kind === "review_lease_missing" && row.taskId === missingLease.id));
     assert(dry.findings.some((row) => row.kind === "done_repository_incomplete" && row.taskId === incompleteDone.id));
     assert(dry.findings.some((row) =>
@@ -187,7 +222,7 @@ async function main() {
     assert.equal((await db.task.findUniqueOrThrow({ where: { id: missingLease.id } })).alertReporter, false);
 
     const applied = await runWorkflowReconciliation({ projectId: project.id, now, dryRun: false });
-    assert(applied.repaired >= 3);
+    assert(applied.repaired >= 4);
     // The review-completion repair later in the same reconciliation pass can
     // drain this freshly requeued effect before the assertion runs. Both
     // states prove the recovery: queued awaits the shared drain; completed
@@ -196,6 +231,12 @@ async function main() {
       ["queued", "completed"].includes(
         (await db.workflowOutbox.findUniqueOrThrow({ where: { id: verifyEffect.id } })).status,
       ),
+    );
+    assert(
+      ["queued", "completed"].includes(
+        (await db.workflowOutbox.findUniqueOrThrow({ where: { id: handoffEffect.id } })).status,
+      ),
+      "a validated candidate stranded before Review must have its verifier safely requeued",
     );
     assert.equal((await db.task.findUniqueOrThrow({ where: { id: missingLease.id } })).alertReporter, true);
     assert.equal((await db.task.findUniqueOrThrow({ where: { id: incompleteDone.id } })).alertReporter, true);

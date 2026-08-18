@@ -77,8 +77,8 @@ const BROWSER_EVIDENCE =
 /**
  * Tool cycles an episode may spend in this suite before PM rolls it over.
  *
- * Production defaults to EPISODE_TOOL_CYCLE_BUDGET_DEFAULT (60). Three makes
- * the boundary observable without streaming sixty events at it; the mechanism
+ * Production defaults to EPISODE_TOOL_CYCLE_BUDGET_DEFAULT (30). Three makes
+ * the boundary observable without streaming thirty events at it; the mechanism
  * under test is the boundary, not the number.
  */
 const TOOL_BUDGET = 3;
@@ -445,7 +445,9 @@ async function main(): Promise<void> {
         "and no blocker slipped through the fence",
       );
 
-      // The one act still permitted: the DURABLE CHECKPOINT between episodes.
+      // The stream boundary has already sealed a deterministic checkpoint and
+      // aborted the oversized turn. A late agent-authored checkpoint must not
+      // overwrite that durable handoff.
       const checkpointed = await turn.post("checkpoint", {
         completedWork: ["Reproduced the stale element reference three times."],
         evidence: [BROWSER_EVIDENCE],
@@ -453,16 +455,11 @@ async function main(): Promise<void> {
         nextAction: "Re-run the portal login in a fresh profile and capture the network trace.",
         risks: ["The runner's browser image may be stale."],
       });
-      c.assertEqual(checkpointed.status, 200, "the fenced turn may write exactly one checkpoint");
+      c.assertEqual(checkpointed.status, 409, "the already-sealed turn cannot overwrite its checkpoint");
       c.assertEqual(
-        checkpointed.body.episodeNo,
-        1,
-        "written onto the episode it exhausted, not onto the successor it never ran",
-      );
-      c.assertEqual(
-        checkpointed.body.successorScheduled,
+        checkpointed.body.episodeBudgetExhausted,
         true,
-        "and the seal is what schedules episode 2 — never before the checkpoint is durable",
+        "the refusal still names the episode boundary",
       );
 
       const sealed = await db.taskExecutionEpisode.findUniqueOrThrow({
@@ -471,8 +468,8 @@ async function main(): Promise<void> {
       });
       c.assertIncludes(
         sealed.nextAction,
-        "network trace",
-        "the successor is briefed from the agent's own words, not from a transcript",
+        "closed by tool_cycle_budget_exhausted",
+        "the successor is briefed from PM's explicit bounded-handoff checkpoint",
       );
       c.assert(sealed.barrierReleasedAt, "the single-use barrier is consumed");
       c.assert(sealed.successorScheduledAt, "and the successor's dispatch is recorded");
@@ -482,8 +479,8 @@ async function main(): Promise<void> {
       });
       c.assertEqual(rollover.length, 1, "exactly one successor turn was armed (WFI-001)");
 
-      // Single-use means single-use: a duplicate checkpoint must not overwrite
-      // the words episode 2 is about to be briefed from.
+      // Single-use means single-use: another checkpoint cannot overwrite the
+      // bounded handoff episode 2 is about to receive.
       const duplicate = await turn.post("checkpoint", {
         nextAction: "A duplicate dispatch overwriting the real checkpoint.",
       });
@@ -494,8 +491,8 @@ async function main(): Promise<void> {
       });
       c.assertIncludes(
         stillSealed.nextAction,
-        "network trace",
-        "the first agent's checkpoint stands",
+        "closed by tool_cycle_budget_exhausted",
+        "the sealed checkpoint stands",
       );
     }
 

@@ -7,6 +7,12 @@ import { sendTaskCommentNotifications } from "@/lib/agents/workflow/notification
 import { revalidateTaskReplyScope, revalidateTaskShell } from "@/lib/tasks/cache";
 import { tryCompleteTaskFromReviewerComment } from "@/lib/tasks/review-automation";
 import { hasAuthorizedTaskAgentOrigin } from "@/lib/agents/owner-origin";
+import {
+  isPmTerminalFailureText,
+  isSilentPmReplyText,
+  modelFallbackActivityText,
+} from "@/lib/agents/ops/pm-silence";
+import { recordModelFallbackActivity } from "@/lib/agents/ops/model-fallback-activity";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -171,6 +177,18 @@ export async function POST(
     originCommentId: original.originCommentId,
   });
 
+  // Legacy callback compatibility: tool/auth/no-response failures are PM
+  // runtime events, not comments authored by the agent.
+  if (isPmTerminalFailureText(body)) {
+    return NextResponse.json({ ok: true, terminalFailure: true, persisted: false });
+  }
+
+  // Legacy callback compatibility: never turn the internal no-contribution
+  // sentinel into a visible Comment/ChatMessage.
+  if (isSilentPmReplyText(body)) {
+    return NextResponse.json({ ok: true, silent: true, channel: origin.channel });
+  }
+
   // ENV-122: Look up the PmChannelRun that produced this reply to wire runId,
   // provider, and model provenance. Resolve it by the same targetKey identity
   // the pm-channel driver uses (see persist-task-reply): the dispatch kind is
@@ -193,6 +211,23 @@ export async function POST(
   const runId = runProvenance?.id ?? null;
   const runProvider = runProvenance?.provider ?? null;
   const runModel = runProvenance?.model ?? null;
+
+  const fallbackMessage = modelFallbackActivityText(body);
+  if (fallbackMessage) {
+    const activity = await recordModelFallbackActivity({
+      agentUserId: agent.user.id,
+      agentSlug,
+      projectId: original.projectId,
+      taskId,
+      messageId,
+      message: fallbackMessage,
+      driver: "legacy-task-reply",
+      runId,
+      provider: runProvider,
+      model: runModel,
+    });
+    return NextResponse.json({ ok: true, modelFallback: true, ...activity });
+  }
 
   const reply = await db.$transaction(async (tx) => {
     if (origin.channel === "comment") {

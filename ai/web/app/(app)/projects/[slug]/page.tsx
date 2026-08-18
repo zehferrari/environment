@@ -19,6 +19,11 @@ import { allocateWorkItemKey } from "@/lib/work-items/keys";
 import { revalidateTaskShell } from "@/lib/tasks/cache";
 import { moveTaskStatus } from "@/lib/tasks/move-status";
 import { activeFormalBlockersByTask } from "@/lib/tasks/formal-blocker";
+import {
+  REPOSITORY_FINALIZATION_FENCE_MESSAGE,
+  repositoryFinalizationFenceSelect,
+  repositoryFinalizationOwnsTask,
+} from "@/lib/tasks/repository-finalization";
 import Board from "./board-client";
 import AddTaskFab from "./add-task-fab";
 import { promoteEpicOnTaskInProgress } from "@/lib/epics/promote-on-start";
@@ -256,7 +261,7 @@ async function moveTask(
       approvedOn: true,
       deletedAt: true,
       epicId: true,
-      repositoryRun: { select: { phase: true } },
+      repositoryRun: { select: repositoryFinalizationFenceSelect },
       epic: { select: { status: true, actingManagerId: true } },
     },
   });
@@ -265,11 +270,11 @@ async function moveTask(
   }
   await requireProjectAccess(actor, { id: current.projectId });
   if (current.status === status) return { ok: true };
-  if (current.repositoryRun?.phase === "finalizing") {
+  if (repositoryFinalizationOwnsTask(current.repositoryRun)) {
     return {
       ok: false,
       code: "EXPLICIT_USER_ACTION_REQUIRED",
-      message: "Repository finalization is running; wait for it to complete before changing status.",
+      message: REPOSITORY_FINALIZATION_FENCE_MESSAGE,
     };
   }
 
@@ -307,7 +312,7 @@ async function moveTask(
     }
   }
 
-  if (current.status === "Review" && status === "Done" && (actor.isOwner || actor.kind === "agent")) {
+  if (current.status === "Review" && status === "Done") {
     const actorUser = await db.user.findUnique({
       where: { id: actor.id },
       select: { username: true },

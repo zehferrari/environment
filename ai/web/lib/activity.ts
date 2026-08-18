@@ -76,6 +76,7 @@ export type ActivityKind =
   | "agent.integration.credentials"
   | "agent.integration.credentials_failed"
   | "agent.model.update"
+  | "agent.model_fallback"
   | "agent.profile.update"
   | "agent.restart.requested"
   | "agent.restart.failed"
@@ -496,6 +497,10 @@ export function describeActivity(row: ActivityRow): string {
       const from = p?.before?.active ?? "unset";
       const to = p?.after?.active ?? "unset";
       return `${actor(row.actorName)} changed ${targetAgent(row)} model from ${from} to ${to}`;
+    }
+    case "agent.model_fallback": {
+      const p = parsePayload<{ message?: string }>(row.payload);
+      return `${targetAgent(row)} used a fallback model${p?.message ? ` — ${trunc(p.message, 140)}` : ""}`;
     }
     case "agent.profile.update":
       return `${actor(row.actorName)} updated ${targetAgent(row)} profile${row.targetFile ? ` (${row.targetFile})` : ""}`;

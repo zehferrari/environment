@@ -68,11 +68,16 @@ async function main() {
     isRetryablePmChannelTurnFailure,
     retryOrFailPmChannelJobForTurnFailure,
     requeueStaleClaimedPmChannelJobs,
+    settleTerminalRunPmChannelJobs,
     runPmChannelWorkerOnce,
   } = await import("@/lib/agents/pm-channel/jobs");
   const { applyPmChannelStreamCallback } = await import("@/lib/agents/pm-channel/stream-callback");
   const { getOrCreateAgentSessionBinding } = await import("@/lib/agents/auth/session-bindings");
-  const { openTaskExecutionEpisode, EPISODE_CLOSE_REASON } = await import(
+  const {
+    openTaskExecutionEpisode,
+    EPISODE_CLOSE_REASON,
+    EPISODE_TOOL_CYCLE_BUDGET_DEFAULT,
+  } = await import(
     "@/lib/agents/episodes/lifecycle"
   );
   const { CONTEXT_PRESSURE_RECOVERY_ACTION } = await import(
@@ -224,6 +229,21 @@ async function main() {
       db.pmChannelJob.update({ where: { id: leaseJobId }, data: { status: "canceled" } }),
       db.pmChannelRun.update({ where: { id: leaseSeed.id }, data: { status: "canceled" } }),
     ]);
+
+    const orphanMessage = "lifecycle-terminal-run-orphan";
+    await grantMessage(orphanMessage);
+    await enqueue({ target: commentTarget(orphanMessage), text: "terminal orphan" });
+    const orphan = await runRow(`task-comment:${agentSlug}:${task.id}:${orphanMessage}`);
+    await db.$transaction([
+      db.pmChannelRun.update({ where: { id: orphan.id }, data: { status: "superseded" } }),
+      db.pmChannelJob.update({ where: { runId: orphan.id }, data: { status: "accepted" } }),
+    ]);
+    assert.equal(await settleTerminalRunPmChannelJobs(), 1, "one terminal-run orphan is reconciled");
+    assert.equal(
+      (await runRow(`task-comment:${agentSlug}:${task.id}:${orphanMessage}`)).jobs[0]!.status,
+      "canceled",
+      "a superseded run cannot retain a live dispatch job",
+    );
     const durableReply = (messageId: string) => db.activityLog.create({
       data: {
         kind: "task.chat.reply",
@@ -684,7 +704,11 @@ async function main() {
     assert.equal(recoveredEpisodes[0]!.nextAction, "resume the browser verification");
     assert.equal(recoveredEpisodes[1]!.status, "open");
     assert.equal(recoveredEpisodes[1]!.sessionKey, null, "the successor has never used the poisoned session");
-    assert.equal(recoveredEpisodes[1]!.toolCycleBudget, 18, "the successor uses the tightened default ceiling");
+    assert.equal(
+      recoveredEpisodes[1]!.toolCycleBudget,
+      EPISODE_TOOL_CYCLE_BUDGET_DEFAULT,
+      "the successor uses the current large-window default ceiling",
+    );
     const contextContinuation = await db.pmChannelContinuation.findFirstOrThrow({
       where: { runId: d6bSeed.id, action: CONTEXT_PRESSURE_RECOVERY_ACTION },
       select: { status: true },

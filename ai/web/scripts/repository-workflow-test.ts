@@ -9,6 +9,41 @@ import {
   activityPayloadUsesCheckpointAuthorization,
   validateCheckpointAuthorizationText,
 } from "@/lib/deploy/checkpoint-authorization";
+import { repositoryFinalizationOwnsTask } from "@/lib/tasks/repository-finalization";
+
+assert.equal(
+  repositoryFinalizationOwnsTask({
+    phase: "operational_error",
+    repoTouched: true,
+    baseSha: "base",
+    candidateSha: "candidate",
+    reviewedSha: "candidate",
+  }),
+  true,
+  "an accepted immutable candidate must retain its finalization fence across an operational cleanup error",
+);
+assert.equal(
+  repositoryFinalizationOwnsTask({
+    phase: "operational_error",
+    repoTouched: true,
+    baseSha: "base",
+    candidateSha: "candidate",
+    reviewedSha: null,
+  }),
+  false,
+  "a validation error before acceptance must not acquire the finalization fence",
+);
+assert.equal(
+  repositoryFinalizationOwnsTask({
+    phase: "completed",
+    repoTouched: false,
+    baseSha: "base",
+    candidateSha: null,
+    reviewedSha: "base",
+  }),
+  true,
+  "an accepted no-change candidate must retain the same finalization fence",
+);
 
 assert.equal(
   semanticCommitDescriptionWarning({
@@ -106,6 +141,7 @@ const workflowRoute = readFileSync(join(root, "app/api/agent/tasks/[taskId]/work
 const epicWorkflowRoute = readFileSync(join(root, "app/api/agent/epics/[epicId]/workflow/route.ts"), "utf8");
 const epicNotifications = readFileSync(join(root, "lib/agents/workflow/notifications/epic.ts"), "utf8");
 const workflowOutbox = readFileSync(join(root, "lib/tasks/workflow-outbox-drain.ts"), "utf8");
+const workflowNudge = readFileSync(join(root, "scripts/pm-workflow-nudge.ts"), "utf8");
 
 assert(
   handoff.includes('status: "To Do"') &&
@@ -193,8 +229,13 @@ assert(
   "an already-published checkpoint baseline must satisfy prefix review and use the no-change cleanup path",
 );
 assert(
-  workflowRoute.includes('task.repositoryRun?.phase === "finalizing"'),
-  "review feedback must not race an accepted repository submission that is already finalizing",
+  workflowRoute.includes("repositoryFinalizationOwnsTask(task.repositoryRun)") &&
+    finalization.includes('task.repositoryRun.phase === "operational_error"') &&
+    finalization.includes('kind: "task.review.finalization_retry"') &&
+    finalization.includes("review-finalize-retry:") &&
+    workflowNudge.includes('args.kind?.startsWith("pm-review-")') &&
+    workflowNudge.includes("repositoryFinalizationOwnsTask(task.repositoryRun)"),
+  "review feedback must stay fenced after acceptance, and review_done must retry an operational finalization without revalidating the branch",
 );
 assert(
   handoff.includes("resolveActiveMonitorAgent") &&
