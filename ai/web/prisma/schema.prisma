@@ -463,6 +463,11 @@ model Task {
   // queries filter deletedAt: null.
   deploymentStatus      String           @default("Not Required") @map("deployment_status")
   activeWorkflowCycleId String?          @map("active_workflow_cycle_id")
+  // Phase E §5.1 — Durable engine ownership. Determines which workflow engine
+  // (legacy or orchestrator_v2) owns this task's mutation path. Ownership is
+  // durable state, not a per-request environment-variable decision.
+  workflowEngine        String           @default("legacy") @map("workflow_engine")
+  workflowEnginePinnedAt DateTime?       @map("workflow_engine_pinned_at")
   deletedAt             DateTime?
   deletedById           String?
   deletedBy             User?            @relation("TaskDeletedBy", fields: [deletedById], references: [id])
@@ -488,6 +493,7 @@ model Task {
   workflowOutbox         WorkflowOutbox[]
   workflowCycles         TaskWorkflowCycle[]
   procedureRuns          TaskProcedureRun[]
+  commandReceipts        TaskWorkflowCommandReceipt[]
 
   @@index([projectId])
   @@index([workItemKey])
@@ -504,6 +510,7 @@ model Task {
   @@index([archivedById])
   @@index([deletedAt])
   @@index([alertReporter])
+  @@index([workflowEngine])
 }
 
 // A Task can require multiple prerequisite Tasks. Dependencies are scheduling
@@ -542,6 +549,9 @@ model TaskWorkflowCycle {
   candidateSha          String?              @map("candidate_sha")
   openedAt              DateTime             @default(now()) @map("opened_at")
   closedAt              DateTime?            @map("closed_at")
+  // Phase E §5.1 — An open cycle is permanently pinned to its engine.
+  // Copied from Task.workflowEngine when the cycle is opened.
+  workflowEngine        String               @default("legacy") @map("workflow_engine")
   createdAt             DateTime             @default(now()) @map("created_at")
   updatedAt             DateTime             @updatedAt @map("updated_at")
   transitions           WorkflowTransition[]
@@ -549,11 +559,47 @@ model TaskWorkflowCycle {
   reviewRun             ReviewRun?
   repositoryRun         TaskRepositoryRun?
   procedureRuns         TaskProcedureRun[]
+  commandReceipts       TaskWorkflowCommandReceipt[]
 
   @@unique([taskId, sequence])
   @@index([taskId, status])
   @@index([status, updatedAt])
+  @@index([workflowEngine])
   @@map("task_workflow_cycles")
+}
+
+// Phase E §6.1 — Durable command receipt: the single replay authority for
+// workflow commands. Replaces the ActivityLog substring scan as the
+// idempotency arbiter. Created atomically inside the workflow transaction
+// after transition + intent writes succeed, before commit. Rejected commands
+// are NOT stored here; operational failures that roll back leave no receipt.
+model TaskWorkflowCommandReceipt {
+  id                      String   @id @default(cuid())
+  taskId                  String   @map("task_id")
+  task                    Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  workflowCycleId         String?  @map("workflow_cycle_id")
+  workflowCycle           TaskWorkflowCycle? @relation(fields: [workflowCycleId], references: [id], onDelete: SetNull)
+  idempotencyKey          String   @map("idempotency_key")
+  requestFingerprint      String   @map("request_fingerprint")
+  intent                  String
+  source                  String
+  actorUserId             String?  @map("actor_user_id")
+  decisionActorId         String?  @map("decision_actor_id")
+  executorActorId         String?  @map("executor_actor_id")
+  expectedWorkflowVersion Int      @map("expected_workflow_version")
+  resultingWorkflowVersion Int     @map("resulting_workflow_version")
+  transitionId            String?  @map("transition_id")
+  procedureRunId          String?  @map("procedure_run_id")
+  status                  String   // accepted | completed | rejected_operational
+  result                  String   // bounded canonical JSON response projection
+  createdAt               DateTime @default(now()) @map("created_at")
+  updatedAt               DateTime @updatedAt @map("updated_at")
+
+  @@unique([taskId, idempotencyKey])
+  @@index([workflowCycleId, createdAt])
+  @@index([intent, createdAt])
+  @@index([procedureRunId])
+  @@map("task_workflow_command_receipts")
 }
 
 // Durable procedure run: an ordered, replay-safe sequence of steps that

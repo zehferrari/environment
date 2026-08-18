@@ -18,6 +18,7 @@ import { authorizeCommand } from "@/lib/tasks/orchestrator/authorize";
 import { runGuards } from "@/lib/tasks/orchestrator/guards";
 import { decideCommand } from "@/lib/tasks/orchestrator/decide";
 import { executeWorkflowCommand } from "@/lib/tasks/orchestrator/execute";
+import { computeRequestFingerprint } from "@/lib/tasks/orchestrator/receipts";
 import { resolveReviewOwnerIdFromSnapshot } from "@/lib/tasks/orchestrator/authorize";
 import type {
   OrchestrationDecision,
@@ -123,35 +124,30 @@ export async function submitWorkflowCommand(command: TaskWorkflowCommand): Promi
   }
 
   // --- Idempotency replay check (before guards, per kernel semantics) ----
-  // The transition kernel deduplicates by idempotencyKey. A replay of the
-  // same command returns the original transition without side effects, even
-  // if the workflow version has since moved on. We check here so the guard's
-  // version check doesn't reject a legitimate replay.
-  const existingTransition = await db.workflowTransition.findUnique({
+  // TaskWorkflowCommandReceipt is the single replay authority (Phase E §6).
+  // The ActivityLog substring scan (payload contains idempotencyKey) is
+  // removed because a `contains` match on serialized JSON is not an
+  // exact-correlation check and cannot reliably reconstruct the original
+  // response. The receipt stores the serialized OrchestratorResult projection
+  // so an exact replay returns an identical response.
+  const existingReceipt = await db.taskWorkflowCommandReceipt.findUnique({
     where: {
       taskId_idempotencyKey: {
         taskId: command.taskId,
         idempotencyKey: command.idempotencyKey,
       },
     },
-    select: { id: true, workflowVersion: true },
+    select: { id: true, requestFingerprint: true, result: true },
   });
-  if (existingTransition) {
-    return { status: "replayed", transitionId: existingTransition.id, workflowVersion: existingTransition.workflowVersion, procedureId: null };
-  }
-  // For no-op decisions (accept_review, checkpoint, etc.) that don't create a
-  // kernel transition, check for an existing activity log with the same
-  // idempotency key. This makes no-op decisions replay-safe too.
-  const existingActivity = await db.activityLog.findFirst({
-    where: {
-      taskId: command.taskId,
-      kind: { startsWith: "task.workflow." },
-      payload: { contains: command.idempotencyKey },
-    },
-    select: { id: true },
-  });
-  if (existingActivity) {
-    return { status: "replayed", transitionId: existingActivity.id, workflowVersion: state.workflowVersion, procedureId: null };
+  if (existingReceipt) {
+    const fingerprint = computeRequestFingerprint(command);
+    if (existingReceipt.requestFingerprint === fingerprint) {
+      // Exact replay — return the stored result.
+      const stored = JSON.parse(existingReceipt.result) as OrchestratorResult;
+      return stored;
+    }
+    // Same key, different payload — idempotency conflict (domain error, not HTTP status).
+    return { status: "invalid", reason: "idempotency_conflict: idempotency key reused with different payload." };
   }
 
   // --- Authorize ---------------------------------------------------------

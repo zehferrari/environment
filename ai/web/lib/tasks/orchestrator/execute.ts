@@ -32,6 +32,8 @@ import {
   updateTaskWorkflowCycleCandidate,
 } from "@/lib/tasks/workflow-cycle";
 import { createProcedureRun } from "@/lib/tasks/orchestrator/procedure-runner";
+import { computeRequestFingerprint, findOrCreateReceipt } from "@/lib/tasks/orchestrator/receipts";
+import { resolveEngineOwnership, stampCycleEngine, ENGINE_ORCHESTRATOR_V2 } from "@/lib/tasks/orchestrator/ownership";
 import type {
   OrchestrationDecision,
   OrchestratorResult,
@@ -275,7 +277,52 @@ export async function executeWorkflowCommand(
           });
         }
 
-        return { status: "accepted", transitionId: transitionId ?? command.idempotencyKey, workflowVersion, procedureId, cycleId };
+        // --- PHASEE-01: Engine ownership check + cycle stamp ----------------
+        // Resolve durable engine ownership inside the transaction. Reject
+        // if the task is legacy-owned — the V2 orchestrator does not accept
+        // commands for legacy tasks. When opening a cycle, stamp it with
+        // the task's engine so the cycle is permanently pinned.
+        const ownership = await resolveEngineOwnership(tx, command.taskId);
+        if (!ownership.ok || ownership.engine !== ENGINE_ORCHESTRATOR_V2) {
+          return {
+            status: "forbidden",
+            reason: ownership.ok
+              ? `Task is ${ownership.engine}-owned; the V2 orchestrator does not accept commands for legacy tasks.`
+              : `Engine ownership error: ${ownership.reason}`,
+          };
+        }
+        if (decision.cycleOperation === "open" && cycleId) {
+          await stampCycleEngine(tx, cycleId, ENGINE_ORCHESTRATOR_V2);
+        }
+
+        // --- PHASEE-01: Command receipt (atomic with transition) -----------
+        // Create the durable receipt inside the transaction so it commits
+        // atomically with the transition. Replays and conflicts were already
+        // handled in submitWorkflowCommand before reaching here; this is the
+        // first-write path.
+        const result: OrchestratorResult = { status: "accepted", transitionId: transitionId ?? command.idempotencyKey, workflowVersion, procedureId, cycleId };
+        const fingerprint = computeRequestFingerprint(command);
+        const receiptOutcome = await findOrCreateReceipt(
+          tx,
+          command,
+          fingerprint,
+          result,
+          {
+            workflowCycleId: cycleId,
+            transitionId,
+            procedureRunId: procedureId,
+            decisionActorId: decision.decisionActorId,
+            executorActorId: decision.executorActorId ?? null,
+          },
+        );
+        if (receiptOutcome.kind === "conflict" || receiptOutcome.kind === "race_conflict") {
+          return { status: "invalid", reason: "idempotency_conflict: idempotency key reused with different payload." };
+        }
+        if (receiptOutcome.kind === "replay" || receiptOutcome.kind === "race_replay") {
+          return receiptOutcome.result;
+        }
+
+        return result;
       },
       { timeout: EXECUTE_TRANSACTION_TIMEOUT_MS },
     );
