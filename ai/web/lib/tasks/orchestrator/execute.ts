@@ -31,6 +31,7 @@ import {
   openTaskWorkflowCycle,
   updateTaskWorkflowCycleCandidate,
 } from "@/lib/tasks/workflow-cycle";
+import { createProcedureRun } from "@/lib/tasks/orchestrator/procedure-runner";
 import type {
   OrchestrationDecision,
   OrchestratorResult,
@@ -172,18 +173,21 @@ export async function executeWorkflowCommand(
           }
         }
 
-        // --- Procedure row (stub for ORCH-02; ORCH-03 fills the engine) --
-        // For now, record the procedure type as an activity row so the
-        // projection can surface it. ORCH-03 replaces this with a real
-        // TaskProcedureRun row + ordered steps.
+        // --- Procedure row (real TaskProcedureRun + steps, ORCH-03) -----
         let procedureId: string | null = null;
         if (decision.procedureType) {
           const task = await tx.task.findUniqueOrThrow({
             where: { id: command.taskId },
             select: { projectId: true },
           });
-          // ORCH-03 will create a TaskProcedureRun here. For ORCH-02, record
-          // the intent as an activity so the projection can observe it.
+          const created = await createProcedureRun(tx, {
+            taskId: command.taskId,
+            workflowCycleId: cycleId,
+            triggerTransitionId: transitionId ?? command.idempotencyKey,
+            type: decision.procedureType,
+            input: command.payload ?? null,
+          });
+          procedureId = created.procedureRunId;
           await tx.activityLog.create({
             data: {
               projectId: task.projectId,
@@ -192,6 +196,7 @@ export async function executeWorkflowCommand(
               kind: `task.workflow.procedure_scheduled`,
               payload: JSON.stringify({
                 procedureType: decision.procedureType,
+                procedureRunId: procedureId,
                 cycleId,
                 transitionId,
                 workflowVersion,

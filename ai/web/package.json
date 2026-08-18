@@ -115,6 +115,7 @@
     "test:workflow-regression": "tsx scripts/workflow-regression-test.ts",
     "test:orch-01-cycle": "tsx scripts/orch-01-cycle-test.ts",
     "test:orch-02-orchestrator": "tsx scripts/orch-02-orchestrator-test.ts",
+    "test:orch-03-procedure": "tsx scripts/orch-03-procedure-test.ts",
     "test:workflow-regression-lifecycle": "tsx scripts/workflow-regression-lifecycle-test.ts",
     "test:workflow-regression-plan-steps": "tsx scripts/workflow-regression-plan-steps-test.ts",
     "test:workflow-regression-blocker": "tsx scripts/workflow-regression-blocker-test.ts",

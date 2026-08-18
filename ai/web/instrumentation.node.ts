@@ -12,10 +12,12 @@ import {
   runPmChannelWorkerDrain,
 } from "@/lib/agents/pm-channel/jobs";
 import { startPmChannelLocalStreamTransports } from "@/lib/agents/pm-channel/stream-local";
+import { runProcedureRunner } from "@/lib/tasks/orchestrator/procedure-runner";
 
 declare global {
   var __pmChannelWorkerPollStarted: boolean | undefined;
   var __deploymentWatcherPollStarted: boolean | undefined;
+  var __procedureRunnerPollStarted: boolean | undefined;
 }
 
 function deploymentWatcherPollMs() {
@@ -74,6 +76,39 @@ function pmChannelWorkerPollMs() {
   return Number.isFinite(value) && value > 0 ? Math.max(250, Math.floor(value)) : 1000;
 }
 
+function procedureRunnerPollMs() {
+  const value = Number.parseInt(process.env.PM_PROCEDURE_RUNNER_POLL_MS ?? "2000", 10);
+  return Number.isFinite(value) && value > 0 ? Math.max(500, Math.floor(value)) : 2000;
+}
+
+function startProcedureRunnerPoll() {
+  if (globalThis.__procedureRunnerPollStarted) return;
+  globalThis.__procedureRunnerPollStarted = true;
+
+  const workerId = process.env.PM_PROCEDURE_RUNNER_WORKER_ID ?? `pm-procedure:${process.pid}`;
+  const pollMs = procedureRunnerPollMs();
+  let running = false;
+
+  const tick = async () => {
+    if (running) return;
+    running = true;
+    try {
+      const result = await runProcedureRunner({ workerId });
+      if (result.claimed > 0) {
+        console.log("[pm] procedure runner:", JSON.stringify({ workerId, ...result }));
+      }
+    } catch (err) {
+      console.error("[pm] procedure runner poll failed:", err);
+    } finally {
+      running = false;
+    }
+  };
+
+  setInterval(tick, pollMs).unref();
+  setTimeout(tick, 0).unref();
+  console.log("[pm] procedure runner poll enabled:", JSON.stringify({ workerId, pollMs }));
+}
+
 function startPmChannelWorkerPoll() {
   if (!pmAsyncDispatchEnabled() || globalThis.__pmChannelWorkerPollStarted) return;
   globalThis.__pmChannelWorkerPollStarted = true;
@@ -119,6 +154,7 @@ try {
 
 startPmChannelWorkerPoll();
 startDeploymentWatcherPoll();
+startProcedureRunnerPoll();
 
 const intervalMin = Number(process.env.AGENT_SYNC_INTERVAL_MIN ?? "5");
 const intervalMs = Math.max(1, intervalMin) * 60_000;

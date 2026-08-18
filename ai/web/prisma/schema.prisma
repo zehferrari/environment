@@ -487,6 +487,7 @@ model Task {
   workflowTransitions    WorkflowTransition[]
   workflowOutbox         WorkflowOutbox[]
   workflowCycles         TaskWorkflowCycle[]
+  procedureRuns          TaskProcedureRun[]
 
   @@index([projectId])
   @@index([workItemKey])
@@ -547,11 +548,71 @@ model TaskWorkflowCycle {
   outbox                WorkflowOutbox[]
   reviewRun             ReviewRun?
   repositoryRun         TaskRepositoryRun?
+  procedureRuns         TaskProcedureRun[]
 
   @@unique([taskId, sequence])
   @@index([taskId, status])
   @@index([status, updatedAt])
   @@map("task_workflow_cycles")
+}
+
+// Durable procedure run: an ordered, replay-safe sequence of steps that
+// executes the mechanical consequences of a workflow decision (ORCH-03).
+// One run per (trigger transition, procedure type). Steps are claimed with
+// leases, executed by a closed handler registry, and retried with backoff.
+// A step may wait for an asynchronous callback (repository validation/
+// finalization) by entering `waiting_callback` with the job id stored in
+// output. Handlers may not change task status directly; they enqueue outbox
+// effects or invoke the orchestrator for mechanical transitions.
+model TaskProcedureRun {
+  id                  String              @id @default(cuid())
+  taskId              String              @map("task_id")
+  task                Task                @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  workflowCycleId     String?             @map("workflow_cycle_id")
+  workflowCycle       TaskWorkflowCycle?  @relation(fields: [workflowCycleId], references: [id], onDelete: SetNull)
+  triggerTransitionId String              @map("trigger_transition_id")
+  type                String
+  status              String              @default("queued")
+  currentStep         String?             @map("current_step")
+  input               String?
+  output              String?
+  lastError           String?             @map("last_error")
+  createdAt           DateTime            @default(now()) @map("created_at")
+  updatedAt           DateTime            @updatedAt @map("updated_at")
+  completedAt         DateTime?           @map("completed_at")
+  steps               TaskProcedureStep[]
+
+  @@unique([triggerTransitionId, type])
+  @@index([status, updatedAt])
+  @@index([taskId, status])
+  @@index([workflowCycleId])
+  @@map("task_procedure_runs")
+}
+
+model TaskProcedureStep {
+  id             String           @id @default(cuid())
+  procedureRunId String           @map("procedure_run_id")
+  procedureRun   TaskProcedureRun @relation(fields: [procedureRunId], references: [id], onDelete: Cascade)
+  name           String
+  ordinal        Int
+  status         String           @default("pending")
+  attempts       Int              @default(0)
+  availableAt    DateTime         @default(now()) @map("available_at")
+  leaseOwner     String?          @map("lease_owner")
+  leaseExpiresAt DateTime?        @map("lease_expires_at")
+  input          String?
+  output         String?
+  lastError      String?          @map("last_error")
+  startedAt      DateTime?        @map("started_at")
+  completedAt    DateTime?        @map("completed_at")
+  createdAt      DateTime         @default(now()) @map("created_at")
+  updatedAt      DateTime         @updatedAt @map("updated_at")
+
+  @@unique([procedureRunId, name])
+  @@unique([procedureRunId, ordinal])
+  @@index([status, availableAt])
+  @@index([leaseExpiresAt])
+  @@map("task_procedure_steps")
 }
 
 // PM-owned repository lifecycle for one Task. Board status remains the

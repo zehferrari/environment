@@ -1,0 +1,513 @@
+// ORCH-03 — Durable procedure runner.
+//
+// Finds the first runnable step whose predecessors completed, claims it
+// atomically with a lease, executes a named handler from a closed registry,
+// persists bounded output, and makes the next step available. On transient
+// failure, clears the lease and retries with exponential backoff. On terminal
+// failure or exhausted attempts, marks the procedure operational_error,
+// alerts the reporter, and creates an activity row. Reclaims expired leases
+// after a worker crash.
+//
+// Invariant 11: ordered procedures — a later step cannot run until all
+// required predecessor steps completed.
+// Invariant 12: bounded recovery — every retry has a lease, attempt limit,
+// backoff, terminal operational-error state, and visible audit record.
+//
+// Handlers may:
+//   - create a durable workflow outbox effect;
+//   - call an existing repository spool enqueue function;
+//   - wait for a callback identified by job ID (enter waiting_callback);
+//   - invoke the orchestration command boundary for a mechanical transition;
+//   - publish a PM notification.
+// Handlers may NOT directly change task status.
+
+import type { Prisma } from "@prisma/client";
+import { db } from "@/lib/db";
+import { getProcedureDefinition } from "@/lib/tasks/orchestrator/procedures";
+import type { TaskProcedureType } from "@/lib/tasks/orchestrator/types";
+
+const LEASE_MS = 2 * 60_000;
+const DEFAULT_BATCH = 20;
+const MAX_BACKOFF_MS = 15 * 60_000;
+
+export type StepHandlerResult =
+  | { status: "completed"; output?: Record<string, unknown> }
+  | { status: "waiting_callback"; jobId: string; output?: Record<string, unknown> }
+  | { status: "failed"; error: string; retryable: boolean };
+
+export type StepHandlerContext = {
+  procedureRunId: string;
+  stepId: string;
+  taskId: string;
+  workflowCycleId: string | null;
+  input: Record<string, unknown> | null;
+  // The procedure run's trigger transition id, for handlers that need to
+  // reference the originating decision.
+  triggerTransitionId: string;
+};
+
+export type StepHandler = (ctx: StepHandlerContext) => Promise<StepHandlerResult>;
+
+// Closed registry of step handlers. Handlers are registered at module load
+// time by the procedure implementations (ORCH-04..07). A handler that is not
+// registered causes the step to fail terminally — procedure definitions are
+// static code, and a missing handler is a bug, not a transient failure.
+const handlerRegistry = new Map<string, StepHandler>();
+
+export function registerStepHandler(procedureType: TaskProcedureType, stepName: string, handler: StepHandler): void {
+  handlerRegistry.set(`${procedureType}:${stepName}`, handler);
+}
+
+export function clearStepHandlerRegistry(): void {
+  handlerRegistry.clear();
+}
+
+export function getStepHandler(procedureType: TaskProcedureType, stepName: string): StepHandler | undefined {
+  return handlerRegistry.get(`${procedureType}:${stepName}`);
+}
+
+// --- Callback matching (§6.4) --------------------------------------------
+// Repository callbacks must match all identifiers: procedure id, step id,
+// task id, cycle id, job id, and expected candidate/base SHA where applicable.
+// A duplicate callback replays the already-completed step. A callback for an
+// older cycle is rejected.
+export type ProcedureCallback = {
+  procedureRunId: string;
+  stepId: string;
+  taskId: string;
+  workflowCycleId: string | null;
+  jobId: string;
+  candidateSha?: string | null;
+  baseSha?: string | null;
+};
+
+export async function applyProcedureCallback(callback: ProcedureCallback): Promise<{ applied: boolean; reason: string }> {
+  const step = await db.taskProcedureStep.findUnique({
+    where: { id: callback.stepId },
+    include: {
+      procedureRun: {
+        select: {
+          id: true,
+          taskId: true,
+          workflowCycleId: true,
+          type: true,
+          status: true,
+        },
+      },
+    },
+  });
+  if (!step || !step.procedureRun) {
+    return { applied: false, reason: "Step not found." };
+  }
+  if (step.procedureRun.id !== callback.procedureRunId) {
+    return { applied: false, reason: "Procedure id mismatch." };
+  }
+  if (step.procedureRun.taskId !== callback.taskId) {
+    return { applied: false, reason: "Task id mismatch." };
+  }
+  if (step.procedureRun.workflowCycleId !== callback.workflowCycleId) {
+    return { applied: false, reason: "Cycle id mismatch — callback is from an older or different cycle." };
+  }
+  // Verify the job id matches the one stored in step output when the step
+  // entered waiting_callback.
+  let storedJobId: string | null = null;
+  if (step.output) {
+    try {
+      const parsed = JSON.parse(step.output) as Record<string, unknown>;
+      storedJobId = typeof parsed.jobId === "string" ? parsed.jobId : null;
+    } catch {
+      // ignore
+    }
+  }
+  if (storedJobId && storedJobId !== callback.jobId) {
+    return { applied: false, reason: "Job id mismatch." };
+  }
+  // Idempotent: a duplicate callback for an already-completed step is a no-op.
+  if (step.status === "completed") {
+    return { applied: true, reason: "Step already completed (duplicate callback replayed)." };
+  }
+  if (step.status !== "waiting_callback") {
+    return { applied: false, reason: `Step is in ${step.status}, not waiting_callback.` };
+  }
+  // Mark the step completed; the runner picks up the next step on the next
+  // poll. The callback's evidence (candidateSha, baseSha) is stored in step
+  // output for the next step's handler to consume.
+  const output: Record<string, unknown> = { jobId: callback.jobId };
+  if (callback.candidateSha !== undefined) output.candidateSha = callback.candidateSha;
+  if (callback.baseSha !== undefined) output.baseSha = callback.baseSha;
+  await db.taskProcedureStep.update({
+    where: { id: step.id },
+    data: {
+      status: "completed",
+      completedAt: new Date(),
+      output: JSON.stringify(output),
+      lastError: null,
+    },
+  });
+  // Make the next step available (the runner's predecessor check handles this
+  // on the next poll, but we also wake the procedure run).
+  await db.taskProcedureRun.update({
+    where: { id: step.procedureRun.id },
+    data: { status: "queued", currentStep: null },
+  });
+  return { applied: true, reason: "Callback applied; step completed." };
+}
+
+// --- Runner ---------------------------------------------------------------
+
+export async function runProcedureRunner(args: {
+  limit?: number;
+  now?: Date;
+  workerId?: string;
+} = {}): Promise<{ claimed: number; completed: number; retried: number; failed: number; waiting: number }> {
+  const now = args.now ?? new Date();
+  const limit = Math.max(1, Math.min(100, args.limit ?? DEFAULT_BATCH));
+  const workerId = args.workerId ?? `procedure-runner:${process.pid}`;
+  let claimed = 0;
+  let completed = 0;
+  let retried = 0;
+  let failed = 0;
+  let waiting = 0;
+
+  for (let index = 0; index < limit; index += 1) {
+    // Find the first runnable step whose predecessors all completed.
+    const candidate = await findRunnableStep(now);
+    if (!candidate) break;
+
+    // Claim it atomically with a lease.
+    const leaseExpiresAt = new Date(now.getTime() + LEASE_MS);
+    const claimedRow = await db.taskProcedureStep.updateMany({
+      where: {
+        id: candidate.id,
+        status: { in: ["pending", "failed"] },
+        availableAt: { lte: now },
+      },
+      data: {
+        status: "running",
+        leaseOwner: workerId,
+        leaseExpiresAt,
+        attempts: { increment: 1 },
+        startedAt: now,
+        lastError: null,
+      },
+    });
+    if (claimedRow.count !== 1) continue;
+    claimed += 1;
+
+    const step = await db.taskProcedureStep.findUnique({
+      where: { id: candidate.id },
+      include: {
+        procedureRun: {
+          select: {
+            id: true,
+            taskId: true,
+            workflowCycleId: true,
+            type: true,
+            triggerTransitionId: true,
+            status: true,
+            input: true,
+          },
+        },
+      },
+    });
+    if (!step || !step.procedureRun) continue;
+
+    // Mark the procedure run as running.
+    await db.taskProcedureRun.update({
+      where: { id: step.procedureRun.id },
+      data: { status: "running", currentStep: step.name },
+    });
+
+    const handler = getStepHandler(step.procedureRun.type as TaskProcedureType, step.name);
+    if (!handler) {
+      // No handler registered — terminal failure (bug in procedure definition).
+      await markStepTerminal({
+        stepId: step.id,
+        procedureRunId: step.procedureRun.id,
+        error: `No handler registered for ${step.procedureRun.type}:${step.name}`,
+        retryable: false,
+        attempts: step.attempts,
+        maxAttempts: getProcedureDefinition(step.procedureRun.type as TaskProcedureType).maxAttemptsPerStep,
+        workerId,
+      });
+      failed += 1;
+      continue;
+    }
+
+    let input: Record<string, unknown> | null = null;
+    if (step.input) {
+      try { input = JSON.parse(step.input) as Record<string, unknown>; } catch { /* ignore */ }
+    }
+    const ctx: StepHandlerContext = {
+      procedureRunId: step.procedureRun.id,
+      stepId: step.id,
+      taskId: step.procedureRun.taskId,
+      workflowCycleId: step.procedureRun.workflowCycleId,
+      input,
+      triggerTransitionId: step.procedureRun.triggerTransitionId,
+    };
+
+    try {
+      const result = await handler(ctx);
+      if (result.status === "completed") {
+        await db.taskProcedureStep.update({
+          where: { id: step.id },
+          data: {
+            status: "completed",
+            completedAt: new Date(),
+            output: result.output ? JSON.stringify(result.output) : step.output,
+            leaseOwner: null,
+            leaseExpiresAt: null,
+            lastError: null,
+          },
+        });
+        completed += 1;
+        // Make the next step available; check if the procedure is complete.
+        await advanceProcedure(step.procedureRun.id);
+      } else if (result.status === "waiting_callback") {
+        await db.taskProcedureStep.update({
+          where: { id: step.id },
+          data: {
+            status: "waiting_callback",
+            output: JSON.stringify({ ...result.output ?? {}, jobId: result.jobId }),
+            leaseOwner: null,
+            leaseExpiresAt: null,
+          },
+        });
+        waiting += 1;
+      } else if (result.status === "failed") {
+        const maxAttempts = getProcedureDefinition(step.procedureRun.type as TaskProcedureType).maxAttemptsPerStep;
+        if (result.retryable && step.attempts < maxAttempts) {
+          // Transient failure: clear lease, retry with backoff.
+          const backoff = Math.min(MAX_BACKOFF_MS, 1000 * 2 ** Math.min(step.attempts, 6));
+          await db.taskProcedureStep.update({
+            where: { id: step.id },
+            data: {
+              status: "failed",
+              availableAt: new Date(now.getTime() + backoff),
+              leaseOwner: null,
+              leaseExpiresAt: null,
+              lastError: result.error.slice(0, 2000),
+            },
+          });
+          retried += 1;
+        } else {
+          // Terminal failure or exhausted attempts.
+          await markStepTerminal({
+            stepId: step.id,
+            procedureRunId: step.procedureRun.id,
+            error: result.error,
+            retryable: result.retryable,
+            attempts: step.attempts,
+            maxAttempts,
+            workerId,
+          });
+          failed += 1;
+        }
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const maxAttempts = getProcedureDefinition(step.procedureRun.type as TaskProcedureType).maxAttemptsPerStep;
+      if (step.attempts < maxAttempts) {
+        const backoff = Math.min(MAX_BACKOFF_MS, 1000 * 2 ** Math.min(step.attempts, 6));
+        await db.taskProcedureStep.update({
+          where: { id: step.id },
+          data: {
+            status: "failed",
+            availableAt: new Date(now.getTime() + backoff),
+            leaseOwner: null,
+            leaseExpiresAt: null,
+            lastError: message.slice(0, 2000),
+          },
+        });
+        retried += 1;
+      } else {
+        await markStepTerminal({
+          stepId: step.id,
+          procedureRunId: step.procedureRun.id,
+          error: message,
+          retryable: true,
+          attempts: step.attempts,
+          maxAttempts,
+          workerId,
+        });
+        failed += 1;
+      }
+    }
+  }
+  // Reclaim expired leases from worker crashes.
+  await reclaimExpiredLeases(now, workerId);
+  return { claimed, completed, retried, failed, waiting };
+}
+
+// --- Find the first runnable step whose predecessors completed ------------
+async function findRunnableStep(now: Date) {
+  // A step is runnable if:
+  //   - its status is pending or failed-with-backoff-elapsed;
+  //   - its availableAt <= now;
+  //   - all predecessor steps (lower ordinal in the same run) are completed.
+  // We query candidate steps then filter by predecessor completion in JS to
+  // avoid a complex SQL join on SQLite.
+  const candidates = await db.taskProcedureStep.findMany({
+    where: {
+      status: { in: ["pending", "failed"] },
+      availableAt: { lte: now },
+      procedureRun: { status: { in: ["queued", "running", "operational_error"] } },
+    },
+    orderBy: [{ availableAt: "asc" }, { createdAt: "asc" }],
+    take: 50,
+    select: { id: true, procedureRunId: true, ordinal: true, name: true },
+  });
+  for (const candidate of candidates) {
+    const predecessors = await db.taskProcedureStep.count({
+      where: {
+        procedureRunId: candidate.procedureRunId,
+        ordinal: { lt: candidate.ordinal },
+        status: { not: "completed" },
+      },
+    });
+    if (predecessors === 0) return candidate;
+  }
+  return null;
+}
+
+async function advanceProcedure(procedureRunId: string): Promise<void> {
+  const steps = await db.taskProcedureStep.findMany({
+    where: { procedureRunId },
+    orderBy: { ordinal: "asc" },
+    select: { id: true, name: true, ordinal: true, status: true },
+  });
+  const allCompleted = steps.length > 0 && steps.every((s) => s.status === "completed");
+  if (allCompleted) {
+    await db.taskProcedureRun.update({
+      where: { id: procedureRunId },
+      data: { status: "completed", currentStep: null, completedAt: new Date() },
+    });
+  } else {
+    // Wake the procedure so the next runnable step is picked up.
+    await db.taskProcedureRun.update({
+      where: { id: procedureRunId },
+      data: { status: "queued" },
+    });
+  }
+}
+
+async function markStepTerminal(args: {
+  stepId: string;
+  procedureRunId: string;
+  error: string;
+  retryable: boolean;
+  attempts: number;
+  maxAttempts: number;
+  workerId: string;
+}): Promise<void> {
+  await db.taskProcedureStep.update({
+    where: { id: args.stepId },
+    data: {
+      status: "terminal_error",
+      lastError: args.error.slice(0, 2000),
+      leaseOwner: null,
+      leaseExpiresAt: null,
+    },
+  });
+  await db.taskProcedureRun.update({
+    where: { id: args.procedureRunId },
+    data: {
+      status: "operational_error",
+      currentStep: null,
+      lastError: `Step ${args.stepId} failed terminally after ${args.attempts} attempts: ${args.error.slice(0, 500)}`,
+    },
+  });
+  // Alert the reporter via task.alertReporter + an activity row (§6.2 rule 7).
+  const run = await db.taskProcedureRun.findUnique({
+    where: { id: args.procedureRunId },
+    select: { taskId: true, type: true },
+  });
+  if (run) {
+    const task = await db.task.findUnique({ where: { id: run.taskId }, select: { projectId: true, reporterId: true } });
+    if (task) {
+      await db.task.updateMany({
+        where: { id: run.taskId, deletedAt: null },
+        data: { alertReporter: true },
+      });
+      await db.activityLog.create({
+        data: {
+          projectId: task.projectId,
+          taskId: run.taskId,
+          kind: "task.workflow.procedure_operational_error",
+          payload: JSON.stringify({
+            procedureRunId: args.procedureRunId,
+            procedureType: run.type,
+            stepId: args.stepId,
+            error: args.error.slice(0, 1000),
+            attempts: args.attempts,
+            retryable: args.retryable,
+            workerId: args.workerId,
+          }),
+        },
+      });
+    }
+  }
+}
+
+async function reclaimExpiredLeases(now: Date, workerId: string): Promise<void> {
+  // Steps with expired leases are returned to pending/failed so a worker
+  // crash doesn't strand a procedure. The predecessor check still applies.
+  const expired = await db.taskProcedureStep.updateMany({
+    where: {
+      status: "running",
+      leaseExpiresAt: { lte: now },
+    },
+    data: {
+      status: "failed",
+      availableAt: now,
+      leaseOwner: null,
+      leaseExpiresAt: null,
+      lastError: "Lease expired (worker crash or timeout).",
+    },
+  });
+  if (expired.count > 0) {
+    console.log(`[procedure-runner] reclaimed ${expired.count} expired lease(s) (worker ${workerId})`);
+  }
+}
+
+// --- Procedure creation (called by execute.ts) ----------------------------
+// Creates a TaskProcedureRun + its ordered TaskProcedureStep rows in one
+// transaction. Called by the orchestrator's execute path when a decision
+// names a procedureType.
+export async function createProcedureRun(
+  tx: Prisma.TransactionClient,
+  args: {
+    taskId: string;
+    workflowCycleId: string | null;
+    triggerTransitionId: string;
+    type: TaskProcedureType;
+    input?: Record<string, unknown> | null;
+  },
+): Promise<{ procedureRunId: string; stepIds: string[] }> {
+  const def = getProcedureDefinition(args.type);
+  const run = await tx.taskProcedureRun.create({
+    data: {
+      taskId: args.taskId,
+      workflowCycleId: args.workflowCycleId,
+      triggerTransitionId: args.triggerTransitionId,
+      type: args.type,
+      status: "queued",
+      input: args.input ? JSON.stringify(args.input) : null,
+    },
+  });
+  const stepIds: string[] = [];
+  for (let i = 0; i < def.steps.length; i += 1) {
+    const step = await tx.taskProcedureStep.create({
+      data: {
+        procedureRunId: run.id,
+        name: def.steps[i],
+        ordinal: i,
+        status: "pending",
+        availableAt: new Date(),
+      },
+    });
+    stepIds.push(step.id);
+  }
+  return { procedureRunId: run.id, stepIds };
+}

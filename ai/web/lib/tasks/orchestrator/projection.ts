@@ -98,6 +98,16 @@ export async function buildTaskWorkflowProjection(taskId: string): Promise<TaskW
       })
     : null;
 
+  // Find the active procedure run for this task (most recent non-completed).
+  const activeProcedureRun = await db.taskProcedureRun.findFirst({
+    where: {
+      taskId,
+      status: { in: ["queued", "running", "operational_error"] },
+    },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, type: true, status: true, currentStep: true },
+  });
+
   const snapshot: TaskStateSnapshot = {
     id: task.id,
     status: task.status as TaskStateSnapshot["status"],
@@ -161,7 +171,13 @@ export async function buildTaskWorkflowProjection(taskId: string): Promise<TaskW
           reviewerId: reviewRun.reviewerId,
         }
       : null,
-    activeProcedure: null, // ORCH-03 fills this from TaskProcedureRun
+    activeProcedure: activeProcedureRun
+      ? {
+          type: activeProcedureRun.type,
+          status: activeProcedureRun.status,
+          currentStep: activeProcedureRun.currentStep,
+        }
+      : null,
     allowedIntents: computeAllowedIntents(snapshot),
     operationalError,
   };
