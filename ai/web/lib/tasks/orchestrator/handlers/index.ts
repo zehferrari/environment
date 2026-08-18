@@ -8,6 +8,7 @@
 import { registerPrepareTodoTaskHandlers } from "@/lib/tasks/orchestrator/handlers/prepare-todo-task";
 import { registerStartImplementationCycleHandlers } from "@/lib/tasks/orchestrator/handlers/start-implementation-cycle";
 import { registerSubmitCandidateForReviewHandlers } from "@/lib/tasks/orchestrator/handlers/submit-candidate-for-review";
+import { registerReturnReviewForChangesHandlers, registerFinalizeAcceptedReviewHandlers } from "@/lib/tasks/orchestrator/handlers/review-decisions";
 
 let registered = false;
 
@@ -17,7 +18,8 @@ export function registerAllProcedureHandlers(): void {
   registerPrepareTodoTaskHandlers();
   registerStartImplementationCycleHandlers();
   registerSubmitCandidateForReviewHandlers();
-  // ORCH-07 will add its registrations here.
+  registerReturnReviewForChangesHandlers();
+  registerFinalizeAcceptedReviewHandlers();
 }
 
 // Auto-register on import so the procedure runner finds handlers without

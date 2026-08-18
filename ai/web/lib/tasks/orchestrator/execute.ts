@@ -156,6 +156,7 @@ export async function executeWorkflowCommand(
                 decisionActorId: decision.decisionActorId,
                 executorActorId: decision.executorActorId ?? null,
                 cycleId,
+                idempotencyKey: command.idempotencyKey,
                 ...command.evidence ?? {},
               }),
             },
@@ -204,6 +205,29 @@ export async function executeWorkflowCommand(
               }),
             },
           });
+        }
+
+        // --- Review lease mutation (invariant 8: immutable decision) ------
+        // For request_review_changes: mark the lease changes_requested.
+        // For accept_review: mark the lease accepted.
+        // The lease is immutable after this — a new cycle creates a new lease.
+        if (command.intent === "request_review_changes" || command.intent === "accept_review") {
+          const lease = await tx.reviewRun.findFirst({
+            where: { taskId: command.taskId, status: "awaiting_review" },
+            orderBy: { createdAt: "desc" },
+            take: 1,
+          });
+          if (lease) {
+            const newStatus = command.intent === "request_review_changes" ? "changes_requested" : "accepted";
+            await tx.reviewRun.updateMany({
+              where: { id: lease.id, status: "awaiting_review" },
+              data: {
+                status: newStatus,
+                reviewerId: decision.decisionActorId,
+                reviewedAt: new Date(),
+              },
+            });
+          }
         }
 
         return { status: "accepted", transitionId: transitionId ?? command.idempotencyKey, workflowVersion, procedureId, cycleId };

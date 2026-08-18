@@ -139,6 +139,20 @@ export async function submitWorkflowCommand(command: TaskWorkflowCommand): Promi
   if (existingTransition) {
     return { status: "replayed", transitionId: existingTransition.id, workflowVersion: existingTransition.workflowVersion, procedureId: null };
   }
+  // For no-op decisions (accept_review, checkpoint, etc.) that don't create a
+  // kernel transition, check for an existing activity log with the same
+  // idempotency key. This makes no-op decisions replay-safe too.
+  const existingActivity = await db.activityLog.findFirst({
+    where: {
+      taskId: command.taskId,
+      kind: { startsWith: "task.workflow." },
+      payload: { contains: command.idempotencyKey },
+    },
+    select: { id: true },
+  });
+  if (existingActivity) {
+    return { status: "replayed", transitionId: existingActivity.id, workflowVersion: state.workflowVersion, procedureId: null };
+  }
 
   // --- Authorize ---------------------------------------------------------
   const auth = authorizeCommand(state, command);
