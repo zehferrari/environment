@@ -71,6 +71,7 @@ async function loadHandoffTask(taskId: string) {
       branchName: true,
       commitPrefix: true,
       workItemKey: true,
+      activeWorkflowCycleId: true,
       assignee: {
         select: { agent: { select: { slug: true } } },
       },
@@ -176,9 +177,10 @@ async function moveToReviewAndDispatch(args: {
         },
       });
       await tx.reviewRun.upsert({
-        where: { taskId_candidateSha: { taskId: task.id, candidateSha: reviewCandidateSha } },
+        where: { workflowCycleId: task.activeWorkflowCycleId ?? "_never_" },
         create: {
           taskId: task.id,
+          workflowCycleId: task.activeWorkflowCycleId,
           candidateSha: reviewCandidateSha,
           baseSha: task.repositoryRun?.baseSha ?? null,
           repoTouched: args.repoTouched,

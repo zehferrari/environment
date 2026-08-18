@@ -667,8 +667,8 @@ model ReviewRun {
   updatedAt         DateTime             @updatedAt @map("updated_at")
   validationChecks  ValidationCheckRun[]
 
-  @@unique([taskId, candidateSha])
   @@index([taskId, status])
+  @@index([taskId, candidateSha])
   @@index([status, createdAt])
   @@map("review_runs")
 }

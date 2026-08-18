@@ -45,7 +45,7 @@ async function main() {
   }
 
   const [task, badTransition, activity, reviewRun, laterTransitions, latestBlocker, monitor] = await Promise.all([
-    db.task.findUnique({
+    db.task.findFirst({
       where: { id: taskId },
       select: {
         id: true,
@@ -72,7 +72,7 @@ async function main() {
         },
       },
     }),
-    db.workflowTransition.findUnique({ where: { id: supersededTransitionId } }),
+    db.workflowTransition.findFirst({ where: { id: supersededTransitionId } }),
     db.activityLog.findMany({
       where: {
         taskId,
@@ -81,8 +81,8 @@ async function main() {
       orderBy: { createdAt: "asc" },
       select: { id: true, kind: true, payload: true, createdAt: true },
     }),
-    db.reviewRun.findUnique({
-      where: { taskId_candidateSha: { taskId, candidateSha: expectedCandidateSha } },
+    db.reviewRun.findFirst({
+      where: { taskId, candidateSha: expectedCandidateSha }, orderBy: { createdAt: "desc" },
       select: {
         id: true,
         candidateSha: true,

@@ -834,7 +834,7 @@ async function main() {
   // epicBranch field (epicChild alone forces the no-push rule).
   const epicMode = Boolean(job.epicChild);
   const branchRefLabel = epicMode ? `refs/heads/${job.branchName}` : `origin/${job.branchName}`;
-  const project = await db.project.findUnique({
+  const project = await db.project.findFirst({
     where: { id: job.projectId },
     select: { agentChangeBlockedBranches: true },
   });
@@ -994,28 +994,39 @@ async function main() {
   let postValidationDirty: string | null = null;
   let postValidationHead: string | null = null;
   if (gitVerifiedOk && candidateSha) {
-    const reviewRun = await db.reviewRun.upsert({
-      where: { taskId_candidateSha: { taskId: job.taskId, candidateSha } },
-      create: {
-        taskId: job.taskId,
-        candidateSha,
-        baseSha: job.baseSha ?? null,
-        repoTouched: !noChangeCandidate && !checkpointBaseline,
-        validationOutcome: "pending",
-        status: "validating",
-      },
-      update: {
-        baseSha: job.baseSha ?? null,
-        repoTouched: !noChangeCandidate && !checkpointBaseline,
-        validationOutcome: "pending",
-        status: "validating",
-        reviewerId: null,
-        reviewedAt: null,
-        invalidatedAt: null,
-        invalidatedReason: null,
-      },
-      select: { id: true },
+    // Look up an existing review run for this candidate, or create a new one.
+    // The legacy unique (taskId, candidateSha) was removed; use findFirst +
+    // create/update instead of upsert.
+    const existingRun = await db.reviewRun.findFirst({
+      where: { taskId: job.taskId, candidateSha },
+      orderBy: { createdAt: "desc" },
     });
+    const reviewRun = existingRun
+      ? await db.reviewRun.update({
+          where: { id: existingRun.id },
+          data: {
+            baseSha: job.baseSha ?? null,
+            repoTouched: !noChangeCandidate && !checkpointBaseline,
+            validationOutcome: "pending",
+            status: "validating",
+            reviewerId: null,
+            reviewedAt: null,
+            invalidatedAt: null,
+            invalidatedReason: null,
+          },
+          select: { id: true },
+        })
+      : await db.reviewRun.create({
+          data: {
+            taskId: job.taskId,
+            candidateSha,
+            baseSha: job.baseSha ?? null,
+            repoTouched: !noChangeCandidate && !checkpointBaseline,
+            validationOutcome: "pending",
+            status: "validating",
+          },
+          select: { id: true },
+        });
     if ((job.validationProfile?.commands.length ?? 0) > 0) {
       if (!state.checkPath) {
         validationChecks = {

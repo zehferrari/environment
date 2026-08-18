@@ -95,9 +95,11 @@ export async function completeReviewedTaskAndAssignNext(args: {
     if (!acceptedCandidate) {
       return { completed: false as const, reason: "repository_candidate_missing" as const };
     }
-    const acceptedReview = await db.reviewRun.findUnique({
-      where: { taskId_candidateSha: { taskId: task.id, candidateSha: acceptedCandidate } },
+    const acceptedReview = await db.reviewRun.findFirst({
+      where: { taskId: task.id, candidateSha: acceptedCandidate },
+      orderBy: { createdAt: "desc" },
       select: {
+        id: true,
         status: true,
         reviewerId: true,
       },
@@ -145,8 +147,9 @@ export async function completeReviewedTaskAndAssignNext(args: {
       if (!acceptedCandidate) {
         return { completed: false as const, reason: "repository_candidate_missing" as const };
       }
-      const acceptedReview = await db.reviewRun.findUnique({
-        where: { taskId_candidateSha: { taskId: task.id, candidateSha: acceptedCandidate } },
+      const acceptedReview = await db.reviewRun.findFirst({
+        where: { taskId: task.id, candidateSha: acceptedCandidate },
+        orderBy: { createdAt: "desc" },
         select: { id: true, status: true, validationOutcome: true },
       });
       if (!acceptedReview || acceptedReview.status !== "accepted") {
@@ -249,8 +252,9 @@ export async function completeReviewedTaskAndAssignNext(args: {
       if (!candidateSha) {
         return { completed: false as const, reason: "repository_candidate_missing" as const };
       }
-      const reviewRun = await db.reviewRun.findUnique({
-        where: { taskId_candidateSha: { taskId: task.id, candidateSha } },
+      const reviewRun = await db.reviewRun.findFirst({
+        where: { taskId: task.id, candidateSha },
+        orderBy: { createdAt: "desc" },
         select: { id: true, status: true },
       });
       if (!reviewRun || reviewRun.status !== "awaiting_review") {

@@ -91,8 +91,8 @@ async function main() {
     assert.equal(moved.status, "Review");
     assert.equal(moved.workflowVersion, 4);
     assert.equal(
-      (await db.reviewRun.findUniqueOrThrow({
-        where: { taskId_candidateSha: { taskId: task.id, candidateSha } },
+      (await db.reviewRun.findFirstOrThrow({
+        where: { taskId: task.id, candidateSha }, orderBy: { createdAt: "desc" },
       })).status,
       "awaiting_review",
     );

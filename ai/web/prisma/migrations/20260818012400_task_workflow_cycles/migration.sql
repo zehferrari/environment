@@ -135,14 +135,31 @@ WHERE "Task"."active_workflow_cycle_id" IS NULL
 -- Attach the backfilled cycle to existing rows. repository_runs get the latest
 -- backfilled cycle for that task; review_runs get the cycle of the task
 -- (candidate identity is preserved; cycle identity is what we are adding).
+-- CRITICAL: only the LATEST review run per task gets the cycle id, because
+-- the @@unique on review_runs.workflow_cycle_id allows only one lease per
+-- cycle. Tasks with multiple historical review runs (e.g. V23-36 has 7)
+-- leave older runs with workflow_cycle_id = NULL — they are historical,
+-- pre-cycle rows that do not map to the synthetic legacy cycle.
 UPDATE "task_repository_runs"
 SET "workflow_cycle_id" = 'cycle_legacy_' || "task_repository_runs"."task_id" || '_1'
 WHERE "workflow_cycle_id" IS NULL
   AND EXISTS (SELECT 1 FROM "task_workflow_cycles" c WHERE c.task_id = "task_repository_runs"."task_id");
 
+-- Assign only the latest review run per task to the cycle. Uses a CTE with
+-- row_number() to pick the most recent run by created_at.
+WITH latest_review_run AS (
+  SELECT
+    "id",
+    "task_id",
+    row_number() OVER (PARTITION BY "task_id" ORDER BY "created_at" DESC) AS rn
+  FROM "review_runs"
+)
 UPDATE "review_runs"
 SET "workflow_cycle_id" = 'cycle_legacy_' || "review_runs"."task_id" || '_1'
-WHERE "workflow_cycle_id" IS NULL
+WHERE "review_runs"."id" IN (
+  SELECT "id" FROM latest_review_run WHERE rn = 1
+)
+  AND "review_runs"."workflow_cycle_id" IS NULL
   AND EXISTS (SELECT 1 FROM "task_workflow_cycles" c WHERE c.task_id = "review_runs"."task_id");
 
 UPDATE "workflow_transitions"

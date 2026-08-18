@@ -243,8 +243,8 @@ async function main() {
     assert.equal((await db.task.findUniqueOrThrow({ where: { id: missingCompletion.id } })).status, "Done");
     assert.equal((await db.task.findUniqueOrThrow({ where: { id: unverifiedCompletion.id } })).status, "Review");
     assert.equal(
-      (await db.reviewRun.findUniqueOrThrow({
-        where: { taskId_candidateSha: { taskId: missingCompletion.id, candidateSha: acceptedCandidate } },
+      (await db.reviewRun.findFirstOrThrow({
+        where: { taskId: missingCompletion.id, candidateSha: acceptedCandidate }, orderBy: { createdAt: "desc" },
       })).status,
       "completed",
     );

@@ -79,7 +79,7 @@ async function main() {
       workflowCycleId: cycle1.id,
       idempotencyKey: "orch06:submit:1",
       source: "orch06-test",
-      payload: { candidateSha: "non-repo-candidate" },
+      payload: { candidateSha: "shared-sha" },
     });
     assert.equal(submitResult.status, "accepted", `submit accepted; got ${JSON.stringify(submitResult)}`);
     assert.ok(submitResult.procedureId, "procedure created");
@@ -92,14 +92,11 @@ async function main() {
     }
     const taskAfter = await db.task.findUniqueOrThrow({ where: { id: task.id } });
     assert.equal(taskAfter.status, "Review", "task moved to Review");
-    // Check procedure status for debugging.
-    const proc1Run = await db.taskProcedureRun.findUniqueOrThrow({ where: { id: submitResult.procedureId! }, include: { steps: { orderBy: { ordinal: "asc" } } } });
-    console.log("DEBUG proc1 status:", proc1Run.status, "steps:", JSON.stringify(proc1Run.steps.map((s) => ({ name: s.name, status: s.status, output: s.output?.slice(0, 200), lastError: s.lastError?.slice(0, 100) }))));
     // A ReviewRun should exist for this cycle.
     const reviewRun = await db.reviewRun.findUnique({ where: { workflowCycleId: cycle1.id } });
     assert.ok(reviewRun, "ReviewRun created for the cycle");
     assert.equal(reviewRun!.status, "awaiting_review");
-    assert.equal(reviewRun!.candidateSha, "non-repo-candidate");
+    assert.equal(reviewRun!.candidateSha, "shared-sha", "cycle 1 ReviewRun has shared-sha");
     console.log("[orch06] non-code submit reaches Review PASS");
 
     // --- Test 2: V23-36 regression — same candidate re-enters Review -----
@@ -145,9 +142,16 @@ async function main() {
     // A NEW ReviewRun should exist for cycle2 (not reusing cycle1's).
     const reviewRun2 = await db.reviewRun.findUnique({ where: { workflowCycleId: cycle2.id } });
     assert.ok(reviewRun2, "new ReviewRun created for cycle 2");
-    assert.equal(reviewRun2!.candidateSha, "shared-sha");
+    assert.equal(reviewRun2!.candidateSha, "shared-sha", "cycle 2 ReviewRun has the SAME SHA as cycle 1");
     assert.equal(reviewRun2!.status, "awaiting_review");
     assert.notEqual(reviewRun!.id, reviewRun2!.id, "different ReviewRun ids (not reused)");
+    // CRITICAL: both ReviewRuns have the same candidateSha — this is the
+    // explicit V23-36 property that the legacy @@unique([taskId, candidateSha])
+    // blocked. The new cycle-scoped uniqueness allows it.
+    assert.equal(reviewRun!.candidateSha, reviewRun2!.candidateSha, "both cycles have the same candidateSha");
+    // Verify two ReviewRun rows exist for this task with the same SHA.
+    const reviewRunsForTask = await db.reviewRun.findMany({ where: { taskId: task.id, candidateSha: "shared-sha" } });
+    assert.equal(reviewRunsForTask.length, 2, "two ReviewRun rows with the same candidateSha (V23-36 property)");
     // cycle1's ReviewRun should still be changes_requested (immutable).
     const reviewRun1After = await db.reviewRun.findUniqueOrThrow({ where: { id: reviewRun!.id } });
     assert.equal(reviewRun1After.status, "changes_requested", "cycle1's lease is immutable");
