@@ -30,7 +30,10 @@ async function main() {
       `  metrics: outbox=${JSON.stringify(report.metrics.outboxByStatus)} ` +
       `repository=${JSON.stringify(report.metrics.repositoryByPhase)} ` +
       `execution=${JSON.stringify(report.metrics.executionByState)} ` +
-      `cancellationPending=${report.metrics.cancellationPending}`,
+      `cancellationPending=${report.metrics.cancellationPending} ` +
+      `cycles=${JSON.stringify(report.metrics.cyclesByStatus)} ` +
+      `procedures=${JSON.stringify(report.metrics.proceduresByStatus)} ` +
+      `procedureSteps=${JSON.stringify(report.metrics.procedureStepsByStatus)}`,
     );
     for (const finding of report.findings) {
       console.log(
