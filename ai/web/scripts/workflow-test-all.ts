@@ -31,6 +31,7 @@ const SUITES: readonly string[] = [
   "test:orch-01-cycle",
   "test:orch-02-orchestrator",
   "test:orch-03-procedure",
+  "test:orch-04-prepare-todo",
   "test:workflow-reconciler",
   "test:workflow-agent-rules",
   "test:repository-workflow",

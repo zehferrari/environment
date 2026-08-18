@@ -13,6 +13,7 @@ import {
 } from "@/lib/agents/pm-channel/jobs";
 import { startPmChannelLocalStreamTransports } from "@/lib/agents/pm-channel/stream-local";
 import { runProcedureRunner } from "@/lib/tasks/orchestrator/procedure-runner";
+import "@/lib/tasks/orchestrator/handlers"; // registers step handlers
 
 declare global {
   var __pmChannelWorkerPollStarted: boolean | undefined;
