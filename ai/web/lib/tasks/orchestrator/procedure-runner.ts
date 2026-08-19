@@ -23,7 +23,7 @@
 
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
-import { getProcedureDefinition } from "@/lib/tasks/orchestrator/procedures";
+import { getProcedureDefinition, getLatestProcedureDefinition } from "@/lib/tasks/orchestrator/procedures";
 import type { TaskProcedureType } from "@/lib/tasks/orchestrator/types";
 
 const LEASE_MS = 2 * 60_000;
@@ -52,18 +52,41 @@ export type StepHandler = (ctx: StepHandlerContext) => Promise<StepHandlerResult
 // time by the procedure implementations (ORCH-04..07). A handler that is not
 // registered causes the step to fail terminally — procedure definitions are
 // static code, and a missing handler is a bug, not a transient failure.
+//
+// PHASEE-06: The registry is now versioned — keyed by
+// `${procedureType}:${version}:${stepName}`. getStepHandler resolves by exact
+// version match ONLY. A run stamped definitionVersion=N with no registered vN
+// handler must fail to operational_error with alertReporter, never execute a
+// different version's handler. Silent cross-version fallback is prohibited —
+// it would defeat the purpose of versioning. If a compatibility window is
+// genuinely wanted later, it needs an explicit per-definition `compatibleWith`
+// declaration, not an implicit latest-wins lookup.
 const handlerRegistry = new Map<string, StepHandler>();
 
-export function registerStepHandler(procedureType: TaskProcedureType, stepName: string, handler: StepHandler): void {
-  handlerRegistry.set(`${procedureType}:${stepName}`, handler);
+export function registerStepHandler(
+  procedureType: TaskProcedureType,
+  version: number,
+  stepName: string,
+  handler: StepHandler,
+): void {
+  handlerRegistry.set(`${procedureType}:${version}:${stepName}`, handler);
 }
 
 export function clearStepHandlerRegistry(): void {
   handlerRegistry.clear();
 }
 
-export function getStepHandler(procedureType: TaskProcedureType, stepName: string): StepHandler | undefined {
-  return handlerRegistry.get(`${procedureType}:${stepName}`);
+/**
+ * Resolve a step handler by exact (procedureType, version, stepName) match.
+ * No cross-version fallback — a missing exact match returns undefined and
+ * the runner must fail the step to operational_error with alertReporter.
+ */
+export function getStepHandler(
+  procedureType: TaskProcedureType,
+  version: number,
+  stepName: string,
+): StepHandler | undefined {
+  return handlerRegistry.get(`${procedureType}:${version}:${stepName}`);
 }
 
 // --- Callback matching (§6.4) --------------------------------------------
@@ -230,6 +253,7 @@ export async function runProcedureRunner(args: {
             triggerTransitionId: true,
             status: true,
             input: true,
+            definitionVersion: true,
           },
         },
       },
@@ -242,16 +266,23 @@ export async function runProcedureRunner(args: {
       data: { status: "running", currentStep: step.name },
     });
 
-    const handler = getStepHandler(step.procedureRun.type as TaskProcedureType, step.name);
+    // PHASEE-06: Resolve handler by exact (type, definitionVersion, stepName).
+    // No cross-version fallback — a missing handler for the run's stamped
+    // version is a terminal operational_error with alertReporter.
+    const runDefVersion = step.procedureRun.definitionVersion ?? 1;
+    const handler = getStepHandler(step.procedureRun.type as TaskProcedureType, runDefVersion, step.name);
     if (!handler) {
-      // No handler registered — terminal failure (bug in procedure definition).
+      // No handler registered for this exact version — terminal failure.
+      // This is precisely the failure versioning exists to prevent: never
+      // execute a different version's handler silently.
+      const maxAttempts = getLatestProcedureDefinition(step.procedureRun.type as TaskProcedureType).maxAttemptsPerStep;
       await markStepTerminal({
         stepId: step.id,
         procedureRunId: step.procedureRun.id,
-        error: `No handler registered for ${step.procedureRun.type}:${step.name}`,
+        error: `No handler registered for ${step.procedureRun.type}:v${runDefVersion}:${step.name} — version mismatch is a terminal error`,
         retryable: false,
         attempts: step.attempts,
-        maxAttempts: getProcedureDefinition(step.procedureRun.type as TaskProcedureType).maxAttemptsPerStep,
+        maxAttempts,
         workerId,
       });
       failed += 1;
@@ -300,7 +331,7 @@ export async function runProcedureRunner(args: {
         });
         waiting += 1;
       } else if (result.status === "failed") {
-        const maxAttempts = getProcedureDefinition(step.procedureRun.type as TaskProcedureType).maxAttemptsPerStep;
+        const maxAttempts = (getProcedureDefinition(step.procedureRun.type as TaskProcedureType, step.procedureRun.definitionVersion ?? 1) ?? getLatestProcedureDefinition(step.procedureRun.type as TaskProcedureType)).maxAttemptsPerStep;
         if (result.retryable && step.attempts < maxAttempts) {
           // Transient failure: clear lease, retry with backoff.
           const backoff = Math.min(MAX_BACKOFF_MS, 1000 * 2 ** Math.min(step.attempts, 6));
@@ -331,7 +362,7 @@ export async function runProcedureRunner(args: {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const maxAttempts = getProcedureDefinition(step.procedureRun.type as TaskProcedureType).maxAttemptsPerStep;
+      const maxAttempts = (getProcedureDefinition(step.procedureRun.type as TaskProcedureType, step.procedureRun.definitionVersion ?? 1) ?? getLatestProcedureDefinition(step.procedureRun.type as TaskProcedureType)).maxAttemptsPerStep;
       if (step.attempts < maxAttempts) {
         const backoff = Math.min(MAX_BACKOFF_MS, 1000 * 2 ** Math.min(step.attempts, 6));
         await db.taskProcedureStep.update({
@@ -509,13 +540,15 @@ export async function createProcedureRun(
     input?: Record<string, unknown> | null;
   },
 ): Promise<{ procedureRunId: string; stepIds: string[] }> {
-  const def = getProcedureDefinition(args.type);
+  const def = getLatestProcedureDefinition(args.type);
   const run = await tx.taskProcedureRun.create({
     data: {
       taskId: args.taskId,
       workflowCycleId: args.workflowCycleId,
       triggerTransitionId: args.triggerTransitionId,
       type: args.type,
+      definitionVersion: def.version,
+      inputSchemaVersion: def.version,
       status: "queued",
       input: args.input ? JSON.stringify(args.input) : null,
     },

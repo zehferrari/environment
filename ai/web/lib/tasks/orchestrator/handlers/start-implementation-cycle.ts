@@ -2,6 +2,13 @@
 //
 // Trigger: authorized assignee intent start_implementation from To Do.
 //
+// §17 side-effect ownership audit (PHASEE-06):
+//   Row: implementation started — command owns: cycle, lane reservations,
+//   In Progress transition, procedure, continuation. This procedure owns:
+//   worktree recheck, episode/open turn dispatch. Compensation for terminal
+//   worktree failure now goes through submitWorkflowCommand (command boundary)
+//   instead of calling applyTaskTransition directly — no dual ownership.
+//
 // The transactional decision (executed by execute.ts) opens the next workflow
 // cycle, moves To Do -> In Progress through the transition kernel, and creates
 // this procedure. The procedure then:
@@ -101,29 +108,33 @@ async function revalidateWorktree(ctx: StepHandlerContext): Promise<StepHandlerR
       lastError: `Worktree revalidation failed: ${message}`,
     });
     if (!retryable) {
-      // Terminal worktree failure — compensate back to To Do via the kernel.
+      // Terminal worktree failure — compensate back to To Do through the
+      // command boundary (§17: implementation_started row — command owns
+      // the In Progress transition; procedure owns worktree recheck only).
+      // The procedure must not call applyTaskTransition directly; it submits
+      // a mechanical compensation intent through submitWorkflowCommand.
       try {
-        const task = await db.task.findUniqueOrThrow({ where: { id: ctx.taskId }, select: { projectId: true, status: true, workflowVersion: true } });
+        const task = await db.task.findUniqueOrThrow({ where: { id: ctx.taskId }, select: { status: true, workflowVersion: true, activeWorkflowCycleId: true, assigneeId: true } });
         if (task.status === "In Progress") {
-          const { applyTaskTransition } = await import("@/lib/tasks/transition-kernel");
-          const { closeTaskWorkflowCycle } = await import("@/lib/tasks/workflow-cycle");
-          await db.$transaction(async (tx) => {
-            await applyTaskTransition(tx, {
-              taskId: ctx.taskId,
-              projectId: task.projectId,
-              intent: "operator_override",
-              from: "In Progress",
-              to: "To Do",
-              source: "procedure-start-compensation",
-              idempotencyKey: `start-compensation:${ctx.procedureRunId}`,
-              rank: "front",
-              evidence: { worktreeRevalidationFailed: true, error: message, mechanical: true },
-            });
-            await closeTaskWorkflowCycle(tx, {
-              taskId: ctx.taskId,
-              outcome: "abandoned",
+          const { submitWorkflowCommand } = await import("@/lib/tasks/orchestrator");
+          await submitWorkflowCommand({
+            taskId: ctx.taskId,
+            intent: "repository_validation_failed",
+            actor: { id: task.assigneeId ?? "procedure-engine", kind: "agent", username: "procedure-engine", role: "monitor" },
+            expectedWorkflowVersion: task.workflowVersion,
+            workflowCycleId: task.activeWorkflowCycleId,
+            idempotencyKey: `start-compensation:${ctx.procedureRunId}`,
+            source: "callback",
+            evidence: { worktreeRevalidationFailed: true, error: message, procedureRunId: ctx.procedureRunId, mechanical: true },
+            payload: {
+              procedureRunId: ctx.procedureRunId,
+              procedureStepId: ctx.stepId,
+              jobId: null,
               candidateSha: null,
-            });
+              baseSha: null,
+              outcome: "failed",
+              failureReason: `Worktree revalidation failed: ${message}`,
+            },
           });
         }
       } catch (compensationError) {
@@ -242,7 +253,7 @@ async function dispatchImplementationTurn(ctx: StepHandlerContext): Promise<Step
 
 // --- Register handlers ----------------------------------------------------
 export function registerStartImplementationCycleHandlers(): void {
-  registerStepHandler(PROCEDURE_TYPE, "revalidate_worktree", revalidateWorktree);
-  registerStepHandler(PROCEDURE_TYPE, "open_execution_episode", openExecutionEpisode);
-  registerStepHandler(PROCEDURE_TYPE, "dispatch_implementation_turn", dispatchImplementationTurn);
+  registerStepHandler(PROCEDURE_TYPE, 1, "revalidate_worktree", revalidateWorktree);
+  registerStepHandler(PROCEDURE_TYPE, 1, "open_execution_episode", openExecutionEpisode);
+  registerStepHandler(PROCEDURE_TYPE, 1, "dispatch_implementation_turn", dispatchImplementationTurn);
 }
