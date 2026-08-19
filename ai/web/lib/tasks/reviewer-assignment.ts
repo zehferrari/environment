@@ -1,3 +1,4 @@
+import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import { db } from "@/lib/db";
 import { ACTIVE_TASK_ASSIGNMENT_STATUSES } from "@/lib/epics/assignment";
 import { startApprovedTodoTaskIfIdle } from "@/lib/tasks/auto-start";
@@ -143,6 +144,10 @@ export async function assignTaskAfterPlanApproval(args: {
   assigneeUsername?: string;
   requireReviewerUserId?: string;
 }): Promise<AssignmentResult> {
+  await recordLegacyWorkflowBoundaryInvocation({
+    legacyBoundary: "auto-start-and-queue-refill",
+    entryPoint: "assignTaskAfterPlanApproval",
+  });
   const task = await db.task.findUnique({
     where: { id: args.taskId },
     select: {

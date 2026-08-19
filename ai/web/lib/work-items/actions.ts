@@ -4,6 +4,7 @@
 // (Slice 3). Auth + cache revalidation only; the transactional commit
 // lives in lib/work-items/apply.ts (auth-free, unit-testable).
 
+import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
 import { commitProposal } from "@/lib/work-items/apply";
@@ -14,6 +15,10 @@ async function requireUserId(): Promise<string> {
 }
 
 export async function applyWorkItemProposal(formData: FormData) {
+  await recordLegacyWorkflowBoundaryInvocation({
+    legacyBoundary: "proposal-application",
+    entryPoint: "applyWorkItemProposal",
+  });
   const userId = await requireUserId();
   const proposalId = String(formData.get("proposalId") ?? "").trim();
   const fallbackAgentSlug = String(formData.get("agentSlug") ?? "").trim();

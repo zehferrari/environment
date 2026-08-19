@@ -1,14 +1,14 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "registryPath": "ai/web/lib/tasks/legacy-workflow-boundary-registry.json",
   "summary": "Phase E freeze registry for legacy workflow mutation boundaries that remain outside the orchestrator command adapter drain.",
   "counterContract": {
-    "activityKind": "task.move",
+    "activityKind": "task.workflow.legacy_boundary.invoked",
     "payloadFields": [
-      "via",
-      "legacyBoundary"
+      "legacyBoundary",
+      "entryPoint"
     ],
-    "notes": "Transition boundaries are countable from task.move payload via/source labels. Non-transition boundaries are countable from their named activityLog kind; registry instrumentation labels are stable Phase E evidence labels."
+    "notes": "Every legacy boundary records an attempted invocation before guards and mutation transactions. The injective boundary id counts rejected guards and non-transition mutations as well as committed transitions."
   },
   "kernelInternals": [
     {
@@ -98,7 +98,10 @@
         "checkpoint",
         "flag_blocker",
         "publish_checkpoint"
-      ]
+      ],
+      "expectedDirectMutationCounts": {
+        "app/api/agent/tasks/[taskId]/workflow/route.ts": 9
+      }
     },
     {
       "id": "agent-epic-workflow-route",
@@ -142,7 +145,10 @@
         "deploy review reject/approve",
         "epic manager queue/refill actions",
         "request_task/request_subtask"
-      ]
+      ],
+      "expectedDirectMutationCounts": {
+        "app/api/agent/epics/[epicId]/workflow/route.ts": 2
+      }
     },
     {
       "id": "browser-board-move-actions",
@@ -189,7 +195,13 @@
         "project board moveTask action",
         "workspace board moveTask action",
         "workspace landing board moveTask action"
-      ]
+      ],
+      "expectedDirectMutationCounts": {
+        "lib/tasks/move-status.ts": 2,
+        "app/(app)/projects/[slug]/page.tsx": 0,
+        "app/(app)/workspaces/[slug]/page.tsx": 2,
+        "app/(app)/workspaces/(landing)/page.tsx": 2
+      }
     },
     {
       "id": "task-detail-server-actions",
@@ -225,7 +237,10 @@
         "updateTask form action",
         "approveActionPlan form action",
         "startApprovedTodoTaskIfIdle after approval"
-      ]
+      ],
+      "expectedDirectMutationCounts": {
+        "app/(app)/projects/[slug]/tasks/[taskId]/page.tsx": 1
+      }
     },
     {
       "id": "auto-start-and-queue-refill",
@@ -273,7 +288,14 @@
         "assignOpenEpicTasks",
         "assignTasksAfterDependencyCompleted",
         "pm-workflow-nudge autoStart"
-      ]
+      ],
+      "expectedDirectMutationCounts": {
+        "lib/tasks/auto-start.ts": 1,
+        "lib/tasks/reviewer-assignment.ts": 1,
+        "lib/epics/assignment.ts": 1,
+        "lib/epics/queue.ts": 0,
+        "scripts/pm-workflow-nudge.ts": 0
+      }
     },
     {
       "id": "review-submission-and-validation",
@@ -315,7 +337,12 @@
         "prepareTaskReviewHandoff",
         "recordRepositoryValidationOutcome",
         "pm-verify-branch-pushed verification callback"
-      ]
+      ],
+      "expectedDirectMutationCounts": {
+        "lib/tasks/review-handoff.ts": 11,
+        "lib/tasks/repository-state.ts": 1,
+        "scripts/pm-verify-branch-pushed.ts": 8
+      }
     },
     {
       "id": "review-decision-and-finalization",
@@ -365,7 +392,11 @@
         "prepareCompletionReview",
         "dispatchCompletionReview",
         "verifyCompletionReviewApproval"
-      ]
+      ],
+      "expectedDirectMutationCounts": {
+        "lib/tasks/review-automation.ts": 6,
+        "lib/deploy/epic-merge.ts": 4
+      }
     },
     {
       "id": "epic-human-actions",
@@ -404,7 +435,10 @@
         "approveEpicActionPlan",
         "transitionEpicStatus",
         "open epic child queue assignment"
-      ]
+      ],
+      "expectedDirectMutationCounts": {
+        "lib/epics/actions.ts": 1
+      }
     },
     {
       "id": "proposal-application",
@@ -448,7 +482,12 @@
         "applyEpicProposalOperation",
         "applySubTaskProposalOperation",
         "agent proposal POST/commit handlers"
-      ]
+      ],
+      "expectedDirectMutationCounts": {
+        "lib/work-items/apply.ts": 1,
+        "lib/work-items/actions.ts": 0,
+        "app/api/agent/projects/[projectId]/proposals/route.ts": 0
+      }
     },
     {
       "id": "workflow-reconciler-and-repair-tools",
@@ -496,7 +535,14 @@
         "repairAcceptedFinalization",
         "repair-task-workflow-state",
         "reopen-tasks-with-open-subtasks"
-      ]
+      ],
+      "expectedDirectMutationCounts": {
+        "lib/tasks/workflow-reconciler.ts": 2,
+        "lib/tasks/workflow-outbox-drain.ts": 3,
+        "scripts/repair-accepted-finalization.ts": 6,
+        "scripts/repair-task-workflow-state.ts": 0,
+        "scripts/reopen-tasks-with-open-subtasks.ts": 1
+      }
     },
     {
       "id": "subtask-checklist-actions",
@@ -532,7 +578,10 @@
         "completeSubTask",
         "removeSubTask",
         "proposal-created SubTask rows"
-      ]
+      ],
+      "expectedDirectMutationCounts": {
+        "lib/tasks/subtasks.ts": 0
+      }
     }
   ]
 }

@@ -6,9 +6,9 @@ Registry shape:
 
 - `schemaVersion`: registry format version used by `scripts/workflow-boundary-test.ts`.
 - `kernelInternals[]`: command-kernel/transaction internals that are allowed to mutate workflow-owned rows directly.
-- `boundaries[]`: legacy mutation boundaries still allowed during the Phase E drain. Each entry records `id`, `files`, `entryPoints` (file/function boundaries), `triggerSurface`, `currentOwner`, `stateTouched`, `sideEffects`, `phaseEMigrationDestination`, `instrumentation.labels`, `responseParity`, and `sideEffectParity`.
+- `boundaries[]`: legacy mutation boundaries still allowed during the Phase E drain. Each entry records `id`, `files`, `expectedDirectMutationCounts`, `entryPoints` (file/function boundaries), `triggerSurface`, `currentOwner`, `stateTouched`, `sideEffects`, `phaseEMigrationDestination`, `instrumentation.labels`, `responseParity`, and `sideEffectParity`.
 
-Instrumentation contract: transition boundaries are countable from `task.move` activity payload labels (`via`/`source`, and future `legacyBoundary` where added). Non-transition boundaries are countable from the named activity kind in `instrumentation.labels`. These labels are stable inputs for PHASEE-10 dashboards and the E5 drain report; do not rename them without updating the registry and downstream evidence.
+Instrumentation contract: every legacy boundary emits `task.workflow.legacy_boundary.invoked` before its guards and mutation transaction. Its payload contains the injective registry `legacyBoundary` id and `entryPoint`. This counts attempted invocations, including guard rejections and non-transition writers. The activity kind, payload keys, and boundary ids are stable inputs for PHASEE-10 dashboards and the E5 drain report; do not rename them without updating the registry and downstream evidence.
 
 ## Registered boundaries
 
@@ -28,7 +28,7 @@ Instrumentation contract: transition boundaries are countable from `task.move` a
 
 ## File/function coverage
 
-The registry `entryPoints` fields name the concrete functions/actions that currently own each legacy boundary (for example `startApprovedTodoTaskIfIdle`, `assignOpenEpicTasks`, `completeReviewedTaskAndAssignNext`, proposal apply operations, workflow route actions, and operator repair scripts). The freeze test asserts every boundary carries file/function entry-point coverage so future drain work can migrate functions, not just files.
+The registry `entryPoints` fields name the concrete functions/actions that currently own each legacy boundary (for example `startApprovedTodoTaskIfIdle`, `assignOpenEpicTasks`, `completeReviewedTaskAndAssignNext`, proposal apply operations, workflow route actions, and operator repair scripts). The freeze test asserts every boundary carries file/function entry-point coverage, emits its own `legacyBoundary` label from a registered file, and preserves the exact detected direct-mutation count per registered file. New writers therefore fail even when added to an already registered file.
 
 ## Response and side-effect parity requirements
 
@@ -39,4 +39,4 @@ Command adapters that replace these legacy paths must preserve:
 - Existing mechanical effects: activity rows, generated comments, Action Plan revision state, checklist minutes/progress, board/cache revalidation, outbox effects, agent wakes, repository validation/finalization jobs, Epic merge/cleanup, blocker settlement, and queue refill.
 - Existing idempotency and compare-and-set behavior for transition, review lease, repository run, workflow outbox, and repair paths.
 
-`pnpm test:workflow-boundary` is the freeze gate. It loads the registry, permits only registered legacy files plus kernel internals, and proves an inline unregistered writer fixture fails for a direct transition-kernel call, a direct `Task.status` write, and a direct workflow-cycle write.
+`pnpm test:workflow-boundary` is the freeze gate. It loads the registry, permits only registered legacy files at their frozen direct-mutation counts plus named kernel internals, and proves inline unregistered writer fixtures fail for direct, aliased, and namespaced transition-kernel calls, a direct `Task.status` write, and a direct workflow-cycle write. Product test files using `-test`, `.test`, or `.spec` conventions are explicitly excluded.

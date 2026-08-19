@@ -1,3 +1,4 @@
+import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import Link from "next/link";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
@@ -158,6 +159,10 @@ async function moveTask(
   options?: MoveTaskOptions,
 ): Promise<MoveTaskResult> {
   "use server";
+  await recordLegacyWorkflowBoundaryInvocation({
+    legacyBoundary: "browser-board-move-actions",
+    entryPoint: "moveTask",
+  });
   const actor = await requireViewer();
   if (!COLUMN_IDS.includes(status)) {
     return { ok: false, code: "UNKNOWN_COLUMN", message: `Unknown column: ${status}` };

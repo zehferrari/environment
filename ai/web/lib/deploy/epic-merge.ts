@@ -1,3 +1,4 @@
+import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync } from "node:fs";
@@ -2076,6 +2077,10 @@ async function executeCleanupJob(job: Extract<EpicMergeJob, { kind: "cleanup" }>
 }
 
 export async function runEpicMergeSpoolJob(job: EpicMergeJob) {
+  await recordLegacyWorkflowBoundaryInvocation({
+    legacyBoundary: "review-decision-and-finalization",
+    entryPoint: "runEpicMergeSpoolJob",
+  });
   if (job.kind === "merge") return executeMergeJob(job);
   if (job.kind === "finalize") return executeFinalizeJob(job);
   if (job.kind === "checkpoint") return executeCheckpointJob(job);

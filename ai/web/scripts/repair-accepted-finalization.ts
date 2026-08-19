@@ -1,3 +1,4 @@
+import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import { db } from "@/lib/db";
 import { inspectValidatedCandidateWorktree } from "@/lib/deploy/epic-merge-git";
 import { recordWorkflowActionExecutionState } from "@/lib/agents/watchdog/transitions";
@@ -34,6 +35,10 @@ function stringField(payload: Record<string, unknown>, key: string) {
 }
 
 async function main() {
+  await recordLegacyWorkflowBoundaryInvocation({
+    legacyBoundary: "workflow-reconciler-and-repair-tools",
+    entryPoint: "main",
+  });
   const taskId = argument("--task-id");
   const expectedCandidateSha = argument("--candidate-sha");
   const supersededTransitionId = argument("--supersede-transition-id");
