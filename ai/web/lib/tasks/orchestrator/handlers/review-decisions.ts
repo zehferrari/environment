@@ -288,9 +288,17 @@ async function completeReview(ctx: StepHandlerContext): Promise<StepHandlerResul
     expectedWorkflowVersion: freshTask.workflowVersion,
     workflowCycleId: freshTask.activeWorkflowCycleId,
     idempotencyKey: `procedure-complete-review:${ctx.procedureRunId}`,
-    source: "procedure-finalize-accepted",
+    source: "callback",
     evidence: { candidateSha, procedureRunId: ctx.procedureRunId },
-    payload: { candidateSha },
+    payload: {
+      procedureRunId: ctx.procedureRunId,
+      procedureStepId: ctx.stepId,
+      jobId: ctx.procedureRunId,
+      candidateSha,
+      baseSha: candidateSha,
+      outcome: "succeeded",
+      publishedSha: null,
+    },
   });
   if (result.status !== "accepted" && result.status !== "replayed") {
     return { status: "failed", error: `Failed to complete review: ${result.status} — ${result.reason ?? "no reason"}`, retryable: result.status === "stale" };

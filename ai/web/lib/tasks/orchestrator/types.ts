@@ -25,27 +25,107 @@
 
 import type { TaskWorkflowStatus } from "@/lib/tasks/transition-kernel";
 
-// --- Intent vocabulary (§5.2) --------------------------------------------
-// Domain intent names, NOT UI status names. Mechanical callbacks use separate
-// intents from human/agent decisions — e.g. Karen executes
-// repository_finalization_succeeded; she does not execute accept_review.
+// ---------------------------------------------------------------------------
+// §15 — Command source: every transport that submits workflow commands.
+// ---------------------------------------------------------------------------
+
+export type WorkflowCommandSource =
+  | "agent"
+  | "browser"
+  | "automation"
+  | "callback"
+  | "operator"
+  | "pm-service";
+
+// ---------------------------------------------------------------------------
+// §14 — AgentExecutionContext: authenticated PM-channel episode integration.
+// Passed into the command when the agent workflow route submits through the
+// orchestrator. The orchestrator must atomically settle the current run,
+// update final checkpoints, arm/suppress continuation, handle episode
+// rollover, and produce the response projection — all inside the same
+// transaction as the workflow transition.
+// ---------------------------------------------------------------------------
+
+export type AgentExecutionContext = {
+  agentSlug: string;
+  pmChannelRunId: string;
+  sourceMessageId: string;
+  publicAction: WorkflowPublicAction;
+  expectedEpisodeId: string | null;
+};
+
+// ---------------------------------------------------------------------------
+// §15 — Public action vocabulary (transport-level actions the route accepts).
+// These are the raw action strings the agent workflow route, browser server
+// actions, and operator tools send. The normalizer (normalize.ts) maps them
+// to canonical domain intents.
+// ---------------------------------------------------------------------------
+
+export const WORKFLOW_PUBLIC_ACTIONS = [
+  "start",
+  "checkpoint",
+  "publish_checkpoint",
+  "ready_for_review",
+  "submit_review",
+  "review_feedback",
+  "review_done",
+  "triage_to_todo",
+  "approve_plan",
+  "submit_plan",
+  "assign_task",
+  "assign_after_plan_approval",
+  "add_subtask",
+  "complete_subtask",
+  "remove_subtask",
+  "request_subtask",
+  "request_task",
+  "flag_blocker",
+  "clear_blocker",
+  "flag_extra_work_blocker",
+] as const;
+
+export type WorkflowPublicAction = (typeof WORKFLOW_PUBLIC_ACTIONS)[number];
+
+// ---------------------------------------------------------------------------
+// §5.2 — Intent vocabulary (domain intent names, NOT UI status names).
+// Mechanical callbacks use separate intents from human/agent decisions —
+// e.g. Karen executes repository_finalization_succeeded; she does not
+// execute accept_review.
+//
+// Extended with new intents from spec §15:
+//   - triage_task, assign_task, raise_scope_blocker
+// ---------------------------------------------------------------------------
+
 export const TASK_WORKFLOW_INTENTS = [
+  // Decision intents (human/agent)
   "submit_plan",
   "approve_plan",
   "request_plan_changes",
   "start_implementation",
   "checkpoint",
   "submit_for_review",
-  "repository_validation_succeeded",
-  "repository_validation_failed",
   "request_review_changes",
   "accept_review",
-  "repository_finalization_succeeded",
-  "repository_finalization_failed",
   "raise_blocker",
   "clear_blocker",
   "cancel_task",
   "archive_task",
+  // New decision intents (spec §15)
+  "triage_task",
+  "assign_task",
+  "raise_scope_blocker",
+  // Mechanical intents (monitor/worker only)
+  "repository_validation_succeeded",
+  "repository_validation_failed",
+  "repository_finalization_succeeded",
+  "repository_finalization_failed",
+  // Operational intents (spec §15 design choice: typed in the command boundary)
+  "publish_checkpoint",
+  "add_subtask",
+  "complete_subtask",
+  "remove_subtask",
+  "request_subtask",
+  "request_task",
 ] as const;
 
 export type TaskWorkflowIntent = (typeof TASK_WORKFLOW_INTENTS)[number];
@@ -63,42 +143,400 @@ export function isMechanicalIntent(intent: TaskWorkflowIntent): boolean {
   return MECHANICAL_INTENTS.has(intent);
 }
 
-// --- Actor (§5.1) ---------------------------------------------------------
+// Operational intents — checklist/subtask/checkpoint actions that participate
+// in episode continuation and workflow truth but do not always change status.
+// They are typed in the command boundary (spec §15 design choice 1) so
+// checklist completion remains atomic with its PM-channel action disposition.
+export const OPERATIONAL_INTENTS: ReadonlySet<TaskWorkflowIntent> = new Set([
+  "publish_checkpoint",
+  "add_subtask",
+  "complete_subtask",
+  "remove_subtask",
+  "request_subtask",
+  "request_task",
+]);
+
+export function isOperationalIntent(intent: TaskWorkflowIntent): boolean {
+  return OPERATIONAL_INTENTS.has(intent);
+}
+
+// ---------------------------------------------------------------------------
+// §5.1 — Actor
+// ---------------------------------------------------------------------------
+// WorkflowActor.role is SERVER-RESOLVED ONLY. Transports must never copy it
+// from request JSON; the orchestrator/authorize.ts resolves the role from
+// authenticated context (assignment, reviewer resolution, registry lookup).
+// The normalizer strips any client-supplied role field.
+
+export type WorkflowActorRole =
+  | "reporter"
+  | "reviewer"
+  | "assignee"
+  | "monitor"
+  | "admin"
+  | "operator"
+  | null;
+
 export type WorkflowActor = {
   id: string;
   kind: "human" | "agent";
   username?: string | null;
-  // Monitor agents act as mechanical executors. Their actor id is recorded
-  // separately as executorActorId; they cannot be the decision actor for
-  // review-acceptance / plan-approval / changes-requested intents.
-  role?: "reporter" | "reviewer" | "assignee" | "monitor" | "admin" | "operator" | null;
+  // SERVER-RESOLVED ONLY — never copied from request JSON. The transport
+  // may leave this undefined; authorize.ts sets it from assignment/registry.
+  role?: WorkflowActorRole;
 };
 
-// --- Command (§5.1) -------------------------------------------------------
-export type TaskWorkflowCommand = {
+// ---------------------------------------------------------------------------
+// Per-intent payload types (discriminated union).
+// Each intent carries a concrete payload type instead of Record<string, unknown>.
+// ---------------------------------------------------------------------------
+
+// --- Decision intent payloads ---------------------------------------------
+
+export type SubmitPlanPayload = {
+  actionPlan: {
+    summary: string;
+    steps: Array<{
+      id: string;
+      title: string;
+      acceptanceCriteria: string[];
+      kind: "sequential" | "parallel";
+      assigneeId?: string | null;
+    }>;
+  };
+  /** In-reply-to message ID for threading. */
+  inReplyToMessageId?: string | null;
+};
+
+export type ApprovePlanPayload = {
+  actionPlanId: string;
+  actionPlanVersion: number;
+  /** Optional constraints the reviewer wants the assignee to hold to. */
+  constraints?: string | null;
+};
+
+export type RequestPlanChangesPayload = {
+  actionPlanId: string;
+  actionPlanVersion: number;
+  reviewerComment: string;
+};
+
+export type StartImplementationPayload = {
+  /** Worktree path (server-resolved from worktree creation). */
+  worktreePath?: string | null;
+  /** Branch name (server-resolved from repository contract). */
+  branchName?: string | null;
+};
+
+export type CheckpointPayload = {
+  completedWork?: string[];
+  evidence?: string[];
+  openChecklist?: string[];
+  nextAction?: string;
+  risks?: string[];
+};
+
+export type SubmitForReviewPayload = {
+  /** Candidate SHA (server-resolved from worktree HEAD). */
+  candidateSha: string | null;
+  /** Base SHA (server-resolved from Epic branch tip). */
+  baseSha: string | null;
+  /** Whether the task touched the repository. */
+  repoTouched: boolean;
+  /** Worktree path for the candidate. */
+  worktreePath?: string | null;
+  /** Branch name for the candidate. */
+  branchName?: string | null;
+  /** Ready-for-review note. */
+  comment?: string | null;
+};
+
+export type RequestReviewChangesPayload = {
+  reviewRunId: string;
+  candidateSha: string;
+  /** Non-empty reviewer comment within size limit. */
+  reviewerComment: string;
+};
+
+export type AcceptReviewPayload = {
+  reviewRunId: string;
+  candidateSha: string;
+};
+
+export type RaiseBlockerPayload = {
+  blockerReport: {
+    blockedOn: "person" | "permission" | "external_service" | "decision" | "dependency";
+    requestedActor: string | null;
+    requestedAction: string;
+    evidence: string[];
+    diagnosticsAttempted: string[];
+    resumeCondition: string;
+    reporterCanResolve: boolean;
+  };
+  /** Optional permission request for reporter-only blockers. */
+  permissionKind?: "reporter_approval" | "publish_checkpoint" | null;
+  permissionScope?: string | null;
+  /** General blocker comment. */
+  comment?: string | null;
+};
+
+export type ClearBlockerPayload = {
+  blockerId: string;
+  /** Resolution evidence. */
+  resolution: string;
+};
+
+export type CancelTaskPayload = {
+  reason?: string | null;
+};
+
+export type ArchiveTaskPayload = Record<string, never>;
+
+// --- New decision intent payloads (spec §15) ------------------------------
+
+export type TriageTaskPayload = {
+  /** Target status after triage (To Do or Backlog). */
+  targetStatus: "To Do" | "Backlog";
+  reason?: string | null;
+};
+
+export type AssignTaskPayload = {
+  /** Username of the agent/human to assign. */
+  assigneeUsername: string;
+  /** Whether to assign after plan approval (vs. immediate). */
+  afterPlanApproval: boolean;
+};
+
+export type RaiseScopeBlockerPayload = {
+  /** Description of the extra work needed. */
+  scopeDescription: string;
+  /** Evidence supporting the scope expansion. */
+  evidence?: string[];
+  /** Requested actor for approval. */
+  requestedActor?: string | null;
+};
+
+// --- Mechanical intent payloads -------------------------------------------
+
+export type RepositoryValidationSucceededPayload = {
+  procedureRunId: string;
+  procedureStepId: string;
+  jobId: string;
+  candidateSha: string;
+  baseSha: string;
+  outcome: "succeeded";
+};
+
+export type RepositoryValidationFailedPayload = {
+  procedureRunId: string;
+  procedureStepId: string;
+  jobId: string;
+  candidateSha: string;
+  baseSha: string;
+  outcome: "failed";
+  /** Failure reason / diagnostics. */
+  failureReason?: string | null;
+};
+
+export type RepositoryFinalizationSucceededPayload = {
+  procedureRunId: string;
+  procedureStepId: string;
+  jobId: string;
+  candidateSha: string;
+  baseSha: string;
+  outcome: "succeeded";
+  /** Published Epic branch SHA after merge. */
+  publishedSha?: string | null;
+};
+
+export type RepositoryFinalizationFailedPayload = {
+  procedureRunId: string;
+  procedureStepId: string;
+  jobId: string;
+  candidateSha: string;
+  baseSha: string;
+  outcome: "failed";
+  failureReason?: string | null;
+};
+
+// --- Operational intent payloads ------------------------------------------
+
+export type PublishCheckpointPayload = {
+  /** Authorization comment ID from the owner grant. */
+  authorizationCommentId: string;
+  /** Candidate SHA to publish. */
+  candidateSha: string;
+  /** Base SHA (Epic branch tip at the time). */
+  baseSha: string;
+};
+
+export type AddSubtaskPayload = {
+  subtaskText: string;
+};
+
+export type CompleteSubtaskPayload = {
+  subtaskId: string;
+  completed: boolean;
+  minutesSpent?: number | null;
+};
+
+export type RemoveSubtaskPayload = {
+  subtaskId: string;
+};
+
+export type RequestSubtaskPayload = {
+  subtaskText: string;
+};
+
+export type RequestTaskPayload = {
+  taskTitle: string;
+  taskDescription?: string | null;
+  epicId?: string | null;
+};
+
+// ---------------------------------------------------------------------------
+// Discriminated union: TaskWorkflowCommand keyed by intent.
+// Each variant carries a typed payload instead of Record<string, unknown>.
+// ---------------------------------------------------------------------------
+
+/** Common fields shared by every command variant. */
+type TaskWorkflowCommandBase = {
   taskId: string;
-  intent: TaskWorkflowIntent;
   actor: WorkflowActor;
   expectedWorkflowVersion: number;
-  // The cycle the command targets. For intents that open a cycle
-  // (start_implementation), this is null/omitted and the orchestrator opens a
-  // new one. For intents that act on an existing cycle, this is the active
-  // cycle id — the orchestrator rejects if it does not match
-  // Task.activeWorkflowCycleId.
+  /** The cycle the command targets. For intents that open a cycle
+   * (start_implementation), this is null/omitted and the orchestrator opens a
+   * new one. For intents that act on an existing cycle, this is the active
+   * cycle id — the orchestrator rejects if it does not match
+   * Task.activeWorkflowCycleId. */
   workflowCycleId?: string | null;
   idempotencyKey: string;
-  source: string;
+  /** Transport source. New code MUST use WorkflowCommandSource; the string
+   * type is retained for backward compatibility with existing procedure
+   * handlers that use internal source labels. */
+  source: WorkflowCommandSource | string;
   messageId?: string | null;
+  /** Optional authenticated PM-channel execution context (spec §14). */
+  executionContext?: AgentExecutionContext | null;
+  /** Legacy evidence bag — retained for backward compatibility with existing
+   * modules that pass evidence alongside the typed payload. New code SHOULD
+   * use the typed payload instead; this field will be removed once all
+   * consumers are migrated. */
   evidence?: Record<string, unknown>;
-  // Optional structured payload for the intent (e.g. candidateSha for
-  // submit_for_review, reviewerComment for request_review_changes).
-  payload?: Record<string, unknown>;
 };
 
-// --- Decision (§5.3) ------------------------------------------------------
-// The pure decision layer returns the transition + cycle operation + effects
-// the orchestrator must durably record. The decision function must NOT access
-// network, filesystem, OpenClaw gateway, Git, or spool directories.
+/** Map intent → payload type. Used to build the discriminated union. */
+interface IntentPayloadMap {
+  submit_plan: SubmitPlanPayload;
+  approve_plan: ApprovePlanPayload;
+  request_plan_changes: RequestPlanChangesPayload;
+  start_implementation: StartImplementationPayload;
+  checkpoint: CheckpointPayload;
+  submit_for_review: SubmitForReviewPayload;
+  request_review_changes: RequestReviewChangesPayload;
+  accept_review: AcceptReviewPayload;
+  raise_blocker: RaiseBlockerPayload;
+  clear_blocker: ClearBlockerPayload;
+  cancel_task: CancelTaskPayload;
+  archive_task: ArchiveTaskPayload;
+  triage_task: TriageTaskPayload;
+  assign_task: AssignTaskPayload;
+  raise_scope_blocker: RaiseScopeBlockerPayload;
+  repository_validation_succeeded: RepositoryValidationSucceededPayload;
+  repository_validation_failed: RepositoryValidationFailedPayload;
+  repository_finalization_succeeded: RepositoryFinalizationSucceededPayload;
+  repository_finalization_failed: RepositoryFinalizationFailedPayload;
+  publish_checkpoint: PublishCheckpointPayload;
+  add_subtask: AddSubtaskPayload;
+  complete_subtask: CompleteSubtaskPayload;
+  remove_subtask: RemoveSubtaskPayload;
+  request_subtask: RequestSubtaskPayload;
+  request_task: RequestTaskPayload;
+}
+
+/** Discriminated union: TaskWorkflowCommand is keyed by `intent`, each variant
+ * carrying a typed `payload` from IntentPayloadMap. */
+export type TaskWorkflowCommand = {
+  [K in TaskWorkflowIntent]: TaskWorkflowCommandBase & {
+    intent: K;
+    payload: IntentPayloadMap[K];
+  };
+}[TaskWorkflowIntent];
+
+// ---------------------------------------------------------------------------
+// Legacy-compatible command shape for backward compatibility.
+// Existing modules that construct TaskWorkflowCommand with generic
+// payload/evidence can use this type during migration. New code MUST use the
+// discriminated union above.
+// ---------------------------------------------------------------------------
+
+export type LegacyTaskWorkflowCommand = TaskWorkflowCommandBase & {
+  intent: TaskWorkflowIntent;
+  payload?: Record<string, unknown>;
+  evidence?: Record<string, unknown>;
+};
+
+// ---------------------------------------------------------------------------
+// Domain error codes (spec §18 — stable error codes with HTTP mapping).
+// ---------------------------------------------------------------------------
+
+export const DOMAIN_ERROR_CODES = [
+  "invalid_payload",
+  "missing_evidence",
+  "stale_version",
+  "idempotency_conflict",
+  "forbidden",
+  "not_assignee",
+  "not_reviewer",
+  "not_authorized",
+  "lease_mismatch",
+  "candidate_mismatch",
+  "cycle_mismatch",
+  "epic_not_actionable",
+  "prerequisites_unmet",
+  "wip_conflict",
+  "branch_collision",
+  "operational_error",
+  "unknown_intent",
+] as const;
+
+export type DomainErrorCode = (typeof DOMAIN_ERROR_CODES)[number];
+
+// HTTP status mapping for OrchestratorResult (spec §18).
+export const RESULT_HTTP_STATUS: ReadonlyMap<string, number> = new Map([
+  ["replayed", 200],
+  ["accepted", 202],
+  ["stale", 409],
+  ["forbidden", 403],
+  ["invalid", 422],
+  ["operational", 503],
+]);
+
+// Domain error code → HTTP status mapping.
+export const DOMAIN_ERROR_HTTP_STATUS: ReadonlyMap<DomainErrorCode, number> = new Map([
+  ["invalid_payload", 422],
+  ["missing_evidence", 422],
+  ["stale_version", 409],
+  ["idempotency_conflict", 409],
+  ["forbidden", 403],
+  ["not_assignee", 403],
+  ["not_reviewer", 403],
+  ["not_authorized", 403],
+  ["lease_mismatch", 409],
+  ["candidate_mismatch", 409],
+  ["cycle_mismatch", 409],
+  ["epic_not_actionable", 409],
+  ["prerequisites_unmet", 409],
+  ["wip_conflict", 409],
+  ["branch_collision", 409],
+  ["operational_error", 503],
+  ["unknown_intent", 422],
+]);
+
+// ---------------------------------------------------------------------------
+// §5.3 — Decision types (unchanged from ORCH-02, re-exported).
+// ---------------------------------------------------------------------------
+
 export type CycleOperation = "none" | "open" | "update" | "close";
 
 export type TaskProcedureType =
@@ -121,9 +559,6 @@ export type WorkflowEffect =
 export type OrchestrationDecision = {
   fromStatus: TaskWorkflowStatus;
   toStatus: TaskWorkflowStatus;
-  // The transition kernel intent. Mapped from the domain intent because the
-  // kernel's intent vocabulary is the legacy one (start, submit_review, ...).
-  // The orchestrator owns the mapping; routes never call the kernel directly.
   kernelIntent:
     | "start"
     | "auto_start"
@@ -144,32 +579,29 @@ export type OrchestrationDecision = {
   procedureType?: TaskProcedureType;
   effects: WorkflowEffect[];
   evidence: Record<string, unknown>;
-  // The authorized decision actor for this transition. For mechanical
-  // intents, this is the reviewer who authorized the underlying decision
-  // (recovered from the review lease), NOT the monitor executing the callback.
   decisionActorId: string;
-  // The mechanical executor (monitor/worker). Null for human/agent decisions.
   executorActorId?: string | null;
-  // Rank for the transition (front of To Do for feedback/validation failure).
   rank?: "front" | "back";
-  // Additional Task columns to set in the same transition kernel call (e.g.
-  // approvedOn/approvedById for approve_plan, alertReporter:false on review
-  // acceptance). The kernel applies these atomically with the status change.
   taskData?: Record<string, unknown>;
 };
 
-// --- Orchestrator result (§5.5) ------------------------------------------
+// ---------------------------------------------------------------------------
+// §5.5 / §18 — Orchestrator result.
+// Extended with domain error code for stable cross-transport error reporting.
+// ---------------------------------------------------------------------------
+
 export type OrchestratorResult =
   | { status: "replayed"; transitionId: string; workflowVersion: number; procedureId?: string | null }
   | { status: "accepted"; transitionId: string; workflowVersion: number; procedureId?: string | null; cycleId?: string | null }
-  | { status: "stale"; reason: string }
-  | { status: "forbidden"; reason: string }
-  | { status: "invalid"; reason: string; details?: Record<string, unknown> }
-  | { status: "operational"; reason: string };
+  | { status: "stale"; reason: string; domainCode?: DomainErrorCode }
+  | { status: "forbidden"; reason: string; domainCode?: DomainErrorCode }
+  | { status: "invalid"; reason: string; details?: Record<string, unknown>; domainCode?: DomainErrorCode }
+  | { status: "operational"; reason: string; domainCode?: DomainErrorCode };
 
-// --- State snapshot passed to the decision function ----------------------
-// The decision function is pure: it receives a snapshot of the task's current
-// state and the command, and returns the decision. It must not touch the DB.
+// ---------------------------------------------------------------------------
+// State snapshot passed to the decision function (unchanged).
+// ---------------------------------------------------------------------------
+
 export type TaskStateSnapshot = {
   id: string;
   status: TaskWorkflowStatus;
@@ -182,17 +614,13 @@ export type TaskStateSnapshot = {
   approvedOn: Date | null;
   approvedById: string | null;
   activeWorkflowCycleId: string | null;
-  // Resolved reviewer (acting manager -> actionable Epic acting manager ->
-  // reporter) at decision time.
   resolvedReviewOwnerId: string | null;
-  // Active review lease for the current cycle, if any.
   activeReviewRun?: {
     id: string;
     status: string;
     candidateSha: string;
     reviewerId: string | null;
   } | null;
-  // Active repository run, if any.
   repositoryRun?: {
     phase: string;
     candidateSha: string | null;

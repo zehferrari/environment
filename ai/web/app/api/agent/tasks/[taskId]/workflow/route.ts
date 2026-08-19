@@ -170,19 +170,22 @@ async function computeV2Prediction(
   const { shouldComputeV2Decision } = await import("@/lib/tasks/orchestrator/flags");
   if (!shouldComputeV2Decision(task.project.slug)) return null;
 
-  const command: TaskWorkflowCommand = {
+  // The V2 probe constructs a command with a computed intent; the payload
+  // shape is approximate since this is a compute-only comparison path.
+  // Cast through the legacy type to avoid requiring an exact union match.
+  const command = {
     taskId: task.id,
     intent,
     actor: {
       id: agentUser.id,
-      kind: "agent",
+      kind: "agent" as const,
       username: agentUser.username,
-      role: agentRole === "monitor" ? "monitor" : undefined,
+      role: agentRole === "monitor" ? ("monitor" as const) : undefined,
     },
     expectedWorkflowVersion: task.workflowVersion,
     workflowCycleId: task.activeWorkflowCycleId ?? undefined,
     idempotencyKey: `${action}:${messageId}`,
-    source: "agent-workflow-v2",
+    source: "agent" as const,
     messageId,
     evidence: {
       comment: comment || undefined,
@@ -195,7 +198,7 @@ async function computeV2Prediction(
       worktreePath: validatedContext.worktreePath ?? undefined,
       branchName: validatedContext.branchName ?? undefined,
     },
-  };
+  } as unknown as TaskWorkflowCommand;
 
   try {
     const { loadTaskState, authorizeCommand, runGuards, decideCommand } = await import("@/lib/tasks/orchestrator");

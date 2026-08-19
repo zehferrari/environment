@@ -78,7 +78,7 @@ async function main() {
       expectedWorkflowVersion: 1,
       workflowCycleId: cycle1.id,
       idempotencyKey: "orch06:submit:1",
-      source: "orch06-test",
+      source: "agent",
       payload: { candidateSha: "shared-sha" },
     });
     assert.equal(submitResult.status, "accepted", `submit accepted; got ${JSON.stringify(submitResult)}`);
@@ -128,7 +128,7 @@ async function main() {
       expectedWorkflowVersion: taskBeforeSubmit2.workflowVersion,
       workflowCycleId: cycle2.id,
       idempotencyKey: "orch06:submit:2",
-      source: "orch06-test",
+      source: "agent",
       payload: { candidateSha: "shared-sha" },
     });
     assert.equal(submit2.status, "accepted", "second submit accepted (same candidate, new cycle)");
@@ -186,7 +186,7 @@ async function main() {
       expectedWorkflowVersion: 1,
       workflowCycleId: cycle4.id,
       idempotencyKey: "orch06:submit:4",
-      source: "orch06-test",
+      source: "agent",
       payload: { candidateSha: "cand-4" },
     });
     assert.equal(submit4.status, "accepted");

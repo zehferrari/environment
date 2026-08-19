@@ -499,9 +499,16 @@ async function enterReview(ctx: StepHandlerContext): Promise<StepHandlerResult> 
     expectedWorkflowVersion: freshTask.workflowVersion,
     workflowCycleId: freshTask.activeWorkflowCycleId,
     idempotencyKey: `procedure-enter-review:${ctx.procedureRunId}`,
-    source: "procedure-submit-candidate",
+    source: "callback",
     evidence: { candidateSha, procedureRunId: ctx.procedureRunId },
-    payload: { candidateSha },
+    payload: {
+      procedureRunId: ctx.procedureRunId,
+      procedureStepId: ctx.stepId,
+      jobId: ctx.procedureRunId,
+      candidateSha,
+      baseSha: candidateSha,
+      outcome: "succeeded",
+    },
   });
   if (result.status !== "accepted" && result.status !== "replayed") {
     return { status: "failed", error: `Failed to enter Review: ${result.status} — ${result.reason ?? "no reason"}`, retryable: result.status === "stale" };
