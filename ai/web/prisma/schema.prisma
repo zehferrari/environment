@@ -687,11 +687,17 @@ model TaskRepositoryRun {
   lastError         String?            @map("last_error")
   attempt           Int                @default(0)
   version           Int                @default(0)
+  // PHASEE-07: durable publication and replay state.
+  // Tracks publication state per job so crash-replay can re-publish
+  // deterministically without creating duplicate spool files.
+  publicationState  String?            @map("publication_state")
+  replayCount       Int                @default(0) @map("replay_count")
   createdAt         DateTime           @default(now()) @map("created_at")
   updatedAt         DateTime           @updatedAt @map("updated_at")
 
   @@index([phase])
   @@index([validationOutcome])
+  @@index([publicationState])
   @@map("task_repository_runs")
 }
 

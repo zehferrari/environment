@@ -21,6 +21,7 @@
 //   - publish a PM notification.
 // Handlers may NOT directly change task status.
 
+import { createHash } from "crypto";
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { getProcedureDefinition, getLatestProcedureDefinition } from "@/lib/tasks/orchestrator/procedures";
@@ -102,10 +103,65 @@ export type ProcedureCallback = {
   jobId: string;
   candidateSha?: string | null;
   baseSha?: string | null;
+  // PHASEE-07: V2 identity fields for exact callback correlation.
+  schemaVersion?: number;
+  commandReceiptId?: string | null;
+  repositoryRunId?: string | null;
+  repositoryRunVersion?: number | null;
   // Additional callback data (e.g. validationOutcome, error) stored in the
   // step output for the next handler to consume.
   data?: Record<string, unknown>;
 };
+
+// PHASEE-07: Compute a stable dedupe fingerprint for a callback mismatch or
+// replay activity. Repeated identical mismatches increment a counter or are
+// suppressed — never spam.
+function callbackMismatchFingerprint(callback: ProcedureCallback, reason: string): string {
+  const parts = [
+    callback.procedureRunId,
+    callback.stepId,
+    callback.taskId,
+    callback.workflowCycleId ?? "null",
+    callback.jobId,
+    callback.candidateSha ?? "null",
+    callback.baseSha ?? "null",
+    reason,
+  ];
+  return createHash("sha256").update(parts.join("\0")).digest("hex").slice(0, 32);
+}
+
+// PHASEE-07: Record a callback mismatch or replay as a deduplicated ActivityLog
+// row. Repeated identical mismatches/replays suppress — never create user
+// comments.
+async function recordCallbackActivity(args: {
+  projectId: string;
+  taskId: string;
+  kind: string;
+  fingerprint: string;
+  payload: Record<string, unknown>;
+}): Promise<void> {
+  // Check for an existing activity with the same fingerprint in the last 24h.
+  // If found, suppress (deduplicate). Otherwise create a new row.
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const existing = await db.activityLog.findFirst({
+    where: {
+      taskId: args.taskId,
+      kind: args.kind,
+      createdAt: { gte: since },
+      payload: { contains: args.fingerprint },
+    },
+    select: { id: true },
+  });
+  if (existing) return; // suppress — deduplicated
+  await db.activityLog.create({
+    data: {
+      projectId: args.projectId,
+      taskId: args.taskId,
+      kind: args.kind,
+      payload: JSON.stringify({ ...args.payload, fingerprint: args.fingerprint }),
+    },
+  });
+}
 
 export async function applyProcedureCallback(callback: ProcedureCallback): Promise<{ applied: boolean; reason: string }> {
   const step = await db.taskProcedureStep.findUnique({
@@ -122,16 +178,66 @@ export async function applyProcedureCallback(callback: ProcedureCallback): Promi
       },
     },
   });
+  // PHASEE-07 Fix #1: Use step.procedureRun.taskId (the trusted owner) for
+  // ActivityLog FK, not callback.taskId (untrusted/stale in a mismatch).
+  // The offending callback.taskId is preserved inside the payload.
+  const trustedTaskId = step?.procedureRun?.taskId ?? null;
+  // PHASEE-07 Fix #3: When the step is not found, fall back to callback.taskId
+  // to look up the task so we can still record the mismatch activity.
+  const taskIdForLookup = trustedTaskId ?? callback.taskId;
+  const taskRow = taskIdForLookup
+    ? await db.task.findUnique({ where: { id: taskIdForLookup }, select: { projectId: true } })
+    : null;
+  const projectId = taskRow?.projectId ?? null;
+
   if (!step || !step.procedureRun) {
+    // PHASEE-07 Fix #3: Record the step_not_found mismatch using callback.taskId
+    // so the mismatch is visible in activity logs, not silently dropped.
+    if (projectId && callback.taskId) {
+      await recordCallbackActivity({
+        projectId,
+        taskId: callback.taskId,
+        kind: "task.workflow.callback.mismatch",
+        fingerprint: callbackMismatchFingerprint(callback, "step_not_found"),
+        payload: { reason: "Step not found for callback.", callbackTaskId: callback.taskId, callback },
+      });
+    }
     return { applied: false, reason: "Step not found." };
   }
   if (step.procedureRun.id !== callback.procedureRunId) {
+    if (projectId) {
+      await recordCallbackActivity({
+        projectId,
+        taskId: trustedTaskId!,
+        kind: "task.workflow.callback.mismatch",
+        fingerprint: callbackMismatchFingerprint(callback, "procedure_id_mismatch"),
+        payload: { reason: "Procedure id mismatch.", callbackTaskId: callback.taskId, callback },
+      });
+    }
     return { applied: false, reason: "Procedure id mismatch." };
   }
   if (step.procedureRun.taskId !== callback.taskId) {
+    if (projectId) {
+      await recordCallbackActivity({
+        projectId,
+        taskId: trustedTaskId!,
+        kind: "task.workflow.callback.mismatch",
+        fingerprint: callbackMismatchFingerprint(callback, "task_id_mismatch"),
+        payload: { reason: "Task id mismatch.", callbackTaskId: callback.taskId, callback },
+      });
+    }
     return { applied: false, reason: "Task id mismatch." };
   }
   if (step.procedureRun.workflowCycleId !== callback.workflowCycleId) {
+    if (projectId) {
+      await recordCallbackActivity({
+        projectId,
+        taskId: trustedTaskId!,
+        kind: "task.workflow.callback.mismatch",
+        fingerprint: callbackMismatchFingerprint(callback, "cycle_id_mismatch"),
+        payload: { reason: "Cycle id mismatch.", callbackTaskId: callback.taskId, callback },
+      });
+    }
     return { applied: false, reason: "Cycle id mismatch — callback is from an older or different cycle." };
   }
   // Verify the job id matches the one stored in step output when the step
@@ -146,6 +252,15 @@ export async function applyProcedureCallback(callback: ProcedureCallback): Promi
     }
   }
   if (storedJobId && storedJobId !== callback.jobId) {
+    if (projectId) {
+      await recordCallbackActivity({
+        projectId,
+        taskId: trustedTaskId!,
+        kind: "task.workflow.callback.mismatch",
+        fingerprint: callbackMismatchFingerprint(callback, "job_id_mismatch"),
+        payload: { reason: "Job id mismatch.", storedJobId, callbackJobId: callback.jobId, callbackTaskId: callback.taskId, callback },
+      });
+    }
     return { applied: false, reason: "Job id mismatch." };
   }
   // P1-6: verify the callback's candidate/base SHA match the expected values
@@ -161,26 +276,122 @@ export async function applyProcedureCallback(callback: ProcedureCallback): Promi
   }
   if (callback.candidateSha !== undefined && callback.candidateSha !== null
     && expectedCandidateSha && callback.candidateSha !== expectedCandidateSha) {
+    if (projectId) {
+      await recordCallbackActivity({
+        projectId,
+        taskId: trustedTaskId!,
+        kind: "task.workflow.callback.mismatch",
+        fingerprint: callbackMismatchFingerprint(callback, `candidate_sha_mismatch:${callback.candidateSha}:${expectedCandidateSha}`),
+        payload: { reason: `Candidate SHA mismatch: callback has ${callback.candidateSha}, expected ${expectedCandidateSha}.`, callbackTaskId: callback.taskId, callback },
+      });
+    }
     return { applied: false, reason: `Candidate SHA mismatch: callback has ${callback.candidateSha}, expected ${expectedCandidateSha}.` };
   }
   // A3: also check baseSha if both expected and callback values are present.
   if (callback.baseSha !== undefined && callback.baseSha !== null
     && expectedBaseSha && callback.baseSha !== expectedBaseSha) {
+    if (projectId) {
+      await recordCallbackActivity({
+        projectId,
+        taskId: trustedTaskId!,
+        kind: "task.workflow.callback.mismatch",
+        fingerprint: callbackMismatchFingerprint(callback, `base_sha_mismatch:${callback.baseSha}:${expectedBaseSha}`),
+        payload: { reason: `Base SHA mismatch: callback has ${callback.baseSha}, expected ${expectedBaseSha}.`, callbackTaskId: callback.taskId, callback },
+      });
+    }
     return { applied: false, reason: `Base SHA mismatch: callback has ${callback.baseSha}, expected ${expectedBaseSha}.` };
   }
   // Idempotent: a duplicate callback for an already-completed step is a no-op.
+  // PHASEE-07: record it as a deduplicated replay activity.
+  // PHASEE-07 Fix #2a: Move publicationState/replayCount logic HERE — before the
+  // completed-step return — so that a duplicate callback (replay) actually
+  // reaches the counter. Previously this block sat after the return and was
+  // dead code. Also write "pending" when a replay is detected so the state
+  // lifecycle is complete: publishing -> published -> pending (on replay).
   if (step.status === "completed") {
+    // Update publication state: this is a replay of a previously-published job.
+    // The row should already be in "published" state from the first callback.
+    try {
+      const existingRun = await db.taskRepositoryRun.findUnique({
+        where: { taskId: trustedTaskId! },
+        select: { id: true, publicationState: true, replayCount: true },
+      });
+      if (existingRun) {
+        await db.taskRepositoryRun.update({
+          where: { id: existingRun.id },
+          data: {
+            publicationState: "pending",
+            replayCount: existingRun.replayCount + 1,
+          },
+        });
+      }
+    } catch (e) {
+      // Narrow catch: only tolerate a missing TaskRepositoryRun row (P2025).
+      // Other errors (e.g. unknown field) should surface, not be swallowed.
+      if (!(e instanceof Error && 'code' in e && (e as { code: string }).code === 'P2025')) {
+        throw e;
+      }
+    }
+    if (projectId) {
+      await recordCallbackActivity({
+        projectId,
+        taskId: trustedTaskId!,
+        kind: "task.workflow.callback.replayed",
+        fingerprint: callbackMismatchFingerprint(callback, "replay"),
+        payload: { reason: "Step already completed (duplicate callback replayed).", callbackTaskId: callback.taskId, callback },
+      });
+    }
     return { applied: true, reason: "Step already completed (duplicate callback replayed)." };
   }
   if (step.status !== "waiting_callback") {
+    if (projectId) {
+      await recordCallbackActivity({
+        projectId,
+        taskId: trustedTaskId!,
+        kind: "task.workflow.callback.mismatch",
+        fingerprint: callbackMismatchFingerprint(callback, `wrong_status:${step.status}`),
+        payload: { reason: `Step is in ${step.status}, not waiting_callback.`, callbackTaskId: callback.taskId, callback },
+      });
+    }
     return { applied: false, reason: `Step is in ${step.status}, not waiting_callback.` };
   }
+  // PHASEE-07 Fix #2a: On first successful callback, transition publicationState
+  // from "publishing" to "published". The replayCount increment happens in the
+  // completed-step branch above (since a replay is a duplicate callback for an
+  // already-completed step). Narrow catch: only tolerate a missing
+  // TaskRepositoryRun row (P2025), not all errors.
+  try {
+    const existingRun = await db.taskRepositoryRun.findUnique({
+      where: { taskId: trustedTaskId! },
+      select: { id: true, publicationState: true, replayCount: true },
+    });
+    if (existingRun) {
+      await db.taskRepositoryRun.update({
+        where: { id: existingRun.id },
+        data: {
+          publicationState: "published",
+        },
+      });
+    }
+  } catch (e) {
+    // Narrow catch: only tolerate a missing TaskRepositoryRun row (P2025).
+    // Other errors should surface, not be swallowed.
+    if (!(e instanceof Error && 'code' in e && (e as { code: string }).code === 'P2025')) {
+      throw e;
+    }
+  }
+
   // Mark the step completed; the runner picks up the next step on the next
   // poll. The callback's evidence (candidateSha, baseSha, validationOutcome,
   // error) is stored in step output for the next step's handler to consume.
   const output: Record<string, unknown> = { jobId: callback.jobId };
   if (callback.candidateSha !== undefined) output.candidateSha = callback.candidateSha;
   if (callback.baseSha !== undefined) output.baseSha = callback.baseSha;
+  // PHASEE-07: persist V2 identity fields in step output for crash-replay.
+  if (callback.schemaVersion !== undefined) output.schemaVersion = callback.schemaVersion;
+  if (callback.commandReceiptId !== undefined) output.commandReceiptId = callback.commandReceiptId;
+  if (callback.repositoryRunId !== undefined) output.repositoryRunId = callback.repositoryRunId;
+  if (callback.repositoryRunVersion !== undefined) output.repositoryRunVersion = callback.repositoryRunVersion;
   if (callback.data) Object.assign(output, callback.data);
   await db.taskProcedureStep.update({
     where: { id: step.id },
