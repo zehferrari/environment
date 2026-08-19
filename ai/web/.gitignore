@@ -44,3 +44,6 @@ prisma/prisma/
 # coverage
 coverage/
 *.lcov
+
+# backup files — never track
+*.bak

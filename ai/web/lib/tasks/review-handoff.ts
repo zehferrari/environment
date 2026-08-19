@@ -10,6 +10,7 @@ import { createHash, randomUUID } from "crypto";
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import type { BranchVerifyJob } from "@/lib/deploy/branch-verify";
+import { REPOSITORY_JOB_SCHEMA_V2 } from "@/lib/deploy/branch-verify";
 import { refillEpicQueue } from "@/lib/epics/queue";
 import { syncEpicOnHumanTaskStatus } from "@/lib/epics/sync-on-human-task-move";
 import { resolveEffectiveProjectSettings } from "@/lib/settings/effective";
@@ -41,22 +42,28 @@ export type RepositoryProcedureCallback = {
   workflowCycleId: string | null;
   jobId: string;
   baseSha: string | null;
+  // PHASEE-07: V2 identity fields for exact callback correlation.
+  schemaVersion?: number;
+  commandReceiptId?: string | null;
+  repositoryRunId?: string | null;
+  repositoryRunVersion?: number | null;
+  candidateSha?: string | null;
 };
 
-// ORCH-06/P0-4: apply a validation callback to a waiting procedure step.
-// Called after the legacy validation handoff completes/fails. If a procedure
-// step is in waiting_callback for this task, applies the callback so the
-// procedure engine can continue (create review lease → enter Review → wake
-// reviewer, or close cycle → return to To Do → feedback).
-async function applyValidationCallbackToProcedure(
+// PHASEE-07: Legacy v1 drain adapter for validation callbacks.
+// DRAIN-ONLY: used for callbacks from jobs queued by older PM builds that
+// do not carry schemaVersion=2. This function still uses task-scoped lookup
+// to find the waiting step. It will be removed after the drain deadline
+// when all active v1 jobs have been consumed.
+// REMOVAL CONDITION: zero task.workflow.callback.v1_drain activities for
+// two consecutive deploy cycles.
+export async function v1DrainValidationCallback(
   taskId: string,
   candidateSha: string | null,
   validationOutcome: string,
   error?: string,
   callback?: RepositoryProcedureCallback,
 ): Promise<void> {
-  // New verifier jobs carry the exact procedure + step identity. Only jobs
-  // queued by older builds may use the task-scoped lookup fallback.
   const step = callback
     ? await db.taskProcedureStep.findFirst({
         where: {
@@ -93,7 +100,7 @@ async function applyValidationCallbackToProcedure(
             projectId: task.projectId,
             taskId,
             kind: "task.workflow.procedure_callback_rejected",
-            payload: JSON.stringify({ ...callback, candidateSha, reason: "Exact procedure step not found for callback." }),
+            payload: JSON.stringify({ ...callback, candidateSha, reason: "Exact procedure step not found for v1 drain callback." }),
           },
         });
       }
@@ -119,8 +126,6 @@ async function applyValidationCallbackToProcedure(
     workflowCycleId: callback?.workflowCycleId ?? step.procedureRun.workflowCycleId,
     jobId,
     candidateSha: callback ? candidateSha : candidateSha ?? expectedCandidateSha,
-    // For correlated jobs this is verifier-supplied evidence from the job,
-    // not the expected value re-read from the waiting step.
     baseSha: callbackBaseSha,
     data: { validationOutcome, error: error ?? undefined },
   });
@@ -140,10 +145,73 @@ async function applyValidationCallbackToProcedure(
             candidateSha,
             baseSha: callbackBaseSha,
             reason: result.reason,
+            drainPath: "v1",
           }),
         },
       });
     }
+  }
+}
+
+// PHASEE-07: V2-exact validation callback application. Requires exact match
+// on all V2RepositoryJobIdentity fields — no task-search fallback.
+// A V2 callback that cannot be exactly correlated is rejected and recorded
+// as a deduplicated activity, never guessed.
+async function applyV2ValidationCallback(
+  taskId: string,
+  candidateSha: string | null,
+  validationOutcome: string,
+  error: string | undefined,
+  callback: RepositoryProcedureCallback,
+): Promise<void> {
+  const { applyProcedureCallback } = await import("@/lib/tasks/orchestrator/procedure-runner");
+  const result = await applyProcedureCallback({
+    procedureRunId: callback.procedureRunId,
+    stepId: callback.procedureStepId,
+    taskId,
+    workflowCycleId: callback.workflowCycleId,
+    jobId: callback.jobId,
+    candidateSha: callback.candidateSha ?? candidateSha,
+    baseSha: callback.baseSha,
+    schemaVersion: callback.schemaVersion,
+    commandReceiptId: callback.commandReceiptId,
+    repositoryRunId: callback.repositoryRunId,
+    repositoryRunVersion: callback.repositoryRunVersion,
+    data: { validationOutcome, error: error ?? undefined },
+  });
+  if (!result.applied) {
+    const task = await db.task.findUnique({ where: { id: taskId }, select: { projectId: true } });
+    if (task) {
+      await db.activityLog.create({
+        data: {
+          projectId: task.projectId,
+          taskId,
+          kind: "task.workflow.procedure_callback_rejected",
+          payload: JSON.stringify({
+            ...callback,
+            candidateSha,
+            reason: result.reason,
+            correlationPath: "v2-exact",
+          }),
+        },
+      });
+    }
+  }
+}
+
+// PHASEE-07: Dispatcher for validation callbacks. Routes V2 callbacks
+// through exact correlation and v1 callbacks through the legacy drain.
+async function applyValidationCallbackToProcedure(
+  taskId: string,
+  candidateSha: string | null,
+  validationOutcome: string,
+  error?: string,
+  callback?: RepositoryProcedureCallback,
+): Promise<void> {
+  if (callback?.schemaVersion === 2) {
+    await applyV2ValidationCallback(taskId, candidateSha, validationOutcome, error, callback);
+  } else {
+    await v1DrainValidationCallback(taskId, candidateSha, validationOutcome, error, callback);
   }
 }
 
@@ -707,6 +775,11 @@ export async function runTaskReviewHandoff(args: {
   });
   const jobId = randomUUID();
   const validationProfile = await resolveValidationProfileSnapshot(task.projectId);
+  // PHASEE-07: Resolve repository run for V2 identity fields.
+  const repoRun = await db.taskRepositoryRun.findUnique({
+    where: { taskId: task.id },
+    select: { id: true, version: true },
+  });
   const job: BranchVerifyJob = {
     jobId,
     taskId: task.id,
@@ -714,7 +787,12 @@ export async function runTaskReviewHandoff(args: {
     projectSlug: task.project.slug,
     repositoryPath: task.project.repositoryPath,
     branchName,
+    // PHASEE-07: emit schema-v2 job with mandatory V2 identity fields.
+    schemaVersion: REPOSITORY_JOB_SCHEMA_V2,
     workflowCycleId: task.activeWorkflowCycleId,
+    commandReceiptId: null,
+    repositoryRunId: repoRun?.id ?? null,
+    repositoryRunVersion: repoRun?.version ?? null,
     baseBranch: effectiveSettings.deployment.prTargetBranch.value,
     epicChild: Boolean(task.epicId),
     epicBranch: task.epic ? effectiveEpicBranchName(task.epic) : null,

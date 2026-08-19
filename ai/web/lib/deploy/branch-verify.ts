@@ -23,6 +23,31 @@ import type { ValidationProfileSnapshot } from "@/lib/tasks/validation-profile";
 export const BRANCH_VERIFY_DIR =
   process.env.PM_BRANCH_VERIFY_DIR ?? "/var/lib/pm/branch-verify";
 
+// --- PHASEE-07: V2 repository job identity -------------------------------
+// Schema-v2 jobs carry a mandatory, fully-correlated identity packet so
+// callbacks can be matched through exact correlation alone — no task-scoped
+// search fallback. v1 jobs (missing schemaVersion or schemaVersion=1) are
+// routed through a separate legacy drain adapter.
+export const REPOSITORY_JOB_SCHEMA_V2 = 2 as const;
+
+export type V2RepositoryJobIdentity = {
+  schemaVersion: typeof REPOSITORY_JOB_SCHEMA_V2;
+  jobId: string;
+  taskId: string;
+  workflowCycleId: string | null;
+  procedureRunId: string;
+  procedureStepId: string;
+  commandReceiptId: string | null;
+  repositoryRunId: string | null;
+  repositoryRunVersion: number | null;
+  candidateSha: string | null;
+  baseSha: string | null;
+};
+
+export function isV2RepositoryJob(job: { schemaVersion?: number }): job is { schemaVersion: typeof REPOSITORY_JOB_SCHEMA_V2 } & Record<string, unknown> {
+  return job.schemaVersion === REPOSITORY_JOB_SCHEMA_V2;
+}
+
 export interface BranchVerifyJob {
   jobId: string;
   taskId: string;
@@ -30,6 +55,11 @@ export interface BranchVerifyJob {
   projectSlug: string;
   repositoryPath: string;
   branchName: string;
+  // PHASEE-07: schema version for exact callback correlation.
+  // V2 jobs carry a mandatory V2RepositoryJobIdentity and are matched
+  // through exact correlation only. V1 jobs (missing or schemaVersion=1)
+  // route through the legacy drain adapter.
+  schemaVersion?: number;
   // ORCH-06/R4: procedure correlation. The verifier callback uses these to
   // route the result back to the correct procedure step via
   // applyProcedureCallback. Optional for backward compatibility with jobs
@@ -37,6 +67,10 @@ export interface BranchVerifyJob {
   procedureRunId?: string;
   procedureStepId?: string;
   workflowCycleId?: string | null;
+  // PHASEE-07: additional V2 identity fields for exact correlation.
+  commandReceiptId?: string | null;
+  repositoryRunId?: string | null;
+  repositoryRunVersion?: number | null;
   // Effective deployment PR target branch at enqueue time. Optional so jobs
   // queued by older PM builds can resolve origin/HEAD safely.
   baseBranch?: string | null;

@@ -28,6 +28,7 @@ import {
   existsSync,
   readFileSync,
   realpathSync,
+  renameSync,
   unlinkSync,
 } from "node:fs";
 import path from "node:path";
@@ -106,6 +107,13 @@ function procedureCallbackForJob(job: BranchVerifyJob): RepositoryProcedureCallb
     workflowCycleId: job.workflowCycleId,
     jobId: job.jobId,
     baseSha: job.baseSha ?? null,
+    // PHASEE-07: round-trip V2 identity fields from the spooled job so the
+    // callback carries the full V2RepositoryJobIdentity for exact correlation.
+    schemaVersion: job.schemaVersion,
+    commandReceiptId: job.commandReceiptId ?? null,
+    repositoryRunId: job.repositoryRunId ?? null,
+    repositoryRunVersion: job.repositoryRunVersion ?? null,
+    candidateSha: job.previousCandidateSha ?? null,
   };
 }
 
@@ -875,6 +883,30 @@ async function main() {
   }
 
   const job = JSON.parse(readFileSync(jobFile, "utf8")) as BranchVerifyJob;
+  // PHASEE-07 Fix #4: Runner version skew handling.
+  // pm-verify is installed out-of-band, so a deployed older runner can pick
+  // up a new schema-v2 job. That older binary has none of this code, so this
+  // guard can never fire for it. What actually saves that case is the
+  // dispatcher falling back to the v1 drain on a callback with no
+  // schemaVersion — the v1-drain adapter handles legacy callbacks.
+  // This guard handles the *forward* case: a newer job schema (v3+) that
+  // this runner does not understand. To avoid a re-read loop where the
+  // runner keeps picking up the same unrecognised job every cycle, we
+  // rename the job file to a `.skipped` suffix so the runner ignores it
+  // on subsequent scans, while preserving the file for inspection.
+  if (job.schemaVersion !== undefined && job.schemaVersion > 2) {
+    const skipPath = `${jobFile}.skipped`;
+    console.error(
+      `[pm-verify] unrecognised schemaVersion ${job.schemaVersion} in job ${job.jobId}; renaming to ${skipPath} to avoid re-read loop.`,
+    );
+    try {
+      renameSync(jobFile, skipPath);
+    } catch {
+      // If rename fails (e.g. permissions), unlink to prevent re-read loop.
+      try { unlinkSync(jobFile); } catch { /* best effort */ }
+    }
+    return;
+  }
   let actor: Awaited<ReturnType<typeof monitorActor>> | null = null;
   try {
     actor = await monitorActor(job);
