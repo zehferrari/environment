@@ -5,6 +5,7 @@
 // the task to Review and wakes its related reviewer. Concrete validation
 // failures return the task to the front of To Do without a reviewer wake.
 
+import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import { createHash, randomUUID } from "crypto";
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
@@ -401,6 +402,10 @@ export async function completeTaskReviewHandoffAfterValidation(args: {
   repoTouched?: boolean;
   procedureCallback?: RepositoryProcedureCallback;
 }) {
+  await recordLegacyWorkflowBoundaryInvocation({
+    legacyBoundary: "review-submission-and-validation",
+    entryPoint: "completeTaskReviewHandoffAfterValidation",
+  });
   const result = await moveToReviewAndDispatch({
     ...args,
     via: "monitor-repository-validation",
@@ -422,6 +427,10 @@ export async function failTaskReviewValidation(args: {
   procedureCallback?: RepositoryProcedureCallback;
   applyProcedureCallback?: boolean;
 }) {
+  await recordLegacyWorkflowBoundaryInvocation({
+    legacyBoundary: "review-submission-and-validation",
+    entryPoint: "failTaskReviewValidation",
+  });
   // ORCH-06/P0-4: if a procedure step is waiting for a validation callback,
   // apply it with the failure outcome so the procedure engine can handle
   // the validation failure path.
@@ -511,6 +520,10 @@ export async function recordTaskReviewOperationalError(args: {
   error: string;
   preserveValidationOutcome?: boolean;
 }) {
+  await recordLegacyWorkflowBoundaryInvocation({
+    legacyBoundary: "review-submission-and-validation",
+    entryPoint: "recordTaskReviewOperationalError",
+  });
   const task = await loadHandoffTask(args.taskId);
   if (!task) return;
   await db.$transaction(async (tx) => {
@@ -551,6 +564,10 @@ export async function runTaskReviewHandoff(args: {
   assigneeNote?: string | null;
   workflowAction?: PmChannelWorkflowActionArgs;
 }): Promise<ReviewHandoffResult> {
+  await recordLegacyWorkflowBoundaryInvocation({
+    legacyBoundary: "review-submission-and-validation",
+    entryPoint: "runTaskReviewHandoff",
+  });
   const task = await loadHandoffTask(args.taskId);
   if (!task) {
     return {

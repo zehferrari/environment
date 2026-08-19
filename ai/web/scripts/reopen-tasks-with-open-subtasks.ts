@@ -8,11 +8,16 @@
 //   pnpm tsx scripts/reopen-tasks-with-open-subtasks.ts            # dry run
 //   pnpm tsx scripts/reopen-tasks-with-open-subtasks.ts --apply    # execute
 
+import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import { db } from "@/lib/db";
 
 const APPLY = process.argv.includes("--apply");
 
 async function main() {
+  await recordLegacyWorkflowBoundaryInvocation({
+    legacyBoundary: "workflow-reconciler-and-repair-tools",
+    entryPoint: "main",
+  });
   const tasks = await db.task.findMany({
     where: {
       deletedAt: null,

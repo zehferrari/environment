@@ -1,0 +1,587 @@
+{
+  "schemaVersion": 2,
+  "registryPath": "ai/web/lib/tasks/legacy-workflow-boundary-registry.json",
+  "summary": "Phase E freeze registry for legacy workflow mutation boundaries that remain outside the orchestrator command adapter drain.",
+  "counterContract": {
+    "activityKind": "task.workflow.legacy_boundary.invoked",
+    "payloadFields": [
+      "legacyBoundary",
+      "entryPoint"
+    ],
+    "notes": "Every legacy boundary records an attempted invocation before guards and mutation transactions. The injective boundary id counts rejected guards and non-transition mutations as well as committed transitions."
+  },
+  "kernelInternals": [
+    {
+      "file": "lib/tasks/transition-kernel.ts",
+      "reason": "single Task.status/workflowVersion writer and workflow transition/outbox transaction helper"
+    },
+    {
+      "file": "lib/tasks/workflow-cycle.ts",
+      "reason": "workflow cycle lifecycle internals and active cycle pointer writer"
+    },
+    {
+      "file": "lib/tasks/orchestrator/execute.ts",
+      "reason": "canonical command transaction executor"
+    },
+    {
+      "file": "lib/tasks/orchestrator/ownership.ts",
+      "reason": "canonical engine ownership pinning and task/cycle engine stamp internals"
+    },
+    {
+      "file": "lib/tasks/orchestrator/procedure-runner.ts",
+      "reason": "procedure state engine"
+    },
+    {
+      "file": "lib/tasks/orchestrator/handlers/start-implementation-cycle.ts",
+      "reason": "canonical start implementation procedure handler"
+    },
+    {
+      "file": "lib/tasks/orchestrator/handlers/submit-candidate-for-review.ts",
+      "reason": "canonical review submission procedure handler"
+    },
+    {
+      "file": "lib/tasks/orchestrator/handlers/review-decisions.ts",
+      "reason": "canonical review decision procedure handler"
+    }
+  ],
+  "boundaries": [
+    {
+      "id": "agent-task-workflow-route",
+      "title": "Agent task workflow endpoint",
+      "files": [
+        "app/api/agent/tasks/[taskId]/workflow/route.ts"
+      ],
+      "triggerSurface": "Native PM task workflow callback for assignee/reviewer workflow actions.",
+      "currentOwner": "PM agent workflow route",
+      "stateTouched": [
+        "Task status via transition kernel",
+        "ActionPlan approval state",
+        "TaskExecutionEpisode checkpoint/cycle state",
+        "SubTask checklist completion",
+        "formal blocker and checkpoint permission state",
+        "WorkflowOutbox effects"
+      ],
+      "sideEffects": [
+        "task comments/chat persistence",
+        "review handoff scheduling",
+        "auto-start after approval",
+        "board touch effects",
+        "repository validation/finalization effects",
+        "agent wake notifications"
+      ],
+      "phaseEMigrationDestination": "Task workflow command adapter backed by lib/tasks/orchestrator submitWorkflowCommand.",
+      "instrumentation": {
+        "kind": "task.move payload via/source or route activity kind",
+        "labels": [
+          "agent-workflow",
+          "agent-workflow-v2",
+          "agent-action-plan-approval",
+          "agent-plan-approval",
+          "action-plan-approval",
+          "approval_comment",
+          "ready-for-review",
+          "task.workflow.v2_shadow",
+          "task.workflow.v2_canary"
+        ]
+      },
+      "responseParity": "Preserve JSON workflow responses, validation errors, episode budget fields, and silent/visible reply routing.",
+      "sideEffectParity": "Preserve idempotency, comments, activity rows, outbox effects, repository handoff, checklist updates, blocker controls, board invalidation, and wake behavior.",
+      "entryPoints": [
+        "POST task workflow action handler",
+        "submit_plan",
+        "start",
+        "approve_plan",
+        "ready_for_review",
+        "review_done",
+        "review_feedback",
+        "complete_subtask",
+        "checkpoint",
+        "flag_blocker",
+        "publish_checkpoint"
+      ],
+      "expectedDirectMutationCounts": {
+        "app/api/agent/tasks/[taskId]/workflow/route.ts": 9
+      }
+    },
+    {
+      "id": "agent-epic-workflow-route",
+      "title": "Agent epic workflow endpoint",
+      "files": [
+        "app/api/agent/epics/[epicId]/workflow/route.ts"
+      ],
+      "triggerSurface": "Native PM epic workflow callback for completion review, deploy review, manager queueing, and task requests.",
+      "currentOwner": "PM epic workflow route",
+      "stateTouched": [
+        "Epic status/deploy review fields",
+        "child Task status via transition kernel",
+        "Task action-plan approval/reset state",
+        "SubTask/task creation state",
+        "WorkflowOutbox effects"
+      ],
+      "sideEffects": [
+        "completion review approval/rejection comments",
+        "deploy-review approval/rejection comments",
+        "child task assignment/queue refill",
+        "board touch effects",
+        "agent wakes"
+      ],
+      "phaseEMigrationDestination": "Epic workflow command adapter plus child-task command dispatch.",
+      "instrumentation": {
+        "kind": "task.move payload via/source or epic activity kind",
+        "labels": [
+          "completion_review_reject",
+          "deploy_review_reject",
+          "epic-manager-workflow",
+          "epic.completion_review.approval_requested",
+          "epic.completion_review.reject",
+          "epic.deploy_review.approve"
+        ]
+      },
+      "responseParity": "Preserve scoped-token JSON responses and comment/action-plan routing for reviewer/manager turns.",
+      "sideEffectParity": "Preserve child task rank movement, approval reset, generated comments, queue assignment, outbox effects, and Epic status/deploy status activity.",
+      "entryPoints": [
+        "POST epic workflow action handler",
+        "completion review reject/approve",
+        "deploy review reject/approve",
+        "epic manager queue/refill actions",
+        "request_task/request_subtask"
+      ],
+      "expectedDirectMutationCounts": {
+        "app/api/agent/epics/[epicId]/workflow/route.ts": 2
+      }
+    },
+    {
+      "id": "browser-board-move-actions",
+      "title": "Browser/server board move actions",
+      "files": [
+        "lib/tasks/move-status.ts",
+        "app/(app)/projects/[slug]/page.tsx",
+        "app/(app)/workspaces/[slug]/page.tsx",
+        "app/(app)/workspaces/(landing)/page.tsx"
+      ],
+      "triggerSurface": "Authenticated browser board drag/drop and status-change server actions on project and workspace boards.",
+      "currentOwner": "Board server actions with lib/tasks/move-status guard layer",
+      "stateTouched": [
+        "Task status via transition kernel",
+        "ReviewRun/taskRepositoryRun decision/finalization state through review automation",
+        "rank movement"
+      ],
+      "sideEffects": [
+        "review completion/finalization",
+        "task cache revalidation",
+        "board touch",
+        "Epic child assignment",
+        "agent notifications"
+      ],
+      "phaseEMigrationDestination": "Board move command adapter that delegates every status edge to orchestrator commands.",
+      "instrumentation": {
+        "kind": "task.move payload via/source",
+        "labels": [
+          "human-board-move",
+          "agent-board-move",
+          "board-move",
+          "board_move",
+          "human-workspace-board-move",
+          "agent-workspace-board-move",
+          "human-workspace-landing-move",
+          "agent-workspace-landing-move"
+        ]
+      },
+      "responseParity": "Preserve redirect/action result semantics, guard messages, and board UI revalidation.",
+      "sideEffectParity": "Preserve human/operator authorization, rank calculation, review acceptance handoff, outbox effects, and cache invalidation.",
+      "entryPoints": [
+        "moveTaskStatus",
+        "completeReviewedTaskAndAssignNext",
+        "project board moveTask action",
+        "workspace board moveTask action",
+        "workspace landing board moveTask action"
+      ],
+      "expectedDirectMutationCounts": {
+        "lib/tasks/move-status.ts": 2,
+        "app/(app)/projects/[slug]/page.tsx": 0,
+        "app/(app)/workspaces/[slug]/page.tsx": 2,
+        "app/(app)/workspaces/(landing)/page.tsx": 2
+      }
+    },
+    {
+      "id": "task-detail-server-actions",
+      "title": "Task detail server actions",
+      "files": [
+        "app/(app)/projects/[slug]/tasks/[taskId]/page.tsx"
+      ],
+      "triggerSurface": "Task editor form/server actions for task status changes and Action Plan approval.",
+      "currentOwner": "Task detail page server actions",
+      "stateTouched": [
+        "Task status via move-status/transition kernel",
+        "ActionPlan approval fields",
+        "approval revision state"
+      ],
+      "sideEffects": [
+        "auto-start after action-plan approval",
+        "task detail revalidation",
+        "activity rows",
+        "agent wakes"
+      ],
+      "phaseEMigrationDestination": "Task detail command adapter for plan approval and status intents.",
+      "instrumentation": {
+        "kind": "task.move payload via/source or action-plan activity kind",
+        "labels": [
+          "task-edit",
+          "action-plan-approval",
+          "task.action_plan.approve"
+        ]
+      },
+      "responseParity": "Preserve form validation, redirects, and rendered error messages.",
+      "sideEffectParity": "Preserve plan revision approval, approval comments, auto-start, and cache invalidation.",
+      "entryPoints": [
+        "updateTask form action",
+        "approveActionPlan form action",
+        "startApprovedTodoTaskIfIdle after approval"
+      ],
+      "expectedDirectMutationCounts": {
+        "app/(app)/projects/[slug]/tasks/[taskId]/page.tsx": 1
+      }
+    },
+    {
+      "id": "auto-start-and-queue-refill",
+      "title": "Auto-start, queue refill, and dependency release",
+      "files": [
+        "lib/tasks/auto-start.ts",
+        "lib/tasks/reviewer-assignment.ts",
+        "lib/epics/assignment.ts",
+        "lib/epics/queue.ts",
+        "scripts/pm-workflow-nudge.ts"
+      ],
+      "triggerSurface": "Reviewer plan approval, Epic open/status changes, dependency completion effects, and workflow nudge automation.",
+      "currentOwner": "Task auto-start and Epic assignment helpers",
+      "stateTouched": [
+        "Task status via transition kernel",
+        "assignee and approval reset fields",
+        "WorkflowOutbox dependency_refill effects"
+      ],
+      "sideEffects": [
+        "worktree provisioning",
+        "Action Plan reset when ownership changes",
+        "task.assign activity",
+        "agent notifications",
+        "board touch"
+      ],
+      "phaseEMigrationDestination": "Prepare/start implementation command adapters and dependency-release command adapter.",
+      "instrumentation": {
+        "kind": "task.move payload via/source or task.assign/task.action_plan.reset activity kind",
+        "labels": [
+          "reviewer-plan-approval",
+          "agent-action-plan-approval",
+          "action-plan-approval",
+          "pm-workflow-nudge",
+          "dependency-completed",
+          "epic_open",
+          "epic_status",
+          "task.assign",
+          "task.action_plan.reset"
+        ]
+      },
+      "responseParity": "Preserve idle-worker checks, worktree errors, and no-op assignment results.",
+      "sideEffectParity": "Preserve one-active-task guard, worktree claim behavior, queue ordering, approval reset, assignment activity, and wake effects.",
+      "entryPoints": [
+        "startApprovedTodoTaskIfIdle",
+        "assignOpenEpicTasks",
+        "assignTasksAfterDependencyCompleted",
+        "pm-workflow-nudge autoStart"
+      ],
+      "expectedDirectMutationCounts": {
+        "lib/tasks/auto-start.ts": 1,
+        "lib/tasks/reviewer-assignment.ts": 1,
+        "lib/epics/assignment.ts": 1,
+        "lib/epics/queue.ts": 0,
+        "scripts/pm-workflow-nudge.ts": 0
+      }
+    },
+    {
+      "id": "review-submission-and-validation",
+      "title": "Review submission and repository validation handoff",
+      "files": [
+        "lib/tasks/review-handoff.ts",
+        "lib/tasks/repository-state.ts",
+        "scripts/pm-verify-branch-pushed.ts"
+      ],
+      "triggerSurface": "ready_for_review workflow action, repository verification callback, and branch-pushed verifier utility.",
+      "currentOwner": "Review handoff/repository validation helpers",
+      "stateTouched": [
+        "Task status via transition kernel",
+        "TaskRepositoryRun phase/version/candidate state",
+        "ReviewRun validating/awaiting/invalidated state",
+        "Task.alertReporter"
+      ],
+      "sideEffects": [
+        "repository verifier job",
+        "review lease creation",
+        "reviewer notification",
+        "validation failure feedback",
+        "operational-error blocker activity"
+      ],
+      "phaseEMigrationDestination": "Submit-candidate-for-review procedure adapter and repository validation callback command.",
+      "instrumentation": {
+        "kind": "task.move payload via/source or repository activity kind",
+        "labels": [
+          "ready-for-review",
+          "monitor-repository-validation",
+          "task.workflow.procedure_callback_rejected",
+          "pm.repo.verify.enqueue",
+          "pm.repo.verify.operational_error"
+        ]
+      },
+      "responseParity": "Preserve ready_for_review responses, repository validation outcome mapping, and callback rejection behavior.",
+      "sideEffectParity": "Preserve candidate SHA/base SHA capture, review lease invalidation/upsert, outbox effects, reviewer wakes, and reporter alerting.",
+      "entryPoints": [
+        "prepareTaskReviewHandoff",
+        "recordRepositoryValidationOutcome",
+        "pm-verify-branch-pushed verification callback"
+      ],
+      "expectedDirectMutationCounts": {
+        "lib/tasks/review-handoff.ts": 11,
+        "lib/tasks/repository-state.ts": 1,
+        "scripts/pm-verify-branch-pushed.ts": 8
+      }
+    },
+    {
+      "id": "review-decision-and-finalization",
+      "title": "Review decision and repository finalization",
+      "files": [
+        "lib/tasks/review-automation.ts",
+        "lib/deploy/epic-merge.ts"
+      ],
+      "triggerSurface": "review_done/review_feedback, repository finalization jobs, Epic checkpoint/merge workers, and completion review automation.",
+      "currentOwner": "Review automation and Epic merge/finalization helpers",
+      "stateTouched": [
+        "Task status via transition kernel",
+        "ReviewRun accepted/changes_requested/finalization state",
+        "TaskRepositoryRun finalizing/accepted/error state",
+        "Epic completion/deploy status fields"
+      ],
+      "sideEffects": [
+        "repository finalization outbox",
+        "Epic branch merge/publish",
+        "completion review request",
+        "cleanup scheduling",
+        "next task assignment",
+        "blocker settlement"
+      ],
+      "phaseEMigrationDestination": "Review decision command adapter and finalization procedure adapter.",
+      "instrumentation": {
+        "kind": "task.move payload via/source or review/finalization activity kind",
+        "labels": [
+          "agent-workflow",
+          "repository-finalization",
+          "workflow-reconciliation",
+          "epic_merge_failed",
+          "completion_review_prepare",
+          "completion_review_dispatch",
+          "task.review.accepted",
+          "task.review.finalization_retry",
+          "pm.epic.merge.ok",
+          "pm.repo.checkpoint.fail"
+        ]
+      },
+      "responseParity": "Preserve reviewer authorization, finalization retry/no-op statuses, and repository-vs-non-repository behavior.",
+      "sideEffectParity": "Preserve immutable review decisions, repository phase updates, Epic merge/cleanup effects, queue refill, and blocker lifecycle activity.",
+      "entryPoints": [
+        "completeReviewedTaskAndAssignNext",
+        "completeReviewFromComment",
+        "finalizeTaskRepositorySubmission",
+        "prepareCompletionReview",
+        "dispatchCompletionReview",
+        "verifyCompletionReviewApproval"
+      ],
+      "expectedDirectMutationCounts": {
+        "lib/tasks/review-automation.ts": 6,
+        "lib/deploy/epic-merge.ts": 4
+      }
+    },
+    {
+      "id": "epic-human-actions",
+      "title": "Human Epic actions affecting child workflow",
+      "files": [
+        "lib/epics/actions.ts"
+      ],
+      "triggerSurface": "Epic create/update/status/action-plan server actions that cascade or queue child tasks.",
+      "currentOwner": "Epic action helpers",
+      "stateTouched": [
+        "Epic status/action-plan fields",
+        "child Task status via transition kernel",
+        "child Task archive/rank state"
+      ],
+      "sideEffects": [
+        "Epic/task activity rows",
+        "child assignment on Epic open",
+        "deploy review trigger",
+        "cache/board refresh"
+      ],
+      "phaseEMigrationDestination": "Epic command adapter with explicit child-task command fanout.",
+      "instrumentation": {
+        "kind": "task.move payload via/source or epic activity kind",
+        "labels": [
+          "epic_update",
+          "epic_status",
+          "epic_open",
+          "epic.status",
+          "epic.action_plan.reset"
+        ]
+      },
+      "responseParity": "Preserve form action results and Epic status/approval guards.",
+      "sideEffectParity": "Preserve child cascade semantics, archive-on-done, deploy review trigger, assignment, and activity rows.",
+      "entryPoints": [
+        "updateEpic",
+        "approveEpicActionPlan",
+        "transitionEpicStatus",
+        "open epic child queue assignment"
+      ],
+      "expectedDirectMutationCounts": {
+        "lib/epics/actions.ts": 1
+      }
+    },
+    {
+      "id": "proposal-application",
+      "title": "Work-item proposal application",
+      "files": [
+        "lib/work-items/apply.ts",
+        "lib/work-items/actions.ts",
+        "app/api/agent/projects/[projectId]/proposals/route.ts"
+      ],
+      "triggerSurface": "Agent/human application of approved work-item proposals.",
+      "currentOwner": "Work-item proposal apply helpers and proposal API route",
+      "stateTouched": [
+        "Task/Epic/SubTask creation",
+        "Task status via transition kernel",
+        "assignee/approval/blocked-by fields",
+        "WorkItemProposal status fields"
+      ],
+      "sideEffects": [
+        "activity rows for created/updated work items",
+        "task.action_plan.reset",
+        "dependency validation",
+        "workflow outbox drain",
+        "created-item summaries"
+      ],
+      "phaseEMigrationDestination": "Work-item proposal command adapter that emits task/epic/subtask commands instead of direct writes.",
+      "instrumentation": {
+        "kind": "task.move payload via/source or proposal activity kind",
+        "labels": [
+          "proposal-apply",
+          "task.create",
+          "task.update",
+          "task.subtask.add",
+          "workitem.proposal.apply"
+        ]
+      },
+      "responseParity": "Preserve proposal validation messages, created item summaries, and apply/reject JSON semantics.",
+      "sideEffectParity": "Preserve reference resolution, dependency guards, status transitions, activity rows, proposal status, and outbox draining.",
+      "entryPoints": [
+        "applyWorkItemProposal",
+        "applyTaskProposalOperation",
+        "applyEpicProposalOperation",
+        "applySubTaskProposalOperation",
+        "agent proposal POST/commit handlers"
+      ],
+      "expectedDirectMutationCounts": {
+        "lib/work-items/apply.ts": 1,
+        "lib/work-items/actions.ts": 0,
+        "app/api/agent/projects/[projectId]/proposals/route.ts": 0
+      }
+    },
+    {
+      "id": "workflow-reconciler-and-repair-tools",
+      "title": "Workflow reconciler, watchdog, and operator repair tools",
+      "files": [
+        "lib/tasks/workflow-reconciler.ts",
+        "lib/tasks/workflow-outbox-drain.ts",
+        "scripts/repair-accepted-finalization.ts",
+        "scripts/repair-task-workflow-state.ts",
+        "scripts/reopen-tasks-with-open-subtasks.ts"
+      ],
+      "triggerSurface": "Monitor reconciliation, workflow outbox drain failures, and explicit operator repair scripts.",
+      "currentOwner": "Workflow reconciler/repair tooling",
+      "stateTouched": [
+        "Task status via transition kernel or guarded repair",
+        "WorkflowOutbox dispatch state",
+        "ReviewRun repair/invalidated state",
+        "TaskRepositoryRun repair state",
+        "Task.alertReporter"
+      ],
+      "sideEffects": [
+        "operational error activity",
+        "repair comments",
+        "board touch effects",
+        "review finalization retry",
+        "blocker clear activity"
+      ],
+      "phaseEMigrationDestination": "Reconciler/repair command adapter with explicit incident and repair command types.",
+      "instrumentation": {
+        "kind": "task.move payload via/source or repair/reconciler activity kind",
+        "labels": [
+          "workflow-reconciliation",
+          "workflow_outbox",
+          "operator-finalization-repair",
+          "reopen-open-subtasks",
+          "task.workflow.finalization_repair",
+          "task.workflow.effect_failed"
+        ]
+      },
+      "responseParity": "Preserve CLI dry-run/apply behavior, reconciler no-op behavior, and retry/error logging.",
+      "sideEffectParity": "Preserve guarded compare-and-set repairs, reporter alerting, generated comments, outbox retry state, and activity evidence.",
+      "entryPoints": [
+        "reconcileWorkflowState",
+        "drainWorkflowOutbox",
+        "repairAcceptedFinalization",
+        "repair-task-workflow-state",
+        "reopen-tasks-with-open-subtasks"
+      ],
+      "expectedDirectMutationCounts": {
+        "lib/tasks/workflow-reconciler.ts": 2,
+        "lib/tasks/workflow-outbox-drain.ts": 3,
+        "scripts/repair-accepted-finalization.ts": 6,
+        "scripts/repair-task-workflow-state.ts": 0,
+        "scripts/reopen-tasks-with-open-subtasks.ts": 1
+      }
+    },
+    {
+      "id": "subtask-checklist-actions",
+      "title": "Sub-task checklist actions",
+      "files": [
+        "lib/tasks/subtasks.ts"
+      ],
+      "triggerSurface": "PM workflow add/complete/remove_subtask actions and work-item proposal subtask creation.",
+      "currentOwner": "Task checklist helper",
+      "stateTouched": [
+        "SubTask create/update/delete/rank state",
+        "minutesSpent/completedAt progress fields"
+      ],
+      "sideEffects": [
+        "task.subtask.add activity",
+        "task.subtask.complete activity",
+        "task.subtask.delete activity",
+        "board/detail revalidation through callers"
+      ],
+      "phaseEMigrationDestination": "Checklist command adapter used by task workflow commands.",
+      "instrumentation": {
+        "kind": "subtask activity kind",
+        "labels": [
+          "task.subtask.add",
+          "task.subtask.complete",
+          "task.subtask.delete"
+        ]
+      },
+      "responseParity": "Preserve workflow JSON response fields and validation for unknown/duplicate checklist rows.",
+      "sideEffectParity": "Preserve progress timestamps, minutes roll-up, activity rows, and rank ordering.",
+      "entryPoints": [
+        "addSubTask",
+        "completeSubTask",
+        "removeSubTask",
+        "proposal-created SubTask rows"
+      ],
+      "expectedDirectMutationCounts": {
+        "lib/tasks/subtasks.ts": 0
+      }
+    }
+  ]
+}

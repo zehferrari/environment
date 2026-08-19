@@ -1,3 +1,4 @@
+import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import { randomUUID } from "crypto";
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -172,6 +173,10 @@ async function requireActorId(): Promise<string> {
 // actions did. The assignment wake fires after commit, non-throwing.
 async function updateTask(formData: FormData) {
   "use server";
+  await recordLegacyWorkflowBoundaryInvocation({
+    legacyBoundary: "task-detail-server-actions",
+    entryPoint: "updateTask",
+  });
   const actor = await requireActor();
   const taskId = String(formData.get("taskId") ?? "");
   const slug = String(formData.get("projectSlug") ?? "");
@@ -636,6 +641,10 @@ async function updateTask(formData: FormData) {
 
 async function approveTaskActionPlan(formData: FormData) {
   "use server";
+  await recordLegacyWorkflowBoundaryInvocation({
+    legacyBoundary: "task-detail-server-actions",
+    entryPoint: "approveTaskActionPlan",
+  });
   const actor = await requireActor();
   const taskId = String(formData.get("taskId") ?? "");
   const slug = String(formData.get("projectSlug") ?? "");

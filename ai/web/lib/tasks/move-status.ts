@@ -1,5 +1,6 @@
 "use server";
 
+import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
 import {
@@ -67,6 +68,10 @@ export async function moveTaskStatus(
   slug: string,
   options?: MoveTaskOptions,
 ): Promise<MoveTaskResult> {
+  await recordLegacyWorkflowBoundaryInvocation({
+    legacyBoundary: "browser-board-move-actions",
+    entryPoint: "moveTaskStatus",
+  });
   const actor = await requireViewer();
   if (!TASK_STATUSES.includes(status)) {
     return {
