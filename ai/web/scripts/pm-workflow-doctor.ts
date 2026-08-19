@@ -13,6 +13,9 @@
 
 import { runWorkflowReconciliation } from "@/lib/tasks/workflow-reconciler";
 import { getCohortSummary, getLegacyInvocationSummary } from "@/lib/tasks/orchestrator/dashboard-data";
+import { orchestratorV2MutationProjects } from "@/lib/tasks/orchestrator/flags";
+import { PHASE_E_STOP_CONDITIONS } from "@/lib/tasks/orchestrator/rollout-gates";
+import { LEGACY_WORKFLOW_BOUNDARY_ACTIVITY_KIND } from "@/lib/tasks/legacy-workflow-boundary";
 import { db } from "@/lib/db";
 
 function flag(name: string) {
@@ -33,7 +36,7 @@ async function main() {
   });
 
   // PHASEE-10 — Gather Phase E specific metrics.
-  const [cohortSummary, legacyInvocationSummary, engineDistribution, receiptStats, procedureStats] = await Promise.all([
+  const [cohortSummary, legacyInvocationSummary, engineDistribution, receiptStats, procedureStats, diagnosticActivities, v2LegacyInvocations, mechanicalDecisionActors] = await Promise.all([
     getCohortSummary(projectId),
     getLegacyInvocationSummary(projectId),
     db.task.groupBy({
@@ -49,6 +52,40 @@ async function main() {
       by: ["status"],
       _count: { _all: true },
     }),
+    db.activityLog.groupBy({
+      by: ["kind"],
+      where: {
+        ...(projectId ? { projectId } : {}),
+        kind: { in: [
+          "task.workflow.idempotency_conflict",
+          "task.workflow.engine_invariant",
+          "task.workflow.legacy_bypass_attempt",
+          "task.workflow.callback.mismatch",
+          "task.workflow.callback.replayed",
+          "task.workflow.procedure_operational_error",
+        ] },
+      },
+      _count: { _all: true },
+    }),
+    db.activityLog.findMany({
+      where: {
+        ...(projectId ? { projectId } : {}),
+        kind: LEGACY_WORKFLOW_BOUNDARY_ACTIVITY_KIND,
+        task: { workflowEngine: "orchestrator_v2", workflowEnginePinnedAt: { not: null } },
+      },
+      select: {
+        createdAt: true,
+        taskId: true,
+        task: { select: { workflowEnginePinnedAt: true } },
+      },
+    }),
+    db.workflowTransition.count({
+      where: {
+        ...(projectId ? { task: { projectId } } : {}),
+        intent: { in: ["submit_plan", "approve_plan", "accept_review", "repository_finalization_succeeded"] },
+        actor: { agent: { role: "monitor" } },
+      },
+    }),
   ]);
 
   const phaseEFindings = report.findings.filter((f) =>
@@ -57,6 +94,60 @@ async function main() {
     f.kind === "procedure_run_without_cycle" ||
     f.kind === "dual_engine_active",
   );
+  const diagnosticCounts = Object.fromEntries(
+    diagnosticActivities.map((row) => [row.kind, row._count._all]),
+  );
+  const legacyAfterV2Pin = v2LegacyInvocations.filter((row) =>
+    row.task?.workflowEnginePinnedAt && row.createdAt >= row.task.workflowEnginePinnedAt,
+  ).length;
+  const findingKinds = new Set(report.findings.map((finding) => finding.kind));
+  const stopConditionDiagnostics = PHASE_E_STOP_CONDITIONS.map((id) => {
+    let triggered = false;
+    let evidenceCount = 0;
+    switch (id) {
+      case "decision_actor_is_mechanical_executor":
+        evidenceCount = mechanicalDecisionActors;
+        triggered = evidenceCount > 0;
+        break;
+      case "dual_authoritative_mutation":
+      case "rollback_routed_active_v2_to_legacy":
+        evidenceCount = legacyAfterV2Pin + (diagnosticCounts["task.workflow.legacy_bypass_attempt"] ?? 0);
+        triggered = evidenceCount > 0;
+        break;
+      case "command_missing_procedure_or_continuation":
+        triggered = findingKinds.has("in_progress_no_open_cycle") || findingKinds.has("accepted_review_no_finalization_procedure");
+        evidenceCount = triggered ? 1 : 0;
+        break;
+      case "idempotency_evidence_conflict":
+        evidenceCount = diagnosticCounts["task.workflow.idempotency_conflict"] ?? 0;
+        triggered = evidenceCount > 0;
+        break;
+      case "accepted_review_evidence_reused_or_reset":
+        triggered = findingKinds.has("review_lease_missing") || findingKinds.has("review_no_lease");
+        evidenceCount = triggered ? 1 : 0;
+        break;
+      case "duplicate_mechanical_effect":
+        triggered = findingKinds.has("multiple_open_cycles");
+        evidenceCount = triggered ? 1 : 0;
+        break;
+      case "lost_execution_continuation":
+        triggered = findingKinds.has("in_progress_no_open_cycle");
+        evidenceCount = triggered ? 1 : 0;
+        break;
+      case "doctor_engine_cycle_receipt_contradiction":
+        evidenceCount = phaseEFindings.length;
+        triggered = evidenceCount > 0;
+        break;
+      // A rejected/replayed stale callback is healthy fencing evidence, not a
+      // stop. This diagnostic remains false unless reconciliation proves it
+      // mutated durable state.
+      case "stale_callback_mutated_active_cycle":
+        triggered = false;
+        evidenceCount = 0;
+        break;
+    }
+    return { id, triggered, evidenceCount };
+  });
 
   const phaseE = {
     engineOwnershipDistribution: Object.fromEntries(
@@ -71,6 +162,14 @@ async function main() {
     legacyInvocationCount: legacyInvocationSummary.totalInvocations,
     legacyInvocationByBoundary: legacyInvocationSummary.byBoundary,
     cohortCoverage: cohortSummary,
+    configuredMutationProjects: [...orchestratorV2MutationProjects()].sort(),
+    commandCallbackHealth: {
+      diagnosticCounts,
+      rejectedCallbacks: diagnosticCounts["task.workflow.callback.mismatch"] ?? 0,
+      replayedCallbacks: diagnosticCounts["task.workflow.callback.replayed"] ?? 0,
+    },
+    stopConditionGatePassed: stopConditionDiagnostics.every((diagnostic) => !diagnostic.triggered),
+    stopConditionDiagnostics,
     invariantViolations: phaseEFindings.length,
     invariantFindings: phaseEFindings.map((f) => ({
       kind: f.kind,
@@ -106,7 +205,8 @@ async function main() {
       `receipts=${JSON.stringify(phaseE.receiptStats)} ` +
       `procedures=${JSON.stringify(phaseE.procedureStatusSummary)} ` +
       `legacyInvocations=${phaseE.legacyInvocationCount} ` +
-      `invariantViolations=${phaseE.invariantViolations}`,
+      `invariantViolations=${phaseE.invariantViolations} ` +
+      `stopConditionGate=${phaseE.stopConditionGatePassed ? "pass" : "FAIL"}`,
     );
     for (const finding of report.findings) {
       console.log(
@@ -118,7 +218,7 @@ async function main() {
   }
 
   // --strict exits non-zero if any finding (including Phase E invariants) exists.
-  if (flag("strict") && report.findings.length > 0) process.exit(1);
+  if (flag("strict") && (report.findings.length > 0 || !phaseE.stopConditionGatePassed)) process.exit(1);
 }
 
 main().catch((error) => {

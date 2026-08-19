@@ -8,6 +8,7 @@
 
 import { db } from "@/lib/db";
 import { LEGACY_WORKFLOW_BOUNDARY_ACTIVITY_KIND } from "@/lib/tasks/legacy-workflow-boundary";
+import { isV2MutationAdmissionEnabledForProject } from "@/lib/tasks/orchestrator/flags";
 
 export type CohortSummary = {
   projectSlug: string;
@@ -16,6 +17,13 @@ export type CohortSummary = {
   taskCountByStatus: Record<string, number>;
   activeCycleCount: number;
   activeProcedureCount: number;
+  configuredEffectful: boolean;
+  eligibleTaskCount: number;
+  admittedTaskCount: number;
+  skippedTaskCount: number;
+  skippedReasons: Record<string, number>;
+  commandHealth: Record<string, number>;
+  callbackHealth: { applied: number; rejected: number };
 };
 
 export type LegacyInvocationEntry = {
@@ -51,7 +59,7 @@ export async function getCohortSummary(projectId?: string): Promise<CohortSummar
     projectId: { in: projectIds },
   };
 
-  const [engineGroups, statusGroups, activeCycleCounts, procedureGroups] = await Promise.all([
+  const [engineGroups, statusGroups, activeCycleCounts, procedureGroups, eligibleGroups, receiptGroups, callbackGroups, skipActivities] = await Promise.all([
     // Engine distribution: groupBy projectId + workflowEngine.
     db.task.groupBy({
       by: ["projectId", "workflowEngine"],
@@ -88,12 +96,88 @@ export async function getCohortSummary(projectId?: string): Promise<CohortSummar
       },
       _count: true,
     }),
+    db.task.groupBy({
+      by: ["projectId"],
+      where: {
+        ...taskWhere,
+        workflowEngine: "legacy",
+        status: { in: ["Backlog", "To Do"] },
+        activeWorkflowCycleId: null,
+      },
+      _count: true,
+    }),
+    db.taskWorkflowCommandReceipt.groupBy({
+      by: ["taskId", "status"],
+      where: { task: { projectId: { in: projectIds }, deletedAt: null } },
+      _count: true,
+    }),
+    db.activityLog.groupBy({
+      by: ["projectId", "kind"],
+      where: {
+        projectId: { in: projectIds },
+        kind: { in: ["task.workflow.callback.applied", "task.workflow.callback.rejected"] },
+      },
+      _count: true,
+    }),
+    db.activityLog.findMany({
+      where: {
+        projectId: { in: projectIds },
+        kind: "task.workflow.engine_admission_skipped",
+        taskId: { not: null },
+      },
+      orderBy: { createdAt: "desc" },
+      select: { projectId: true, taskId: true, payload: true },
+    }),
   ]);
 
   // Build per-project summaries from the grouped data
   const engineMap = new Map<string, Record<string, number>>();
   const statusMap = new Map<string, Record<string, number>>();
   const procedureMap = new Map<string, number>();
+  const eligibleMap = new Map(eligibleGroups.map((group) => [
+    group.projectId,
+    typeof group._count === "number" ? group._count : 0,
+  ]));
+  const receiptTaskProjects = receiptGroups.length > 0
+    ? await db.task.findMany({
+        where: { id: { in: receiptGroups.map((group) => group.taskId) } },
+        select: { id: true, projectId: true },
+      })
+    : [];
+  const receiptTaskProjectMap = new Map(receiptTaskProjects.map((task) => [task.id, task.projectId]));
+  const commandHealthMap = new Map<string, Record<string, number>>();
+  for (const group of receiptGroups) {
+    const pid = receiptTaskProjectMap.get(group.taskId);
+    if (!pid) continue;
+    const health = commandHealthMap.get(pid) ?? {};
+    health[group.status] = (health[group.status] ?? 0) + (typeof group._count === "number" ? group._count : 0);
+    commandHealthMap.set(pid, health);
+  }
+  const callbackMap = new Map<string, { applied: number; rejected: number }>();
+  for (const group of callbackGroups) {
+    if (!group.projectId) continue;
+    const health = callbackMap.get(group.projectId) ?? { applied: 0, rejected: 0 };
+    const count = typeof group._count === "number" ? group._count : 0;
+    if (group.kind.endsWith(".applied")) health.applied += count;
+    else health.rejected += count;
+    callbackMap.set(group.projectId, health);
+  }
+  const seenSkippedTasks = new Set<string>();
+  const skippedReasonMap = new Map<string, Record<string, number>>();
+  for (const activity of skipActivities) {
+    if (!activity.projectId || !activity.taskId || seenSkippedTasks.has(activity.taskId)) continue;
+    seenSkippedTasks.add(activity.taskId);
+    let reasonCode = "unknown";
+    try {
+      const payload = JSON.parse(activity.payload ?? "{}") as Record<string, unknown>;
+      reasonCode = String(payload.reasonCode ?? "unknown");
+    } catch {
+      // Preserve a stable unknown bucket for malformed historical evidence.
+    }
+    const reasons = skippedReasonMap.get(activity.projectId) ?? {};
+    reasons[reasonCode] = (reasons[reasonCode] ?? 0) + 1;
+    skippedReasonMap.set(activity.projectId, reasons);
+  }
 
   for (const g of engineGroups) {
     const m = engineMap.get(g.projectId) ?? {};
@@ -136,6 +220,13 @@ export async function getCohortSummary(projectId?: string): Promise<CohortSummar
     taskCountByStatus: statusMap.get(project.id) ?? {},
     activeCycleCount: activeCycleMap.get(project.id) ?? 0,
     activeProcedureCount: procedureMap.get(project.id) ?? 0,
+    configuredEffectful: isV2MutationAdmissionEnabledForProject(project.slug),
+    eligibleTaskCount: eligibleMap.get(project.id) ?? 0,
+    admittedTaskCount: engineMap.get(project.id)?.orchestrator_v2 ?? 0,
+    skippedTaskCount: Object.values(skippedReasonMap.get(project.id) ?? {}).reduce((sum, count) => sum + count, 0),
+    skippedReasons: skippedReasonMap.get(project.id) ?? {},
+    commandHealth: commandHealthMap.get(project.id) ?? {},
+    callbackHealth: callbackMap.get(project.id) ?? { applied: 0, rejected: 0 },
   }));
 }
 

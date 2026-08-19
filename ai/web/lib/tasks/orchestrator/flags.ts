@@ -21,14 +21,19 @@
 //     rollout evidence.
 //   No flags set: no probe, zero overhead.
 //
-// FUTURE PHASES (not yet implemented):
-//   Phase C: effectful procedure canary — V2 procedures own worktree prep
-//     and notifications for allowlisted projects. Repository validation and
-//     finalization jobs already carry procedure/step/cycle correlation; this
-//     phase still requires rollout ownership and compensation verification.
-//   Phase E: V2 owns transitions — legacy paths removed. Requires all
-//     entry points migrated and all safety gates replicated in the V2
-//     orchestrator.
+// Effectful admission is deliberately configured by a third, independent
+// allowlist. PM_ORCHESTRATOR_V2_MUTATION_PROJECTS never changes the meaning of
+// either comparison flag above: it only permits the audited admission job to
+// pin new/quiescent tasks to durable orchestrator_v2 ownership.
+
+function parseProjectAllowlist(raw: string | undefined): Set<string> {
+  return new Set(
+    (raw ?? "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean),
+  );
+}
 
 /** Shadow mode: enable the comparison probe for all projects. */
 export function orchestratorShadowEnabled(): boolean {
@@ -41,9 +46,7 @@ export function orchestratorShadowEnabled(): boolean {
  * are executed.
  */
 export function orchestratorV2Projects(): Set<string> {
-  const raw = process.env.PM_ORCHESTRATOR_V2_PROJECTS ?? "";
-  if (!raw.trim()) return new Set();
-  return new Set(raw.split(",").map((s) => s.trim()).filter(Boolean));
+  return parseProjectAllowlist(process.env.PM_ORCHESTRATOR_V2_PROJECTS);
 }
 
 /**
@@ -74,4 +77,20 @@ export function shouldComputeV2Decision(projectSlug: string): boolean {
 export function shouldRecordV2CanaryComparison(projectSlug: string): boolean {
   if (orchestratorShadowEnabled()) return false; // shadow records v2_shadow, not v2_canary
   return isV2EnabledForProject(projectSlug);
+}
+
+/**
+ * Project allowlist for effectful V2 ownership admission. Empty by default.
+ * This parser is intentionally separate from the compute-only comparison
+ * parser so changing either legacy flag can never admit a mutation owner.
+ */
+export function orchestratorV2MutationProjects(): Set<string> {
+  return parseProjectAllowlist(process.env.PM_ORCHESTRATOR_V2_MUTATION_PROJECTS);
+}
+
+/** Whether an operator may admit new/quiescent tasks in this project. */
+export function isV2MutationAdmissionEnabledForProject(projectSlug: string): boolean {
+  const projects = orchestratorV2MutationProjects();
+  if (projects.size === 0) return false;
+  return projects.has("*") || projects.has(projectSlug);
 }

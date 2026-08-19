@@ -17,7 +17,8 @@
 //     V2 procedures and callbacks to finish.
 
 import type { Prisma } from "@prisma/client";
-import type { Task, TaskWorkflowCycle } from "@prisma/client";
+import { computeActivityDedupeKey, writeDeduplicatedActivity } from "@/lib/tasks/orchestrator/activity-dedup";
+import { isV2MutationAdmissionEnabledForProject } from "@/lib/tasks/orchestrator/flags";
 
 type OwnershipDbClient = Prisma.TransactionClient | typeof import("@/lib/db").db;
 
@@ -34,11 +35,28 @@ export const ALLOWED_ENGINES: ReadonlySet<string> = new Set([
 ]);
 
 // Statuses approved for the initial V2 migration (quiescent tasks only).
-const MIGRATION_APPROVED_STATUSES: ReadonlySet<string> = new Set([
+export const MUTATION_ADMISSION_STATUSES: ReadonlySet<string> = new Set([
   "Backlog",
   "To Do",
   "Done",
 ]);
+
+const ACTIVE_REPOSITORY_PHASES = [
+  "reserved",
+  "provisioning",
+  "validating",
+  "review_ready",
+  "finalizing",
+  "operational_error",
+] as const;
+
+const TERMINAL_PM_RUN_STATUSES = [
+  "completed",
+  "failed",
+  "timed_out",
+  "cancelled",
+  "superseded",
+] as const;
 
 // --- Types ---------------------------------------------------------------
 
@@ -47,12 +65,162 @@ export type OwnershipResolution =
   | { ok: false; reason: string; code: "engine_mismatch" | "invalid_engine" | "task_not_found" };
 
 export type PinResult =
-  | { ok: true }
+  | { ok: true; code: "pinned" | "already_pinned" }
   | { ok: false; reason: string; code: string };
 
 export type UnpinResult =
-  | { ok: true }
+  | { ok: true; code: "unpinned" }
   | { ok: false; reason: string; code: string };
+
+export type AdmissionInspection =
+  | { eligible: true; code: "eligible" | "already_pinned"; engine: WorkflowEngine; status: string }
+  | { eligible: false; code: string; reason: string; engine: WorkflowEngine; status: string };
+
+type AdmissionTaskSnapshot = {
+  id: string;
+  status: string;
+  workflowEngine: string;
+  workflowVersion: number;
+  activeWorkflowCycleId: string | null;
+  workflowEnginePinnedAt: Date | null;
+  projectId: string;
+  updatedAt: Date;
+};
+
+async function findQuiescenceBlocker(
+  tx: Prisma.TransactionClient,
+  task: AdmissionTaskSnapshot,
+): Promise<{ code: string; reason: string } | null> {
+  if (!MUTATION_ADMISSION_STATUSES.has(task.status)) {
+    return {
+      code: "status_not_approved",
+      reason: `Task status "${task.status}" is not quiescent (Backlog, To Do, or Done).`,
+    };
+  }
+
+  if (task.activeWorkflowCycleId) {
+    return {
+      code: "active_cycle",
+      reason: "Task has an active workflow cycle.",
+    };
+  }
+
+  const [activeRepositoryRun, activeProcedure, activePmRun, activeContinuation, activeOutbox, unsettledReceipt] =
+    await Promise.all([
+      tx.taskRepositoryRun.findFirst({
+        where: { taskId: task.id, phase: { in: [...ACTIVE_REPOSITORY_PHASES] } },
+        select: { id: true, phase: true },
+      }),
+      tx.taskProcedureRun.findFirst({
+        where: { taskId: task.id, status: { not: "completed" } },
+        select: { id: true, status: true },
+      }),
+      tx.pmChannelRun.findFirst({
+        where: { taskId: task.id, status: { notIn: [...TERMINAL_PM_RUN_STATUSES] } },
+        select: { id: true, status: true },
+      }),
+      tx.pmChannelContinuation.findFirst({
+        where: { taskId: task.id, status: { in: ["armed", "queued"] } },
+        select: { id: true, status: true },
+      }),
+      tx.workflowOutbox.findFirst({
+        where: { taskId: task.id, status: { not: "completed" } },
+        select: { id: true, status: true },
+      }),
+      tx.taskWorkflowCommandReceipt.findFirst({
+        where: { taskId: task.id, status: "accepted" },
+        select: { id: true },
+      }),
+    ]);
+
+  if (activeRepositoryRun) {
+    return {
+      code: "active_repository_work",
+      reason: `Task has repository work in phase "${activeRepositoryRun.phase}".`,
+    };
+  }
+  if (activeProcedure) {
+    return {
+      code: "active_procedure",
+      reason: `Task has a procedure in status "${activeProcedure.status}".`,
+    };
+  }
+  if (activePmRun) {
+    return {
+      code: "active_execution_run",
+      reason: `Task has a PM execution run in status "${activePmRun.status}".`,
+    };
+  }
+  if (activeContinuation) {
+    return {
+      code: "active_continuation",
+      reason: `Task has a continuation in status "${activeContinuation.status}".`,
+    };
+  }
+  if (activeOutbox) {
+    return {
+      code: "active_recovery_work",
+      reason: `Task has a workflow effect in status "${activeOutbox.status}".`,
+    };
+  }
+  if (unsettledReceipt) {
+    return {
+      code: "unsettled_receipt",
+      reason: "Task has an accepted command whose mechanical work is not settled.",
+    };
+  }
+  return null;
+}
+
+/** Read-only admission inspection used by dry-run/reporting surfaces. */
+export async function inspectTaskAdmission(
+  tx: Prisma.TransactionClient,
+  taskId: string,
+  opts: { projectInCohort: boolean },
+): Promise<AdmissionInspection | null> {
+  const task = await tx.task.findUnique({
+    where: { id: taskId, deletedAt: null },
+    select: {
+      id: true,
+      status: true,
+      workflowEngine: true,
+      workflowVersion: true,
+      activeWorkflowCycleId: true,
+      workflowEnginePinnedAt: true,
+      projectId: true,
+      updatedAt: true,
+    },
+  });
+  if (!task) return null;
+
+  const engine = ALLOWED_ENGINES.has(task.workflowEngine)
+    ? task.workflowEngine as WorkflowEngine
+    : ENGINE_LEGACY;
+  if (!ALLOWED_ENGINES.has(task.workflowEngine)) {
+    return {
+      eligible: false,
+      code: "invalid_engine",
+      reason: `Task has unknown engine value: ${task.workflowEngine}`,
+      engine,
+      status: task.status,
+    };
+  }
+  if (engine === ENGINE_ORCHESTRATOR_V2) {
+    return { eligible: true, code: "already_pinned", engine, status: task.status };
+  }
+  if (!opts.projectInCohort) {
+    return {
+      eligible: false,
+      code: "project_not_in_cohort",
+      reason: "Project is not in the Phase E effectful mutation cohort.",
+      engine,
+      status: task.status,
+    };
+  }
+  const blocker = await findQuiescenceBlocker(tx, task);
+  if (blocker) return { eligible: false, ...blocker, engine, status: task.status };
+  return { eligible: true, code: "eligible", engine, status: task.status };
+}
 
 // --- Read ----------------------------------------------------------------
 
@@ -146,6 +314,7 @@ export async function pinToV2(
   taskId: string,
   opts: {
     projectInCohort: boolean;
+    operatorUserId?: string | null;
   },
 ): Promise<PinResult> {
   const task = await tx.task.findUnique({
@@ -156,6 +325,9 @@ export async function pinToV2(
       workflowEngine: true,
       activeWorkflowCycleId: true,
       projectId: true,
+      workflowVersion: true,
+      workflowEnginePinnedAt: true,
+      updatedAt: true,
     },
   });
 
@@ -165,7 +337,7 @@ export async function pinToV2(
 
   // Already pinned — idempotent success.
   if (task.workflowEngine === ENGINE_ORCHESTRATOR_V2) {
-    return { ok: true };
+    return { ok: true, code: "already_pinned" };
   }
 
   // Precondition: project must be in the effectful Phase E cohort.
@@ -177,72 +349,55 @@ export async function pinToV2(
     };
   }
 
-  // Precondition: status must be in the approved migration set.
-  if (!MIGRATION_APPROVED_STATUSES.has(task.status)) {
-    return {
-      ok: false,
-      reason: `Task status "${task.status}" is not in the approved migration set (Backlog, To Do, Done). In Progress and Review tasks must drain their legacy cycle first.`,
-      code: "status_not_approved",
-    };
+  const blocker = await findQuiescenceBlocker(tx, task);
+  if (blocker) {
+    if (blocker.code === "active_cycle") return { ok: false, ...blocker, code: "open_cycle_exists" };
+    if (blocker.code === "active_repository_work") return { ok: false, ...blocker, code: "active_repo_job" };
+    return { ok: false, ...blocker };
   }
 
-  // Precondition: no open legacy cycle.
-  if (task.activeWorkflowCycleId) {
-    const cycle = await tx.taskWorkflowCycle.findUnique({
-      where: { id: task.activeWorkflowCycleId },
-      select: { status: true, workflowEngine: true },
-    });
-    if (cycle && cycle.status === "open") {
-      return {
-        ok: false,
-        reason: "Task has an open workflow cycle. The cycle must close before pinning to V2.",
-        code: "open_cycle_exists",
-      };
-    }
-  }
-
-  // Precondition: no active legacy repository job.
-  const activeRepoJob = await tx.taskRepositoryRun.findFirst({
+  // Compare-and-set across the admission fence. A concurrent task transition,
+  // preparation run, or ownership job changes at least one predicate and the
+  // pin is rejected instead of producing mixed task/cycle ownership.
+  const pinnedAt = new Date();
+  const updated = await tx.task.updateMany({
     where: {
-      taskId: task.id,
-      phase: { in: ["reserved", "validating", "finalizing"] },
+      id: task.id,
+      workflowEngine: ENGINE_LEGACY,
+      workflowVersion: task.workflowVersion,
+      status: task.status,
+      activeWorkflowCycleId: null,
+      updatedAt: task.updatedAt,
     },
-    select: { id: true },
-  });
-  if (activeRepoJob) {
-    return {
-      ok: false,
-      reason: "Task has an active repository validation/finalization job.",
-      code: "active_repo_job",
-    };
-  }
-
-  // Precondition: no queued/running legacy procedure.
-  const activeProcedure = await tx.taskProcedureRun.findFirst({
-    where: {
-      taskId: task.id,
-      status: { in: ["queued", "running"] },
-    },
-    select: { id: true },
-  });
-  if (activeProcedure) {
-    return {
-      ok: false,
-      reason: "Task has a queued or running procedure.",
-      code: "active_procedure",
-    };
-  }
-
-  // All preconditions met — pin to V2.
-  await tx.task.update({
-    where: { id: task.id },
     data: {
       workflowEngine: ENGINE_ORCHESTRATOR_V2,
-      workflowEnginePinnedAt: new Date(),
+      workflowEnginePinnedAt: pinnedAt,
     },
   });
+  if (updated.count !== 1) {
+    return {
+      ok: false,
+      code: "admission_fence_changed",
+      reason: "Task state changed while admission was being evaluated; retry from a fresh report.",
+    };
+  }
 
-  return { ok: true };
+  const payload = {
+    from: ENGINE_LEGACY,
+    to: ENGINE_ORCHESTRATOR_V2,
+    pinnedAt: pinnedAt.toISOString(),
+  };
+  await writeDeduplicatedActivity({
+    client: tx,
+    projectId: task.projectId,
+    taskId: task.id,
+    userId: opts.operatorUserId ?? null,
+    kind: "task.workflow.engine_pinned",
+    payload,
+    dedupeKey: computeActivityDedupeKey("task.workflow.engine_pinned", task.id, payload),
+  });
+
+  return { ok: true, code: "pinned" };
 }
 
 /**
@@ -265,6 +420,10 @@ export async function unpinFromV2(
       workflowEngine: true,
       activeWorkflowCycleId: true,
       projectId: true,
+      status: true,
+      workflowVersion: true,
+      workflowEnginePinnedAt: true,
+      updatedAt: true,
     },
   });
 
@@ -280,94 +439,49 @@ export async function unpinFromV2(
     };
   }
 
-  // Reject if any active cycle exists.
-  if (task.activeWorkflowCycleId) {
-    const cycle = await tx.taskWorkflowCycle.findUnique({
-      where: { id: task.activeWorkflowCycleId },
-      select: { status: true },
-    });
-    if (cycle && cycle.status === "open") {
-      return {
-        ok: false,
-        reason: "Cannot unpin: task has an open workflow cycle. Rollback admission never reroutes an open cycle to legacy.",
-        code: "active_cycle",
-      };
-    }
-  }
+  const blocker = await findQuiescenceBlocker(tx, task);
+  if (blocker) return { ok: false, ...blocker };
 
-  // Reject if any active procedure exists.
-  const activeProcedure = await tx.taskProcedureRun.findFirst({
+  const updated = await tx.task.updateMany({
     where: {
-      taskId: task.id,
-      status: { in: ["queued", "running"] },
+      id: task.id,
+      workflowEngine: ENGINE_ORCHESTRATOR_V2,
+      workflowVersion: task.workflowVersion,
+      status: task.status,
+      activeWorkflowCycleId: null,
+      workflowEnginePinnedAt: task.workflowEnginePinnedAt,
+      updatedAt: task.updatedAt,
     },
-    select: { id: true },
-  });
-  if (activeProcedure) {
-    return {
-      ok: false,
-      reason: "Cannot unpin: task has an active procedure.",
-      code: "active_procedure",
-    };
-  }
-
-  // Reject if any active repository job exists.
-  const activeRepoJob = await tx.taskRepositoryRun.findFirst({
-    where: {
-      taskId: task.id,
-      phase: { in: ["reserved", "validating", "finalizing"] },
-    },
-    select: { id: true },
-  });
-  if (activeRepoJob) {
-    return {
-      ok: false,
-      reason: "Cannot unpin: task has an active repository job.",
-      code: "active_repo_job",
-    };
-  }
-
-  // Reject if any unsettled command receipt exists (accepted but not completed).
-  const unsettledReceipt = await tx.taskWorkflowCommandReceipt.findFirst({
-    where: {
-      taskId: task.id,
-      status: "accepted",
-    },
-    select: { id: true },
-  });
-  if (unsettledReceipt) {
-    return {
-      ok: false,
-      reason: "Cannot unpin: task has an unsettled command receipt.",
-      code: "unsettled_receipt",
-    };
-  }
-
-  // All preconditions met — unpin to legacy.
-  await tx.task.update({
-    where: { id: task.id },
     data: {
       workflowEngine: ENGINE_LEGACY,
       workflowEnginePinnedAt: null,
     },
   });
+  if (updated.count !== 1) {
+    return {
+      ok: false,
+      code: "admission_fence_changed",
+      reason: "Task state changed while unpinning was being evaluated; retry from a fresh report.",
+    };
+  }
 
   // Audit the unpin.
-  await tx.activityLog.create({
-    data: {
-      projectId: task.projectId,
-      taskId: task.id,
-      userId: opts.operatorUserId,
-      kind: "task.workflow.engine_unpin",
-      payload: JSON.stringify({
-        from: ENGINE_ORCHESTRATOR_V2,
-        to: ENGINE_LEGACY,
-        operatorUserId: opts.operatorUserId,
-      }),
-    },
+  const payload = {
+    from: ENGINE_ORCHESTRATOR_V2,
+    to: ENGINE_LEGACY,
+    pinnedAt: task.workflowEnginePinnedAt?.toISOString() ?? null,
+  };
+  await writeDeduplicatedActivity({
+    client: tx,
+    projectId: task.projectId,
+    taskId: task.id,
+    userId: opts.operatorUserId,
+    kind: "task.workflow.engine_unpinned",
+    payload,
+    dedupeKey: computeActivityDedupeKey("task.workflow.engine_unpinned", task.id, payload),
   });
 
-  return { ok: true };
+  return { ok: true, code: "unpinned" };
 }
 
 // --- Rollback admission --------------------------------------------------
@@ -379,14 +493,7 @@ export async function unpinFromV2(
  * an already-pinned task or open cycle to legacy.
  */
 export function isProjectInMutationCohort(projectSlug: string): boolean {
-  const raw = process.env.PM_ORCHESTRATOR_V2_MUTATION_PROJECTS ?? "";
-  if (!raw.trim()) return false;
-  if (raw.trim() === "*") return true;
-  return raw
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .includes(projectSlug);
+  return isV2MutationAdmissionEnabledForProject(projectSlug);
 }
 
 /**

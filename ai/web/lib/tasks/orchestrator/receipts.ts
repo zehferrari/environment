@@ -228,7 +228,12 @@ export async function findOrCreateReceipt(
   const resultingWorkflowVersion =
     "workflowVersion" in result ? result.workflowVersion : command.expectedWorkflowVersion;
 
-  const receiptStatus = result.status === "accepted" ? "accepted" : "completed";
+  // "accepted" means durable mechanical work is still owned by a procedure.
+  // Synchronous/no-procedure commands are already settled at commit and must
+  // not permanently block a later quiescent ownership unpin.
+  const receiptStatus = result.status === "accepted" && opts.procedureRunId
+    ? "accepted"
+    : "completed";
 
   try {
     const created = await tx.taskWorkflowCommandReceipt.create({
