@@ -8,7 +8,7 @@ import ConfirmPopup from "@/components/confirm-popup";
 import TaskBulkEditControls, { type BulkTaskEditField } from "@/components/task-bulk-edit-controls";
 import type { AvatarComboboxOption } from "@/components/avatar-combobox";
 import { bulkUpdateTaskRole, type BulkTaskRoleField } from "@/lib/tasks/bulk-roles";
-import { moveTaskStatus } from "@/lib/tasks/move-status";
+import { overrideEpicTaskStatuses } from "@/lib/epics/actions";
 
 const TASK_STATUS_OPTIONS = ["Backlog", "To Do", "In Progress", "Review", "Done"]
   .map((value) => ({ value, label: value }));
@@ -162,16 +162,11 @@ export default function EpicTasksClient({
       try {
         if (field === "status") {
           if (!value) return;
-          const succeededIds = new Set<string>();
-          for (const id of ids) {
-            const result = await moveTaskStatus(id, value, projectSlug);
-            if (!result.ok) {
-              setSelectedIds(new Set(ids.filter((taskId) => !succeededIds.has(taskId))));
-              setError(result.message);
-              router.refresh();
-              return;
-            }
-            succeededIds.add(id);
+          const result = await overrideEpicTaskStatuses(ids, value, projectSlug, epicId);
+          if (!result.ok) {
+            setError(result.message);
+            router.refresh();
+            return;
           }
         } else {
           await bulkUpdateTaskRole(ids, projectSlug, field as BulkTaskRoleField, value);

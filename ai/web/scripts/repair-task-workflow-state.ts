@@ -1,4 +1,3 @@
-import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import { db } from "@/lib/db";
 import { settleConsumedCheckpointBlocker } from "@/lib/tasks/checkpoint-blocker";
 import { resolveActiveMonitorAgent } from "@/lib/tasks/repository-state";
@@ -27,13 +26,10 @@ function checkpointPayload(payload: string | null) {
 }
 
 async function main() {
-  await recordLegacyWorkflowBoundaryInvocation({
-    legacyBoundary: "workflow-reconciler-and-repair-tools",
-    entryPoint: "main",
-  });
   const taskId = argument("--task-id");
-  if (!taskId) throw new Error("Usage: repair-task-workflow-state --task-id <id> [--rotate-session] [--resume]");
-  if (flag("--resume") && !process.env.AUTH_SECRET?.trim()) {
+  const apply = flag("--apply");
+  if (!taskId) throw new Error("Usage: repair-task-workflow-state --task-id <id> [--apply] [--rotate-session] [--resume]");
+  if (apply && flag("--resume") && !process.env.AUTH_SECRET?.trim()) {
     throw new Error("AUTH_SECRET is required with --resume; run this repair with the live pm.service environment before any state is changed");
   }
 
@@ -60,7 +56,7 @@ async function main() {
     select: { payload: true },
   });
   let blockerCleared = false;
-  for (const row of checkpointRows) {
+  for (const row of apply ? checkpointRows : []) {
     const checkpoint = checkpointPayload(row.payload);
     if (!checkpoint.authorizationCommentId) continue;
     const settlement = await settleConsumedCheckpointBlocker({
@@ -81,7 +77,7 @@ async function main() {
   }
 
   let rotatedSessionKey: string | null = null;
-  if (flag("--rotate-session") && task.assignee?.agent?.slug) {
+  if (apply && flag("--rotate-session") && task.assignee?.agent?.slug) {
     const binding = await db.agentSessionBinding.findUnique({
       where: {
         scopeType_scopeId_agentSlug: {
@@ -105,7 +101,7 @@ async function main() {
 
   let resumeMessageId: string | null = null;
   if (
-    flag("--resume") &&
+    apply && flag("--resume") &&
     task.status === "In Progress" &&
     task.assigneeId &&
     task.assignee?.agent?.slug &&
@@ -150,7 +146,18 @@ async function main() {
     }
   }
 
-  console.log(JSON.stringify({ taskId, blockerCleared, rotatedSessionKey, resumeMessageId }, null, 2));
+  console.log(JSON.stringify({
+    taskId,
+    dryRun: !apply,
+    requested: {
+      settleConsumedCheckpoint: checkpointRows.some((row) => Boolean(checkpointPayload(row.payload).authorizationCommentId)),
+      rotateSession: flag("--rotate-session"),
+      resume: flag("--resume"),
+    },
+    blockerCleared,
+    rotatedSessionKey,
+    resumeMessageId,
+  }, null, 2));
 }
 
 main().catch((error) => {

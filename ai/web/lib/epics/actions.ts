@@ -29,13 +29,14 @@ import { checkDeploymentStatusWrite, isDeploymentStatus } from "@/lib/deploy/dep
 import { enqueueEpicDoneCleanup } from "@/lib/deploy/epic-merge";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import { assignOpenEpicTasks } from "@/lib/epics/assignment";
+import { submitEpicChildUpdateInTransaction } from "@/lib/epics/task-workflow-adapter";
+import { syncEpicOnHumanTaskStatus } from "@/lib/epics/sync-on-human-task-move";
+import { submitWorkflowCommandInTransaction } from "@/lib/tasks/orchestrator";
+import type { MoveTaskResult } from "@/lib/tasks/move-status";
 import { resetEpicActionPlanForDeployReview, triggerDeployReview } from "@/lib/epics/deploy-review";
 import { canApplySubmittedEpicStatus } from "@/lib/epics/status-concurrency";
 import {
-  applyTaskTransition,
   isTaskWorkflowStatus,
-  type TaskTransitionIntent,
-  type TaskWorkflowStatus,
 } from "@/lib/tasks/transition-kernel";
 import {
   accessibleEpicWhere,
@@ -57,18 +58,6 @@ function isEpicStatus(value: unknown): value is EpicStatus {
   );
 }
 
-function epicCascadeIntent(
-  from: TaskWorkflowStatus,
-  to: "Backlog" | "To Do",
-): TaskTransitionIntent | null {
-  if (from === to || from === "Done") return null;
-  if (to === "Backlog") return "cancel";
-  if (from === "Backlog") return "triage";
-  if (from === "In Progress") return "queue";
-  if (from === "Review") return "request_changes";
-  return null;
-}
-
 async function cascadeEpicTasks(
   tx: Prisma.TransactionClient,
   args: {
@@ -87,32 +76,79 @@ async function cascadeEpicTasks(
       deletedAt: null,
       status: { not: "Done" },
     }),
-    select: { id: true, status: true, workflowVersion: true },
+    select: { id: true, status: true, workflowVersion: true, activeWorkflowCycleId: true },
     orderBy: { id: "asc" },
   });
   for (const task of tasks) {
     if (!isTaskWorkflowStatus(task.status)) {
       throw new Error(`Task ${task.id} has unsupported workflow status ${task.status}.`);
     }
-    const intent = epicCascadeIntent(task.status, args.target);
-    if (!intent) continue;
-    await applyTaskTransition(tx, {
+    if (task.status === args.target || task.status === "Done") continue;
+    await submitEpicChildUpdateInTransaction(tx, {
       taskId: task.id,
-      projectId: args.projectId,
-      actorUserId: args.actor.id,
-      intent,
-      from: task.status,
-      to: args.target,
-      source: args.source,
-      idempotencyKey: `${args.source}:${args.epicId}:${args.target}:v${task.workflowVersion}`,
-      expectedVersion: task.workflowVersion,
-      taskData: args.clearAssignee ? { assigneeId: null } : undefined,
+      workflowVersion: task.workflowVersion,
+      workflowCycleId: task.activeWorkflowCycleId,
+      actor: {
+        id: args.actor.id,
+        kind: args.actor.kind,
+        username: args.actor.username,
+      },
+      source: args.actor.kind === "human" ? "browser" : "agent",
+      idempotencyKey: `${args.source}:${args.epicId}:${task.id}:${args.target}:v${task.workflowVersion}`,
+      payload: {
+        epicId: args.epicId,
+        targetStatus: args.target,
+        reason: args.source,
+        rank: "back",
+        clearAssignee: args.clearAssignee,
+        clearArchive: true,
+        archive: false,
+        resetPlanApproval: false,
+        comment: null,
+        notification: null,
+      },
+      evidence: { epicId: args.epicId, projectId: args.projectId },
+    });
+  }
+}
+
+async function archiveEpicTasks(
+  tx: Prisma.TransactionClient,
+  args: { actor: Viewer; epicId: string; source: "epic_update" | "epic_status" },
+) {
+  const tasks = await tx.task.findMany({
+    where: accessibleTaskWhere(args.actor, {
+      epicId: args.epicId,
+      archivedAt: null,
+      deletedAt: null,
+    }),
+    select: { id: true, status: true, workflowVersion: true, activeWorkflowCycleId: true },
+    orderBy: { id: "asc" },
+  });
+  for (const task of tasks) {
+    if (!isTaskWorkflowStatus(task.status)) {
+      throw new Error(`Task ${task.id} has unsupported workflow status ${task.status}.`);
+    }
+    await submitEpicChildUpdateInTransaction(tx, {
+      taskId: task.id,
+      workflowVersion: task.workflowVersion,
+      workflowCycleId: task.activeWorkflowCycleId,
+      actor: { id: args.actor.id, kind: args.actor.kind, username: args.actor.username },
+      source: args.actor.kind === "human" ? "browser" : "agent",
+      idempotencyKey: `${args.source}:archive:${args.epicId}:${task.id}:v${task.workflowVersion}`,
+      payload: {
+        epicId: args.epicId,
+        targetStatus: task.status,
+        reason: `${args.source}_done_archive`,
+        rank: "back",
+        clearAssignee: false,
+        clearArchive: false,
+        archive: true,
+        resetPlanApproval: false,
+        comment: null,
+        notification: null,
+      },
       evidence: { epicId: args.epicId },
-      effects: [{
-        type: "board_touch",
-        key: "epic-cascade-board-touch",
-        payload: { projectId: args.projectId },
-      }],
     });
   }
 }
@@ -131,6 +167,107 @@ async function assertEpicTaskCascadeAllowed(
 
 async function requireActor(): Promise<Viewer> {
   return requireViewer();
+}
+
+class BrowserEpicStatusBatchError extends Error {
+  constructor(
+    readonly status: "stale" | "invalid" | "forbidden" | "operational",
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+/** Atomic bulk status override for the Epic task table. */
+export async function overrideEpicTaskStatuses(
+  taskIds: string[],
+  targetStatus: string,
+  slug: string,
+  epicId: string,
+): Promise<MoveTaskResult> {
+  const actor = await requireActor();
+  if (actor.kind !== "human") {
+    return {
+      ok: false,
+      code: "EXPLICIT_USER_ACTION_REQUIRED",
+      message: "Only an authenticated human can override task status from the Epic table.",
+    };
+  }
+  if (!isTaskWorkflowStatus(targetStatus)) {
+    return { ok: false, code: "UNKNOWN_COLUMN", message: `Unknown column: ${targetStatus}` };
+  }
+  const uniqueIds = [...new Set(taskIds)];
+  if (uniqueIds.length === 0) return { ok: true };
+  if (uniqueIds.length > 100) {
+    return { ok: false, code: "EXPLICIT_USER_ACTION_REQUIRED", message: "At most 100 Epic tasks can be updated at once." };
+  }
+  const epic = await loadEpicScoped(actor, epicId, slug);
+  if (!epic) return { ok: false, code: "UNKNOWN_COLUMN", message: "Epic not found" };
+
+  const tasks = await db.task.findMany({
+    where: accessibleTaskWhere(actor, {
+      id: { in: uniqueIds },
+      epicId,
+      deletedAt: null,
+    }),
+    select: { id: true, status: true, workflowVersion: true, activeWorkflowCycleId: true },
+    orderBy: { id: "asc" },
+  });
+  if (tasks.length !== uniqueIds.length) {
+    return { ok: false, code: "UNKNOWN_COLUMN", message: "One or more Epic tasks were not found." };
+  }
+
+  try {
+    await db.$transaction(async (tx) => {
+      for (const task of tasks) {
+        if (!isTaskWorkflowStatus(task.status)) {
+          throw new BrowserEpicStatusBatchError("invalid", `Task ${task.id} has an unsupported workflow status.`);
+        }
+        if (task.status === targetStatus) continue;
+        const result = await submitWorkflowCommandInTransaction(tx, {
+          taskId: task.id,
+          intent: "override_status",
+          actor: { id: actor.id, kind: "human", username: actor.username },
+          expectedWorkflowVersion: task.workflowVersion,
+          workflowCycleId: task.activeWorkflowCycleId,
+          source: "browser",
+          idempotencyKey: `epic-table-status:${epicId}:${actor.id}:v${task.workflowVersion}:${targetStatus}`,
+          payload: {
+            targetStatus,
+            reason: `Authenticated human status change from Epic task table ${epicId}.`,
+          },
+        });
+        if (result.status !== "accepted" && result.status !== "replayed") {
+          throw new BrowserEpicStatusBatchError(result.status, result.reason);
+        }
+        await syncEpicOnHumanTaskStatus(tx, {
+          epicId,
+          projectId: epic.project.id,
+          taskId: task.id,
+          actorId: actor.id,
+          actorKind: "human",
+          targetStatus,
+          via: "epic-table-status",
+        });
+      }
+    });
+  } catch (error) {
+    if (error instanceof BrowserEpicStatusBatchError) {
+      return {
+        ok: false,
+        code: error.status === "stale" ? "STALE_VERSION" : "EXPLICIT_USER_ACTION_REQUIRED",
+        message: error.status === "stale"
+          ? "An Epic task changed while this update was pending. Refresh and try again."
+          : error.message,
+      };
+    }
+    throw error;
+  }
+
+  revalidatePath(`/projects/${slug}/epics/${epicId}`);
+  revalidatePath(`/projects/${slug}`);
+  publishBoardTouch(epic.project.id);
+  return { ok: true };
 }
 
 async function loadEpicScoped(actor: Viewer, epicId: string, slug: string) {
@@ -842,9 +979,10 @@ export async function updateEpic(formData: FormData) {
       }
     }
     if (archiveChildrenOnDone) {
-      await tx.task.updateMany({
-        where: accessibleTaskWhere(actor, { epicId, archivedAt: null, deletedAt: null }),
-        data: { archivedAt: statusChangedAt, archivedById: actor.id },
+      await archiveEpicTasks(tx, {
+        actor,
+        epicId,
+        source: "epic_update",
       });
     }
     for (const a of activity) {
@@ -1128,9 +1266,10 @@ export async function setEpicStatus(formData: FormData) {
     }
     // Moving an epic to Done archives all of its live child tasks.
     if (status === "Done") {
-      await tx.task.updateMany({
-        where: accessibleTaskWhere(actor, { epicId, archivedAt: null, deletedAt: null }),
-        data: { archivedAt: statusChangedAt, archivedById: actor.id },
+      await archiveEpicTasks(tx, {
+        actor,
+        epicId,
+        source: "epic_status",
       });
     }
     await tx.activityLog.create({

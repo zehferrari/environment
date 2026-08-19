@@ -106,6 +106,7 @@ export type TaskAggregate = TaskStateSnapshot & {
     id: string;
     username: string | null;
     kind: string;
+    codingCapability: boolean;
   } | null;
 
   // --- Other In Progress task for same assignee/project ---
@@ -461,7 +462,13 @@ async function loadTaskAggregateWithClient(
     task.assigneeId
       ? client.user.findUnique({
           where: { id: task.assigneeId },
-          select: { id: true, username: true, kind: true },
+          select: {
+            id: true,
+            username: true,
+            kind: true,
+            status: true,
+            agent: { select: { role: true, deactivatedAt: true } },
+          },
         })
       : Promise.resolve(null),
 
@@ -658,6 +665,10 @@ async function loadTaskAggregateWithClient(
           id: assignee.id,
           username: assignee.username,
           kind: assignee.kind,
+          codingCapability: assignee.status === "active"
+            && assignee.kind === "agent"
+            && assignee.agent?.role === "coding"
+            && !assignee.agent.deactivatedAt,
         }
       : null,
 

@@ -15,6 +15,10 @@ type BoundaryRegistry = {
     expectedDirectMutationCounts: Record<string, number>;
     entryPoints: string[];
     currentOwner: string;
+    actorSource: string;
+    authorizationAndGuards: string;
+    idempotencyIdentity: string;
+    replacementCommand: string;
     phaseEMigrationDestination: string;
     instrumentation: { kind: string; labels: string[] };
     responseParity: string;
@@ -51,6 +55,10 @@ for (const boundary of registry.boundaries) {
   assert.ok(boundary.files.length > 0, `${boundary.id} must name at least one file`);
   assert.ok(boundary.entryPoints.length > 0, `${boundary.id} must name file/function entry points`);
   assert.ok(boundary.currentOwner.trim(), `${boundary.id} must name a current owner`);
+  assert.ok(boundary.actorSource.trim(), `${boundary.id} must name its authoritative actor source`);
+  assert.ok(boundary.authorizationAndGuards.trim(), `${boundary.id} must document authorization and guards`);
+  assert.ok(boundary.idempotencyIdentity.trim(), `${boundary.id} must document deterministic idempotency evidence`);
+  assert.ok(boundary.replacementCommand.trim(), `${boundary.id} must name the exact replacement command or callback`);
   assert.ok(boundary.phaseEMigrationDestination.trim(), `${boundary.id} must name a Phase E migration destination`);
   assert.ok(boundary.instrumentation.kind.trim(), `${boundary.id} must name an instrumentation kind`);
   assert.ok(boundary.instrumentation.labels.length > 0, `${boundary.id} must name stable instrumentation labels`);
@@ -242,6 +250,48 @@ assert.ok(
     && fixtureViolations.some((line) => line.includes("taskWorkflowCycle.create")),
   "boundary test fixture must prove direct, aliased, and namespaced unregistered writers fail",
 );
+
+for (const filename of [
+  "scripts/repair-accepted-finalization.ts",
+  "scripts/reopen-tasks-with-open-subtasks.ts",
+]) {
+  const source = readFileSync(filename, "utf8");
+  assert.equal(registeredFiles.has(path.normalize(filename)), false, `${filename} is a retired legacy writer`);
+  assert.deepEqual(violationsForSource(filename, source), [], `${filename} must remain read-only`);
+  assert.doesNotMatch(
+    source,
+    /\bdb\.[A-Za-z]\w*\.(?:create|createMany|update|updateMany|upsert|delete|deleteMany)\s*\(/,
+    `${filename} must not write any database model`,
+  );
+  assert.doesNotMatch(
+    source,
+    /recordLegacyWorkflowBoundaryInvocation/,
+    `${filename} must not emit a legacy-writer invocation`,
+  );
+}
+
+const operatorRecoverySource = readFileSync("scripts/repair-task-workflow-state.ts", "utf8");
+assert.equal(
+  registeredFiles.has(path.normalize("scripts/repair-task-workflow-state.ts")),
+  false,
+  "operator workflow-state recovery is not a legacy domain writer",
+);
+assert.match(operatorRecoverySource, /const apply = flag\("--apply"\)/, "mechanical recovery must default to dry-run");
+assert.deepEqual(
+  violationsForSource("scripts/repair-task-workflow-state.ts", operatorRecoverySource),
+  [],
+  "operator recovery may settle blockers/sessions/notifications but must not write workflow-owned state",
+);
+
+for (const filename of ["lib/tasks/workflow-reconciler.ts", "lib/tasks/workflow-outbox-drain.ts"]) {
+  const source = readFileSync(filename, "utf8");
+  assert.doesNotMatch(source, /completeReviewedTaskAndAssignNext/, `${filename} must not fabricate a review decision`);
+  assert.doesNotMatch(
+    source,
+    /\bdb\.task\.(?:create|createMany|update|updateMany|upsert|delete|deleteMany)\s*\(/,
+    `${filename} must not mutate the Task aggregate directly`,
+  );
+}
 
 const violations: string[] = [];
 for (const root of roots) {

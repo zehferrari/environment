@@ -437,6 +437,80 @@ function validateOverrideStatus(raw: Record<string, unknown>): PayloadValidation
   return ok(payload);
 }
 
+function validateEpicChildUpdate(raw: Record<string, unknown>): PayloadValidationResult {
+  const epicId = requireString(raw, "epicId", MAX_ID);
+  if (!epicId.ok || epicId.value.length === 0) {
+    return fail("invalid_payload", epicId.ok ? "epicId must not be empty" : epicId.message);
+  }
+  const targetStatus = raw["targetStatus"];
+  if (
+    targetStatus !== "Backlog" &&
+    targetStatus !== "To Do" &&
+    targetStatus !== "In Progress" &&
+    targetStatus !== "Review" &&
+    targetStatus !== "Done"
+  ) {
+    return fail("invalid_payload", "targetStatus must be a workflow status");
+  }
+  const reason = requireString(raw, "reason", MAX_REASON);
+  if (!reason.ok || reason.value.length === 0) {
+    return fail("invalid_payload", reason.ok ? "reason must not be empty" : reason.message);
+  }
+  const rank = raw["rank"];
+  if (rank !== "front" && rank !== "back") {
+    return fail("invalid_payload", "rank must be front or back");
+  }
+  const booleanFields = ["clearAssignee", "clearArchive", "archive", "resetPlanApproval"] as const;
+  const booleans: Record<(typeof booleanFields)[number], boolean> = {
+    clearAssignee: false,
+    clearArchive: false,
+    archive: false,
+    resetPlanApproval: false,
+  };
+  for (const field of booleanFields) {
+    const value = requireBoolean(raw, field);
+    if (!value.ok) return fail("invalid_payload", value.message);
+    booleans[field] = value.value;
+  }
+  if (booleans.archive && booleans.clearArchive) {
+    return fail("invalid_payload", "archive and clearArchive are mutually exclusive");
+  }
+  const comment = requireStringOrNull(raw, "comment", MAX_TEXT);
+  if (!comment.ok) return fail("invalid_payload", comment.message);
+
+  let notification: Record<string, unknown> | null = null;
+  if (raw["notification"] !== undefined && raw["notification"] !== null) {
+    if (!isObject(raw["notification"])) {
+      return fail("invalid_payload", "notification must be an object or null");
+    }
+    const candidate = raw["notification"];
+    const targetUserId = requireString(candidate, "targetUserId", MAX_ID);
+    const notificationReason = requireString(candidate, "reason", MAX_REASON);
+    const body = requireString(candidate, "body", MAX_TEXT);
+    if (!targetUserId.ok) return fail("invalid_payload", `notification.${targetUserId.message}`);
+    if (!notificationReason.ok) return fail("invalid_payload", `notification.${notificationReason.message}`);
+    if (!body.ok) return fail("invalid_payload", `notification.${body.message}`);
+    if (!targetUserId.value || !notificationReason.value || !body.value) {
+      return fail("invalid_payload", "notification fields must not be empty");
+    }
+    notification = {
+      targetUserId: targetUserId.value,
+      reason: notificationReason.value,
+      body: body.value,
+    };
+  }
+
+  return ok({
+    epicId: epicId.value,
+    targetStatus,
+    reason: reason.value,
+    rank,
+    ...booleans,
+    comment: comment.value,
+    notification,
+  });
+}
+
 function validateAssignTask(raw: Record<string, unknown>): PayloadValidationResult {
   const assigneeUsername = requireStringOrNull(raw, "assigneeUsername", MAX_ID);
   if (!assigneeUsername.ok) return fail("invalid_payload", assigneeUsername.message);
@@ -661,6 +735,7 @@ export function validateCommandPayload(
     case "assign_task": return validateAssignTask(raw);
     case "raise_scope_blocker": return validateRaiseScopeBlocker(raw);
     case "override_status": return validateOverrideStatus(raw);
+    case "epic_child_update": return validateEpicChildUpdate(raw);
     case "repository_validation_succeeded":
       return validateRepositoryCallback(raw, "succeeded", "repository_validation_succeeded");
     case "repository_validation_failed":

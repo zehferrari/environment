@@ -64,6 +64,62 @@ export type AuthorizationResult = {
   executorActorId: string | null;
 };
 
+function isPmPolicyCommand(
+  state: Pick<TaskStateSnapshot, "id" | "projectId" | "workflowVersion" | "assigneeId"> & {
+    assignee?: { codingCapability?: boolean } | null;
+  },
+  command: {
+    source?: string;
+    expectedWorkflowVersion?: number;
+    payload?: Record<string, unknown>;
+    evidence?: Record<string, unknown>;
+  },
+  policies: readonly string[],
+): boolean {
+  if (command.source !== "pm-service") return false;
+  const evidence = command.evidence;
+  if (!evidence || !policies.includes(String(evidence.policy ?? ""))) return false;
+  if (evidence.selectedTaskId !== state.id) return false;
+  if (
+    evidence.expectedWorkflowVersion !== command.expectedWorkflowVersion
+    || command.expectedWorkflowVersion !== state.workflowVersion
+  ) return false;
+  const trigger = evidence.trigger;
+  const validTrigger = Boolean(
+    trigger
+    && typeof trigger === "object"
+    && !Array.isArray(trigger)
+    && typeof (trigger as Record<string, unknown>).kind === "string"
+    && typeof (trigger as Record<string, unknown>).id === "string"
+    && String((trigger as Record<string, unknown>).id).trim(),
+  );
+  if (!validTrigger) return false;
+  if (evidence.policy === "auto_start") {
+    return Boolean(
+      state.assigneeId
+      && evidence.selectedAssigneeId === state.assigneeId
+      && evidence.assigneeLane === `${state.projectId}:${state.assigneeId}`
+      && state.assignee?.codingCapability === true,
+    );
+  }
+  if (evidence.policy === "reviewer_assignment" || evidence.policy === "epic_queue_refill") {
+    const selectedId = typeof evidence.selectedAssigneeId === "string" ? evidence.selectedAssigneeId : null;
+    const selectedUsername = typeof evidence.selectedAssigneeUsername === "string"
+      ? evidence.selectedAssigneeUsername.replace(/^@/, "")
+      : null;
+    const requestedUsername = typeof command.payload?.assigneeUsername === "string"
+      ? command.payload.assigneeUsername.replace(/^@/, "")
+      : null;
+    return Boolean(
+      selectedId
+      && selectedUsername
+      && selectedUsername === requestedUsername
+      && evidence.assigneeLane === `${state.projectId}:${selectedId}`,
+    );
+  }
+  return true;
+}
+
 // Re-export the canonical resolvers so callers can reach them through the
 // orchestrator boundary without importing workflow-actors directly.
 export {
@@ -166,7 +222,14 @@ export function canExecuteMechanicalCallback(
 
 export function authorizeCommand(
   state: TaskStateSnapshot,
-  command: { intent: TaskWorkflowIntent; actor: WorkflowActor; payload?: Record<string, unknown> },
+  command: {
+    intent: TaskWorkflowIntent;
+    actor: WorkflowActor;
+    source?: string;
+    expectedWorkflowVersion?: number;
+    payload?: Record<string, unknown>;
+    evidence?: Record<string, unknown>;
+  },
 ): AuthorizationResult {
   const { intent, actor } = command;
 
@@ -211,6 +274,30 @@ export function authorizeCommand(
     };
   }
 
+  // Internal Epic adapters are authenticated before command construction.
+  // Humans have already passed project access; agents must be the Epic acting
+  // manager or carry a server-resolved operator/admin/monitor role (completion
+  // reviewer, deploy reviewer, or repository executor). The Epic-id guard is
+  // repeated in guards.ts so a valid actor cannot target a sibling Epic task.
+  if (intent === "epic_child_update") {
+    const isAuthorizedAgent = actor.id === state.epic?.actingManagerId ||
+      actor.role === "operator" || actor.role === "admin" || actor.role === "monitor";
+    if (actor.kind !== "human" && !isAuthorizedAgent) {
+      return {
+        allowed: false,
+        reason: "not_authorized_for_plan",
+        decisionActorId: null,
+        executorActorId: null,
+      };
+    }
+    return {
+      allowed: true,
+      reason: "ok",
+      decisionActorId: actor.id,
+      executorActorId: actor.kind === "agent" ? actor.id : null,
+    };
+  }
+
   // Human/agent decisions: monitor may NOT decide.
   if (actor.role === "monitor") {
     return {
@@ -246,6 +333,17 @@ export function authorizeCommand(
     case "checkpoint":
     case "submit_for_review":
     case "start_implementation": {
+      if (
+        intent === "start_implementation"
+        && isPmPolicyCommand(state, command, ["auto_start"])
+      ) {
+        return {
+          allowed: true,
+          reason: "ok",
+          decisionActorId: actor.id,
+          executorActorId: actor.id,
+        };
+      }
       // §10.3: start_implementation requires coding capability.
       // §10.5: submit_for_review requires coding-capable assignee.
       // checkpoint and submit_plan are assignee-owned but do not require
@@ -474,6 +572,18 @@ export function authorizeCommand(
     case "triage_task":
     case "assign_task":
     case "request_subtask": {
+      if (
+        intent === "triage_task"
+        && isPmPolicyCommand(state, command, ["epic_queue_promotion"])
+      ) {
+        return { allowed: true, reason: "ok", decisionActorId: actor.id, executorActorId: actor.id };
+      }
+      if (
+        intent === "assign_task"
+        && isPmPolicyCommand(state, command, ["reviewer_assignment", "epic_queue_refill"])
+      ) {
+        return { allowed: true, reason: "ok", decisionActorId: actor.id, executorActorId: actor.id };
+      }
       const reviewerId = resolveReviewOwnerId({
         actingManagerId: state.actingManagerId,
         reporterId: state.reporterId,

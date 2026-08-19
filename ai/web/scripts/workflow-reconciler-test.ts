@@ -210,43 +210,56 @@ async function main() {
     assert(dry.findings.some((row) =>
       row.kind === "review_completion_missing"
       && row.taskId === missingCompletion.id
-      && row.repair === "complete_review",
+      && row.repair === "escalate",
     ));
     assert.equal((await db.task.findUniqueOrThrow({ where: { id: missingCompletion.id } })).status, "Review");
     assert.equal(
-      dry.findings.some((row) => row.taskId === unverifiedCompletion.id && row.repair === "complete_review"),
+      dry.findings.some((row) => row.taskId === unverifiedCompletion.id && row.kind === "review_completion_missing"),
       false,
       "repository completion without matching Epic merge evidence must not be guessed",
     );
+    assert(dry.findings.some((row) =>
+      row.kind === "finalization_completed_no_done_transition"
+      && row.taskId === unverifiedCompletion.id
+      && row.repair === "escalate",
+    ));
     assert.equal((await db.workflowOutbox.findUniqueOrThrow({ where: { id: verifyEffect.id } })).status, "completed");
     assert.equal((await db.task.findUniqueOrThrow({ where: { id: missingLease.id } })).alertReporter, false);
 
     const applied = await runWorkflowReconciliation({ projectId: project.id, now, dryRun: false });
     assert(applied.repaired >= 4);
-    // The review-completion repair later in the same reconciliation pass can
-    // drain this freshly requeued effect before the assertion runs. Both
-    // states prove the recovery: queued awaits the shared drain; completed
-    // means that drain already projected it durably.
-    assert(
-      ["queued", "completed"].includes(
-        (await db.workflowOutbox.findUniqueOrThrow({ where: { id: verifyEffect.id } })).status,
-      ),
+    assert.equal(
+      (await db.workflowOutbox.findUniqueOrThrow({ where: { id: verifyEffect.id } })).status,
+      "queued",
+      "the reconciler may replay an existing durable effect without inventing a command",
     );
-    assert(
-      ["queued", "completed"].includes(
-        (await db.workflowOutbox.findUniqueOrThrow({ where: { id: handoffEffect.id } })).status,
-      ),
+    assert.equal(
+      (await db.workflowOutbox.findUniqueOrThrow({ where: { id: handoffEffect.id } })).status,
+      "queued",
       "a validated candidate stranded before Review must have its verifier safely requeued",
     );
-    assert.equal((await db.task.findUniqueOrThrow({ where: { id: missingLease.id } })).alertReporter, true);
-    assert.equal((await db.task.findUniqueOrThrow({ where: { id: incompleteDone.id } })).alertReporter, true);
-    assert.equal((await db.task.findUniqueOrThrow({ where: { id: missingCompletion.id } })).status, "Done");
+    assert.equal(
+      (await db.task.findUniqueOrThrow({ where: { id: missingLease.id } })).alertReporter,
+      false,
+      "reconciliation escalation must not mutate Task alert state",
+    );
+    assert.equal(
+      (await db.task.findUniqueOrThrow({ where: { id: incompleteDone.id } })).alertReporter,
+      false,
+      "invariant reports stay outside the task workflow aggregate",
+    );
+    assert.equal(
+      (await db.task.findUniqueOrThrow({ where: { id: missingCompletion.id } })).status,
+      "Review",
+      "accepted-review contradictions are reported for an explicit typed repair, never auto-completed",
+    );
     assert.equal((await db.task.findUniqueOrThrow({ where: { id: unverifiedCompletion.id } })).status, "Review");
     assert.equal(
       (await db.reviewRun.findFirstOrThrow({
         where: { taskId: missingCompletion.id, candidateSha: acceptedCandidate }, orderBy: { createdAt: "desc" },
       })).status,
-      "completed",
+      "accepted",
+      "reconciliation must preserve the immutable reviewer decision",
     );
     assert.equal(
       await db.workflowTransition.count({
@@ -257,7 +270,8 @@ async function main() {
           source: "workflow-reconciliation",
         },
       }),
-      1,
+      0,
+      "reconciliation must not fabricate a Review-to-Done command",
     );
     assert.equal(
       await db.activityLog.count({ where: { kind: "task.workflow.reconciliation_required" } }),
@@ -269,8 +283,8 @@ async function main() {
       await db.workflowTransition.count({
         where: { taskId: missingCompletion.id, fromStatus: "Review", toStatus: "Done" },
       }),
-      1,
-      "a repeated pass must not duplicate the recovered completion transition",
+      0,
+      "a repeated pass must remain report-only for the missing completion transition",
     );
     assert.equal(
       await db.activityLog.count({ where: { kind: "task.workflow.reconciliation_required" } }),

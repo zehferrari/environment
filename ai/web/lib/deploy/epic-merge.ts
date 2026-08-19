@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync } from "node:fs";
 import { mkdir, rename, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { db } from "@/lib/db";
 import { publishBoardTouch } from "@/lib/pm/board-events";
@@ -33,10 +34,14 @@ import {
   validateCheckpointAuthorizationText,
 } from "@/lib/deploy/checkpoint-authorization";
 import { settleConsumedCheckpointBlocker } from "@/lib/tasks/checkpoint-blocker";
+import { submitEpicChildUpdateInTransaction } from "@/lib/epics/task-workflow-adapter";
 import {
-  applyTaskTransition,
+  ENGINE_LEGACY,
+  ENGINE_ORCHESTRATOR_V2,
+  resolveEngineOwnership,
+} from "@/lib/tasks/orchestrator/ownership";
+import {
   enqueueWorkflowEffects,
-  type WorkflowEffect,
 } from "@/lib/tasks/transition-kernel";
 import { drainWorkflowOutbox } from "@/lib/tasks/workflow-outbox-drain";
 
@@ -182,9 +187,12 @@ export async function enqueueTaskReviewFinalization(args: {
   repositoryRunVersion?: number | null;
   baseSha?: string | null;
 }) {
+  const exactV2JobId = args.schemaVersion === 2 && args.procedureRunId && args.procedureStepId
+    ? `proc-finalize-${args.procedureRunId}-${args.procedureStepId}`
+    : null;
   const job: Extract<EpicMergeJob, { kind: "finalize" }> = {
     kind: "finalize",
-    jobId: `finalize-${args.taskId}`,
+    jobId: exactV2JobId ?? `finalize-${args.taskId}`,
     taskId: args.taskId,
     projectId: args.projectId,
     requestedByUserId: args.requestedByUserId,
@@ -391,42 +399,41 @@ async function bounceTaskToReview(args: {
 }) {
   const { task, epicBranch, taskBranch, reason } = args;
   const actor = await resolveEpicMergeActor(task.epic?.deployReviewerId ?? null);
-  const now = new Date();
-  const effects: WorkflowEffect[] = [
-    { type: "board_touch", key: "board-epic-merge-failed", payload: {} },
-  ];
-  if (task.assigneeId && actor) {
-    effects.push({
-      type: "task_notification",
-      key: `epic-merge-feedback:${task.assigneeId}`,
-      payload: {
-        taskId: task.id,
-        targetUserId: task.assigneeId,
-        actor: { id: actor.id, username: actor.username, kind: "agent" },
-        reason: "review_feedback",
-        body: [
-          `Your task "${task.title}" could not be auto-merged into the Epic branch \`${epicBranch}\` and is back in Review.`,
-          reason,
-          `Resolve it and commit your changes locally on \`${taskBranch}\` — never push Epic-child branches. When the task is moved to Done again the integration retries automatically.`,
-        ].join("\n"),
-      },
-    });
+  if (!actor) {
+    throw new Error("epic_merge_actor_unavailable: no active deploy reviewer or monitor can authorize the repair callback");
   }
+  const now = new Date();
 
   await db.$transaction(async (tx) => {
-    await applyTaskTransition(tx, {
+    await submitEpicChildUpdateInTransaction(tx, {
       taskId: task.id,
-      projectId: task.projectId,
-      actorUserId: actor?.id ?? null,
-      intent: "repository_reopen",
-      from: "Done",
-      to: "Review",
-      source: "epic_merge_failed",
+      workflowVersion: task.workflowVersion,
+      actor: { id: actor.id, username: actor.username, kind: "agent", role: "operator" },
+      source: "pm-service",
       idempotencyKey: `epic-merge-failed:${epicBranch}:${taskBranch}:v${task.workflowVersion + 1}`,
-      expectedVersion: task.workflowVersion,
-      taskData: { archivedAt: null, archivedById: null },
-      evidence: { epicBranch, taskBranch, reason },
-      effects,
+      payload: {
+        epicId: task.epic!.id,
+        targetStatus: "Review",
+        reason: "epic_merge_failed",
+        rank: "back",
+        clearAssignee: false,
+        clearArchive: true,
+        archive: false,
+        resetPlanApproval: false,
+        comment: `🔀 Auto-merge into the Epic branch \`${epicBranch}\` failed, so this task is back in Review.\n\n${reason}`,
+        notification: task.assigneeId
+          ? {
+              targetUserId: task.assigneeId,
+              reason: "review_feedback",
+              body: [
+                `Your task "${task.title}" could not be auto-merged into the Epic branch \`${epicBranch}\` and is back in Review.`,
+                reason,
+                `Resolve it and commit your changes locally on \`${taskBranch}\` — never push Epic-child branches. When the task is moved to Done again the integration retries automatically.`,
+              ].join("\n"),
+            }
+          : null,
+      },
+      evidence: { epicId: task.epic!.id, epicBranch, taskBranch, reason },
     });
 
     // A child integration failure invalidates any in-flight whole-Epic
@@ -457,28 +464,6 @@ async function bounceTaskToReview(args: {
       });
     }
 
-    if (actor) {
-      const comment = await tx.comment.create({
-        data: {
-          taskId: task.id,
-          userId: actor.id,
-          body: `🔀 Auto-merge into the Epic branch \`${epicBranch}\` failed, so this task is back in Review.\n\n${reason}`,
-          commentKind: "workflow_action",
-          isGenerated: true,
-        },
-        select: { id: true },
-      });
-      await tx.activityLog.create({
-        data: {
-          projectId: task.projectId,
-          taskId: task.id,
-          userId: actor.id,
-          kind: "task.comment",
-          payload: JSON.stringify({ commentId: comment.id, reason: "epic_merge_failed" }),
-        },
-      });
-    }
-
     await tx.activityLog.create({
       data: {
         projectId: task.projectId,
@@ -489,7 +474,7 @@ async function bounceTaskToReview(args: {
       },
     });
   });
-  await drainWorkflowOutbox({ limit: effects.length }).catch(() => {});
+  await drainWorkflowOutbox({ limit: 2 }).catch(() => {});
   publishBoardTouch(task.projectId);
 }
 
@@ -1544,6 +1529,189 @@ async function executeCheckpointJob(
   };
 }
 
+type FinalizationCorrelation =
+  | { ok: true; mode: "legacy-v1" }
+  | { ok: true; mode: "v2-exact"; replay: boolean }
+  | { ok: false; reason: string };
+
+function finalizationCorrelationFingerprint(
+  job: Extract<EpicMergeJob, { kind: "finalize" }>,
+  reason: string,
+) {
+  return createHash("sha256").update([
+    job.taskId,
+    job.workflowCycleId ?? "null",
+    job.procedureRunId ?? "null",
+    job.procedureStepId ?? "null",
+    job.jobId,
+    job.repositoryRunId ?? "null",
+    job.repositoryRunVersion ?? "null",
+    job.candidateSha,
+    job.baseSha ?? "null",
+    reason,
+  ].join("\0")).digest("hex").slice(0, 32);
+}
+
+async function recordFinalizationCorrelationRejection(args: {
+  taskId: string;
+  projectId: string;
+  job: Extract<EpicMergeJob, { kind: "finalize" }>;
+  reason: string;
+}) {
+  const fingerprint = finalizationCorrelationFingerprint(args.job, args.reason);
+  const existing = await db.activityLog.findFirst({
+    where: {
+      taskId: args.taskId,
+      kind: "task.workflow.procedure_callback_rejected",
+      payload: { contains: fingerprint },
+      createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1_000) },
+    },
+    select: { id: true },
+  });
+  if (existing) return;
+  await db.activityLog.create({
+    data: {
+      projectId: args.projectId,
+      taskId: args.taskId,
+      kind: "task.workflow.procedure_callback_rejected",
+      payload: JSON.stringify({
+        fingerprint,
+        correlationPath: "epic-finalization-preflight",
+        reason: args.reason,
+        job: args.job,
+      }),
+    },
+  });
+}
+
+async function validateFinalizationCorrelation(
+  task: {
+    id: string;
+    projectId: string;
+    activeWorkflowCycleId: string | null;
+    repositoryRun: {
+      id: string;
+      version: number;
+      baseSha: string | null;
+      candidateSha: string | null;
+    } | null;
+  },
+  job: Extract<EpicMergeJob, { kind: "finalize" }>,
+): Promise<FinalizationCorrelation> {
+  const ownership = await resolveEngineOwnership(db, task.id);
+  if (!ownership.ok) return { ok: false, reason: ownership.reason };
+
+  const v2Packet = job.schemaVersion === 2;
+  if (ownership.engine === ENGINE_ORCHESTRATOR_V2 && !v2Packet) {
+    return { ok: false, reason: "A V2-owned task rejected a legacy-v1 finalization job." };
+  }
+  if (ownership.engine === ENGINE_LEGACY && v2Packet) {
+    return { ok: false, reason: "A legacy-owned task rejected an orchestrator-v2 finalization job." };
+  }
+  if (!v2Packet) return { ok: true, mode: "legacy-v1" };
+
+  if (
+    !job.procedureRunId ||
+    !job.procedureStepId ||
+    typeof job.workflowCycleId !== "string" ||
+    !job.repositoryRunId ||
+    typeof job.repositoryRunVersion !== "number"
+  ) {
+    return { ok: false, reason: "V2 finalization job is missing exact procedure, cycle, or repository-run identity." };
+  }
+  if (job.projectId !== task.projectId) {
+    return { ok: false, reason: "Finalization job project does not match the task project." };
+  }
+  const step = await db.taskProcedureStep.findUnique({
+    where: { id: job.procedureStepId },
+    select: {
+      id: true,
+      status: true,
+      output: true,
+      procedureRun: {
+        select: { id: true, taskId: true, workflowCycleId: true, type: true },
+      },
+    },
+  });
+  if (!step ||
+    step.procedureRun.id !== job.procedureRunId ||
+    step.procedureRun.taskId !== task.id ||
+    step.procedureRun.workflowCycleId !== job.workflowCycleId ||
+    step.procedureRun.type !== "finalize_accepted_review"
+  ) {
+    return { ok: false, reason: "Finalization job does not match the exact procedure step owner." };
+  }
+  let expected: Record<string, unknown> = {};
+  if (step.output) {
+    try { expected = JSON.parse(step.output) as Record<string, unknown>; } catch { /* malformed output is rejected below */ }
+  }
+  if (
+    expected.jobId !== job.jobId ||
+    expected.schemaVersion !== 2 ||
+    (expected.commandReceiptId ?? null) !== (job.commandReceiptId ?? null) ||
+    expected.repositoryRunId !== job.repositoryRunId ||
+    expected.repositoryRunVersion !== job.repositoryRunVersion ||
+    expected.candidateSha !== job.candidateSha ||
+    (expected.baseSha ?? null) !== (job.baseSha ?? null)
+  ) {
+    return { ok: false, reason: "Finalization job identity differs from the waiting procedure step." };
+  }
+  if (step.status === "completed") {
+    return { ok: true, mode: "v2-exact", replay: true };
+  }
+  if (
+    expected.taskId !== task.id ||
+    expected.workflowCycleId !== job.workflowCycleId ||
+    expected.procedureRunId !== job.procedureRunId ||
+    expected.procedureStepId !== job.procedureStepId
+  ) {
+    return { ok: false, reason: "Finalization job owner identity differs from the waiting procedure step." };
+  }
+  if (!task.repositoryRun ||
+    task.repositoryRun.id !== job.repositoryRunId ||
+    task.repositoryRun.version !== job.repositoryRunVersion ||
+    task.repositoryRun.candidateSha !== job.candidateSha ||
+    task.repositoryRun.baseSha !== (job.baseSha ?? null)
+  ) {
+    return { ok: false, reason: "Finalization job identity differs from the current repository run." };
+  }
+  if (step.status !== "waiting_callback") {
+    return { ok: false, reason: `Finalization procedure step is ${step.status}, not waiting_callback.` };
+  }
+  if (task.activeWorkflowCycleId !== job.workflowCycleId) {
+    return { ok: false, reason: "Finalization job no longer belongs to the task's active workflow cycle." };
+  }
+  return { ok: true, mode: "v2-exact", replay: false };
+}
+
+async function applyExactFinalizationJobCallback(args: {
+  job: Extract<EpicMergeJob, { kind: "finalize" }>;
+  taskId: string;
+  ok: boolean;
+  mergeSha?: string | null;
+  error?: string;
+}) {
+  const { applyProcedureCallback } = await import("@/lib/tasks/orchestrator/procedure-runner");
+  return applyProcedureCallback({
+    procedureRunId: args.job.procedureRunId!,
+    stepId: args.job.procedureStepId!,
+    taskId: args.taskId,
+    workflowCycleId: args.job.workflowCycleId!,
+    jobId: args.job.jobId,
+    candidateSha: args.job.candidateSha,
+    baseSha: args.job.baseSha ?? null,
+    schemaVersion: args.job.schemaVersion,
+    commandReceiptId: args.job.commandReceiptId ?? null,
+    repositoryRunId: args.job.repositoryRunId ?? null,
+    repositoryRunVersion: args.job.repositoryRunVersion ?? null,
+    data: {
+      finalizationOk: args.ok,
+      mergeSha: args.mergeSha ?? undefined,
+      error: args.error,
+    },
+  });
+}
+
 async function executeFinalizeJob(
   job: Extract<EpicMergeJob, { kind: "finalize" }>,
 ) {
@@ -1574,6 +1742,8 @@ async function executeFinalizeJob(
       },
       repositoryRun: {
         select: {
+          id: true,
+          version: true,
           baseSha: true,
           candidateSha: true,
           repoTouched: true,
@@ -1592,6 +1762,40 @@ async function executeFinalizeJob(
   });
   if (!task) {
     return { taskId: job.taskId, outcome: "skipped" as const, note: "task no longer exists" };
+  }
+  const correlation = await validateFinalizationCorrelation(task, job);
+  if (!correlation.ok) {
+    await recordFinalizationCorrelationRejection({
+      taskId: task.id,
+      projectId: task.projectId,
+      job,
+      reason: correlation.reason,
+    });
+    return {
+      taskId: task.id,
+      outcome: "rejected-correlation" as const,
+      note: correlation.reason,
+    };
+  }
+  const procedureCallback = job.procedureRunId && job.procedureStepId && job.workflowCycleId !== undefined
+    ? {
+        procedureRunId: job.procedureRunId,
+        procedureStepId: job.procedureStepId,
+        workflowCycleId: job.workflowCycleId,
+        jobId: job.jobId,
+        schemaVersion: job.schemaVersion,
+        commandReceiptId: job.commandReceiptId ?? null,
+        repositoryRunId: job.repositoryRunId ?? null,
+        repositoryRunVersion: job.repositoryRunVersion ?? null,
+        candidateSha: job.candidateSha,
+        baseSha: job.baseSha ?? null,
+      }
+    : undefined;
+  if (correlation.mode === "v2-exact" && correlation.replay) {
+    const replay = await applyExactFinalizationJobCallback({ job, taskId: task.id, ok: true });
+    return replay.applied
+      ? { taskId: task.id, outcome: "replayed" as const }
+      : { taskId: task.id, outcome: "rejected-correlation" as const, note: replay.reason };
   }
   if (job.workflowCycleId !== undefined && task.activeWorkflowCycleId !== job.workflowCycleId) {
     const reason = "finalization job no longer belongs to the task's active workflow cycle";
@@ -1653,21 +1857,6 @@ async function executeFinalizeJob(
   if (task.status !== "Review") {
     return { taskId: job.taskId, outcome: "skipped" as const, note: "task is no longer in Review" };
   }
-  const procedureCallback = job.procedureRunId && job.procedureStepId && job.workflowCycleId !== undefined
-    ? {
-        procedureRunId: job.procedureRunId,
-        procedureStepId: job.procedureStepId,
-        workflowCycleId: job.workflowCycleId,
-        jobId: job.jobId,
-        // PHASEE-07: round-trip V2 identity fields for exact callback correlation.
-        schemaVersion: job.schemaVersion,
-        commandReceiptId: job.commandReceiptId ?? null,
-        repositoryRunId: job.repositoryRunId ?? null,
-        repositoryRunVersion: job.repositoryRunVersion ?? null,
-        candidateSha: job.candidateSha,
-        baseSha: job.baseSha ?? null,
-      }
-    : undefined;
   const repositoryPath = task.project.repositoryPath;
   const taskBranch = effectiveTaskBranchName(task);
   const repoTouched = task.repositoryRun?.repoTouched === true;
@@ -1681,6 +1870,17 @@ async function executeFinalizeJob(
       error: "No active Monitor Agent is available to finalize the reviewed repository branch.",
       preserveValidationOutcome: true,
     });
+    if (correlation.mode === "v2-exact") {
+      const callback = await applyExactFinalizationJobCallback({
+        job,
+        taskId: task.id,
+        ok: false,
+        error: "No active Monitor Agent is available to finalize the reviewed repository branch.",
+      });
+      return callback.applied
+        ? { taskId: task.id, outcome: "operational-error" as const }
+        : { taskId: task.id, outcome: "rejected-correlation" as const, note: callback.reason };
+    }
     const { applyFinalizationCallbackToProcedure } = await import("@/lib/tasks/review-automation");
     await applyFinalizationCallbackToProcedure(
       task.id,
@@ -1693,6 +1893,7 @@ async function executeFinalizeJob(
     return { taskId: task.id, outcome: "operational-error" as const };
   }
   const actor = { id: monitor.id, username: monitor.username, kind: "agent" as const };
+  const v2Exact = correlation.mode === "v2-exact";
 
   const fail = async (reason: string, operational = false) => {
     if (operational) {
@@ -1725,10 +1926,17 @@ async function executeFinalizeJob(
           isGenerated: true,
         },
       });
-      const { applyFinalizationCallbackToProcedure } = await import("@/lib/tasks/review-automation");
-      await applyFinalizationCallbackToProcedure(task.id, candidateSha ?? null, false, null, reason, procedureCallback).catch((error) =>
-        console.error("[pm] procedure finalization callback failed:", task.id, error),
-      );
+      if (v2Exact) {
+        const callback = await applyExactFinalizationJobCallback({ job, taskId: task.id, ok: false, error: reason });
+        if (!callback.applied) {
+          return { taskId: task.id, outcome: "rejected-correlation" as const, note: callback.reason };
+        }
+      } else {
+        const { applyFinalizationCallbackToProcedure } = await import("@/lib/tasks/review-automation");
+        await applyFinalizationCallbackToProcedure(task.id, candidateSha ?? null, false, null, reason, procedureCallback).catch((error) =>
+          console.error("[pm] procedure finalization callback failed:", task.id, error),
+        );
+      }
       return { taskId: task.id, outcome: "operational-error" as const, reason, attempt };
     }
     await db.comment.create({
@@ -1740,6 +1948,13 @@ async function executeFinalizeJob(
         isGenerated: true,
       },
     });
+    if (v2Exact) {
+      const callback = await applyExactFinalizationJobCallback({ job, taskId: task.id, ok: false, error: reason });
+      if (!callback.applied) {
+        return { taskId: task.id, outcome: "rejected-correlation" as const, note: callback.reason };
+      }
+      return { taskId: task.id, outcome: "callback-applied" as const, reason };
+    }
     const { applyFinalizationCallbackToProcedure } = await import("@/lib/tasks/review-automation");
     await applyFinalizationCallbackToProcedure(task.id, candidateSha ?? null, false, null, reason, procedureCallback).catch((error) =>
       console.error("[pm] procedure finalization callback failed:", task.id, error),
@@ -1863,6 +2078,19 @@ async function executeFinalizeJob(
     }
     const cleanup = await removeFinalizedTaskWorktree(finalizedRepositoryPath, finalizedTaskBranch, []);
     if (!cleanup.ok) return fail(cleanup.error, true);
+  }
+
+  if (v2Exact) {
+    const callback = await applyExactFinalizationJobCallback({
+      job,
+      taskId: task.id,
+      ok: true,
+    });
+    if (!callback.applied) {
+      return { taskId: task.id, outcome: "rejected-correlation" as const, note: callback.reason };
+    }
+    publishBoardTouch(task.projectId);
+    return { taskId: task.id, outcome: "callback-applied" as const };
   }
 
   await updateTaskRepositoryState(task.id, {
@@ -2102,10 +2330,12 @@ async function executeCleanupJob(job: Extract<EpicMergeJob, { kind: "cleanup" }>
 }
 
 export async function runEpicMergeSpoolJob(job: EpicMergeJob) {
-  await recordLegacyWorkflowBoundaryInvocation({
-    legacyBoundary: "review-decision-and-finalization",
-    entryPoint: "runEpicMergeSpoolJob",
-  });
+  if (job.kind !== "finalize" || job.schemaVersion !== 2) {
+    await recordLegacyWorkflowBoundaryInvocation({
+      legacyBoundary: "review-decision-and-finalization",
+      entryPoint: "runEpicMergeSpoolJob",
+    });
+  }
   if (job.kind === "merge") return executeMergeJob(job);
   if (job.kind === "finalize") return executeFinalizeJob(job);
   if (job.kind === "checkpoint") return executeCheckpointJob(job);

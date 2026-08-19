@@ -1,4 +1,3 @@
-import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import { randomUUID } from "crypto";
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -52,26 +51,15 @@ import { publishBoardTouch } from "@/lib/pm/board-events";
 import {
   canApproveActionPlanForActor,
   isActionableEpicStatus,
-  resolveReviewOwnerId,
 } from "@/lib/tasks/workflow-actors";
 import { syncEpicOnHumanTaskStatus } from "@/lib/epics/sync-on-human-task-move";
-import { startApprovedTodoTaskIfIdle } from "@/lib/tasks/auto-start";
 import { getTaskGitChanges, getTaskGitFileDiff } from "@/lib/tasks/git-changes";
-import { createChecklistAndDelegatableTasksFromPlan } from "@/lib/tasks/action-plan-store";
-import { moveTaskStatus as transitionTaskStatus } from "@/lib/tasks/move-status";
-import { reserveTaskRepositoryState } from "@/lib/tasks/repository-state";
 import {
-  REPOSITORY_FINALIZATION_FENCE_MESSAGE,
-  repositoryFinalizationFenceSelect,
-  repositoryFinalizationOwnsTask,
-} from "@/lib/tasks/repository-finalization";
+  isTaskWorkflowStatus,
+  submitBrowserStatusOverride,
+} from "@/lib/tasks/orchestrator/browser-status-adapter";
+import { submitBrowserPlanApproval } from "@/lib/tasks/orchestrator/browser-plan-adapter";
 import { effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
-import {
-  applyTaskTransition,
-  enqueueWorkflowEffects,
-  type WorkflowEffect,
-} from "@/lib/tasks/transition-kernel";
-import { drainWorkflowOutbox } from "@/lib/tasks/workflow-outbox-drain";
 import {
   getCachedLatestRepoVerifyActivity,
   getCachedPendingTaskProposals,
@@ -174,10 +162,6 @@ async function requireActorId(): Promise<string> {
 // actions did. The assignment wake fires after commit, non-throwing.
 async function updateTask(formData: FormData) {
   "use server";
-  await recordLegacyWorkflowBoundaryInvocation({
-    legacyBoundary: "task-detail-server-actions",
-    entryPoint: "updateTask",
-  });
   const actor = await requireActor();
   const taskId = String(formData.get("taskId") ?? "");
   const slug = String(formData.get("projectSlug") ?? "");
@@ -241,7 +225,6 @@ async function updateTask(formData: FormData) {
       blockedBy: { select: { workItemKey: true } },
       approvedOn: true,
       workItemKey: true,
-      repositoryRun: { select: repositoryFinalizationFenceSelect },
       project: {
         select: {
           slug: true,
@@ -295,16 +278,8 @@ async function updateTask(formData: FormData) {
 
   // Status (workflow-validated, recomputes rank like the board move)
   if (newStatus !== "" && newStatus !== task.status) {
-    if (repositoryFinalizationOwnsTask(task.repositoryRun)) {
-      throw new Error(REPOSITORY_FINALIZATION_FENCE_MESSAGE);
-    }
-    if (newStatus === "In Progress") {
-      if (newBranch !== task.branchName || newEpicId !== task.epicId) {
-        throw new Error("Save the task branch/Epic change before moving it to In Progress so PM can provision the correct worktree.");
-      }
-    }
-    // The editor is only an adapter. The shared move service owns every gate,
-    // transition ledger row, repository handoff, and durable side effect.
+    // The editor is only a transport. The authoritative human override command
+    // owns the workflow transition and the wait-for-human blocker atomically.
     statusChangedTo = newStatus;
   }
 
@@ -517,8 +492,19 @@ async function updateTask(formData: FormData) {
   }
 
   if (statusChangedTo) {
-    const moved = await transitionTaskStatus(taskId, statusChangedTo, slug);
+    if (!isTaskWorkflowStatus(task.status) || !isTaskWorkflowStatus(statusChangedTo)) {
+      throw new Error("Task has an invalid workflow status.");
+    }
+    const moved = await submitBrowserStatusOverride({
+      actor,
+      taskId,
+      currentStatus: task.status,
+      targetStatus: statusChangedTo,
+      expectedWorkflowVersion: task.workflowVersion,
+      surface: "task-detail",
+    });
     if (!moved.ok) throw new Error(moved.message);
+    revalidateTaskReplyScope(taskId, "comment");
   } else {
     await syncEpicOnHumanTaskStatus(db, {
       epicId: newEpicId,
@@ -642,10 +628,6 @@ async function updateTask(formData: FormData) {
 
 async function approveTaskActionPlan(formData: FormData) {
   "use server";
-  await recordLegacyWorkflowBoundaryInvocation({
-    legacyBoundary: "task-detail-server-actions",
-    entryPoint: "approveTaskActionPlan",
-  });
   const actor = await requireActor();
   const taskId = String(formData.get("taskId") ?? "");
   const slug = String(formData.get("projectSlug") ?? "");
@@ -656,29 +638,26 @@ async function approveTaskActionPlan(formData: FormData) {
     where: { id: taskId },
     select: {
       id: true,
-      title: true,
       status: true,
       workflowVersion: true,
       projectId: true,
       approvedOn: true,
-      assigneeId: true,
-      actingManagerId: true,
-      reporterId: true,
       deletedAt: true,
-      actionPlan: { select: { id: true, version: true, status: true, steps: { select: { id: true }, take: 1 } } },
-      project: { select: { slug: true, onlyReportersCanApproveActionPlans: true } },
-      epic: { select: { status: true, actingManagerId: true } },
+      actionPlan: {
+        select: {
+          id: true,
+          version: true,
+          status: true,
+          steps: { select: { id: true }, take: 1 },
+        },
+      },
+      project: { select: { slug: true } },
     },
   });
   if (!task || task.deletedAt || task.project.slug !== slug) return;
   await requireProjectAccess(actor, { id: task.projectId });
-  if (!actor.isOwner) throw new Error("Not authorized");
+  if (!actor.isOwner || actor.kind !== "human") throw new Error("Not authorized");
 
-  if (actor.kind !== "human" && !canApproveActionPlanForActor(task, actor.id)) {
-    throw new Error(task.project.onlyReportersCanApproveActionPlans
-      ? "Only the task reporter can approve the Action Plan for this project."
-      : "Only the task reviewer or reporter can approve the Action Plan.");
-  }
   if (task.approvedOn) return;
   if (task.status !== "Backlog" && task.status !== "To Do") {
     throw new Error("Action Plans can only be approved before implementation starts.");
@@ -692,119 +671,20 @@ async function approveTaskActionPlan(formData: FormData) {
       : "Only the latest submitted Action Plan revision can be approved.");
   }
 
-  // Approval reserves the repository contract. Worktree provisioning belongs
-  // to the In Progress transition so queued work has no writable tree.
-  await reserveTaskRepositoryState(task.id);
-
-  const approvedAt = new Date();
-  const reviewerId = resolveReviewOwnerId(task);
-  const effects: WorkflowEffect[] = [
-    { type: "board_touch", key: "board-plan-approved", payload: {} },
-  ];
-  if (task.assigneeId) {
-    effects.push({
-      type: "task_notification",
-      key: `plan-approved:${task.assigneeId}`,
-      payload: {
-        taskId: task.id,
-        targetUserId: task.assigneeId,
-        actor,
-        reason: "todo_start_required",
-        body: [
-          `The Action Plan for "${task.title}" was approved.`,
-          "PM will auto-start it if the execution lane and repository gates are free. Check the current status: implement immediately if In Progress, otherwise call action=start when it remains To Do.",
-          "Keep visible replies concise; use a comment only if a blocker or material plan change appears.",
-        ].join("\n"),
-      },
-    });
-  } else if (reviewerId) {
-    effects.push({
-      type: "task_notification",
-      key: `assignment-required:${reviewerId}`,
-      payload: {
-        taskId: task.id,
-        targetUserId: reviewerId,
-        actor,
-        reason: "reviewer_assignment_requested",
-        body: [
-          `The Action Plan for "${task.title}" was approved, but the task has no assignee.`,
-          "Call action=assign_task so PM can select an eligible coding agent. Do not start implementation yourself.",
-        ].join("\n"),
-      },
-    });
-  }
-
-  await db.$transaction(async (tx) => {
-    if (task.status === "Backlog") {
-      await applyTaskTransition(tx, {
-        taskId: task.id,
-        projectId: task.projectId,
-        actorUserId: actor.id,
-        intent: "approve_plan",
-        from: "Backlog",
-        to: "To Do",
-        source: "action-plan-approval",
-        idempotencyKey: `human-plan-approval:v${task.workflowVersion + 1}`,
-        expectedVersion: task.workflowVersion,
-        taskData: { approvedOn: approvedAt, approvedById: actor.id },
-        evidence: { actionPlanId: task.actionPlan!.id },
-        effects,
-      });
-    } else {
-      await tx.task.update({
-        where: { id: task.id },
-        data: { approvedOn: approvedAt, approvedById: actor.id },
-      });
-      await enqueueWorkflowEffects(tx, {
-        taskId: task.id,
-        projectId: task.projectId,
-        aggregateVersion: task.workflowVersion,
-        effects,
-      });
-    }
-    await tx.actionPlan.update({
-      where: { id: task.actionPlan!.id },
-      data: { status: "approved", approvedOn: approvedAt, approvedById: actor.id },
-    });
-    await tx.actionPlanRevision.updateMany({
-      where: { actionPlanId: task.actionPlan!.id, version: task.actionPlan!.version, status: "draft" },
-      data: { status: "approved", approvedOn: approvedAt, approvedById: actor.id },
-    });
-    await createChecklistAndDelegatableTasksFromPlan({
-      taskId: task.id,
-      approvedAt,
-      approvedById: actor.id,
-      client: tx,
-    });
-    await tx.activityLog.create({
-      data: {
-        projectId: task.projectId,
-        taskId: task.id,
-        userId: actor.id,
-        kind: "task.action_plan.approve",
-        payload: JSON.stringify({
-          taskId: task.id,
-          previousStatus: task.status,
-          status: task.status === "Backlog" ? "To Do" : task.status,
-        }),
-      },
-    });
+  const approved = await submitBrowserPlanApproval({
+    actor,
+    taskId: task.id,
+    actionPlanId: task.actionPlan.id,
+    actionPlanVersion: task.actionPlan.version,
+    expectedWorkflowVersion: task.workflowVersion,
   });
-
-  if (task.assigneeId) {
-    await startApprovedTodoTaskIfIdle({
-      taskId: task.id,
-      actor,
-      via: "action-plan-approval",
-    });
-  }
-  await drainWorkflowOutbox({ limit: effects.length }).catch(() => {});
+  if (!approved.ok) throw new Error(approved.message);
 
   revalidateTaskShell(task.id);
   revalidatePath(`/projects/${slug}/tasks/${task.id}`);
   revalidatePath(`/projects/${slug}`);
+  publishBoardTouch(task.projectId);
 }
-
 // Human-only comment removal (HOMELAB-41). Agents post comments but
 // cannot delete them — moderation stays a human action. Scoped by the
 // URL slug + task so a comment id from another project can't be removed.

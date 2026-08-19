@@ -441,6 +441,15 @@ export function runGuards(
   if (!versionGuard.ok) return versionGuard;
 
   switch (command.intent) {
+    case "epic_child_update":
+      return command.payload?.epicId === state.epicId && state.epicId !== null
+        ? { ok: true }
+        : {
+            ok: false,
+            status: "stale",
+            reason: "[cycle_mismatch] Epic child command does not match the task's current Epic.",
+          };
+
     case "override_status":
       // Deliberately bypass ordinary edge/plan/cycle/blocker/repository guards.
       // The workflow-version guard above remains authoritative and is fenced
