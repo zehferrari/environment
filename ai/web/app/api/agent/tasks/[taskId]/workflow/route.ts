@@ -557,7 +557,7 @@ async function handleTaskWorkflowAction(
     (matchingRun.settledByAction === action || matchingRun.lastAction === action);
   if (
     matchingRun &&
-    !["queued", "accepted", "streaming"].includes(matchingRun.status) &&
+    !["queued", "delivered", "accepted", "streaming"].includes(matchingRun.status) &&
     !exactIdempotentReplay &&
     !rolloverBarrier
   ) {

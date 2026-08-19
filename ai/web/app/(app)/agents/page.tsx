@@ -312,6 +312,7 @@ export default async function AgentsPage() {
         epicId: true,
         createdAt: true,
         updatedAt: true,
+        admittedAt: true,
         acceptedAt: true,
         streamingAt: true,
         completedAt: true,
@@ -336,7 +337,7 @@ export default async function AgentsPage() {
   // what a busy agent is answering right now.
   const freshPendingRuns = recentPmRuns.filter(
     (run) =>
-      (run.status === "queued" || run.status === "accepted" || run.status === "streaming") &&
+      (run.status === "queued" || run.status === "accepted" || run.status === "delivered" || run.status === "waiting_capacity" || run.status === "admitted" || run.status === "streaming") &&
       now - run.updatedAt.getTime() < LIVE_FRESH_MS,
   );
   const runTaskIds = [...new Set(freshPendingRuns.map((r) => r.taskId).filter((id): id is string => Boolean(id)))];
@@ -469,7 +470,7 @@ export default async function AgentsPage() {
   const activeServices = hostServices.filter(([, s]) => s.is_active === "active").length;
   const openSensorEvents = monitor?.open_events ?? [];
   const activePmRuns = recentPmRuns.filter((run) => (
-    run.status === "queued" || run.status === "accepted" || run.status === "streaming"
+    run.status === "queued" || run.status === "accepted" || run.status === "delivered" || run.status === "waiting_capacity" || run.status === "admitted" || run.status === "streaming"
   ));
   const pmRunsByAgent = new Map<string, typeof recentPmRuns>();
   for (const run of recentPmRuns) {
@@ -512,7 +513,7 @@ export default async function AgentsPage() {
             const live = liveAgents[a.slug];
             const recentAgentPmRuns = pmRunsByAgent.get(a.slug) ?? [];
             const pendingRuns = recentAgentPmRuns.filter((run) => (
-              run.status === "queued" || run.status === "accepted" || run.status === "streaming"
+              run.status === "queued" || run.status === "accepted" || run.status === "delivered" || run.status === "waiting_capacity" || run.status === "admitted" || run.status === "streaming"
             ));
             const newestPmRun = recentAgentPmRuns[0] ?? null;
             const newestPmLatency = newestPmRun ? pmChannelLatencySpans(newestPmRun) : null;

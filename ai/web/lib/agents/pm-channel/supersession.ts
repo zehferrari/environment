@@ -116,7 +116,7 @@ export async function fenceSupersededPmChannelRuns(args: {
       agentSlug: true,
       gatewayPort: true,
       sessionKey: true,
-      acceptedAt: true,
+      admittedAt: true,
       streamingAt: true,
     },
   });
@@ -130,7 +130,7 @@ export async function fenceSupersededPmChannelRuns(args: {
 
     // A queued run was never handed to a gateway, so retiring its job is the
     // complete cancellation acknowledgement.
-    const wasDelivered = predecessor.acceptedAt !== null || predecessor.streamingAt !== null;
+    const wasDelivered = predecessor.admittedAt !== null || predecessor.streamingAt !== null;
     if (!wasDelivered) {
       await db.pmChannelRun.update({
         where: { id: predecessor.id },

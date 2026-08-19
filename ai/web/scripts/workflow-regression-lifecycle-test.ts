@@ -153,7 +153,7 @@ async function main(): Promise<void> {
         where: { id: runId },
         select: {
           createdAt: true,
-          acceptedAt: true,
+          acceptedAt: true, admittedAt: true,
           streamingAt: true,
           lastEventAt: true,
           leaseExpiresAt: true,
@@ -166,7 +166,7 @@ async function main(): Promise<void> {
         where: { id: runId },
         data: {
           createdAt: new Date(run.createdAt.getTime() - ms),
-          acceptedAt: back(run.acceptedAt),
+          acceptedAt: back(run.acceptedAt), admittedAt: back(run.admittedAt ?? run.acceptedAt),
           streamingAt: back(run.streamingAt),
           lastEventAt: back(run.lastEventAt),
           leaseExpiresAt: back(run.leaseExpiresAt),
@@ -329,9 +329,18 @@ async function main(): Promise<void> {
       await acceptDispatch(turn.target);
 
       const accepted = await runFor(task.id, turn.messageId);
-      c.assertEqual(accepted.status, "accepted", "the run is holding a lease");
-      c.assert(accepted.leaseExpiresAt !== null, "and the lease has an expiry it can miss");
+      c.assertEqual(accepted.status, "delivered", "the run was delivered to the gateway");
       c.assertEqual((await jobFor(accepted.id)).status, "queued", "its queue job is still open");
+
+      // ENV-159: simulate admission — the gateway picks up the delivered run
+      // and sets a lease. The process dies after admission but before any
+      // streaming event, so the lease is the only evidence it was ever alive.
+      const now = new Date();
+      const leaseExpiresAt = new Date(now.getTime() + WORKFLOW_RUN_LEASE_TTL_MS);
+      await db.pmChannelRun.update({
+        where: { id: accepted.id },
+        data: { admittedAt: now, leaseExpiresAt, lastEventAt: now },
+      });
 
       // ... and then nothing at all, for longer than the lease allows.
       await ageRun(accepted.id, LONG_DEAD_MS);
@@ -705,7 +714,7 @@ async function main(): Promise<void> {
       const olderStarted = await older.post("add_subtask", { subtaskText: "C5 work in the older turn" });
       c.assertEqual(olderStarted.status, 200, "the older turn armed a continuation of its own");
       const olderRun = await runFor(task.id, older.messageId);
-      c.assertEqual(olderRun.status, "accepted", "the older run is holding the lane");
+      c.assertEqual(olderRun.status, "delivered", "the older run is holding the lane");
 
       const newer = await dispatchWorkflowTurn({ boot, world: scope, taskId: task.id });
       const newerRun = await runFor(task.id, newer.messageId);
@@ -787,7 +796,7 @@ async function main(): Promise<void> {
           taskId: legacyTask.id,
           status: "accepted",
           createdAt: stale,
-          acceptedAt: stale,
+          acceptedAt: stale, admittedAt: stale,
           lastEventAt: stale,
         },
       });

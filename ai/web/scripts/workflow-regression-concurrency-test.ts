@@ -285,7 +285,7 @@ async function racingMonitorRecovery(
       sessionKey: "session-race",
       status: "completed",
       createdAt: stalled,
-      acceptedAt: stalled,
+      acceptedAt: stalled, admittedAt: stalled,
       lastEventAt: stalled,
       lastAction: "start",
       lastActionAt: stalled,
@@ -480,7 +480,7 @@ async function racingMonitorRecovery(
       taskId: deadTask.id,
       status: "accepted",
       createdAt: leaseDead,
-      acceptedAt: leaseDead,
+      acceptedAt: leaseDead, admittedAt: leaseDead,
       lastEventAt: leaseDead,
     },
   });

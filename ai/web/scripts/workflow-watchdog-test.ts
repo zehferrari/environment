@@ -78,7 +78,7 @@ function run(overrides: Partial<WatchdogRunRecord> = {}): WatchdogRunRecord {
     status: "accepted",
     sessionKey: "session-1",
     createdAt: NOW - 2 * MINUTE,
-    acceptedAt: NOW - 2 * MINUTE,
+    acceptedAt: NOW - 2 * MINUTE, admittedAt: NOW - 2 * MINUTE,
     streamingAt: null,
     lastEventAt: NOW - 2 * MINUTE,
     lastAction: null,
@@ -177,7 +177,7 @@ for (const detector of WATCHDOG_DETECTORS) {
 // ------------------------------------------------------------------
 
 {
-  const stale = run({ lastEventAt: NOW - 60 * MINUTE, acceptedAt: NOW - 60 * MINUTE });
+  const stale = run({ lastEventAt: NOW - 60 * MINUTE, acceptedAt: NOW - 60 * MINUTE, admittedAt: NOW - 60 * MINUTE });
   const findings = detectWatchdogFindings(
     snapshot({ tasks: [task()], runs: [stale] }),
   );

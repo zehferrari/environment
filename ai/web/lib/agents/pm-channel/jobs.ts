@@ -12,6 +12,7 @@ import {
   pmChannelRunTargetKey,
   recordPmChannelRunQueued,
 } from "@/lib/agents/pm-channel/runs";
+import { reserveExecutionLane, releaseExecutionLane } from "@/lib/agents/pm-channel/execution-lane";
 import { publishPmChannelStreamEvent } from "@/lib/agents/pm-channel/stream";
 import { enqueuePmChannelStreamDurability } from "@/lib/agents/pm-channel/stream-log";
 import {
@@ -210,7 +211,7 @@ function recoveryMaxAgeMs() {
 
 async function appendAndPublishStatus(args: {
   payload: DispatchJobPayload;
-  runStatus: "queued" | "accepted" | "completed" | "failed" | "timed_out" | "cancelled" | "superseded";
+  runStatus: "queued" | "accepted" | "delivered" | "waiting_capacity" | "admitted" | "completed" | "failed" | "timed_out" | "cancelled" | "superseded";
   error?: string | null;
 }) {
   const input = {
@@ -591,6 +592,45 @@ export async function runPmChannelJob(job: NonNullable<Awaited<ReturnType<typeof
     await appendAndPublishStatus({ payload, runStatus: "queued", error });
     return { ok: false, driver: "openclaw-pm-channel", error } satisfies SendPmChannelTurnResult;
   }
+  // ENV-159: Reserve the execution lane before dispatching. If the lane is
+  // occupied by another run, mark this run as waiting_capacity and retry
+  // later — capacity waiting does not consume retry attempts.
+  const agentSlug = payload.replyTarget.agentSlug;
+  const laneResult = await reserveExecutionLane({
+    agentSlug,
+    runId: job.runId,
+    taskId: payload.replyTarget.kind === "task-chat" || payload.replyTarget.kind === "task-comment"
+      ? payload.replyTarget.taskId
+      : null,
+  });
+  if (!laneResult.acquired) {
+    const now = new Date();
+    await db.$transaction([
+      db.pmChannelJob.update({
+        where: { id: job.id },
+        data: {
+          status: "retryable",
+          availableAt: new Date(now.getTime() + 5000),
+          claimedBy: null,
+          claimedAt: null,
+          lastError: `agent_capacity: blocked by run ${laneResult.blockedByRunId}`,
+        },
+      }),
+      db.pmChannelRun.update({
+        where: { id: job.runId },
+        data: {
+          status: "waiting_capacity",
+          blockedReason: "agent_capacity",
+          blockedByRunId: laneResult.blockedByRunId,
+          blockedByTaskId: laneResult.blockedByTaskId,
+          capacityBlockedAt: now,
+          lastEventAt: now,
+        },
+      }),
+    ]);
+    await appendAndPublishStatus({ payload, runStatus: "waiting_capacity" });
+    return { ok: true, status: 202, driver: "openclaw-pm-channel" } satisfies SendPmChannelTurnResult;
+  }
   // A job whose last failure was a retryable TURN failure (no-reply/abort) is
   // being re-run: warn the agent the previous attempt may have partially
   // completed. Dispatch-copy only; the stored payload stays pristine.
@@ -617,6 +657,8 @@ export async function runPmChannelJob(job: NonNullable<Awaited<ReturnType<typeof
     return result;
   }
 
+  // ENV-159: Release the execution lane on dispatch failure.
+  await releaseExecutionLane({ runId: job.runId });
   const attemptCount = job.attemptCount;
   const exhausted = attemptCount >= (Number.isFinite(MAX_ATTEMPTS) && MAX_ATTEMPTS > 0 ? MAX_ATTEMPTS : 3);
   const jobStatus = exhausted ? "failed" : "retryable";

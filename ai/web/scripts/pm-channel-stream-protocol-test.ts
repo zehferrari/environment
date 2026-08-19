@@ -131,7 +131,7 @@ async function assertCallbackProtocolBoundary() {
       agentSlug,
       messageId: original.id,
       status: "accepted",
-      acceptedAt: new Date(),
+      acceptedAt: new Date(), admittedAt: new Date(),
       lastEventAt: new Date(),
     },
   });
@@ -199,7 +199,7 @@ async function assertCallbackProtocolBoundary() {
       agentSlug,
       messageId: failureOriginal.id,
       status: "accepted",
-      acceptedAt: new Date(),
+      acceptedAt: new Date(), admittedAt: new Date(),
       lastEventAt: new Date(),
     },
   });
@@ -240,7 +240,7 @@ async function assertCallbackProtocolBoundary() {
       agentSlug,
       messageId: transientOriginal.id,
       status: "accepted",
-      acceptedAt: new Date(),
+      acceptedAt: new Date(), admittedAt: new Date(),
       lastEventAt: new Date(),
     },
   });

@@ -114,6 +114,7 @@ import PmOptions from "@/components/pm-options";
 import { findPmOptionResolution, parsePmOptions, isPmOptionsTargetedAtCurrentUser } from "@/lib/pm-options";
 import AvatarCombobox, { type AvatarComboboxOption } from "@/components/avatar-combobox";
 import TaskEpicPicker from "./task-epic-picker";
+import { TaskPrerequisiteEditor } from "./task-prerequisite-editor";
 import DeploymentTab, { DeploymentStatusSelect, canShowDeploymentAction, canShowDeploymentTab, type DeploymentPrRow } from "@/components/deployment-tab";
 import { checkDeploymentStatusWrite, isDeploymentStatus } from "@/lib/deploy/deployment-status";
 import {
@@ -1476,6 +1477,9 @@ export default async function TaskDetailPage({
 
   // Comment moderation is exclusive to the Mission Control owner.
   const canDeleteComments = viewer.isOwner;
+  // Recompute blocked-by edit permission in the page component scope;
+  // the value in updateTask() lives in a different function.
+  const canEditBlockedBy = !task.blockedById || await canAccessTask(viewer, task.blockedById);
 
   const [principals, cachedProjectEpics, mentionableUsers, recentTaskChatMessages, recentReplyActivity, latestRepoVerify, allActivity, targetedCommentRows] = await Promise.all([
     viewer.isOwner ? listAssignablePrincipals(viewer) : Promise.resolve([]),
@@ -1520,21 +1524,6 @@ export default async function TaskDetailPage({
     ? blockerPermissionGrantForComment(allActivity, activeFormalBlocker.commentId)
     : null;
 
-  // Candidate blockers for the "Blocked by" picker: other live tasks in this
-  // project. Cycles are rejected server-side on save (lib/tasks/blocking.ts).
-  const blockerCandidates = await db.task.findMany({
-    where: accessibleTaskWhere(viewer, {
-      projectId: task.project.id,
-      id: { not: task.id },
-      OR: [
-        { deletedAt: null, archivedAt: null },
-        ...(task.blockedById ? [{ id: task.blockedById }] : []),
-      ],
-    }),
-    orderBy: [{ status: "asc" }, { workItemKey: "asc" }],
-    select: { id: true, workItemKey: true, title: true, status: true },
-  });
-  const currentBlockerVisible = !task.blockedById || blockerCandidates.some((candidate) => candidate.id === task.blockedById);
   const agentUsernames = mentionableUsers.filter((user) => user.kind === "agent").map((user) => user.username);
   const targetedCommentIds = new Set(targetedCommentRows.map((row) => row.originCommentId).filter(Boolean));
   const mentionables = mentionableUsers
@@ -2263,61 +2252,28 @@ export default async function TaskDetailPage({
                         task is a subset of "not executing". */}
                     <TaskExecutionStrip executionState={task.executionState} />
 
-                    {task.dependencies.length > 0 ? (
-                      <div className="space-y-1.5 rounded-card border border-line bg-panel-soft p-card">
-                        <div className="flex items-center gap-1.5 text-micro font-semibold uppercase tracking-wider text-text-muted">
-                          <LockIcon />
-                          Workflow prerequisites
-                        </div>
-                        <div className="space-y-1 text-caption">
-                          {task.dependencies.map(({ prerequisite }) => (
-                            <Link
-                              key={prerequisite.id}
-                              href={`/projects/${prerequisite.project.slug}/tasks/${prerequisite.id}`}
-                              className="flex items-center justify-between gap-2 rounded-md px-1.5 py-1 hover:bg-bg"
-                            >
-                              <span className="min-w-0 truncate">
-                                {prerequisite.workItemKey ?? prerequisite.title}
-                                {prerequisite.project.slug !== slug ? ` · ${prerequisite.project.name}` : ""}
-                              </span>
-                              <span className={prerequisite.status === "Done" ? "text-ok" : "text-warn"}>
-                                {prerequisite.status}
-                              </span>
-                            </Link>
-                          ))}
-                        </div>
-                        <p className="text-nano text-text-muted">
-                          Assignment and start unlock only after every prerequisite is Done.
-                        </p>
-                      </div>
-                    ) : null}
-
-                    {/* Legacy primary prerequisite editor (ENV-62). */}
-                    {currentBlockerVisible ? <div className="space-y-1 rounded-card border border-line bg-panel-soft p-card">
-                      <label className="block">
-                        <span className="mb-1 flex items-center gap-1.5 text-micro font-semibold uppercase tracking-wider text-text-muted">
-                          <LockIcon />
-                          Primary prerequisite
-                        </span>
-                        <select
-                          form="taskMain"
-                          name="blockedById"
-                          defaultValue={task.blockedById ?? ""}
-                          aria-label="Primary prerequisite"
-                          className="w-full rounded-lg border border-line bg-bg px-2 py-1.5 text-caption outline-none focus:border-accent"
-                        >
-                          <option value="">None</option>
-                          {blockerCandidates.map((candidate) => (
-                            <option key={candidate.id} value={candidate.id}>
-                              {(candidate.workItemKey ? `${candidate.workItemKey} — ` : "") + candidate.title} ({candidate.status})
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <p className="text-nano text-text-muted">
-                        Human-edited same-project prerequisite. Manager-created multi-project dependencies are listed above.
-                      </p>
-                    </div> : null}
+                    {/* Multi-prerequisite editor (ENV-159 step 8).
+                        Replaces the legacy single-value blockedById panel.
+                        Renders union of TaskDependency + legacy blockedById edges.
+                        canEdit respects canEditBlockedBy from the server auth check.
+                        readOnlyDependencies marks cross-project/manager-created edges
+                        the current user cannot remove. */}
+                    <TaskPrerequisiteEditor
+                      taskId={task.id}
+                      projectSlug={slug}
+                      canEdit={canEditBlockedBy}
+                      readOnlyDependencies={task.dependencies
+                        .filter(({ prerequisite }) => prerequisite.project.slug !== slug)
+                        .map(({ prerequisite }) => ({
+                          id: prerequisite.id,
+                          title: prerequisite.title,
+                          workItemKey: prerequisite.workItemKey ?? null,
+                          status: prerequisite.status,
+                          projectId: prerequisite.projectId ?? null,
+                          private: prerequisite.private ?? false,
+                          source: "dependency" as const,
+                        }))}
+                    />
 
                     <div data-task-actions className="grid grid-cols-2 gap-3">
                       <form

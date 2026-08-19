@@ -35,7 +35,8 @@ async function markDirectTurnAccepted(slug: string, messageId: string) {
       agentSlug: slug,
       messageId,
       status: "accepted",
-      acceptedAt: new Date(),
+      admittedAt: new Date(),
+      acceptedAt: new Date(), // ENV-159: legacy compatibility
       lastEventAt: new Date(),
     },
   });

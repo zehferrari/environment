@@ -1380,6 +1380,20 @@ model PmChannelRun {
   // effect. A continuation-required action lands here without settling.
   lastAction                 String?
   lastActionAt               DateTime?
+  // ENV-159: Lifecycle separation — `admittedAt` replaces `acceptedAt` to
+  // represent actual model execution admission, not merely gateway receipt.
+  // `acceptedAt` is kept as a compatibility read path during the migration;
+  // new code writes `admittedAt`. The delivery→capacity→admission chain is:
+  //   queued → claimed → delivered → waiting_capacity → admitted → streaming → terminal
+  admittedAt                 DateTime?
+  // ENV-159: Capacity-blocked run metadata. When an agent's execution lane is
+  // occupied, the run enters waiting_capacity instead of being delivered.
+  blockedReason              String?
+  blockedByRunId             String?
+  blockedByTaskId            String?
+  capacityBlockedAt          DateTime?
+  gatewayDispatchId          String?
+  // Legacy field retained for compatibility — new code uses admittedAt.
   acceptedAt                 DateTime?
   streamingAt                DateTime?
   completedAt                DateTime?
@@ -1399,6 +1413,7 @@ model PmChannelRun {
   contextGrants              ContextGrant[]
   continuations              PmChannelContinuation[]
   comments                   Comment[]
+  toolCalls                  PmChannelToolCall[]
 
   @@index([agentSlug])
   @@index([messageId])
@@ -1409,6 +1424,7 @@ model PmChannelRun {
   @@index([status])
   @@index([lastEventAt])
   @@index([supersededByRunId])
+  @@index([blockedByRunId])
 }
 
 // ENV-118 continuation outbox. A continuation-required workflow action (start,
@@ -1499,6 +1515,53 @@ model PmChannelStreamEvent {
   @@index([runId, createdAt])
   @@index([kind])
   @@index([createdAt])
+}
+
+// ENV-159: Durable tool-call correlation table. Each logical tool call gets
+// exactly one row per run, keyed by the stable toolCallId. This is what makes
+// tool accounting idempotent: duplicate callbacks/retries for the same
+// toolCallId find the existing row and do not increment the episode count.
+model PmChannelToolCall {
+  id          String       @id @default(cuid())
+  runId       String
+  run         PmChannelRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  toolCallId  String
+  toolName    String
+  provider    String?
+  model       String?
+  startedAt   DateTime     @default(now())
+  completedAt DateTime?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@unique([runId, toolCallId])
+  @@index([runId])
+  @@index([toolCallId])
+}
+
+// ENV-159: Durable per-agent execution lane. Ensures only one run per agent
+// is reserved/admitted/running at a time. The partial unique index on
+// (agentSlug) WHERE status IN (reserved, admitted, running) is the constraint
+// that makes the lane exclusive. Queue priority is enforced by the job
+// scheduler: continuation > review feedback > reviewer/manager decisions >
+// newly approved To Do > informational.
+model AgentExecutionLease {
+  id          String   @id @default(cuid())
+  agentSlug   String
+  runId       String?  @unique
+  taskId      String?
+  status      String   @default("reserved") // reserved | admitted | running | released
+  leaseToken  String   @unique @default(cuid())
+  acquiredAt  DateTime @default(now())
+  heartbeatAt DateTime?
+  expiresAt   DateTime?
+  releasedAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([agentSlug])
+  @@index([status])
+  @@index([taskId])
 }
 
 // Opaque, short-lived read capability handed to agents instead of putting a
