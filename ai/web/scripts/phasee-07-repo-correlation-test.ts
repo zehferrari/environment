@@ -64,7 +64,7 @@ async function setupTestTask(): Promise<{ taskId: string; projectId: string; pro
       status: "In Progress",
       workflowVersion: 1,
       branchName: "test-branch",
-      workItemKey: "TEST-1",
+      workItemKey: `TEST-${randomUUID().slice(0, 8)}`,
       activeWorkflowCycleId: workflowCycleId,
     },
   });
@@ -126,9 +126,9 @@ async function setupTestRepoRun(taskId: string): Promise<void> {
 }
 
 async function cleanupTestTask(taskId: string, projectId: string): Promise<void> {
-  await db.taskRepositoryRun.delete({ where: { taskId } }).catch(() => {});
-  await db.task.delete({ where: { id: taskId } }).catch(() => {});
-  await db.project.delete({ where: { id: projectId } }).catch(() => {});
+  await db.taskRepositoryRun.deleteMany({ where: { taskId } }).catch(() => {});
+  await db.task.deleteMany({ where: { id: taskId } }).catch(() => {});
+  await db.project.deleteMany({ where: { id: projectId } }).catch(() => {});
 }
 
 async function test1_ExactV2CallbackApplies(): Promise<void> {
@@ -475,59 +475,182 @@ async function test10_StepNotFoundMismatchRecorded(): Promise<void> {
 }
 
 async function test11_DifferentShaResubmissionCallbackApplies(): Promise<void> {
-  console.log("\n--- Test 11: Different-SHA resubmission across two cycles — second callback applies (Fix #1) ---");
+  console.log("\n--- Test 11: Different-SHA resubmission across two cycles — handler drives real code path (Fix #1) ---");
   // Regression test for the blocking review finding:
   //   Cycle 1 submits SHA A; repositoryRun.candidateSha = A.
   //   Reviewer sends review_feedback — reviewedSha cleared but candidateSha stays A.
   //   Cycle 2 submits SHA B; procInput.candidateSha = B.
-  //   The job's previousCandidateSha = B (from candidateOutput), but the step output
-  //   v2Identity.candidateSha must ALSO be B (not repositoryRun.candidateSha = A).
+  //   The run_validation handler reads candidateOutput from the prepare_candidate
+  //   step output. With Fix #1, v2Identity.candidateSha uses candidateOutput.candidateSha
+  //   (same as job.previousCandidateSha), NOT repositoryRun.candidateSha.
   //   The runner echoes B; exact correlation must match and the callback must apply.
-  const { taskId, projectId, procedureRunId, stepId, workflowCycleId } = await setupTestTask();
-  try {
-    // Simulate cycle 1: DB row has candidateSha = "sha-A".
-    await setupTestRepoRun(taskId);
-    await db.taskRepositoryRun.update({
-      where: { taskId },
-      data: { candidateSha: "sha-A", publicationState: "published" },
-    });
+  const { getStepHandler } = await import("@/lib/tasks/orchestrator/procedure-runner");
+  const { registerSubmitCandidateForReviewHandlers } = await import("@/lib/tasks/orchestrator/handlers/submit-candidate-for-review");
+  registerSubmitCandidateForReviewHandlers();
 
-    // Simulate cycle 2: step output carries candidateSha = "sha-B" (the new
-    // candidate from candidateOutput, NOT the stale DB row value "sha-A").
-    // This is what the fix produces: v2Identity.candidateSha uses candidateOutput.candidateSha.
-    await db.taskProcedureStep.update({
-      where: { id: stepId },
+  const projectId = randomUUID();
+  const taskId = randomUUID();
+  const procedureRunId = randomUUID();
+  const prepareStepId = randomUUID();
+  const validationStepId = randomUUID();
+  const workflowCycleId = randomUUID();
+
+  try {
+    // Seed minimal project + task + procedure run for the handler to resolve.
+    await db.project.create({
       data: {
-        status: "waiting_callback",
-        output: JSON.stringify({
-          jobId: "test-job-1",
-          candidateSha: "sha-B",  // Fix #1: step output now carries the same SHA as the job
-          baseSha: "def456",
-          schemaVersion: REPOSITORY_JOB_SCHEMA_V2,
-        }),
+        id: projectId,
+        slug: `test-${randomUUID().slice(0, 8)}`,
+        name: "Test Project",
+        repositoryPath: "/tmp/test-repo",
+        defaultGitUserName: "Test",
+        defaultGitUserEmail: "test@test.com",
       },
     });
 
-    // The runner echoes candidateSha = "sha-B" (matching job.previousCandidateSha).
-    const callback: ProcedureCallback = {
+    await db.task.create({
+      data: {
+        id: taskId,
+        projectId,
+        title: "Test Task",
+        description: "Test",
+        status: "In Progress",
+        workflowVersion: 1,
+        branchName: "test-branch",
+        workItemKey: `TEST-${randomUUID().slice(0, 8)}`,
+        activeWorkflowCycleId: workflowCycleId,
+      },
+    });
+
+    await db.taskWorkflowCycle.create({
+      data: {
+        id: workflowCycleId,
+        taskId,
+        sequence: 1,
+        status: "active",
+        openedWorkflowVersion: 1,
+      },
+    });
+
+    // Seed the procedure run with cycle-2 input carrying candidateSha = "sha-B".
+    await db.taskProcedureRun.create({
+      data: {
+        id: procedureRunId,
+        taskId,
+        workflowCycleId,
+        triggerTransitionId: `test-${randomUUID()}`,
+        type: "submit_candidate_for_review",
+        definitionVersion: 1,
+        status: "running",
+        input: JSON.stringify({ candidateSha: "sha-B", baseSha: "base-B" }),
+      },
+    });
+
+    // Seed a completed prepare_candidate step whose output carries candidateSha = "sha-B".
+    // This is what run_validation reads as candidateOutput.candidateSha.
+    await db.taskProcedureStep.create({
+      data: {
+        id: prepareStepId,
+        procedureRunId,
+        name: "prepare_candidate",
+        ordinal: 2,
+        status: "completed",
+        output: JSON.stringify({ codeTouching: true, candidateSha: "sha-B", baseSha: "base-B" }),
+      },
+    });
+
+    // Seed the run_validation step (status: waiting — the handler will update it).
+    await db.taskProcedureStep.create({
+      data: {
+        id: validationStepId,
+        procedureRunId,
+        name: "run_validation",
+        ordinal: 3,
+        status: "waiting",
+      },
+    });
+
+    // Seed TaskRepositoryRun with stale cycle-1 candidateSha = "sha-A".
+    await db.taskRepositoryRun.create({
+      data: {
+        taskId,
+        phase: "preparing",
+        branchName: "test-branch",
+        candidateSha: "sha-A",
+        baseSha: "base-A",
+        publicationState: "published",
+        replayCount: 0,
+      },
+    });
+
+    // Invoke the real run_validation handler.
+    const handler = getStepHandler("submit_candidate_for_review", 1, "run_validation");
+    assert(handler !== undefined, "run_validation handler should be registered");
+
+    const result = await handler!({
       procedureRunId,
-      stepId,
+      stepId: validationStepId,
       taskId,
       workflowCycleId,
-      jobId: "test-job-1",
+      input: null,
+      triggerTransitionId: `test-${randomUUID()}`,
+    });
+
+    // Fix #1 assertion: output.candidateSha MUST be "sha-B" (from candidateOutput),
+    // NOT "sha-A" (from stale repositoryRun.candidateSha).
+    // This assertion FAILS when Fix #1 is reverted.
+    assert(result.status === "waiting_callback", `Handler should return waiting_callback, got: ${result.status}`);
+    assert(result.output?.candidateSha === "sha-B", `output.candidateSha should be 'sha-B' (from candidateOutput, not stale DB row), got: ${result.output?.candidateSha}`);
+    assert(result.output?.baseSha === "base-B", `output.baseSha should be 'base-B', got: ${result.output?.baseSha}`);
+
+    // PHASEE-07 Fix #3: Verify deterministic jobId was built from procedureRunId + stepId.
+    const expectedJobId = `proc-val-${procedureRunId}-${validationStepId}`;
+    assert(result.jobId === expectedJobId, `jobId should be deterministic: ${expectedJobId}, got: ${result.jobId}`);
+
+    // PHASEE-07: Verify the step was NOT mutated by the handler itself
+    // (the procedure runner updates step status/output after handler returns).
+    const updatedStep = await db.taskProcedureStep.findUnique({ where: { id: validationStepId } });
+    // Handler returns waiting_callback result; the runner updates the step.
+    assert(updatedStep?.status === "waiting", "Step status should still be 'waiting' — runner handles the transition");
+
+    // The handler result output carries candidateSha, not the DB row yet.
+    assert(result.output?.candidateSha === "sha-B", `Handler result candidateSha should be 'sha-B', got: ${result.output?.candidateSha}`);
+
+    // Update the step to waiting_callback with the handler output so applyProcedureCallback can match it.
+    await db.taskProcedureStep.update({
+      where: { id: validationStepId },
+      data: {
+        status: "waiting_callback",
+        output: JSON.stringify(result.output),
+      },
+    });
+
+    // Now drive applyProcedureCallback with the echoed candidateSha = "sha-B".
+    const callback: ProcedureCallback = {
+      procedureRunId,
+      stepId: validationStepId,
+      taskId,
+      workflowCycleId,
+      jobId: expectedJobId,
       candidateSha: "sha-B",
-      baseSha: "def456",
+      baseSha: "base-B",
       schemaVersion: REPOSITORY_JOB_SCHEMA_V2,
       data: { validationOutcome: "valid" },
     };
-    const result = await applyProcedureCallback(callback);
-    assert(result.applied === true, `Different-SHA resubmission callback should apply (Fix #1), got: ${result.reason}`);
+    const cbResult = await applyProcedureCallback(callback);
+    assert(cbResult.applied === true, `Callback should apply after exact correlation, got: ${cbResult.reason}`);
 
-    // Verify step is completed.
-    const step = await db.taskProcedureStep.findUnique({ where: { id: stepId } });
-    assert(step?.status === "completed", "Step should be completed after different-SHA resubmission callback");
+    // Verify step is now completed.
+    const finalStep = await db.taskProcedureStep.findUnique({ where: { id: validationStepId } });
+    assert(finalStep?.status === "completed", "Step should be completed after successful callback");
   } finally {
-    await cleanupTestTask(taskId, projectId);
+    // Cleanup in reverse dependency order.
+    await db.taskRepositoryRun.deleteMany({ where: { taskId } }).catch(() => {});
+    await db.taskProcedureStep.deleteMany({ where: { procedureRunId } }).catch(() => {});
+    await db.taskProcedureRun.deleteMany({ where: { id: procedureRunId } }).catch(() => {});
+    await db.taskWorkflowCycle.deleteMany({ where: { taskId } }).catch(() => {});
+    await db.task.deleteMany({ where: { id: taskId } }).catch(() => {});
+    await db.project.deleteMany({ where: { id: projectId } }).catch(() => {});
   }
 }
 
