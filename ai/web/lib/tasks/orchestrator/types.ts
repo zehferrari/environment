@@ -186,6 +186,10 @@ export type WorkflowActor = {
   // SERVER-RESOLVED ONLY — never copied from request JSON. The transport
   // may leave this undefined; authorize.ts sets it from assignment/registry.
   role?: WorkflowActorRole;
+  // SERVER-RESOLVED ONLY — whether the actor has coding capability.
+  // Resolved upstream from the DB agent record (agent.role === "coding")
+  // and carried on the actor so authorizeCommand stays a pure function.
+  codingCapability?: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -509,6 +513,7 @@ export const DOMAIN_ERROR_CODES = [
   "not_assignee",
   "not_reviewer",
   "not_authorized",
+  "not_coding_capable",
   "lease_mismatch",
   "candidate_mismatch",
   "cycle_mismatch",
@@ -516,6 +521,10 @@ export const DOMAIN_ERROR_CODES = [
   "prerequisites_unmet",
   "wip_conflict",
   "branch_collision",
+  "checklist_incomplete",
+  "blocker_unresolved",
+  "plan_evidence_invalid",
+  "callback_correlation_mismatch",
   "operational_error",
   "unknown_intent",
 ] as const;
@@ -542,6 +551,7 @@ export const DOMAIN_ERROR_HTTP_STATUS: ReadonlyMap<DomainErrorCode, number> = ne
   ["not_assignee", 403],
   ["not_reviewer", 403],
   ["not_authorized", 403],
+  ["not_coding_capable", 403],
   ["lease_mismatch", 409],
   ["candidate_mismatch", 409],
   ["cycle_mismatch", 409],
@@ -549,6 +559,10 @@ export const DOMAIN_ERROR_HTTP_STATUS: ReadonlyMap<DomainErrorCode, number> = ne
   ["prerequisites_unmet", 409],
   ["wip_conflict", 409],
   ["branch_collision", 409],
+  ["checklist_incomplete", 422],
+  ["blocker_unresolved", 422],
+  ["plan_evidence_invalid", 422],
+  ["callback_correlation_mismatch", 409],
   ["operational_error", 503],
   ["unknown_intent", 422],
 ]);
@@ -641,6 +655,9 @@ export type TaskStateSnapshot = {
     status: string;
     candidateSha: string;
     reviewerId: string | null;
+    baseSha: string | null;
+    repoTouched: boolean;
+    validationOutcome: string;
   } | null;
   repositoryRun?: {
     phase: string;
@@ -657,5 +674,24 @@ export type TaskStateSnapshot = {
   epic?: {
     status: string;
     actingManagerId: string | null;
+  } | null;
+  // --- Extended fields for §10 guards (PHASEE-03) ---
+  // These are populated by loadTaskAggregate and are optional on
+  // TaskStateSnapshot so existing callers that construct snapshots
+  // manually still compile. Guards that need them check for undefined.
+  unresolvedPrerequisites?: Array<{ id: string; title: string; status: string }>;
+  otherInProgressTaskForAssignee?: { id: string; title: string } | null;
+  otherInProgressTaskOnBranch?: { id: string; title: string; branchName: string | null } | null;
+  openChecklist?: { count: number; ids: string[] };
+  activeBlocker?: {
+    commentId: string | null;
+    permissionRequest: { kind: string; scope: string } | null;
+  } | null;
+  actionPlan?: {
+    id: string;
+    version: number;
+    status: string;
+    approvedOn: Date | null;
+    steps: Array<{ id: string; stepId: string; title: string; kind: string; assigneeId: string | null; rank: number }>;
   } | null;
 };

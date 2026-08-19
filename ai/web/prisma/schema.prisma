@@ -618,8 +618,6 @@ model TaskProcedureRun {
   workflowCycle       TaskWorkflowCycle?  @relation(fields: [workflowCycleId], references: [id], onDelete: SetNull)
   triggerTransitionId String              @map("trigger_transition_id")
   type                String
-  definitionVersion   Int                 @default(1) @map("definition_version")
-  inputSchemaVersion  Int                 @default(1) @map("input_schema_version")
   status              String              @default("queued")
   currentStep         String?             @map("current_step")
   input               String?

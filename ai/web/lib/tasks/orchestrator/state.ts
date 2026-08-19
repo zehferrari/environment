@@ -24,7 +24,7 @@
 import type { Prisma } from "@prisma/client";
 import type { TaskWorkflowCommand } from "@/lib/tasks/orchestrator/types";
 import type { TaskStateSnapshot } from "@/lib/tasks/orchestrator/types";
-import { resolveReviewOwnerIdFromSnapshot } from "@/lib/tasks/orchestrator/authorize";
+import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 
 // ---------------------------------------------------------------------------
 // FENCE_ERROR_CODES — local declaration, structurally assignable to 02a's
@@ -544,7 +544,7 @@ async function loadTaskAggregateWithClient(
     }));
 
   // --- Resolve review owner for snapshot compatibility ---
-  const resolvedReviewOwnerId = resolveReviewOwnerIdFromSnapshot({
+  const resolvedReviewOwnerId = resolveReviewOwnerId({
     actingManagerId: task.actingManagerId,
     reporterId: task.reporterId,
     epic: task.epic
