@@ -110,7 +110,23 @@ async function setupTestTask(): Promise<{ taskId: string; projectId: string; pro
   return { taskId, projectId, procedureRunId, stepId, workflowCycleId };
 }
 
+async function setupTestRepoRun(taskId: string): Promise<void> {
+  // Create a TaskRepositoryRun row for publicationState/replayCount testing.
+  await db.taskRepositoryRun.create({
+    data: {
+      taskId,
+      phase: "validating",
+      branchName: "test-branch",
+      candidateSha: "abc123",
+      baseSha: "def456",
+      publicationState: "publishing",
+      replayCount: 0,
+    },
+  });
+}
+
 async function cleanupTestTask(taskId: string, projectId: string): Promise<void> {
+  await db.taskRepositoryRun.delete({ where: { taskId } }).catch(() => {});
   await db.task.delete({ where: { id: taskId } }).catch(() => {});
   await db.project.delete({ where: { id: projectId } }).catch(() => {});
 }
@@ -118,6 +134,7 @@ async function cleanupTestTask(taskId: string, projectId: string): Promise<void>
 async function test1_ExactV2CallbackApplies(): Promise<void> {
   console.log("\n--- Test 1: Exact V2 callback correlation applies successfully ---");
   const { taskId, projectId, procedureRunId, stepId, workflowCycleId } = await setupTestTask();
+  await setupTestRepoRun(taskId);
   try {
     const callback: ProcedureCallback = {
       procedureRunId,
@@ -140,6 +157,11 @@ async function test1_ExactV2CallbackApplies(): Promise<void> {
     // Verify step is now completed.
     const step = await db.taskProcedureStep.findUnique({ where: { id: stepId } });
     assert(step?.status === "completed", "Step should be completed after successful callback");
+
+    // PHASEE-07 Fix #2b: Verify publicationState transitioned to "published".
+    const repoRun = await db.taskRepositoryRun.findUnique({ where: { taskId } });
+    assert(repoRun?.publicationState === "published", `publicationState should be "published" after successful callback, got: ${repoRun?.publicationState}`);
+    assert(repoRun?.replayCount === 0, `replayCount should be 0 on first callback, got: ${repoRun?.replayCount}`);
   } finally {
     await cleanupTestTask(taskId, projectId);
   }
@@ -194,6 +216,7 @@ async function test2_V2CallbackMismatchRejected(): Promise<void> {
 async function test3_DuplicateCallbackReplayed(): Promise<void> {
   console.log("\n--- Test 3: Duplicate V2 callback is replayed and recorded ---");
   const { taskId, projectId, procedureRunId, stepId, workflowCycleId } = await setupTestTask();
+  await setupTestRepoRun(taskId);
   try {
     const callback: ProcedureCallback = {
       procedureRunId,
@@ -210,10 +233,20 @@ async function test3_DuplicateCallbackReplayed(): Promise<void> {
     const result1 = await applyProcedureCallback(callback);
     assert(result1.applied === true, "First callback should apply");
 
+    // Verify publicationState is "published" after first callback.
+    const repoRun1 = await db.taskRepositoryRun.findUnique({ where: { taskId } });
+    assert(repoRun1?.publicationState === "published", `publicationState should be "published" after first callback, got: ${repoRun1?.publicationState}`);
+    assert(repoRun1?.replayCount === 0, `replayCount should be 0 after first callback, got: ${repoRun1?.replayCount}`);
+
     // Second callback is a replay.
     const result2 = await applyProcedureCallback(callback);
     assert(result2.applied === true, "Duplicate callback should be replayed (no-op)");
     assert(result2.reason.includes("already completed"), `Should say already completed, got: ${result2.reason}`);
+
+    // PHASEE-07 Fix #2b: Verify publicationState transitioned to "pending" and replayCount incremented.
+    const repoRun2 = await db.taskRepositoryRun.findUnique({ where: { taskId } });
+    assert(repoRun2?.publicationState === "pending", `publicationState should be "pending" after replay, got: ${repoRun2?.publicationState}`);
+    assert(repoRun2?.replayCount === 1, `replayCount should be 1 after replay, got: ${repoRun2?.replayCount}`);
 
     // Verify a replay activity was recorded.
     const replayActivities = await db.activityLog.findMany({
@@ -410,6 +443,37 @@ async function test9_V2RepositoryJobIdentityTypeAndGuard(): Promise<void> {
   assert(REPOSITORY_JOB_SCHEMA_V2 === 2, "Schema version constant should be 2");
 }
 
+async function test10_StepNotFoundMismatchRecorded(): Promise<void> {
+  console.log("\n--- Test 10: step_not_found mismatch is recorded as activity ---");
+  const { taskId, projectId, procedureRunId, stepId, workflowCycleId } = await setupTestTask();
+  try {
+    // Use a non-existent stepId so the step lookup fails.
+    const wrongStepId = randomUUID();
+    const callback: ProcedureCallback = {
+      procedureRunId,
+      stepId: wrongStepId,
+      taskId,
+      workflowCycleId,
+      jobId: "test-job-1",
+      candidateSha: "abc123",
+      baseSha: "def456",
+      schemaVersion: REPOSITORY_JOB_SCHEMA_V2,
+      data: { validationOutcome: "valid" },
+    };
+    const result = await applyProcedureCallback(callback);
+    assert(result.applied === false, "Callback with wrong stepId should be rejected");
+    assert(result.reason.includes("Step not found"), `Should say step not found, got: ${result.reason}`);
+
+    // PHASEE-07 Fix #3: Verify the mismatch was recorded as activity using callback.taskId.
+    const activities = await db.activityLog.findMany({
+      where: { taskId, kind: "task.workflow.callback.mismatch" },
+    });
+    assert(activities.length > 0, "step_not_found mismatch should be recorded as activity");
+  } finally {
+    await cleanupTestTask(taskId, projectId);
+  }
+}
+
 async function main() {
   console.log("=== PHASEE-07: Exact repository job and callback correlation tests ===\n");
 
@@ -422,6 +486,7 @@ async function main() {
   await test7_DeterministicJobFilenames();
   await test8_MismatchedCallbackNoUserComments();
   await test9_V2RepositoryJobIdentityTypeAndGuard();
+  await test10_StepNotFoundMismatchRecorded();
 
   console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
   if (failed > 0) {

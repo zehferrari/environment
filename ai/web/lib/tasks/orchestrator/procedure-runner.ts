@@ -181,16 +181,27 @@ export async function applyProcedureCallback(callback: ProcedureCallback): Promi
   // PHASEE-07 Fix #1: Use step.procedureRun.taskId (the trusted owner) for
   // ActivityLog FK, not callback.taskId (untrusted/stale in a mismatch).
   // The offending callback.taskId is preserved inside the payload.
-  // When the step itself is not found, we cannot resolve a trusted taskId —
-  // skip activity recording in that case (no FK target exists).
   const trustedTaskId = step?.procedureRun?.taskId ?? null;
-  const taskRow = trustedTaskId
-    ? await db.task.findUnique({ where: { id: trustedTaskId }, select: { projectId: true } })
+  // PHASEE-07 Fix #3: When the step is not found, fall back to callback.taskId
+  // to look up the task so we can still record the mismatch activity.
+  const taskIdForLookup = trustedTaskId ?? callback.taskId;
+  const taskRow = taskIdForLookup
+    ? await db.task.findUnique({ where: { id: taskIdForLookup }, select: { projectId: true } })
     : null;
   const projectId = taskRow?.projectId ?? null;
 
   if (!step || !step.procedureRun) {
-    // Cannot record activity — no trusted task to attribute it to.
+    // PHASEE-07 Fix #3: Record the step_not_found mismatch using callback.taskId
+    // so the mismatch is visible in activity logs, not silently dropped.
+    if (projectId && callback.taskId) {
+      await recordCallbackActivity({
+        projectId,
+        taskId: callback.taskId,
+        kind: "task.workflow.callback.mismatch",
+        fingerprint: callbackMismatchFingerprint(callback, "step_not_found"),
+        payload: { reason: "Step not found for callback.", callbackTaskId: callback.taskId, callback },
+      });
+    }
     return { applied: false, reason: "Step not found." };
   }
   if (step.procedureRun.id !== callback.procedureRunId) {
@@ -292,7 +303,35 @@ export async function applyProcedureCallback(callback: ProcedureCallback): Promi
   }
   // Idempotent: a duplicate callback for an already-completed step is a no-op.
   // PHASEE-07: record it as a deduplicated replay activity.
+  // PHASEE-07 Fix #2a: Move publicationState/replayCount logic HERE — before the
+  // completed-step return — so that a duplicate callback (replay) actually
+  // reaches the counter. Previously this block sat after the return and was
+  // dead code. Also write "pending" when a replay is detected so the state
+  // lifecycle is complete: publishing -> published -> pending (on replay).
   if (step.status === "completed") {
+    // Update publication state: this is a replay of a previously-published job.
+    // The row should already be in "published" state from the first callback.
+    try {
+      const existingRun = await db.taskRepositoryRun.findUnique({
+        where: { taskId: trustedTaskId! },
+        select: { id: true, publicationState: true, replayCount: true },
+      });
+      if (existingRun) {
+        await db.taskRepositoryRun.update({
+          where: { id: existingRun.id },
+          data: {
+            publicationState: "pending",
+            replayCount: existingRun.replayCount + 1,
+          },
+        });
+      }
+    } catch (e) {
+      // Narrow catch: only tolerate a missing TaskRepositoryRun row (P2025).
+      // Other errors (e.g. unknown field) should surface, not be swallowed.
+      if (!(e instanceof Error && 'code' in e && (e as { code: string }).code === 'P2025')) {
+        throw e;
+      }
+    }
     if (projectId) {
       await recordCallbackActivity({
         projectId,
@@ -316,27 +355,31 @@ export async function applyProcedureCallback(callback: ProcedureCallback): Promi
     }
     return { applied: false, reason: `Step is in ${step.status}, not waiting_callback.` };
   }
-  // PHASEE-07 Fix #2: On successful callback, transition publicationState
-  // to 'published' and increment replayCount if this was a replay of a
-  // previously-published job (detected via existing publicationState).
-  // The repositoryRun row may not exist for all task types, so guard with
-  // a try/catch — the publication state is observability, not a gate.
+  // PHASEE-07 Fix #2a: On first successful callback, transition publicationState
+  // from "publishing" to "published". The replayCount increment happens in the
+  // completed-step branch above (since a replay is a duplicate callback for an
+  // already-completed step). Narrow catch: only tolerate a missing
+  // TaskRepositoryRun row (P2025), not all errors.
   try {
     const existingRun = await db.taskRepositoryRun.findUnique({
       where: { taskId: trustedTaskId! },
       select: { id: true, publicationState: true, replayCount: true },
     });
     if (existingRun) {
-      const isReplay = existingRun.publicationState === "published";
       await db.taskRepositoryRun.update({
         where: { id: existingRun.id },
         data: {
           publicationState: "published",
-          replayCount: isReplay ? existingRun.replayCount + 1 : existingRun.replayCount,
         },
       });
     }
-  } catch { /* publication state is observability, not a gate */ }
+  } catch (e) {
+    // Narrow catch: only tolerate a missing TaskRepositoryRun row (P2025).
+    // Other errors should surface, not be swallowed.
+    if (!(e instanceof Error && 'code' in e && (e as { code: string }).code === 'P2025')) {
+      throw e;
+    }
+  }
 
   // Mark the step completed; the runner picks up the next step on the next
   // poll. The callback's evidence (candidateSha, baseSha, validationOutcome,

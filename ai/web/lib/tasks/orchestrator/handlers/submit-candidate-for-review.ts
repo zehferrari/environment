@@ -292,12 +292,23 @@ async function runValidation(ctx: StepHandlerContext): Promise<StepHandlerResult
     lastError: null,
     incrementAttempt: true,
   });
-  // PHASEE-07 Fix #2: Set publicationState to 'publishing' when enqueuing.
+  // PHASEE-07 Fix #2a: Read publicationState to detect a replay (crash-recovery
+  // re-enqueue of the same job). If the row is already in "published" state,
+  // this is a replay — transition to "pending" and increment replayCount.
+  // Then set to "publishing" for the new enqueue.
   // PHASEE-07 Fix #3: Store full V2 identity packet in waiting_callback output
   // so a crash-replay can re-publish the same job deterministically.
+  const existingRepoRun = await db.taskRepositoryRun.findUnique({
+    where: { taskId: task.id },
+    select: { id: true, publicationState: true, replayCount: true },
+  });
+  const isReplay = existingRepoRun?.publicationState === "published";
   await db.taskRepositoryRun.update({
     where: { taskId: task.id },
-    data: { publicationState: "publishing" },
+    data: {
+      publicationState: "publishing",
+      replayCount: isReplay ? (existingRepoRun?.replayCount ?? 0) + 1 : existingRepoRun?.replayCount ?? 0,
+    },
   });
   const v2Identity = {
     schemaVersion: REPOSITORY_JOB_SCHEMA_V2,
