@@ -54,6 +54,7 @@ import { resolveValidationProfileSnapshot } from "@/lib/tasks/validation-profile
 import { effectiveTaskBranchName, effectiveEpicBranchName } from "@/lib/work-items/branches";
 import { effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
 import type { BranchVerifyJob } from "@/lib/deploy/branch-verify";
+import { REPOSITORY_JOB_SCHEMA_V2 } from "@/lib/deploy/branch-verify";
 
 const PROCEDURE_TYPE: TaskProcedureType = "submit_candidate_for_review";
 
@@ -226,7 +227,15 @@ async function runValidation(ctx: StepHandlerContext): Promise<StepHandlerResult
     deploymentPrTargetBranch: task.project.deploymentPrTargetBranch,
   });
   const validationProfile = await resolveValidationProfileSnapshot(task.projectId);
-  const jobId = `proc-val-${ctx.procedureRunId}-${Date.now()}`;
+  // PHASEE-07 Fix #3: Deterministic job ID based on procedure run + step —
+  // a crash-replay re-publishes the same jobId, hitting the same spool path,
+  // so no duplicate spool file is created.
+  const jobId = `proc-val-${ctx.procedureRunId}-${ctx.stepId}`;
+  // PHASEE-07: Resolve repository run for V2 identity fields.
+  const repoRun = await db.taskRepositoryRun.findUnique({
+    where: { taskId: task.id },
+    select: { id: true, version: true, baseSha: true, candidateSha: true },
+  });
   const job: BranchVerifyJob = {
     jobId,
     taskId: task.id,
@@ -234,9 +243,14 @@ async function runValidation(ctx: StepHandlerContext): Promise<StepHandlerResult
     projectSlug: task.project.slug,
     repositoryPath: task.project.repositoryPath,
     branchName,
+    // PHASEE-07: emit schema-v2 job with mandatory V2 identity fields.
+    schemaVersion: REPOSITORY_JOB_SCHEMA_V2,
     procedureRunId: ctx.procedureRunId,
     procedureStepId: ctx.stepId,
     workflowCycleId: ctx.workflowCycleId,
+    commandReceiptId: null, // populated when command receipt is available in ctx
+    repositoryRunId: repoRun?.id ?? null,
+    repositoryRunVersion: repoRun?.version ?? null,
     baseBranch: effectiveSettings.deployment.prTargetBranch.value,
     epicChild: Boolean(task.epicId),
     epicBranch: task.epic ? effectiveEpicBranchName(task.epic) : null,
@@ -278,7 +292,44 @@ async function runValidation(ctx: StepHandlerContext): Promise<StepHandlerResult
     lastError: null,
     incrementAttempt: true,
   });
-  return { status: "waiting_callback", jobId, output: { candidateSha: task.repositoryRun?.candidateSha, baseSha: task.repositoryRun?.baseSha, branchName } };
+  // PHASEE-07: Publication lifecycle:
+  //   publishing  → set here at enqueue time.
+  //   published   → set by procedure-runner when the callback is applied (step completes).
+  //   pending     → set by procedure-runner when a duplicate callback arrives for an
+  //                 already-completed step; replayCount is incremented there.
+  // A re-enqueue after crash-recovery sees publicationState="published" and
+  // increments replayCount here, then sets "publishing" for the new enqueue.
+  // PHASEE-07 Fix #3: Store full V2 identity packet in waiting_callback output
+  // so a crash-replay can re-publish the same job deterministically.
+  const existingRepoRun = await db.taskRepositoryRun.findUnique({
+    where: { taskId: task.id },
+    select: { id: true, publicationState: true, replayCount: true },
+  });
+  const isReplay = existingRepoRun?.publicationState === "published";
+  await db.taskRepositoryRun.update({
+    where: { taskId: task.id },
+    data: {
+      publicationState: "publishing",
+      replayCount: isReplay ? (existingRepoRun?.replayCount ?? 0) + 1 : existingRepoRun?.replayCount ?? 0,
+    },
+  });
+  const v2Identity = {
+    schemaVersion: REPOSITORY_JOB_SCHEMA_V2,
+    jobId,
+    taskId: task.id,
+    workflowCycleId: ctx.workflowCycleId,
+    procedureRunId: ctx.procedureRunId,
+    procedureStepId: ctx.stepId,
+    commandReceiptId: null,
+    repositoryRunId: repoRun?.id ?? null,
+    repositoryRunVersion: repoRun?.version ?? null,
+    // PHASEE-07 Fix #1: Use the same source as job.previousCandidateSha/job.baseSha
+    // (candidateOutput) so exact correlation never rejects a legitimate callback.
+    // The DB row's candidateSha can lag behind on resubmission after review_feedback.
+    candidateSha: typeof candidateOutput?.candidateSha === "string" ? candidateOutput.candidateSha : task.repositoryRun?.candidateSha ?? null,
+    baseSha: typeof candidateOutput?.baseSha === "string" ? candidateOutput.baseSha : task.repositoryRun?.baseSha ?? null,
+  };
+  return { status: "waiting_callback", jobId, output: { ...v2Identity, branchName } };
 }
 
 // --- Step 4: apply_validation_result ------------------------------------

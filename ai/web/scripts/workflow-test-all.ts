@@ -42,6 +42,8 @@ const SUITES: readonly string[] = [
   "test:orch-10-rollout-flags",
   "test:orch-state-fencing",
   "test:orch-phasee-03",
+  "test:orch-override-contract",
+  "test:orch-override-executor",
   "test:workflow-reconciler",
   "test:workflow-agent-rules",
   "test:repository-workflow",

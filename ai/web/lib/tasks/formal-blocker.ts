@@ -57,11 +57,19 @@ export type FormalBlockerReport = {
   permission?: BlockerPermissionRequest | null;
 };
 
+export type WaitForHumanBlockerOverride = {
+  kind: "wait_for_human";
+  targetStatus: string | null;
+  reason: string | null;
+};
+
 export type ActiveFormalBlocker = {
   commentId: string | null;
   permissionRequest: BlockerPermissionRequest | null;
   report: FormalBlockerReport | null;
   raisedAt: Date | string | number | null;
+  /** Present only for the blocker created by a human status override. */
+  override: WaitForHumanBlockerOverride | null;
 };
 
 export type BlockerPermissionGrant = {
@@ -120,13 +128,27 @@ export function blockerMetadataFromPayload(payload: string | null | undefined): 
   // Rows written before ENV-120 carry no report. They stay readable: the
   // structured fields simply resolve to null.
   const report = formalBlockerReportFromValue(parsed?.blockerReport);
+  const rawOverride = parsed?.override;
+  const override: WaitForHumanBlockerOverride | null =
+    rawOverride && typeof rawOverride === "object"
+      && (rawOverride as Record<string, unknown>).kind === "wait_for_human"
+      ? {
+          kind: "wait_for_human",
+          targetStatus: typeof (rawOverride as Record<string, unknown>).targetStatus === "string"
+            ? (rawOverride as Record<string, unknown>).targetStatus as string
+            : null,
+          reason: typeof (rawOverride as Record<string, unknown>).reason === "string"
+            ? (rawOverride as Record<string, unknown>).reason as string
+            : null,
+        }
+      : null;
   const rawRequest = parsed?.permissionRequest;
   if (!rawRequest || typeof rawRequest !== "object") {
-    return { commentId, permissionRequest: null, report, raisedAt: null };
+    return { commentId, permissionRequest: null, report, raisedAt: null, override };
   }
   const request = rawRequest as Record<string, unknown>;
   if (!isBlockerPermissionKind(request.kind) || typeof request.scope !== "string" || !request.scope.trim()) {
-    return { commentId, permissionRequest: null, report, raisedAt: null };
+    return { commentId, permissionRequest: null, report, raisedAt: null, override };
   }
   return {
     commentId,
@@ -139,6 +161,7 @@ export function blockerMetadataFromPayload(payload: string | null | undefined): 
     },
     report,
     raisedAt: null,
+    override,
   };
 }
 

@@ -312,6 +312,54 @@ const clearBlockerExecutor: IntentExecutor<"clear_blocker"> = async (context) =>
   return context.helpers.executeDecisionWrites();
 };
 
+const overrideStatusExecutor: IntentExecutor<"override_status"> = async (context) => {
+  // Human-authorized status override. The kernel transition (status,
+  // workflow version, receipt, activity) is committed by
+  // executeDecisionWrites below through the operator-override path.
+  // Because this executor runs inside the same Prisma transaction as that
+  // transition, the wait-for-human blocker created here commits atomically
+  // with the status move.
+  const targetStatus = context.command.payload.targetStatus;
+
+  // Every target other than Done raises a deterministic wait-for-human
+  // blocker so guardNoUnresolvedBlocker refuses later agent commands until
+  // an authorized human clear_blocker resolves it. Done creates no blocker.
+  if (targetStatus !== "Done") {
+    const comment = await createWorkflowComment(
+      context,
+      `Human status override: this task was moved to **${targetStatus}** by an authorized human. The assigned agent must **stop all further work** on this task and await explicit human instructions. Do not perform any agent workflow action (start, checkpoint, submit_for_review, raise/clear blockers, etc.) until an authorized human clears this blocker.`,
+      "blocker_notice",
+    );
+    await createDomainActivity(context, "task.blocker", {
+      commentId: comment.id,
+      permissionRequest: null,
+      blockerReport: {
+        blockedOn: "decision",
+        requestedActor: "human owner",
+        requestedAction: "Provide explicit instructions and clear the wait-for-human blocker with clear_blocker.",
+        evidence: `Human status override to ${targetStatus} recorded as an authoritative decision.`,
+        diagnosticsAttempted: [
+          "Confirmed this blocker was created by an authoritative human status override, not an agent-diagnosable technical failure.",
+        ],
+        resumeCondition: "An authorized human clears the wait-for-human blocker.",
+        reporterCanResolve: true,
+      },
+      override: {
+        kind: "wait_for_human",
+        targetStatus,
+        reason: context.command.payload.reason ?? null,
+      },
+    });
+    await context.tx.task.update({
+      where: { id: context.command.taskId },
+      data: { alertReporter: true },
+    });
+  }
+
+  // Commit the authoritative status transition with receipt/activity atomically.
+  return context.helpers.executeDecisionWrites();
+};
+
 const cancelTaskExecutor: IntentExecutor<"cancel_task"> = (context) =>
   context.helpers.executeDecisionWrites();
 
@@ -487,6 +535,7 @@ export const INTENT_EXECUTORS = {
   triage_task: executeRegisteredIntent,
   assign_task: assignTaskExecutor,
   raise_scope_blocker: raiseScopeBlockerExecutor,
+  override_status: overrideStatusExecutor,
   worktree_revalidation_failed: worktreeRevalidationFailedExecutor,
   repository_validation_succeeded: repositoryValidationSucceededExecutor,
   repository_validation_failed: repositoryValidationFailedExecutor,

@@ -51,6 +51,35 @@ export function decideCommand(
   const executorActorId = auth.executorActorId ?? null;
 
   switch (command.intent) {
+    case "override_status": {
+      const targetStatus = command.payload?.targetStatus;
+      if (
+        targetStatus !== "Backlog" &&
+        targetStatus !== "To Do" &&
+        targetStatus !== "In Progress" &&
+        targetStatus !== "Review" &&
+        targetStatus !== "Done"
+      ) {
+        return { status: "invalid", reason: "override_status requires a workflow targetStatus" };
+      }
+      return {
+        fromStatus: state.status,
+        toStatus: targetStatus,
+        kernelIntent: "operator_override",
+        cycleOperation: "none",
+        effects: [{ type: "board_touch", key: "board-status-override", payload: {} }],
+        evidence: {
+          ...command.evidence ?? {},
+          decisionActorId,
+          executorActorId,
+          humanStatusOverride: true,
+          reason: command.payload?.reason ?? null,
+        },
+        decisionActorId,
+        executorActorId,
+      };
+    }
+
     case "approve_plan": {
       // Backlog -> To Do. Opens the prepare_todo_task procedure (ORCH-04).
       // Cycle operation is "none" — the cycle opens at start_implementation,
