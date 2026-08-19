@@ -448,14 +448,11 @@ function buildPayload(
     case "repository_validation_succeeded": {
       const procedureRunId = ctx.procedureRunId ?? getString(raw, "procedureRunId");
       const procedureStepId = ctx.procedureStepId ?? getString(raw, "procedureStepId");
-      const jobId = ctx.jobId ?? getString(raw, "jobId");
-      const candidateSha = ctx.candidateSha ?? getString(raw, "candidateSha");
-      const baseSha = ctx.baseSha ?? getString(raw, "baseSha");
+      const jobId = ctx.jobId ?? getString(raw, "jobId") ?? null;
+      const candidateSha = ctx.candidateSha ?? getString(raw, "candidateSha") ?? null;
+      const baseSha = ctx.baseSha ?? getString(raw, "baseSha") ?? null;
       if (!procedureRunId) return fail("invalid_payload", "procedureRunId is required");
       if (!procedureStepId) return fail("invalid_payload", "procedureStepId is required");
-      if (!jobId) return fail("invalid_payload", "jobId is required");
-      if (!candidateSha) return fail("invalid_payload", "candidateSha is required");
-      if (!baseSha) return fail("invalid_payload", "baseSha is required");
       const payload: RepositoryValidationSucceededPayload = {
         procedureRunId, procedureStepId, jobId, candidateSha, baseSha,
         outcome: "succeeded",
@@ -466,14 +463,11 @@ function buildPayload(
     case "repository_validation_failed": {
       const procedureRunId = ctx.procedureRunId ?? getString(raw, "procedureRunId");
       const procedureStepId = ctx.procedureStepId ?? getString(raw, "procedureStepId");
-      const jobId = ctx.jobId ?? getString(raw, "jobId");
-      const candidateSha = ctx.candidateSha ?? getString(raw, "candidateSha");
-      const baseSha = ctx.baseSha ?? getString(raw, "baseSha");
+      const jobId = ctx.jobId ?? getString(raw, "jobId") ?? null;
+      const candidateSha = ctx.candidateSha ?? getString(raw, "candidateSha") ?? null;
+      const baseSha = ctx.baseSha ?? getString(raw, "baseSha") ?? null;
       if (!procedureRunId) return fail("invalid_payload", "procedureRunId is required");
       if (!procedureStepId) return fail("invalid_payload", "procedureStepId is required");
-      if (!jobId) return fail("invalid_payload", "jobId is required");
-      if (!candidateSha) return fail("invalid_payload", "candidateSha is required");
-      if (!baseSha) return fail("invalid_payload", "baseSha is required");
       const failureReason = getString(raw, "failureReason") ?? getString(raw, "reason") ?? null;
       const payload: RepositoryValidationFailedPayload = {
         procedureRunId, procedureStepId, jobId, candidateSha, baseSha,
@@ -486,14 +480,11 @@ function buildPayload(
     case "repository_finalization_succeeded": {
       const procedureRunId = ctx.procedureRunId ?? getString(raw, "procedureRunId");
       const procedureStepId = ctx.procedureStepId ?? getString(raw, "procedureStepId");
-      const jobId = ctx.jobId ?? getString(raw, "jobId");
-      const candidateSha = ctx.candidateSha ?? getString(raw, "candidateSha");
-      const baseSha = ctx.baseSha ?? getString(raw, "baseSha");
+      const jobId = ctx.jobId ?? getString(raw, "jobId") ?? null;
+      const candidateSha = ctx.candidateSha ?? getString(raw, "candidateSha") ?? null;
+      const baseSha = ctx.baseSha ?? getString(raw, "baseSha") ?? null;
       if (!procedureRunId) return fail("invalid_payload", "procedureRunId is required");
       if (!procedureStepId) return fail("invalid_payload", "procedureStepId is required");
-      if (!jobId) return fail("invalid_payload", "jobId is required");
-      if (!candidateSha) return fail("invalid_payload", "candidateSha is required");
-      if (!baseSha) return fail("invalid_payload", "baseSha is required");
       const publishedSha = getString(raw, "publishedSha") ?? null;
       const payload: RepositoryFinalizationSucceededPayload = {
         procedureRunId, procedureStepId, jobId, candidateSha, baseSha,
@@ -506,14 +497,11 @@ function buildPayload(
     case "repository_finalization_failed": {
       const procedureRunId = ctx.procedureRunId ?? getString(raw, "procedureRunId");
       const procedureStepId = ctx.procedureStepId ?? getString(raw, "procedureStepId");
-      const jobId = ctx.jobId ?? getString(raw, "jobId");
-      const candidateSha = ctx.candidateSha ?? getString(raw, "candidateSha");
-      const baseSha = ctx.baseSha ?? getString(raw, "baseSha");
+      const jobId = ctx.jobId ?? getString(raw, "jobId") ?? null;
+      const candidateSha = ctx.candidateSha ?? getString(raw, "candidateSha") ?? null;
+      const baseSha = ctx.baseSha ?? getString(raw, "baseSha") ?? null;
       if (!procedureRunId) return fail("invalid_payload", "procedureRunId is required");
       if (!procedureStepId) return fail("invalid_payload", "procedureStepId is required");
-      if (!jobId) return fail("invalid_payload", "jobId is required");
-      if (!candidateSha) return fail("invalid_payload", "candidateSha is required");
-      if (!baseSha) return fail("invalid_payload", "baseSha is required");
       const failureReason = getString(raw, "failureReason") ?? getString(raw, "reason") ?? null;
       const payload: RepositoryFinalizationFailedPayload = {
         procedureRunId, procedureStepId, jobId, candidateSha, baseSha,

@@ -201,12 +201,19 @@ test("validateCommandPayload: accept_review requires reviewRunId + candidateSha"
   expectOk(validateCommandPayload("accept_review", { reviewRunId: "r1", candidateSha: "abc" }));
 });
 
-test("validateCommandPayload: repository callbacks require all correlation IDs", () => {
+test("validateCommandPayload: repository callbacks require procedureRunId + procedureStepId, allow nullable jobId/candidateSha/baseSha", () => {
   const full = { procedureRunId: "p1", procedureStepId: "s1", jobId: "j1", candidateSha: "abc", baseSha: "def", outcome: "succeeded" };
   expectFail(validateCommandPayload("repository_validation_succeeded", { ...full, procedureRunId: undefined }), "invalid_payload");
+  expectFail(validateCommandPayload("repository_validation_succeeded", { ...full, procedureStepId: undefined }), "invalid_payload");
   expectFail(validateCommandPayload("repository_validation_succeeded", { ...full, outcome: "failed" }), "invalid_payload");
   expectOk(validateCommandPayload("repository_validation_succeeded", full));
   expectOk(validateCommandPayload("repository_validation_failed", { ...full, outcome: "failed", failureReason: "boom" }));
+  // Null jobId/candidateSha/baseSha is the shape both handlers emit — must validate OK
+  const nullish = { procedureRunId: "p1", procedureStepId: "s1", jobId: null, candidateSha: null, baseSha: null, outcome: "succeeded" };
+  expectOk(validateCommandPayload("repository_validation_succeeded", nullish));
+  expectOk(validateCommandPayload("repository_validation_failed", { ...nullish, outcome: "failed" }));
+  expectOk(validateCommandPayload("repository_finalization_succeeded", { ...nullish, publishedSha: "pub1" }));
+  expectOk(validateCommandPayload("repository_finalization_failed", { ...nullish, outcome: "failed", failureReason: "boom" }));
 });
 
 test("validateCommandPayload: raise_blocker requires structured blockerReport", () => {
@@ -386,6 +393,22 @@ test("normalizePublicAction: evidence fields come from authContext, not rawBody"
 test("normalizePublicAction: unknown action returns unknown_intent", () => {
   const r = normalizePublicAction("unknown_action" as WorkflowPublicAction, {}, makeAuthCtx());
   expectFail(r as NormalizerResult, "unknown_intent");
+});
+
+test("validateCommandPayload: repository callback with null jobId/candidateSha/baseSha is accepted and carries nulls", () => {
+  // This is the shape both handlers emit (submit-candidate-for-review.ts, review-decisions.ts)
+  const nullish = { procedureRunId: "p1", procedureStepId: "s1", jobId: null, candidateSha: null, baseSha: null, outcome: "succeeded" };
+  // Validator accepts it
+  const vr = validateCommandPayload("repository_validation_succeeded", nullish);
+  assert.ok(vr.ok, `expected validation OK, got ${JSON.stringify(vr)}`);
+  const vp = (vr as { ok: true; payload: { jobId: string | null; candidateSha: string | null; baseSha: string | null } }).payload;
+  assert.strictEqual(vp.jobId, null);
+  assert.strictEqual(vp.candidateSha, null);
+  assert.strictEqual(vp.baseSha, null);
+  // All four callback intents accept nulls
+  expectOk(validateCommandPayload("repository_validation_failed", { ...nullish, outcome: "failed" }));
+  expectOk(validateCommandPayload("repository_finalization_succeeded", { ...nullish, publishedSha: "pub1" }));
+  expectOk(validateCommandPayload("repository_finalization_failed", { ...nullish, outcome: "failed", failureReason: "boom" }));
 });
 
 test("normalizePublicAction: is a pure function (no side effects)", () => {

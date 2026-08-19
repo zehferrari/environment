@@ -439,11 +439,11 @@ function validateRepositoryCallback(raw: Record<string, unknown>, expectedOutcom
   if (!procedureRunId.ok) return fail("invalid_payload", procedureRunId.message);
   const procedureStepId = requireString(raw, "procedureStepId", MAX_ID);
   if (!procedureStepId.ok) return fail("invalid_payload", procedureStepId.message);
-  const jobId = requireString(raw, "jobId", MAX_ID);
+  const jobId = requireStringOrNull(raw, "jobId", MAX_ID);
   if (!jobId.ok) return fail("invalid_payload", jobId.message);
-  const candidateSha = requireString(raw, "candidateSha", MAX_ID);
+  const candidateSha = requireStringOrNull(raw, "candidateSha", MAX_ID);
   if (!candidateSha.ok) return fail("invalid_payload", candidateSha.message);
-  const baseSha = requireString(raw, "baseSha", MAX_ID);
+  const baseSha = requireStringOrNull(raw, "baseSha", MAX_ID);
   if (!baseSha.ok) return fail("invalid_payload", baseSha.message);
   const outcome = raw["outcome"];
   if (outcome !== expectedOutcome) {
