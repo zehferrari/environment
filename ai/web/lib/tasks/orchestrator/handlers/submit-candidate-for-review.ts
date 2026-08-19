@@ -490,8 +490,9 @@ async function enterReview(ctx: StepHandlerContext): Promise<StepHandlerResult> 
   // it may have changed since the procedure was created. Use the assignee's
   // user ID as the mechanical actor (the procedure acts on the assignee's
   // behalf; the decision actor is recorded separately by the orchestrator).
-  const freshTask = await db.task.findUniqueOrThrow({ where: { id: task.id }, select: { workflowVersion: true, activeWorkflowCycleId: true, assigneeId: true } });
+  const freshTask = await db.task.findUniqueOrThrow({ where: { id: task.id }, select: { workflowVersion: true, activeWorkflowCycleId: true, assigneeId: true, repositoryRun: { select: { baseSha: true } } } });
   const candidateSha = (leaseOutput?.candidateSha as string) ?? null;
+  const realBaseSha = freshTask.repositoryRun?.baseSha ?? null;
   const result = await submitWorkflowCommand({
     taskId: task.id,
     intent: "repository_validation_succeeded",
@@ -499,9 +500,16 @@ async function enterReview(ctx: StepHandlerContext): Promise<StepHandlerResult> 
     expectedWorkflowVersion: freshTask.workflowVersion,
     workflowCycleId: freshTask.activeWorkflowCycleId,
     idempotencyKey: `procedure-enter-review:${ctx.procedureRunId}`,
-    source: "procedure-submit-candidate",
+    source: "callback",
     evidence: { candidateSha, procedureRunId: ctx.procedureRunId },
-    payload: { candidateSha },
+    payload: {
+      procedureRunId: ctx.procedureRunId,
+      procedureStepId: ctx.stepId,
+      jobId: null,
+      candidateSha: candidateSha ?? null,
+      baseSha: realBaseSha ?? null,
+      outcome: "succeeded",
+    },
   });
   if (result.status !== "accepted" && result.status !== "replayed") {
     return { status: "failed", error: `Failed to enter Review: ${result.status} — ${result.reason ?? "no reason"}`, retryable: result.status === "stale" };

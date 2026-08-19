@@ -15,6 +15,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 const execFileP = promisify(execFile);
+import type { TaskWorkflowCommand } from "@/lib/tasks/orchestrator/types";
 
 async function freshDb(): Promise<{ dbUrl: string; cleanup: () => Promise<void> }> {
   const sandbox = await mkdtemp(path.join(tmpdir(), "orch05-"));
@@ -70,8 +71,9 @@ async function main() {
       actor: { id: assigneeUser.id, kind: "agent", username: "impl", role: "assignee" },
       expectedWorkflowVersion: 1,
       idempotencyKey: "orch05:start:1",
-      source: "orch05-test",
-    });
+      source: "agent",
+      payload: {},
+    } as unknown as TaskWorkflowCommand);
     assert.equal(startResult.status, "accepted", `start accepted; got ${JSON.stringify(startResult)}`);
     assert.ok(startResult.cycleId, "a cycle was opened");
     assert.ok(startResult.procedureId, "a procedure was created");
@@ -108,8 +110,8 @@ async function main() {
     const plan2 = await db.actionPlan.create({ data: { taskId: task2.id, summary: "Plan 2", version: 1, status: "approved", authorId: assigneeUser.id, contentHash: "h2", approvedOn: new Date(), approvedById: owner.id } });
     await db.actionPlanStep.create({ data: { actionPlanId: plan2.id, stepId: "s1", title: "Step", acceptanceCriteria: "[]", kind: "sequential", rank: 0 } });
     const [s2a, s2b] = await Promise.all([
-      submitWorkflowCommand({ taskId: task2.id, intent: "start_implementation", actor: { id: assigneeUser.id, kind: "agent", username: "impl", role: "assignee" }, expectedWorkflowVersion: 1, idempotencyKey: "orch05:start:2a", source: "orch05-test" }),
-      submitWorkflowCommand({ taskId: task2.id, intent: "start_implementation", actor: { id: assigneeUser.id, kind: "agent", username: "impl", role: "assignee" }, expectedWorkflowVersion: 1, idempotencyKey: "orch05:start:2b", source: "orch05-test" }),
+      submitWorkflowCommand({ taskId: task2.id, intent: "start_implementation", actor: { id: assigneeUser.id, kind: "agent", username: "impl", role: "assignee" }, expectedWorkflowVersion: 1, idempotencyKey: "orch05:start:2a", source: "agent", payload: {} }),
+      submitWorkflowCommand({ taskId: task2.id, intent: "start_implementation", actor: { id: assigneeUser.id, kind: "agent", username: "impl", role: "assignee" }, expectedWorkflowVersion: 1, idempotencyKey: "orch05:start:2b", source: "agent", payload: {} }),
     ]);
     const statuses = [s2a.status, s2b.status].sort();
     assert.ok(statuses.includes("accepted") || statuses.includes("operational"), "one concurrent start wins");
@@ -132,8 +134,9 @@ async function main() {
       actor: { id: assigneeUser.id, kind: "agent", username: "impl", role: "assignee" },
       expectedWorkflowVersion: 2, // version was 1, the start increments it
       idempotencyKey: "orch05:start:3",
-      source: "orch05-test",
-    });
+      source: "agent",
+      payload: {},
+    } as unknown as TaskWorkflowCommand);
     // The version might have moved from the first start; accept either accepted or stale.
     if (start3.status === "accepted") {
       for (let i = 0; i < 10; i += 1) {
