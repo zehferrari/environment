@@ -1477,6 +1477,9 @@ export default async function TaskDetailPage({
 
   // Comment moderation is exclusive to the Mission Control owner.
   const canDeleteComments = viewer.isOwner;
+  // Recompute blocked-by edit permission in the page component scope;
+  // the value in updateTask() lives in a different function.
+  const canEditBlockedBy = !task.blockedById || await canAccessTask(viewer, task.blockedById);
 
   const [principals, cachedProjectEpics, mentionableUsers, recentTaskChatMessages, recentReplyActivity, latestRepoVerify, allActivity, targetedCommentRows] = await Promise.all([
     viewer.isOwner ? listAssignablePrincipals(viewer) : Promise.resolve([]),

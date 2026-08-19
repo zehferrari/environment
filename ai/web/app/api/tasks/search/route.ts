@@ -30,8 +30,8 @@ export async function GET(req: NextRequest) {
     deletedAt: null,
     ...(exclude ? { id: { not: exclude } } : {}),
     OR: [
-      { title: { contains: q, mode: "insensitive" } },
-      { workItemKey: { contains: q, mode: "insensitive" } },
+      { title: { contains: q } },
+      { workItemKey: { contains: q } },
     ],
   });
 

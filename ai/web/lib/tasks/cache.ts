@@ -210,6 +210,8 @@ export function getCachedTaskDetailShell(taskId: string) {
                 workItemKey: true,
                 title: true,
                 status: true,
+                projectId: true,
+                private: true,
                 project: { select: { slug: true, name: true } },
               },
             },
