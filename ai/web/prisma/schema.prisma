@@ -1231,8 +1231,8 @@ model ActivityLog {
   // PHASEE-10 — Composite index for legacy boundary invocation queries
   // (kind + createdAt range scans in getLegacyInvocationSummary).
   @@index([kind, createdAt])
-  // PHASEE-10 — Partial unique index on dedupeKey. NULL values are excluded
-  // by the filter so rows without a dedupe key are never constrained.
+  // PHASEE-10 — Unique index on dedupeKey. SQLite UNIQUE constraints treat
+  // NULL values as distinct, so rows without a dedupe key remain valid.
   @@unique([dedupeKey])
 }
 

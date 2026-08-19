@@ -2,4 +2,4 @@
 -- for efficient legacy boundary invocation queries in
 -- getLegacyInvocationSummary (range scan by kind + createdAt ordering).
 
-CREATE INDEX "ActivityLog_kind_created_at_idx" ON "ActivityLog"("kind", "createdAt");
+CREATE INDEX "ActivityLog_kind_createdAt_idx" ON "ActivityLog"("kind", "createdAt");
