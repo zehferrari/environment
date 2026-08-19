@@ -37,6 +37,7 @@ import type {
   TriageTaskPayload,
   AssignTaskPayload,
   RaiseScopeBlockerPayload,
+  OverrideStatusPayload,
   RepositoryValidationSucceededPayload,
   RepositoryValidationFailedPayload,
   RepositoryFinalizationSucceededPayload,
@@ -117,6 +118,7 @@ const ACTION_TO_INTENT: ReadonlyMap<WorkflowPublicAction, TaskWorkflowIntent> = 
   ["flag_blocker", "raise_blocker"],
   ["clear_blocker", "clear_blocker"],
   ["flag_extra_work_blocker", "raise_scope_blocker"],
+  ["override_status", "override_status"],
 ]);
 
 // ---------------------------------------------------------------------------
@@ -241,6 +243,7 @@ type BuiltPayload =
   | TriageTaskPayload
   | AssignTaskPayload
   | RaiseScopeBlockerPayload
+  | OverrideStatusPayload
   | RepositoryValidationSucceededPayload
   | RepositoryValidationFailedPayload
   | RepositoryFinalizationSucceededPayload
@@ -440,6 +443,26 @@ function buildPayload(
         scopeDescription,
         ...(evidence !== undefined ? { evidence } : {}),
         ...(requestedActor !== undefined ? { requestedActor } : {}),
+      };
+      return payload;
+    }
+
+    // --- override_status ---
+    case "override_status": {
+      const targetStatus = getString(raw, "targetStatus");
+      if (
+        targetStatus !== "Backlog" &&
+        targetStatus !== "To Do" &&
+        targetStatus !== "In Progress" &&
+        targetStatus !== "Review" &&
+        targetStatus !== "Done"
+      ) {
+        return fail("invalid_payload", "targetStatus must be a workflow status");
+      }
+      const reason = getString(raw, "reason");
+      const payload: OverrideStatusPayload = {
+        targetStatus,
+        ...(reason !== undefined ? { reason } : {}),
       };
       return payload;
     }

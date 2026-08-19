@@ -82,6 +82,7 @@ export const WORKFLOW_PUBLIC_ACTIONS = [
   "flag_blocker",
   "clear_blocker",
   "flag_extra_work_blocker",
+  "override_status",
 ] as const;
 
 export type WorkflowPublicAction = (typeof WORKFLOW_PUBLIC_ACTIONS)[number];
@@ -114,6 +115,7 @@ export const TASK_WORKFLOW_INTENTS = [
   "triage_task",
   "assign_task",
   "raise_scope_blocker",
+  "override_status",
   // Mechanical intents (monitor/worker only)
   "repository_validation_succeeded",
   "repository_validation_failed",
@@ -313,6 +315,11 @@ export type AssignTaskPayload = {
   afterPlanApproval: boolean;
 };
 
+export type OverrideStatusPayload = {
+  targetStatus: "Backlog" | "To Do" | "In Progress" | "Review" | "Done";
+  reason?: string | null;
+};
+
 export type RaiseScopeBlockerPayload = {
   /** Description of the extra work needed. */
   scopeDescription: string;
@@ -465,6 +472,7 @@ interface IntentPayloadMap {
   triage_task: TriageTaskPayload;
   assign_task: AssignTaskPayload;
   raise_scope_blocker: RaiseScopeBlockerPayload;
+  override_status: OverrideStatusPayload;
   repository_validation_succeeded: RepositoryValidationSucceededPayload;
   repository_validation_failed: RepositoryValidationFailedPayload;
   worktree_revalidation_failed: WorktreeRevalidationFailedPayload;
@@ -686,6 +694,15 @@ export type TaskStateSnapshot = {
   activeBlocker?: {
     commentId: string | null;
     permissionRequest: { kind: string; scope: string } | null;
+    permissionGrant?: {
+      authorizationCommentId: string | null;
+      grantedAt: Date | null;
+    } | null;
+    override?: {
+      kind: "wait_for_human";
+      targetStatus: string | null;
+      reason: string | null;
+    } | null;
   } | null;
   actionPlan?: {
     id: string;
