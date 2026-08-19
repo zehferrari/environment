@@ -20,7 +20,6 @@ import { decideCommand } from "@/lib/tasks/orchestrator/decide";
 import { executeWorkflowCommand } from "@/lib/tasks/orchestrator/execute";
 import { computeRequestFingerprint } from "@/lib/tasks/orchestrator/receipts";
 import { resolveEngineOwnership, stampCycleEngine, ENGINE_ORCHESTRATOR_V2 } from "@/lib/tasks/orchestrator/ownership";
-import { resolveReviewOwnerIdFromSnapshot } from "@/lib/tasks/orchestrator/authorize";
 import type {
   OrchestrationDecision,
   OrchestratorResult,
@@ -32,86 +31,16 @@ import type {
  * Build a TaskStateSnapshot from the DB for the decision function. The
  * snapshot is a frozen view of the task's current state; the decision
  * function is pure and does not touch the DB.
+ *
+ * Delegates to loadTaskAggregate (state.ts) which loads the complete
+ * task aggregate (spec §8). TaskAggregate extends TaskStateSnapshot, so
+ * the returned object is structurally compatible with all existing
+ * guards/decide/authorize consumers.
  */
 export async function loadTaskStateSnapshot(taskId: string): Promise<TaskStateSnapshot | null> {
-  const task = await db.task.findUnique({
-    where: { id: taskId, deletedAt: null },
-    select: {
-      id: true,
-      status: true,
-      workflowVersion: true,
-      projectId: true,
-      epicId: true,
-      assigneeId: true,
-      actingManagerId: true,
-      reporterId: true,
-      approvedOn: true,
-      approvedById: true,
-      activeWorkflowCycleId: true,
-      project: {
-        select: {
-          onlyReportersCanApproveActionPlans: true,
-          onlyReportersCanSetTasksDone: true,
-          repositoryPath: true,
-        },
-      },
-      epic: { select: { status: true, actingManagerId: true } },
-      repositoryRun: {
-        select: {
-          phase: true,
-          candidateSha: true,
-          baseSha: true,
-          repoTouched: true,
-          reviewedSha: true,
-        },
-      },
-    },
-  });
-  if (!task) return null;
-
-  const reviewRun = task.activeWorkflowCycleId
-    ? await db.reviewRun.findUnique({
-        where: { workflowCycleId: task.activeWorkflowCycleId },
-        select: { id: true, status: true, candidateSha: true, reviewerId: true },
-      })
-    : null;
-
-  return {
-    id: task.id,
-    status: task.status as TaskStateSnapshot["status"],
-    workflowVersion: task.workflowVersion,
-    projectId: task.projectId,
-    epicId: task.epicId,
-    assigneeId: task.assigneeId,
-    actingManagerId: task.actingManagerId,
-    reporterId: task.reporterId,
-    approvedOn: task.approvedOn,
-    approvedById: task.approvedById,
-    activeWorkflowCycleId: task.activeWorkflowCycleId,
-    resolvedReviewOwnerId: resolveReviewOwnerIdFromSnapshot({
-      actingManagerId: task.actingManagerId,
-      reporterId: task.reporterId,
-      epic: task.epic ? { status: task.epic.status, actingManagerId: task.epic.actingManagerId } : null,
-    }),
-    activeReviewRun: reviewRun
-      ? { id: reviewRun.id, status: reviewRun.status, candidateSha: reviewRun.candidateSha, reviewerId: reviewRun.reviewerId }
-      : null,
-    repositoryRun: task.repositoryRun
-      ? {
-          phase: task.repositoryRun.phase,
-          candidateSha: task.repositoryRun.candidateSha,
-          baseSha: task.repositoryRun.baseSha,
-          repoTouched: task.repositoryRun.repoTouched,
-          reviewedSha: task.repositoryRun.reviewedSha,
-        }
-      : null,
-    project: {
-      onlyReportersCanApproveActionPlans: task.project.onlyReportersCanApproveActionPlans,
-      onlyReportersCanSetTasksDone: task.project.onlyReportersCanSetTasksDone,
-      repositoryPath: task.project.repositoryPath,
-    },
-    epic: task.epic ? { status: task.epic.status, actingManagerId: task.epic.actingManagerId } : null,
-  };
+  const { loadTaskAggregate } = await import("@/lib/tasks/orchestrator/state");
+  const aggregate = await loadTaskAggregate(taskId);
+  return aggregate;
 }
 
 /**
@@ -232,7 +161,7 @@ export async function submitWorkflowCommand(command: TaskWorkflowCommand): Promi
   const orchestrationDecision = decision as OrchestrationDecision;
 
   // --- Execute (atomic) --------------------------------------------------
-  return executeWorkflowCommand(command, orchestrationDecision);
+  return executeWorkflowCommand(command, orchestrationDecision, state);
 }
 
 // Re-export the public API so routes can import from a single module.
@@ -241,5 +170,18 @@ export { runGuards } from "@/lib/tasks/orchestrator/guards";
 export { decideCommand } from "@/lib/tasks/orchestrator/decide";
 export { executeWorkflowCommand } from "@/lib/tasks/orchestrator/execute";
 export { buildTaskWorkflowProjection } from "@/lib/tasks/orchestrator/projection";
+export {
+  loadTaskAggregate,
+  refreshTaskAggregateForTx,
+  fenceState,
+  mapFenceResultToOrchestratorResult,
+  FENCE_ERROR_CODES,
+  type TaskAggregate,
+  type FenceResult,
+  type FenceErrorCode,
+} from "@/lib/tasks/orchestrator/state";
+// Backward-compatible re-export: loadTaskStateSnapshot delegates to
+// loadTaskAggregate in state.ts. The existing guards/decide/authorize consume
+// TaskStateSnapshot, which is structurally compatible with TaskAggregate.
 export { loadTaskStateSnapshot as loadTaskState };
 export type { TaskWorkflowCommand, OrchestratorResult, OrchestrationDecision, TaskStateSnapshot };

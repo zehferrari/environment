@@ -21,7 +21,7 @@ export function guardWorkflowVersion(state: TaskStateSnapshot, expectedVersion: 
     return {
       ok: false,
       status: "stale",
-      reason: `Task workflow version changed concurrently: expected ${expectedVersion}, found ${state.workflowVersion}.`,
+      reason: `[stale_version] Task workflow version changed concurrently: expected ${expectedVersion}, found ${state.workflowVersion}.`,
     };
   }
   return { ok: true };
@@ -90,7 +90,7 @@ export function guardCyclePrecondition(
     return {
       ok: false,
       status: "stale",
-      reason: `Command targets cycle ${commandCycleId}, but the active cycle is ${state.activeWorkflowCycleId}.`,
+      reason: `[cycle_mismatch] Command targets cycle ${commandCycleId}, but the active cycle is ${state.activeWorkflowCycleId}.`,
     };
   }
   return { ok: true };
@@ -117,7 +117,7 @@ export function guardReviewLease(
     return {
       ok: false,
       status: "stale",
-      reason: `Intent ${intent} requires an awaiting_review lease, but the lease is ${lease.status}.`,
+      reason: `[lease_mismatch] Intent ${intent} requires an awaiting_review lease, but the lease is ${lease.status}.`,
     };
   }
   // P1-6: verify the candidate SHA matches if the command provides one.
@@ -125,7 +125,7 @@ export function guardReviewLease(
     return {
       ok: false,
       status: "stale",
-      reason: `Intent ${intent} targets candidate ${expectedCandidateSha}, but the lease candidate is ${lease.candidateSha}.`,
+      reason: `[candidate_mismatch] Intent ${intent} targets candidate ${expectedCandidateSha}, but the lease candidate is ${lease.candidateSha}.`,
     };
   }
   return { ok: true };
