@@ -227,7 +227,10 @@ async function runValidation(ctx: StepHandlerContext): Promise<StepHandlerResult
     deploymentPrTargetBranch: task.project.deploymentPrTargetBranch,
   });
   const validationProfile = await resolveValidationProfileSnapshot(task.projectId);
-  const jobId = `proc-val-${ctx.procedureRunId}-${Date.now()}`;
+  // PHASEE-07 Fix #3: Deterministic job ID based on procedure run + step —
+  // a crash-replay re-publishes the same jobId, hitting the same spool path,
+  // so no duplicate spool file is created.
+  const jobId = `proc-val-${ctx.procedureRunId}-${ctx.stepId}`;
   // PHASEE-07: Resolve repository run for V2 identity fields.
   const repoRun = await db.taskRepositoryRun.findUnique({
     where: { taskId: task.id },
@@ -289,7 +292,27 @@ async function runValidation(ctx: StepHandlerContext): Promise<StepHandlerResult
     lastError: null,
     incrementAttempt: true,
   });
-  return { status: "waiting_callback", jobId, output: { candidateSha: task.repositoryRun?.candidateSha, baseSha: task.repositoryRun?.baseSha, branchName } };
+  // PHASEE-07 Fix #2: Set publicationState to 'publishing' when enqueuing.
+  // PHASEE-07 Fix #3: Store full V2 identity packet in waiting_callback output
+  // so a crash-replay can re-publish the same job deterministically.
+  await db.taskRepositoryRun.update({
+    where: { taskId: task.id },
+    data: { publicationState: "publishing" },
+  });
+  const v2Identity = {
+    schemaVersion: REPOSITORY_JOB_SCHEMA_V2,
+    jobId,
+    taskId: task.id,
+    workflowCycleId: ctx.workflowCycleId,
+    procedureRunId: ctx.procedureRunId,
+    procedureStepId: ctx.stepId,
+    commandReceiptId: null,
+    repositoryRunId: repoRun?.id ?? null,
+    repositoryRunVersion: repoRun?.version ?? null,
+    candidateSha: task.repositoryRun?.candidateSha ?? null,
+    baseSha: task.repositoryRun?.baseSha ?? null,
+  };
+  return { status: "waiting_callback", jobId, output: { ...v2Identity, branchName } };
 }
 
 // --- Step 4: apply_validation_result ------------------------------------

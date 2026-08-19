@@ -207,7 +207,10 @@ async function finalizeRepository(ctx: StepHandlerContext): Promise<StepHandlerR
   // Enqueue the review_finalize outbox effect. The outbox drain enqueues the
   // actual finalization spool job. The callback will come back via
   // applyProcedureCallback. PHASEE-07: include V2 identity fields.
-  const jobId = `proc-finalize-${ctx.procedureRunId}-${Date.now()}`;
+  // PHASEE-07 Fix #3: Deterministic job ID based on procedure run + step —
+  // a crash-replay re-publishes the same jobId, hitting the same spool path,
+  // so no duplicate spool file is created.
+  const jobId = `proc-finalize-${ctx.procedureRunId}-${ctx.stepId}`;
   await enqueueWorkflowEffects(db, {
     taskId: task.id,
     projectId: task.projectId,
@@ -233,12 +236,27 @@ async function finalizeRepository(ctx: StepHandlerContext): Promise<StepHandlerR
       },
     }],
   });
-  // PHASEE-07: record publication state for durable replay.
+  // PHASEE-07 Fix #2: Set publicationState to 'publishing' when enqueuing.
+  // PHASEE-07 Fix #3: Store full V2 identity packet in waiting_callback output
+  // so a crash-replay can re-publish the same job deterministically.
   await db.taskRepositoryRun.update({
     where: { taskId: task.id },
     data: { publicationState: "publishing" },
   });
-  return { status: "waiting_callback", jobId, output: { candidateSha } };
+  const v2Identity = {
+    schemaVersion: REPOSITORY_JOB_SCHEMA_V2,
+    jobId,
+    taskId: task.id,
+    workflowCycleId: task.activeWorkflowCycleId,
+    procedureRunId: ctx.procedureRunId,
+    procedureStepId: ctx.stepId,
+    commandReceiptId: null,
+    repositoryRunId: repoRun?.id ?? null,
+    repositoryRunVersion: repoRun?.version ?? null,
+    candidateSha,
+    baseSha: repoRun?.baseSha ?? null,
+  };
+  return { status: "waiting_callback", jobId, output: { ...v2Identity } };
 }
 
 // --- Step 2: verify_finalization --------------------------------------
