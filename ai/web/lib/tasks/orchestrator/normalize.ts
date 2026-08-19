@@ -20,6 +20,7 @@ import type {
   WorkflowCommandSource,
   WorkflowPublicAction,
   WorkflowActor,
+  WorkflowSubtaskKind,
   // Payload types — imported so buildPayload returns typed payloads,
   // making the discriminated union enforceable at compile time.
   SubmitPlanPayload,
@@ -64,6 +65,7 @@ export type NormalizerAuthContext = {
   actorUsername: string | null;
   /** Server-resolved actor role (never from client JSON). */
   actorRole?: WorkflowActor["role"];
+  actorCodingCapability?: boolean;
   expectedWorkflowVersion: number;
   workflowCycleId: string | null;
   idempotencyKey: string;
@@ -81,6 +83,8 @@ export type NormalizerAuthContext = {
   procedureRunId?: string | null;
   procedureStepId?: string | null;
   jobId?: string | null;
+  blockerId?: string | null;
+  subtaskKind?: WorkflowSubtaskKind | null;
   // PM-channel episode context (spec §14)
   executionContext?: AgentExecutionContext | null;
 };
@@ -192,6 +196,9 @@ function buildBase(
     kind: ctx.actorKind,
     ...(ctx.actorUsername !== null ? { username: ctx.actorUsername } : {}),
     ...(ctx.actorRole !== undefined ? { role: ctx.actorRole } : {}),
+    ...(ctx.actorCodingCapability !== undefined
+      ? { codingCapability: ctx.actorCodingCapability }
+      : {}),
   };
 
   const base: TaskWorkflowCommandBase = {
@@ -276,11 +283,11 @@ function buildPayload(
 
     // --- approve_plan ---
     case "approve_plan": {
-      const actionPlanId = ctx.actionPlanId ?? getString(raw, "actionPlanId");
+      const actionPlanId = ctx.actionPlanId;
       if (!actionPlanId) return fail("invalid_payload", "actionPlanId is required");
-      const actionPlanVersion = ctx.actionPlanVersion ?? getNumber(raw, "actionPlanVersion");
+      const actionPlanVersion = ctx.actionPlanVersion ?? undefined;
       if (actionPlanVersion === undefined) return fail("invalid_payload", "actionPlanVersion is required");
-      const constraints = getString(raw, "constraints");
+      const constraints = getString(raw, "constraints") ?? getString(raw, "comment");
       const payload: ApprovePlanPayload = {
         actionPlanId,
         actionPlanVersion,
@@ -291,9 +298,9 @@ function buildPayload(
 
     // --- request_plan_changes ---
     case "request_plan_changes": {
-      const actionPlanId = ctx.actionPlanId ?? getString(raw, "actionPlanId");
+      const actionPlanId = ctx.actionPlanId;
       if (!actionPlanId) return fail("invalid_payload", "actionPlanId is required");
-      const actionPlanVersion = ctx.actionPlanVersion ?? getNumber(raw, "actionPlanVersion");
+      const actionPlanVersion = ctx.actionPlanVersion ?? undefined;
       if (actionPlanVersion === undefined) return fail("invalid_payload", "actionPlanVersion is required");
       const reviewerComment = getString(raw, "reviewerComment") ?? getString(raw, "comment");
       if (!reviewerComment) return fail("invalid_payload", "reviewerComment is required");
@@ -303,8 +310,8 @@ function buildPayload(
 
     // --- start_implementation ---
     case "start_implementation": {
-      const worktreePath = ctx.worktreePath ?? getString(raw, "worktreePath");
-      const branchName = ctx.branchName ?? getString(raw, "branchName");
+      const worktreePath = ctx.worktreePath ?? undefined;
+      const branchName = ctx.branchName ?? undefined;
       const payload: StartImplementationPayload = {
         ...(worktreePath !== undefined ? { worktreePath } : {}),
         ...(branchName !== undefined ? { branchName } : {}),
@@ -331,11 +338,11 @@ function buildPayload(
 
     // --- submit_for_review ---
     case "submit_for_review": {
-      const candidateSha = ctx.candidateSha ?? getString(raw, "candidateSha") ?? null;
-      const baseSha = ctx.baseSha ?? getString(raw, "baseSha") ?? null;
+      const candidateSha = ctx.candidateSha ?? null;
+      const baseSha = ctx.baseSha ?? null;
       const repoTouched = getBoolean(raw, "repoTouched") ?? false;
-      const worktreePath = ctx.worktreePath ?? getString(raw, "worktreePath");
-      const branchName = ctx.branchName ?? getString(raw, "branchName");
+      const worktreePath = ctx.worktreePath ?? undefined;
+      const branchName = ctx.branchName ?? undefined;
       const comment = getString(raw, "comment");
       const payload: SubmitForReviewPayload = {
         candidateSha,
@@ -350,9 +357,9 @@ function buildPayload(
 
     // --- request_review_changes ---
     case "request_review_changes": {
-      const reviewRunId = ctx.reviewRunId ?? getString(raw, "reviewRunId");
+      const reviewRunId = ctx.reviewRunId;
       if (!reviewRunId) return fail("invalid_payload", "reviewRunId is required");
-      const candidateSha = ctx.candidateSha ?? getString(raw, "candidateSha");
+      const candidateSha = ctx.candidateSha;
       if (!candidateSha) return fail("invalid_payload", "candidateSha is required");
       const reviewerComment = getString(raw, "reviewerComment") ?? getString(raw, "comment");
       if (!reviewerComment) return fail("invalid_payload", "reviewerComment is required");
@@ -362,9 +369,9 @@ function buildPayload(
 
     // --- accept_review ---
     case "accept_review": {
-      const reviewRunId = ctx.reviewRunId ?? getString(raw, "reviewRunId");
+      const reviewRunId = ctx.reviewRunId;
       if (!reviewRunId) return fail("invalid_payload", "reviewRunId is required");
-      const candidateSha = ctx.candidateSha ?? getString(raw, "candidateSha");
+      const candidateSha = ctx.candidateSha;
       if (!candidateSha) return fail("invalid_payload", "candidateSha is required");
       const payload: AcceptReviewPayload = { reviewRunId, candidateSha };
       return payload;
@@ -372,11 +379,24 @@ function buildPayload(
 
     // --- raise_blocker ---
     case "raise_blocker": {
-      const blockerReport = getObject(raw, "blockerReport");
-      if (!blockerReport) return fail("invalid_payload", "blockerReport is required");
       const comment = getString(raw, "comment");
       const permissionKind = getString(raw, "permissionKind") as RaiseBlockerPayload["permissionKind"] | undefined;
       const permissionScope = getString(raw, "permissionScope");
+      const suppliedReport = getObject(raw, "blockerReport");
+      const blockerReport = suppliedReport ?? (permissionKind
+        ? {
+            blockedOn: "permission",
+            requestedActor: "the task reporter",
+            requestedAction: permissionScope ?? comment ?? "Grant the requested permission.",
+            evidence: comment ?? permissionScope ?? "Permission is required by policy.",
+            diagnosticsAttempted: [
+              "No agent-side retry can grant this permission; the scope is owner-authorized by design.",
+            ],
+            resumeCondition: `The task reporter grants "${permissionScope ?? comment ?? "the requested permission"}" on the blocker comment.`,
+            reporterCanResolve: true,
+          }
+        : null);
+      if (!blockerReport) return fail("invalid_payload", "blockerReport is required");
       const payload: RaiseBlockerPayload = {
         blockerReport: blockerReport as RaiseBlockerPayload["blockerReport"],
         ...(comment !== undefined ? { comment } : {}),
@@ -388,7 +408,7 @@ function buildPayload(
 
     // --- clear_blocker ---
     case "clear_blocker": {
-      const blockerId = getString(raw, "blockerId");
+      const blockerId = ctx.blockerId;
       if (!blockerId) return fail("invalid_payload", "blockerId is required");
       const resolution = getString(raw, "resolution") ?? getString(raw, "comment");
       if (!resolution) return fail("invalid_payload", "resolution is required");
@@ -425,8 +445,7 @@ function buildPayload(
 
     // --- assign_task ---
     case "assign_task": {
-      const assigneeUsername = getString(raw, "assigneeUsername") ?? getString(raw, "assignee");
-      if (!assigneeUsername) return fail("invalid_payload", "assigneeUsername is required");
+      const assigneeUsername = getString(raw, "assigneeUsername") ?? getString(raw, "assignee") ?? null;
       // assign_after_plan_approval sets afterPlanApproval=true
       const afterPlanApproval = action === "assign_after_plan_approval" ? true : (getBoolean(raw, "afterPlanApproval") ?? false);
       const payload: AssignTaskPayload = { assigneeUsername, afterPlanApproval };
@@ -550,11 +569,15 @@ function buildPayload(
     case "publish_checkpoint": {
       const authorizationCommentId = getString(raw, "authorizationCommentId");
       if (!authorizationCommentId) return fail("invalid_payload", "authorizationCommentId is required");
-      const candidateSha = ctx.candidateSha ?? getString(raw, "candidateSha");
-      if (!candidateSha) return fail("invalid_payload", "candidateSha is required");
-      const baseSha = ctx.baseSha ?? getString(raw, "baseSha");
-      if (!baseSha) return fail("invalid_payload", "baseSha is required");
-      const payload: PublishCheckpointPayload = { authorizationCommentId, candidateSha, baseSha };
+      const candidateSha = ctx.candidateSha ?? undefined;
+      const baseSha = ctx.baseSha ?? undefined;
+      const comment = getString(raw, "comment");
+      const payload: PublishCheckpointPayload = {
+        authorizationCommentId,
+        ...(candidateSha !== undefined ? { candidateSha } : {}),
+        ...(baseSha !== undefined ? { baseSha } : {}),
+        ...(comment !== undefined ? { comment } : {}),
+      };
       return payload;
     }
 
@@ -562,7 +585,11 @@ function buildPayload(
     case "add_subtask": {
       const subtaskText = getString(raw, "subtaskText");
       if (!subtaskText) return fail("invalid_payload", "subtaskText is required");
-      const payload: AddSubtaskPayload = { subtaskText };
+      const rawKind = ctx.subtaskKind ?? getString(raw, "subtaskKind") ?? "implementation";
+      if (rawKind !== "implementation" && rawKind !== "review") {
+        return fail("invalid_payload", "subtaskKind must be implementation or review");
+      }
+      const payload: AddSubtaskPayload = { subtaskText, subtaskKind: rawKind };
       return payload;
     }
 
@@ -570,10 +597,12 @@ function buildPayload(
     case "complete_subtask": {
       const subtaskId = getString(raw, "subtaskId");
       if (!subtaskId) return fail("invalid_payload", "subtaskId is required");
+      const subtaskKind = ctx.subtaskKind;
+      if (!subtaskKind) return fail("invalid_payload", "subtaskId must identify a sub-task on this task");
       const completed = getBoolean(raw, "completed") ?? true;
       const minutesSpent = getNumber(raw, "minutesSpent");
       const payload: CompleteSubtaskPayload = {
-        subtaskId, completed,
+        subtaskId, subtaskKind, completed,
         ...(minutesSpent !== undefined ? { minutesSpent } : {}),
       };
       return payload;
@@ -583,7 +612,9 @@ function buildPayload(
     case "remove_subtask": {
       const subtaskId = getString(raw, "subtaskId");
       if (!subtaskId) return fail("invalid_payload", "subtaskId is required");
-      const payload: RemoveSubtaskPayload = { subtaskId };
+      const subtaskKind = ctx.subtaskKind;
+      if (!subtaskKind) return fail("invalid_payload", "subtaskId must identify a sub-task on this task");
+      const payload: RemoveSubtaskPayload = { subtaskId, subtaskKind };
       return payload;
     }
 
@@ -591,20 +622,25 @@ function buildPayload(
     case "request_subtask": {
       const subtaskText = getString(raw, "subtaskText");
       if (!subtaskText) return fail("invalid_payload", "subtaskText is required");
-      const payload: RequestSubtaskPayload = { subtaskText };
+      const reason = getString(raw, "reason") ?? getString(raw, "comment");
+      if (!reason) return fail("invalid_payload", "comment is required");
+      const payload: RequestSubtaskPayload = { subtaskText, reason };
       return payload;
     }
 
     // --- request_task ---
     case "request_task": {
-      const taskTitle = getString(raw, "taskTitle") ?? getString(raw, "title");
+      const taskTitle = getString(raw, "taskTitle") ?? getString(raw, "title") ?? getString(raw, "subtaskText");
       if (!taskTitle) return fail("invalid_payload", "taskTitle is required");
       const taskDescription = getString(raw, "taskDescription") ?? getString(raw, "description");
       const epicId = getString(raw, "epicId");
+      const reason = getString(raw, "reason") ?? getString(raw, "comment");
+      if (!reason) return fail("invalid_payload", "comment is required");
       const payload: RequestTaskPayload = {
         taskTitle,
         ...(taskDescription !== undefined ? { taskDescription } : {}),
         ...(epicId !== undefined ? { epicId } : {}),
+        reason,
       };
       return payload;
     }

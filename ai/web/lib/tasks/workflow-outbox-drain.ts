@@ -6,6 +6,7 @@ import {
   enqueueEpicCompletionReview,
   enqueueEpicCompletionReviewApproval,
   enqueueEpicDoneCleanup,
+  enqueueTaskCheckpoint,
   enqueueTaskReviewFinalization,
 } from "@/lib/deploy/epic-merge";
 import {
@@ -131,6 +132,22 @@ async function dispatch(row: OutboxRow) {
       dedupeKey: row.dedupeKey,
     });
     if (!delivered) throw new Error("Task workflow notification has no active eligible recipient.");
+    return;
+  }
+  if (row.effectType === "repository_checkpoint") {
+    const result = await enqueueTaskCheckpoint({
+      taskId: String(payload.taskId),
+      projectId: String(payload.projectId),
+      requestedByUserId: String(payload.requestedByUserId),
+      requestedByUsername: String(payload.requestedByUsername),
+      authorizationCommentId: String(payload.authorizationCommentId),
+      note: String(payload.note),
+    });
+    if (result.blockedByFailedJob) {
+      throw new TerminalWorkflowEffectError(
+        "A failed checkpoint runner job requires operator recovery.",
+      );
+    }
     return;
   }
   if (row.effectType === "board_touch") {

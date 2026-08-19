@@ -13,6 +13,13 @@ import type {
   IntentExecutorRegistry,
   IntentExecutorContext,
 } from "@/lib/tasks/orchestrator/intents/types";
+import {
+  activityPayloadUsesCheckpointAuthorization,
+  validateCheckpointAuthorizationText,
+} from "@/lib/deploy/checkpoint-authorization";
+import { isProtectedBranch } from "@/lib/projects/protected-branches";
+import { effectiveEpicBranchName, effectiveTaskBranchName } from "@/lib/work-items/branches";
+import { enqueueWorkflowEffects } from "@/lib/tasks/transition-kernel";
 
 async function executeRegisteredIntent<I extends TaskWorkflowIntent>(
   context: IntentExecutorContext<I>,
@@ -138,8 +145,12 @@ const submitForReviewExecutor: IntentExecutor<"submit_for_review"> = async (cont
     where: { taskId: context.command.taskId },
     data: {
       workflowCycleId: context.state.activeWorkflowCycleId,
-      candidateSha: context.command.payload.candidateSha,
-      baseSha: context.command.payload.baseSha,
+      ...(context.command.payload.candidateSha
+        ? { candidateSha: context.command.payload.candidateSha }
+        : {}),
+      ...(context.command.payload.baseSha
+        ? { baseSha: context.command.payload.baseSha }
+        : {}),
       repoTouched: context.command.payload.repoTouched,
       validationOutcome: null,
       phase: "validating",
@@ -372,15 +383,23 @@ const archiveTaskExecutor: IntentExecutor<"archive_task"> = async (context) => {
 };
 
 const assignTaskExecutor: IntentExecutor<"assign_task"> = async (context) => {
-  const username = context.command.payload.assigneeUsername.replace(/^@/, "");
+  const requestedUsername = context.command.payload.assigneeUsername?.replace(/^@/, "") ?? null;
   const assignee = await context.tx.user.findFirst({
     where: {
-      username,
+      ...(requestedUsername ? { username: requestedUsername } : {}),
       status: "active",
       kind: "agent",
       agent: { is: { role: "coding", deactivatedAt: null } },
+      assignedTasks: {
+        none: {
+          projectId: context.state.projectId,
+          status: "In Progress",
+          deletedAt: null,
+        },
+      },
     },
-    select: { id: true },
+    orderBy: { createdAt: "asc" },
+    select: { id: true, username: true },
   });
   if (!assignee) throw new Error("assignee_not_found");
   const assigned = await context.tx.task.updateMany({
@@ -390,10 +409,29 @@ const assignTaskExecutor: IntentExecutor<"assign_task"> = async (context) => {
   if (assigned.count !== 1) throw new Error("task_already_assigned");
   await createDomainActivity(context, "task.assign", {
     from: null,
-    to: username,
+    to: assignee.username,
     assigneeId: assignee.id,
     assignedBy: "reviewer",
     afterPlanApproval: context.command.payload.afterPlanApproval,
+  });
+  await enqueueWorkflowEffects(context.tx, {
+    taskId: context.command.taskId,
+    projectId: context.state.projectId,
+    aggregateVersion: context.state.workflowVersion,
+    workflowCycleId: context.state.activeWorkflowCycleId,
+    effects: [{
+      type: "task_notification",
+      key: `assignment:${assignee.id}`,
+      payload: {
+        taskId: context.command.taskId,
+        targetUserId: assignee.id,
+        actor: context.command.actor,
+        reason: context.state.approvedOn ? "todo_start_required" : "backlog_plan_requested",
+        body: context.state.approvedOn
+          ? "You were assigned an approved task. Start it when the lane is available."
+          : "You were assigned this task. Submit its structured Action Plan before implementation.",
+      },
+    }],
   });
   return context.helpers.executeDecisionWrites();
 };
@@ -427,14 +465,92 @@ const raiseScopeBlockerExecutor: IntentExecutor<"raise_scope_blocker"> = async (
 };
 
 const publishCheckpointExecutor: IntentExecutor<"publish_checkpoint"> = async (context) => {
-  await context.tx.taskRepositoryRun.updateMany({
-    where: { taskId: context.command.taskId },
-    data: {
-      candidateSha: context.command.payload.candidateSha,
-      baseSha: context.command.payload.baseSha,
-      version: { increment: 1 },
+  const task = await context.tx.task.findUnique({
+    where: { id: context.command.taskId },
+    select: {
+      approvedOn: true,
+      workItemKey: true,
+      branchName: true,
+      epic: { select: { workItemKey: true, branchName: true, status: true } },
+      project: { select: { repositoryPath: true, agentChangeBlockedBranches: true } },
+      repositoryRun: { select: { phase: true, worktreePath: true } },
     },
   });
+  const authorization = await context.tx.comment.findUnique({
+    where: { id: context.command.payload.authorizationCommentId },
+    select: {
+      taskId: true,
+      body: true,
+      createdAt: true,
+      deletedAt: true,
+      user: { select: { kind: true, status: true, isOwner: true } },
+    },
+  });
+  if (
+    !task?.approvedOn ||
+    !authorization ||
+    authorization.taskId !== context.command.taskId ||
+    authorization.deletedAt ||
+    authorization.createdAt < task.approvedOn ||
+    authorization.user.kind !== "human" ||
+    authorization.user.status !== "active" ||
+    !authorization.user.isOwner
+  ) {
+    return {
+      status: "forbidden",
+      reason: "Checkpoint authorization is not a live owner grant for this approved task.",
+      domainCode: "not_authorized",
+    };
+  }
+  const taskBranch = effectiveTaskBranchName(task);
+  const epicBranch = task.epic ? effectiveEpicBranchName(task.epic) : null;
+  if (
+    !task.project.repositoryPath ||
+    !task.repositoryRun?.worktreePath ||
+    task.repositoryRun.phase !== "active" ||
+    !task.epic ||
+    task.epic.status !== "In Progress" ||
+    !taskBranch ||
+    !epicBranch ||
+    taskBranch === epicBranch ||
+    isProtectedBranch(task.project.agentChangeBlockedBranches, epicBranch)
+  ) {
+    return {
+      status: "stale",
+      reason: "Checkpoint repository contract is not active or publishable.",
+      domainCode: "cycle_mismatch",
+    };
+  }
+  const explicitAuthorization = validateCheckpointAuthorizationText({
+    body: authorization.body,
+    taskKey: task.workItemKey,
+    taskBranch,
+    epicBranch,
+  });
+  if (!explicitAuthorization.ok) {
+    return {
+      status: "forbidden",
+      reason: `Checkpoint authorization is invalid: ${explicitAuthorization.reason}`,
+      domainCode: "not_authorized",
+    };
+  }
+  const priorUses = await context.tx.activityLog.findMany({
+    where: {
+      taskId: context.command.taskId,
+      kind: { in: ["pm.repo.checkpoint.enqueue", "pm.repo.checkpoint.ok", "task.repository.checkpoint.requested"] },
+    },
+    select: { payload: true },
+  });
+  if (priorUses.some((row) => activityPayloadUsesCheckpointAuthorization(
+    row.payload,
+    context.command.payload.authorizationCommentId,
+  ))) {
+    return {
+      status: "invalid",
+      reason: "That checkpoint authorization was already consumed.",
+      domainCode: "idempotency_conflict",
+    };
+  }
   await createDomainActivity(context, "task.repository.checkpoint.requested", {
     authorizationCommentId: context.command.payload.authorizationCommentId,
     candidateSha: context.command.payload.candidateSha,
@@ -447,7 +563,7 @@ const addSubtaskExecutor: IntentExecutor<"add_subtask"> = async (context) => {
   const existing = await context.tx.subTask.findFirst({
     where: {
       taskId: context.command.taskId,
-      kind: "implementation",
+      kind: context.command.payload.subtaskKind,
       text: context.command.payload.subtaskText,
     },
     select: { id: true },
@@ -457,8 +573,9 @@ const addSubtaskExecutor: IntentExecutor<"add_subtask"> = async (context) => {
       taskId: context.command.taskId,
       text: context.command.payload.subtaskText,
       actorUserId: context.decision.decisionActorId,
-      kind: "implementation",
+      kind: context.command.payload.subtaskKind,
       client: context.tx,
+      recordLegacyBoundary: false,
     });
   }
   return context.helpers.executeDecisionWrites();
@@ -472,6 +589,7 @@ const completeSubtaskExecutor: IntentExecutor<"complete_subtask"> = async (conte
     actorUserId: context.decision.decisionActorId,
     expectTaskId: context.command.taskId,
     client: context.tx,
+    recordLegacyBoundary: false,
   });
   if (!updated) throw new Error("subtask_not_found");
   return context.helpers.executeDecisionWrites();
@@ -483,6 +601,7 @@ const removeSubtaskExecutor: IntentExecutor<"remove_subtask"> = async (context) 
     actorUserId: context.decision.decisionActorId,
     expectTaskId: context.command.taskId,
     client: context.tx,
+    recordLegacyBoundary: false,
   });
   if (!removed) throw new Error("subtask_not_found");
   return context.helpers.executeDecisionWrites();
@@ -491,11 +610,12 @@ const removeSubtaskExecutor: IntentExecutor<"remove_subtask"> = async (context) 
 const requestSubtaskExecutor: IntentExecutor<"request_subtask"> = async (context) => {
   const comment = await createWorkflowComment(
     context,
-    `Requested implementation sub-task: ${context.command.payload.subtaskText}`,
+    `Requested implementation sub-task: ${context.command.payload.subtaskText}\n\nReason: ${context.command.payload.reason}`,
   );
   await createDomainActivity(context, "task.subtask.requested", {
     commentId: comment.id,
     subtaskText: context.command.payload.subtaskText,
+    reason: context.command.payload.reason,
   });
   return context.helpers.executeDecisionWrites();
 };
@@ -506,6 +626,7 @@ const requestTaskExecutor: IntentExecutor<"request_task"> = async (context) => {
     [
       `Requested Epic task: ${context.command.payload.taskTitle}`,
       context.command.payload.taskDescription ?? "",
+      `Reason: ${context.command.payload.reason}`,
     ].filter(Boolean).join("\n\n"),
   );
   await createDomainActivity(context, "task.task.requested", {
@@ -513,6 +634,7 @@ const requestTaskExecutor: IntentExecutor<"request_task"> = async (context) => {
     taskTitle: context.command.payload.taskTitle,
     taskDescription: context.command.payload.taskDescription ?? null,
     epicId: context.command.payload.epicId ?? context.state.epicId,
+    reason: context.command.payload.reason,
   });
   return context.helpers.executeDecisionWrites();
 };

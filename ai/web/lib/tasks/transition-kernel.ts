@@ -22,7 +22,8 @@ export type WorkflowEffect = {
     | "epic_cleanup"
     | "epic_completion_review"
     | "epic_completion_review_approval"
-    | "dependency_refill";
+    | "dependency_refill"
+    | "repository_checkpoint";
   key: string;
   payload: Record<string, unknown>;
   availableAt?: Date;

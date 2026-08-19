@@ -113,7 +113,7 @@ async function main(): Promise<void> {
       assert(run !== null, "run should exist after dispatch");
       assertEqual(run!.provider, "ollama", "run.provider should be ollama");
       assertEqual(run!.model, "glm-5.2:cloud", "run.model should be glm-5.2:cloud");
-      assertEqual(run!.status, "accepted", "run.status should be accepted after successful dispatch");
+      assertEqual(run!.status, "delivered", "run.status should be delivered after successful dispatch");
 
       console.log("[env122-provenance] Section 1 passed: provider/model persisted on PmChannelRun");
     }

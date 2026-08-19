@@ -68,7 +68,7 @@ async function main() {
     const startResult = await submitWorkflowCommand({
       taskId: task.id,
       intent: "start_implementation",
-      actor: { id: assigneeUser.id, kind: "agent", username: "impl", role: "assignee" },
+      actor: { id: assigneeUser.id, kind: "agent", username: "impl", role: "assignee", codingCapability: true },
       expectedWorkflowVersion: 1,
       idempotencyKey: "orch05:start:1",
       source: "agent",
@@ -104,17 +104,21 @@ async function main() {
     // --- Test 2: concurrent start cannot open two cycles ----------------
     // The task is already In Progress, so a second start should be rejected
     // by the guard (status != To Do). Use a fresh task.
+    const project2 = await db.project.create({ data: { slug: "orch05-2", name: "Concurrent start" } });
     const task2 = await db.task.create({
-      data: { projectId: project.id, title: "Task 2", status: "To Do", workflowVersion: 1, assigneeId: assigneeUser.id, actingManagerId: reviewerUser.id, reporterId: owner.id, approvedOn: new Date(), approvedById: owner.id },
+      data: { projectId: project2.id, title: "Task 2", status: "To Do", workflowVersion: 1, assigneeId: assigneeUser.id, actingManagerId: reviewerUser.id, reporterId: owner.id, approvedOn: new Date(), approvedById: owner.id },
     });
     const plan2 = await db.actionPlan.create({ data: { taskId: task2.id, summary: "Plan 2", version: 1, status: "approved", authorId: assigneeUser.id, contentHash: "h2", approvedOn: new Date(), approvedById: owner.id } });
     await db.actionPlanStep.create({ data: { actionPlanId: plan2.id, stepId: "s1", title: "Step", acceptanceCriteria: "[]", kind: "sequential", rank: 0 } });
     const [s2a, s2b] = await Promise.all([
-      submitWorkflowCommand({ taskId: task2.id, intent: "start_implementation", actor: { id: assigneeUser.id, kind: "agent", username: "impl", role: "assignee" }, expectedWorkflowVersion: 1, idempotencyKey: "orch05:start:2a", source: "agent", payload: {} }),
-      submitWorkflowCommand({ taskId: task2.id, intent: "start_implementation", actor: { id: assigneeUser.id, kind: "agent", username: "impl", role: "assignee" }, expectedWorkflowVersion: 1, idempotencyKey: "orch05:start:2b", source: "agent", payload: {} }),
+      submitWorkflowCommand({ taskId: task2.id, intent: "start_implementation", actor: { id: assigneeUser.id, kind: "agent", username: "impl", role: "assignee", codingCapability: true }, expectedWorkflowVersion: 1, idempotencyKey: "orch05:start:2a", source: "agent", payload: {} }),
+      submitWorkflowCommand({ taskId: task2.id, intent: "start_implementation", actor: { id: assigneeUser.id, kind: "agent", username: "impl", role: "assignee", codingCapability: true }, expectedWorkflowVersion: 1, idempotencyKey: "orch05:start:2b", source: "agent", payload: {} }),
     ]);
     const statuses = [s2a.status, s2b.status].sort();
-    assert.ok(statuses.includes("accepted") || statuses.includes("operational"), "one concurrent start wins");
+    assert.ok(
+      statuses.includes("accepted") || statuses.includes("operational"),
+      `one concurrent start wins; got ${JSON.stringify([s2a, s2b])}`,
+    );
     const cycles2 = await db.taskWorkflowCycle.findMany({ where: { taskId: task2.id } });
     assert.equal(cycles2.length, 1, "only one cycle opened for concurrent starts");
     console.log("[orch05] concurrent start one cycle PASS");
@@ -131,7 +135,7 @@ async function main() {
     const start3 = await submitWorkflowCommand({
       taskId: task.id,
       intent: "start_implementation",
-      actor: { id: assigneeUser.id, kind: "agent", username: "impl", role: "assignee" },
+      actor: { id: assigneeUser.id, kind: "agent", username: "impl", role: "assignee", codingCapability: true },
       expectedWorkflowVersion: 2, // version was 1, the start increments it
       idempotencyKey: "orch05:start:3",
       source: "agent",

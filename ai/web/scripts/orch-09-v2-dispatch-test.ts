@@ -57,23 +57,23 @@ async function main() {
     delete process.env.PM_ORCHESTRATOR_V2_SHADOW;
     console.log("[v2-dispatch] shadow mode → compute but no effects PASS");
 
-    // --- Test 4: the route uses computeV2Prediction + recordV2Comparison
-    // (two-phase comparison probe), never calls submitWorkflowCommand, and
-    // never returns early from a V2 call.
+    // --- Test 4: durable ownership selects the authoritative adapter once.
+    // Comparison remains only in the legacy drain branch.
     const routeSource = await import("node:fs").then((fs) => fs.readFileSync(
       path.join(process.cwd(), "app/api/agent/tasks/[taskId]/workflow/route.ts"),
       "utf8",
     ));
-    assert.ok(routeSource.includes("computeV2Prediction"), "route has computeV2Prediction");
-    assert.ok(routeSource.includes("recordV2Comparison"), "route has recordV2Comparison");
-    assert.ok(!routeSource.includes("tryV2Dispatch"), "old tryV2Dispatch is removed");
-    assert.ok(!routeSource.includes("tryV2CanaryMutation"), "old tryV2CanaryMutation is removed");
-    assert.ok(!routeSource.match(/await\s+submitWorkflowCommand\(/), "route never calls submitWorkflowCommand as a function call");
-    // No early returns from V2 calls.
-    assert.ok(!routeSource.includes("if (v2StartResult) return"), "no early return from V2 start");
-    assert.ok(!routeSource.includes("if (v2ReviewResult) return"), "no early return from V2 review");
-    assert.ok(!routeSource.includes("if (v2FeedbackResult) return"), "no early return from V2 feedback");
-    assert.ok(!routeSource.includes("if (v2DoneResult) return"), "no early return from V2 done");
+    assert.ok(routeSource.includes("resolveEngineOwnership"), "route resolves durable ownership");
+    assert.ok(routeSource.includes("dispatchByDurableEngine"), "route branches once by durable engine");
+    assert.ok(routeSource.includes("submitAuthoritativeAgentWorkflowAction"), "V2 owner enters the canonical command adapter");
+    assert.ok(routeSource.includes("computeV2Prediction"), "legacy comparison code remains during drain");
+    assert.ok(routeSource.includes("recordV2Comparison"), "legacy comparison telemetry remains during drain");
+    const ownershipIndex = routeSource.indexOf("const ownership = await resolveEngineOwnership");
+    const legacyCounterIndex = routeSource.indexOf("await recordLegacyWorkflowBoundaryInvocation", ownershipIndex);
+    assert.ok(ownershipIndex > 0 && legacyCounterIndex > ownershipIndex,
+      "legacy counter is unreachable until durable legacy ownership is selected");
+    assert.ok(routeSource.includes("if (captured.authoritativeV2) return response"),
+      "V2 response bypasses the legacy mutationful response decorator");
     const finalizeHelper = routeSource.slice(
       routeSource.indexOf("async function recordV2ComparisonAfterLegacy"),
       routeSource.indexOf("async function runLegacyMutationWithV2Comparison"),
@@ -90,24 +90,9 @@ async function main() {
       routeSource.indexOf("if (!auth.allowed)") < routeSource.indexOf("const decision = decideCommand"),
       "V2 decision is not computed after authorization or guard rejection",
     );
-    // The probe is called AFTER the rollover barrier.
-    const rolloverIdx = routeSource.indexOf("THE ROLLOVER BARRIER");
-    const firstComputeCall = routeSource.indexOf("await computeV2Prediction(action");
-    assert.ok(rolloverIdx > 0, "rollover barrier exists");
-    assert.ok(firstComputeCall > rolloverIdx, "first V2 compute call is AFTER the rollover barrier");
-    // All 5 key actions have compute + record calls.
-    const actionBlocks = ["approve_plan", "start", "ready_for_review", "review_feedback", "review_done"];
-    for (const act of actionBlocks) {
-      const actionIdx = routeSource.indexOf(`action === "${act}"`);
-      assert.ok(actionIdx > 0, `${act} action block exists`);
-      const nextCompute = routeSource.indexOf("computeV2Prediction(", actionIdx);
-      const nextAction = routeSource.indexOf("\n  if (action === ", actionIdx + 1);
-      assert.ok(nextCompute > actionIdx && (nextAction < 0 || nextCompute < nextAction),
-        `${act} action block has a computeV2Prediction call before the next action`);
-    }
-    console.log("[v2-dispatch] route two-phase comparison probe PASS");
+    console.log("[v2-dispatch] durable owner route adapter PASS");
 
-    console.log("[v2-dispatch] PASS — V2 comparison integration verified");
+    console.log("[v2-dispatch] PASS — authoritative dispatch and legacy drain verified");
   } finally {
     await cleanup();
   }

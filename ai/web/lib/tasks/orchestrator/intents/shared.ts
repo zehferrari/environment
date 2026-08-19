@@ -12,6 +12,11 @@ import {
 } from "@/lib/tasks/workflow-cycle";
 import { createProcedureRun } from "@/lib/tasks/orchestrator/procedure-runner";
 import {
+  ALLOWED_ENGINES,
+  stampCycleEngine,
+  type WorkflowEngine,
+} from "@/lib/tasks/orchestrator/ownership";
+import {
   computeRequestFingerprint,
   findOrCreateReceipt,
 } from "@/lib/tasks/orchestrator/receipts";
@@ -74,6 +79,10 @@ export async function executeDecisionWrites(args: {
       baseSha: (decision.evidence.baseSha as string | undefined) ?? null,
     });
     cycleId = cycle.id;
+    if (!ALLOWED_ENGINES.has(args.state.workflowEngine)) {
+      throw new Error(`invalid_workflow_engine:${args.state.workflowEngine}`);
+    }
+    await stampCycleEngine(tx, cycle.id, args.state.workflowEngine as WorkflowEngine);
   } else if (decision.cycleOperation === "update") {
     const updated = await updateTaskWorkflowCycleCandidate(tx, {
       taskId: command.taskId,

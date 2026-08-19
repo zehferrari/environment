@@ -394,10 +394,13 @@ async function main() {
     console.log("[orch03] active procedure partial unique indexes PASS");
 
     const { readFileSync } = await import("node:fs");
-    const executeSource = readFileSync(path.join(process.cwd(), "lib/tasks/orchestrator/execute.ts"), "utf8");
-    assert.ok(executeSource.includes('code === "P2002"'), "executor recognizes database uniqueness races");
-    assert.ok(executeSource.includes("const winner = await tx.taskProcedureRun.findFirst"), "executor recovers the winning active procedure");
-    assert.ok(executeSource.includes("workflowCycleId: cycleId"), "executor scopes null and non-null cycles exactly");
+    const sharedExecutorSource = readFileSync(
+      path.join(process.cwd(), "lib/tasks/orchestrator/intents/shared.ts"),
+      "utf8",
+    );
+    assert.ok(sharedExecutorSource.includes('code === "P2002"'), "executor recognizes database uniqueness races");
+    assert.ok(sharedExecutorSource.includes("const winner = await tx.taskProcedureRun.findFirst"), "executor recovers the winning active procedure");
+    assert.ok(sharedExecutorSource.includes("workflowCycleId: cycleId"), "executor scopes null and non-null cycles exactly");
     console.log("[orch03] executor uniqueness-race recovery contract PASS");
 
     console.log("[orch03] PASS — all procedure engine assertions held");

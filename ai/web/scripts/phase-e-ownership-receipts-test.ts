@@ -17,6 +17,10 @@
 // All tests run against a disposable SQLite DB.
 
 import { strict as assert } from "node:assert";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { PrismaClient } from "@prisma/client";
 import { computeRequestFingerprint, findOrCreateReceipt, serializeResult, deserializeResult, IDEMPOTENCY_CONFLICT } from "@/lib/tasks/orchestrator/receipts";
 import {
@@ -30,7 +34,16 @@ import type { TaskWorkflowCommand, OrchestratorResult } from "@/lib/tasks/orches
 
 // --- Disposable DB setup -------------------------------------------------
 
-const DATABASE_URL = process.env.TEST_DATABASE_URL ?? "file:./dev_test_receipts.db";
+const disposableDir = process.env.TEST_DATABASE_URL
+  ? null
+  : mkdtempSync(path.join(tmpdir(), "phase-e-ownership-receipts-"));
+const DATABASE_URL = process.env.TEST_DATABASE_URL
+  ?? `file:${path.join(disposableDir!, "test.db")}`;
+execFileSync("pnpm", ["prisma", "migrate", "deploy", "--schema=prisma/schema.prisma"], {
+  cwd: process.cwd(),
+  env: { ...process.env, DATABASE_URL },
+  stdio: "ignore",
+});
 
 const db = new PrismaClient({
   datasourceUrl: DATABASE_URL,
@@ -483,4 +496,5 @@ main()
   })
   .finally(async () => {
     await db.$disconnect();
+    if (disposableDir) rmSync(disposableDir, { recursive: true, force: true });
   });

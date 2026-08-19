@@ -30,7 +30,7 @@ async function freshDb(): Promise<{ dbUrl: string; cleanup: () => Promise<void> 
   return { dbUrl, cleanup: () => rm(sandbox, { recursive: true, force: true }) };
 }
 
-type Actor = { id: string; kind: "human" | "agent"; username: string; role?: "reporter" | "reviewer" | "assignee" | "monitor" | "admin" | null };
+type Actor = { id: string; kind: "human" | "agent"; username: string; role?: "reporter" | "reviewer" | "assignee" | "monitor" | "admin" | null; codingCapability?: boolean };
 
 async function main() {
   const { dbUrl, cleanup } = await freshDb();
@@ -66,8 +66,28 @@ async function main() {
         reporterId: owner.id,
       },
     });
+    await db.actionPlan.create({
+      data: {
+        id: "plan-1",
+        taskId: task.id,
+        summary: "ORCH-02 plan",
+        version: 1,
+        status: "draft",
+        authorId: assigneeUser.id,
+        contentHash: "orch02-plan",
+        steps: {
+          create: [{
+            stepId: "step-1",
+            title: "Implement",
+            acceptanceCriteria: JSON.stringify(["Done"]),
+            kind: "sequential",
+            rank: 0,
+          }],
+        },
+      },
+    });
 
-    const assigneeActor: Actor = { id: assigneeUser.id, kind: "agent", username: "assignee", role: "assignee" };
+    const assigneeActor: Actor = { id: assigneeUser.id, kind: "agent", username: "assignee", role: "assignee", codingCapability: true };
     const reviewerActor: Actor = { id: reviewerUser.id, kind: "human", username: "reviewer", role: "reviewer" };
     const monitorActor: Actor = { id: monitorUser.id, kind: "agent", username: "monitor", role: "monitor" };
     const ownerActor: Actor = { id: owner.id, kind: "human", username: "owner", role: "reporter" };

@@ -271,11 +271,10 @@ function validateSubmitForReview(raw: Record<string, unknown>): PayloadValidatio
   const repoTouched = requireBoolean(raw, "repoTouched");
   if (!repoTouched.ok) return fail("invalid_payload", repoTouched.message);
 
-  // When repo is touched, candidateSha and baseSha must be non-null strings.
-  if (repoTouched.value) {
-    if (!candidateSha.value) return fail("missing_evidence", "candidateSha is required when repoTouched is true");
-    if (!baseSha.value) return fail("missing_evidence", "baseSha is required when repoTouched is true");
-  }
+  // Candidate/base identity is prepared by the durable submit-review
+  // procedure. The transport may supply an already-resolved value, but a
+  // route must not perform Git mutation or reject a valid command merely
+  // because candidate preparation has not run yet.
 
   const worktreePath = requireStringOrNull(raw, "worktreePath", MAX_TEXT);
   if (!worktreePath.ok) return fail("invalid_payload", worktreePath.message);
@@ -332,8 +331,15 @@ function validateRaiseBlocker(raw: Record<string, unknown>): PayloadValidationRe
   const requestedAction = requireString(br, "requestedAction", MAX_ACTION);
   if (!requestedAction.ok) return fail("invalid_payload", `blockerReport.${requestedAction.message}`);
 
-  const evidence = requireStringArray(br, "evidence");
-  if (!evidence.ok) return fail("invalid_payload", `blockerReport.${evidence.message}`);
+  const rawEvidence = br["evidence"];
+  const evidence = isString(rawEvidence)
+    ? rawEvidence
+    : isStringArray(rawEvidence)
+      ? rawEvidence.join("\n")
+      : null;
+  if (evidence === null || evidence.length > MAX_TEXT) {
+    return fail("invalid_payload", "blockerReport.evidence must be a string or array of strings within the size limit");
+  }
 
   const diagnostics = requireStringArray(br, "diagnosticsAttempted");
   if (!diagnostics.ok) return fail("invalid_payload", `blockerReport.${diagnostics.message}`);
@@ -348,7 +354,7 @@ function validateRaiseBlocker(raw: Record<string, unknown>): PayloadValidationRe
     blockedOn,
     requestedActor: requestedActor.value,
     requestedAction: requestedAction.value,
-    evidence: evidence.value,
+    evidence,
     diagnosticsAttempted: diagnostics.value,
     resumeCondition: resumeCondition.value,
     reporterCanResolve: reporterCanResolve.value,
@@ -357,7 +363,7 @@ function validateRaiseBlocker(raw: Record<string, unknown>): PayloadValidationRe
   const payload: Record<string, unknown> = { blockerReport };
 
   // Optional permission fields
-  const permissionKind = br["permissionKind"];
+  const permissionKind = raw["permissionKind"];
   if (permissionKind !== undefined) {
     if (permissionKind !== "reporter_approval" && permissionKind !== "publish_checkpoint" && permissionKind !== null) {
       return fail("invalid_payload", "permissionKind must be 'reporter_approval', 'publish_checkpoint', or null");
@@ -432,7 +438,7 @@ function validateOverrideStatus(raw: Record<string, unknown>): PayloadValidation
 }
 
 function validateAssignTask(raw: Record<string, unknown>): PayloadValidationResult {
-  const assigneeUsername = requireString(raw, "assigneeUsername", MAX_ID);
+  const assigneeUsername = requireStringOrNull(raw, "assigneeUsername", MAX_ID);
   if (!assigneeUsername.ok) return fail("invalid_payload", assigneeUsername.message);
   const afterPlanApproval = requireBoolean(raw, "afterPlanApproval");
   if (!afterPlanApproval.ok) return fail("invalid_payload", afterPlanApproval.message);
@@ -504,33 +510,66 @@ function validateRepositoryCallback(raw: Record<string, unknown>, expectedOutcom
   return ok(payload);
 }
 
+function validateWorktreeRevalidationFailed(raw: Record<string, unknown>): PayloadValidationResult {
+  const procedureRunId = requireString(raw, "procedureRunId", MAX_ID);
+  if (!procedureRunId.ok) return fail("invalid_payload", procedureRunId.message);
+  const procedureStepId = requireString(raw, "procedureStepId", MAX_ID);
+  if (!procedureStepId.ok) return fail("invalid_payload", procedureStepId.message);
+  const failureReason = requireString(raw, "failureReason", MAX_TEXT);
+  if (!failureReason.ok || failureReason.value.length === 0) {
+    return fail("invalid_payload", failureReason.ok ? "failureReason must not be empty" : failureReason.message);
+  }
+  if (raw["outcome"] !== "failed") return fail("invalid_payload", "outcome must be failed");
+  return ok({
+    procedureRunId: procedureRunId.value,
+    procedureStepId: procedureStepId.value,
+    failureReason: failureReason.value,
+    outcome: "failed",
+  });
+}
+
 function validatePublishCheckpoint(raw: Record<string, unknown>): PayloadValidationResult {
   const authorizationCommentId = requireString(raw, "authorizationCommentId", MAX_ID);
   if (!authorizationCommentId.ok) return fail("invalid_payload", authorizationCommentId.message);
-  const candidateSha = requireString(raw, "candidateSha", MAX_ID);
+  const candidateSha = requireStringOrNull(raw, "candidateSha", MAX_ID);
   if (!candidateSha.ok) return fail("invalid_payload", candidateSha.message);
-  const baseSha = requireString(raw, "baseSha", MAX_ID);
+  const baseSha = requireStringOrNull(raw, "baseSha", MAX_ID);
   if (!baseSha.ok) return fail("invalid_payload", baseSha.message);
 
-  return ok({ authorizationCommentId: authorizationCommentId.value, candidateSha: candidateSha.value, baseSha: baseSha.value });
+  const comment = requireStringOrNull(raw, "comment", MAX_TEXT);
+  if (!comment.ok) return fail("invalid_payload", comment.message);
+  return ok({
+    authorizationCommentId: authorizationCommentId.value,
+    candidateSha: candidateSha.value,
+    baseSha: baseSha.value,
+    comment: comment.value,
+  });
 }
 
 function validateAddSubtask(raw: Record<string, unknown>): PayloadValidationResult {
   const subtaskText = requireString(raw, "subtaskText", MAX_SUBTASK);
   if (!subtaskText.ok) return fail("invalid_payload", subtaskText.message);
   if (subtaskText.value.length === 0) return fail("invalid_payload", "subtaskText must not be empty");
-  return ok({ subtaskText: subtaskText.value });
+  const subtaskKind = raw["subtaskKind"];
+  if (subtaskKind !== "implementation" && subtaskKind !== "review") {
+    return fail("invalid_payload", "subtaskKind must be implementation or review");
+  }
+  return ok({ subtaskText: subtaskText.value, subtaskKind });
 }
 
 function validateCompleteSubtask(raw: Record<string, unknown>): PayloadValidationResult {
   const subtaskId = requireString(raw, "subtaskId", MAX_ID);
   if (!subtaskId.ok) return fail("invalid_payload", subtaskId.message);
+  const subtaskKind = raw["subtaskKind"];
+  if (subtaskKind !== "implementation" && subtaskKind !== "review") {
+    return fail("invalid_payload", "subtaskKind must be implementation or review");
+  }
   const completed = requireBoolean(raw, "completed");
   if (!completed.ok) return fail("invalid_payload", completed.message);
   const minutesSpent = optionalNumberOrNull(raw, "minutesSpent");
   if (!minutesSpent.ok) return fail("invalid_payload", minutesSpent.message);
 
-  const payload: Record<string, unknown> = { subtaskId: subtaskId.value, completed: completed.value };
+  const payload: Record<string, unknown> = { subtaskId: subtaskId.value, subtaskKind, completed: completed.value };
   if (minutesSpent.value !== null) payload["minutesSpent"] = minutesSpent.value;
   return ok(payload);
 }
@@ -538,14 +577,21 @@ function validateCompleteSubtask(raw: Record<string, unknown>): PayloadValidatio
 function validateRemoveSubtask(raw: Record<string, unknown>): PayloadValidationResult {
   const subtaskId = requireString(raw, "subtaskId", MAX_ID);
   if (!subtaskId.ok) return fail("invalid_payload", subtaskId.message);
-  return ok({ subtaskId: subtaskId.value });
+  const subtaskKind = raw["subtaskKind"];
+  if (subtaskKind !== "implementation" && subtaskKind !== "review") {
+    return fail("invalid_payload", "subtaskKind must be implementation or review");
+  }
+  return ok({ subtaskId: subtaskId.value, subtaskKind });
 }
 
 function validateRequestSubtask(raw: Record<string, unknown>): PayloadValidationResult {
   const subtaskText = requireString(raw, "subtaskText", MAX_SUBTASK);
   if (!subtaskText.ok) return fail("invalid_payload", subtaskText.message);
   if (subtaskText.value.length === 0) return fail("invalid_payload", "subtaskText must not be empty");
-  return ok({ subtaskText: subtaskText.value });
+  const reason = requireString(raw, "reason", MAX_TEXT);
+  if (!reason.ok) return fail("invalid_payload", reason.message);
+  if (reason.value.length === 0) return fail("invalid_payload", "reason must not be empty");
+  return ok({ subtaskText: subtaskText.value, reason: reason.value });
 }
 
 function validateRequestTask(raw: Record<string, unknown>): PayloadValidationResult {
@@ -557,10 +603,14 @@ function validateRequestTask(raw: Record<string, unknown>): PayloadValidationRes
   if (!taskDescription.ok) return fail("invalid_payload", taskDescription.message);
   const epicId = requireStringOrNull(raw, "epicId", MAX_ID);
   if (!epicId.ok) return fail("invalid_payload", epicId.message);
+  const reason = requireString(raw, "reason", MAX_TEXT);
+  if (!reason.ok) return fail("invalid_payload", reason.message);
+  if (reason.value.length === 0) return fail("invalid_payload", "reason must not be empty");
 
   const payload: Record<string, unknown> = { taskTitle: taskTitle.value };
   if (taskDescription.value !== null) payload["taskDescription"] = taskDescription.value;
   if (epicId.value !== null) payload["epicId"] = epicId.value;
+  payload["reason"] = reason.value;
   return ok(payload);
 }
 
@@ -615,6 +665,7 @@ export function validateCommandPayload(
       return validateRepositoryCallback(raw, "succeeded", "repository_validation_succeeded");
     case "repository_validation_failed":
       return validateRepositoryCallback(raw, "failed", "repository_validation_failed");
+    case "worktree_revalidation_failed": return validateWorktreeRevalidationFailed(raw);
     case "repository_finalization_succeeded":
       return validateRepositoryCallback(raw, "succeeded", "repository_finalization_succeeded");
     case "repository_finalization_failed":

@@ -520,6 +520,12 @@ export function runGuards(
       ]);
     }
 
+    case "worktree_revalidation_failed":
+      return runGuardsChain([
+        guardStatus(state, command.intent, ["In Progress"]),
+        guardCyclePrecondition(state, command.intent, command.workflowCycleId),
+      ]);
+
     case "request_review_changes":
       // §10.7: status Review, active cycle, exact lease + candidate
       return runGuardsChain([
@@ -554,7 +560,9 @@ export function runGuards(
     case "raise_blocker":
       return runGuardsChain([
         guardStatus(state, command.intent, ["In Progress", "To Do", "Review"]),
-        guardCyclePrecondition(state, command.intent, command.workflowCycleId),
+        state.status === "To Do"
+          ? { ok: true }
+          : guardCyclePrecondition(state, command.intent, command.workflowCycleId),
       ]);
 
     case "clear_blocker":
@@ -567,7 +575,9 @@ export function runGuards(
       // Ordinary agent-raised blockers retain the legacy cycle guard.
       return runGuardsChain([
         guardStatus(state, command.intent, ["In Progress", "To Do", "Review"]),
-        guardCyclePrecondition(state, command.intent, command.workflowCycleId),
+        state.status === "To Do"
+          ? { ok: true }
+          : guardCyclePrecondition(state, command.intent, command.workflowCycleId),
       ]);
 
     case "cancel_task":
@@ -575,6 +585,59 @@ export function runGuards(
 
     case "archive_task":
       return guardStatus(state, command.intent, ["Done"]);
+
+    case "triage_task":
+      return runGuardsChain([
+        guardStatus(state, command.intent, ["Backlog"]),
+        guardEpicActionable(state, command.intent),
+      ]);
+
+    case "assign_task":
+      if (state.assigneeId) {
+        return { ok: false, status: "stale", reason: "Task is already assigned." };
+      }
+      return guardStatus(state, command.intent, ["Backlog", "To Do"]);
+
+    case "publish_checkpoint":
+      return runGuardsChain([
+        guardStatus(state, command.intent, ["In Progress"]),
+        guardApprovedPlan(state, command.intent),
+        guardCyclePrecondition(state, command.intent, command.workflowCycleId),
+        guardEpicActionable(state, command.intent),
+        state.repositoryRun?.phase === "active"
+          ? { ok: true }
+          : {
+              ok: false,
+              status: "invalid",
+              reason: `publish_checkpoint requires an active repository run, found ${state.repositoryRun?.phase ?? "missing"}.`,
+            },
+      ]);
+
+    case "add_subtask":
+    case "complete_subtask":
+    case "remove_subtask": {
+      const kind = command.payload?.subtaskKind;
+      if (kind === "review") return { ok: true };
+      return runGuardsChain([
+        guardStatus(state, command.intent, ["To Do", "In Progress"]),
+        guardApprovedPlan(state, command.intent),
+      ]);
+    }
+
+    case "request_subtask":
+      if (!state.assigneeId) {
+        return { ok: false, status: "invalid", reason: "Task has no assignee to receive the request." };
+      }
+      return { ok: true };
+
+    case "request_task":
+      if (!state.epicId || !state.epic?.actingManagerId) {
+        return { ok: false, status: "invalid", reason: "Task has no Epic acting manager to receive the request." };
+      }
+      return { ok: true };
+
+    case "raise_scope_blocker":
+      return guardStatus(state, command.intent, ["To Do", "In Progress", "Review"]);
 
     default:
       return { ok: false, status: "invalid", reason: `Unknown intent ${command.intent}` };
