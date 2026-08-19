@@ -5,10 +5,13 @@
 //     allowed/denied reason, table-driven.
 //   - Guard test matrix: every intent × every state precondition ×
 //     pass/fail reason, table-driven.
-//   - Concurrency test: simulated parallel start_implementation produces
-//     exactly one accepted result and one stale result (workflowVersion CAS).
-//   - Transaction-time fence test: a state change between guard and execute
-//     returns stale (version, WIP, branch, prerequisites).
+//   - Concurrency test: two start_implementation commands with the same
+//     workflowVersion — after the first commits, the second is stale via
+//     guardWorkflowVersion (workflowVersion CAS proof).
+//   - Fence result mapping test: mapFenceResultToOrchestratorResult maps
+//     version/WIP/branch/prerequisite fence failures to stale. Full
+//     transaction-integration testing of fenceState requires a disposable
+//     database and is deferred to the integration test suite.
 //   - Guard honesty test: guardNoUnresolvedBlocker documents inactive field.
 //   - Callback correlation test: unused params removed, cycle/SHA checks work.
 //   - Coding capability fail-closed test: undefined codingCapability blocks
@@ -477,11 +480,12 @@ async function main(): Promise<void> {
 
   // --- Concurrency test: simulated parallel start_implementation ---
   // The lane/branch lease deferral in guards.ts states that workflowVersion
-  // CAS + fence produces exactly one winner under concurrent start_implementation.
-  // This test simulates that by verifying the guard logic: two commands with
-  // the same expectedWorkflowVersion cannot both pass the guard + fence chain
-  // because the first one bumps workflowVersion, making the second stale.
-  console.log("\n=== Concurrency Tests ===");
+  // Concurrency proof: two start_implementation commands with the same
+  // expectedWorkflowVersion cannot both succeed. After the first commits
+  // (bumping workflowVersion V→V+1 and status→In Progress), the second
+  // command's guardWorkflowVersion rejects it as stale. This verifies the
+  // workflowVersion CAS that the lane/branch lease deferral relies on.
+  console.log("\n=== Concurrency Tests (workflowVersion CAS) ===");
   try {
     const { runGuards } = await import("@/lib/tasks/orchestrator/guards");
 
@@ -558,8 +562,13 @@ async function main(): Promise<void> {
     console.error(`FAIL [concurrency]: ${(e as Error).message}`);
   }
 
-  // --- Fence test: state change between guard and execute returns stale ---
-  console.log("\n=== Fence Tests ===");
+  // --- Fence result mapping test: mapFenceResultToOrchestratorResult ---
+  // Verifies that fence failures (version, WIP, branch, prerequisites) map
+  // to stale orchestrator results. The fenceState function in state.ts
+  // performs these rechecks inside the transaction; these tests verify the
+  // result-to-orchestrator mapping is correct for each failure code.
+  // Full transaction-integration testing requires a disposable database.
+  console.log("\n=== Fence Result Mapping Tests ===");
   try {
     const { runGuards } = await import("@/lib/tasks/orchestrator/guards");
     const { mapFenceResultToOrchestratorResult } = await import("@/lib/tasks/orchestrator/state");

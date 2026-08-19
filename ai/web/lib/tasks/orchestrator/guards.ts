@@ -214,12 +214,15 @@ export function guardEpicActionable(
 // is the final arbiter: it is impossible for two transactions to both
 // commit a status transition from the same workflowVersion.
 //
-// The concurrency and fence tests in scripts/orch-phasee-03-test.ts
-// (=== Concurrency Tests === and === Fence Tests === sections) prove
-// this by simulating two concurrent start_implementation commands and
-// verifying exactly one is accepted and the other is stale, plus
-// verifying that fence rechecks for WIP, branch collision, and
-// prerequisites produce stale results inside the transaction.
+// The concurrency test in scripts/orch-phasee-03-test.ts verifies the
+// guard-level outcome: two commands with the same workflowVersion cannot
+// both pass guards after the first commits, because guardWorkflowVersion
+// rejects the second. The fence rechecks for WIP, branch collision, and
+// prerequisites are implemented in state.ts fenceState (§10 additive,
+// PHASEE-03 Step 3) and are exercised through mapFenceResultToOrchestratorResult
+// mapping tests. A full transaction-integration test that calls fenceState
+// inside a real Prisma transaction with mutated DB state requires a
+// disposable database and is deferred to the integration test suite.
 // ---------------------------------------------------------------------------
 
 // --- §10.3: Project WIP guard ---------------------------------------------
