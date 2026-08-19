@@ -90,9 +90,16 @@ export type EpicMergeJob =
       requestedByUserId: string;
       requestedByUsername: string;
       candidateSha: string;
+      // PHASEE-07: schema version for exact callback correlation.
+      schemaVersion?: number;
       procedureRunId?: string;
       procedureStepId?: string;
       workflowCycleId?: string | null;
+      // PHASEE-07: additional V2 identity fields for exact correlation.
+      commandReceiptId?: string | null;
+      repositoryRunId?: string | null;
+      repositoryRunVersion?: number | null;
+      baseSha?: string | null;
       attempt?: number;
       enqueuedAt: string;
     }
@@ -167,6 +174,12 @@ export async function enqueueTaskReviewFinalization(args: {
   procedureRunId?: string;
   procedureStepId?: string;
   workflowCycleId?: string | null;
+  // PHASEE-07: V2 identity fields for exact callback correlation.
+  schemaVersion?: number;
+  commandReceiptId?: string | null;
+  repositoryRunId?: string | null;
+  repositoryRunVersion?: number | null;
+  baseSha?: string | null;
 }) {
   const job: Extract<EpicMergeJob, { kind: "finalize" }> = {
     kind: "finalize",
@@ -176,9 +189,14 @@ export async function enqueueTaskReviewFinalization(args: {
     requestedByUserId: args.requestedByUserId,
     requestedByUsername: args.requestedByUsername,
     candidateSha: args.candidateSha,
+    schemaVersion: args.schemaVersion,
     procedureRunId: args.procedureRunId,
     procedureStepId: args.procedureStepId,
     workflowCycleId: args.workflowCycleId,
+    commandReceiptId: args.commandReceiptId,
+    repositoryRunId: args.repositoryRunId,
+    repositoryRunVersion: args.repositoryRunVersion,
+    baseSha: args.baseSha,
     enqueuedAt: new Date().toISOString(),
   };
   const target = path.join(EPIC_MERGE_DIR, jobFileName(job));
@@ -1640,6 +1658,13 @@ async function executeFinalizeJob(
         procedureStepId: job.procedureStepId,
         workflowCycleId: job.workflowCycleId,
         jobId: job.jobId,
+        // PHASEE-07: round-trip V2 identity fields for exact callback correlation.
+        schemaVersion: job.schemaVersion,
+        commandReceiptId: job.commandReceiptId ?? null,
+        repositoryRunId: job.repositoryRunId ?? null,
+        repositoryRunVersion: job.repositoryRunVersion ?? null,
+        candidateSha: job.candidateSha,
+        baseSha: job.baseSha ?? null,
       }
     : undefined;
   const repositoryPath = task.project.repositoryPath;

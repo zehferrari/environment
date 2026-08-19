@@ -105,6 +105,13 @@ function procedureCallbackForJob(job: BranchVerifyJob): RepositoryProcedureCallb
     workflowCycleId: job.workflowCycleId,
     jobId: job.jobId,
     baseSha: job.baseSha ?? null,
+    // PHASEE-07: round-trip V2 identity fields from the spooled job so the
+    // callback carries the full V2RepositoryJobIdentity for exact correlation.
+    schemaVersion: job.schemaVersion,
+    commandReceiptId: job.commandReceiptId ?? null,
+    repositoryRunId: job.repositoryRunId ?? null,
+    repositoryRunVersion: job.repositoryRunVersion ?? null,
+    candidateSha: job.previousCandidateSha ?? null,
   };
 }
 
@@ -870,6 +877,19 @@ async function main() {
   }
 
   const job = JSON.parse(readFileSync(jobFile, "utf8")) as BranchVerifyJob;
+  // PHASEE-07: Runner version skew handling.
+  // pm-verify is installed out-of-band, so a deployed older runner can pick
+  // up a new schema-v2 job and emit a v1-shaped callback that exact
+  // correlation then rejects. Decision: make an unrecognised-schema job a
+  // recorded no-op the runner leaves in the spool. The runner records an
+  // activity and exits without consuming the job file, so a newer runner
+  // that understands the schema can process it later.
+  if (job.schemaVersion !== undefined && job.schemaVersion > 2) {
+    console.error(
+      `[pm-verify] unrecognised schemaVersion ${job.schemaVersion} in job ${job.jobId}; leaving in spool for a newer runner.`,
+    );
+    return;
+  }
   let actor: Awaited<ReturnType<typeof monitorActor>> | null = null;
   try {
     actor = await monitorActor(job);

@@ -43,6 +43,7 @@ import { submitWorkflowCommand } from "@/lib/tasks/orchestrator";
 import { registerStepHandler } from "@/lib/tasks/orchestrator/procedure-runner";
 import type { StepHandlerResult, StepHandlerContext } from "@/lib/tasks/orchestrator/procedure-runner";
 import type { TaskProcedureType } from "@/lib/tasks/orchestrator/types";
+import { REPOSITORY_JOB_SCHEMA_V2 } from "@/lib/deploy/branch-verify";
 
 // =====================================================================
 // return_review_for_changes
@@ -198,9 +199,14 @@ async function finalizeRepository(ctx: StepHandlerContext): Promise<StepHandlerR
     reviewedSha: candidateSha,
     lastError: null,
   });
+  // PHASEE-07: Resolve repository run for V2 identity fields.
+  const repoRun = await db.taskRepositoryRun.findUnique({
+    where: { taskId: task.id },
+    select: { id: true, version: true, baseSha: true },
+  });
   // Enqueue the review_finalize outbox effect. The outbox drain enqueues the
   // actual finalization spool job. The callback will come back via
-  // applyProcedureCallback.
+  // applyProcedureCallback. PHASEE-07: include V2 identity fields.
   const jobId = `proc-finalize-${ctx.procedureRunId}-${Date.now()}`;
   await enqueueWorkflowEffects(db, {
     taskId: task.id,
@@ -218,8 +224,19 @@ async function finalizeRepository(ctx: StepHandlerContext): Promise<StepHandlerR
         procedureRunId: ctx.procedureRunId,
         procedureStepId: ctx.stepId,
         workflowCycleId: task.activeWorkflowCycleId,
+        // PHASEE-07: V2 identity fields for exact callback correlation.
+        schemaVersion: REPOSITORY_JOB_SCHEMA_V2,
+        commandReceiptId: null,
+        repositoryRunId: repoRun?.id ?? null,
+        repositoryRunVersion: repoRun?.version ?? null,
+        baseSha: repoRun?.baseSha ?? null,
       },
     }],
+  });
+  // PHASEE-07: record publication state for durable replay.
+  await db.taskRepositoryRun.update({
+    where: { taskId: task.id },
+    data: { publicationState: "publishing" },
   });
   return { status: "waiting_callback", jobId, output: { candidateSha } };
 }

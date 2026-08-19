@@ -133,7 +133,8 @@
     "test:workflow-regression-fixture": "tsx scripts/workflow-regression-fixture-test.ts",
     "export-pm-event-fixture": "tsx scripts/export-pm-event-fixture.ts",
     "workflow-watchdog": "tsx scripts/workflow-watchdog.ts",
-    "workflow-doctor": "tsx scripts/pm-workflow-doctor.ts"
+    "workflow-doctor": "tsx scripts/pm-workflow-doctor.ts",
+    "test:phasee-07-repo-correlation": "tsx scripts/phasee-07-repo-correlation-test.ts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.7.4",

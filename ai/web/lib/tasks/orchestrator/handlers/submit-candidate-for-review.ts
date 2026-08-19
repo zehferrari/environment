@@ -54,6 +54,7 @@ import { resolveValidationProfileSnapshot } from "@/lib/tasks/validation-profile
 import { effectiveTaskBranchName, effectiveEpicBranchName } from "@/lib/work-items/branches";
 import { effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
 import type { BranchVerifyJob } from "@/lib/deploy/branch-verify";
+import { REPOSITORY_JOB_SCHEMA_V2 } from "@/lib/deploy/branch-verify";
 
 const PROCEDURE_TYPE: TaskProcedureType = "submit_candidate_for_review";
 
@@ -227,6 +228,11 @@ async function runValidation(ctx: StepHandlerContext): Promise<StepHandlerResult
   });
   const validationProfile = await resolveValidationProfileSnapshot(task.projectId);
   const jobId = `proc-val-${ctx.procedureRunId}-${Date.now()}`;
+  // PHASEE-07: Resolve repository run for V2 identity fields.
+  const repoRun = await db.taskRepositoryRun.findUnique({
+    where: { taskId: task.id },
+    select: { id: true, version: true, baseSha: true, candidateSha: true },
+  });
   const job: BranchVerifyJob = {
     jobId,
     taskId: task.id,
@@ -234,9 +240,14 @@ async function runValidation(ctx: StepHandlerContext): Promise<StepHandlerResult
     projectSlug: task.project.slug,
     repositoryPath: task.project.repositoryPath,
     branchName,
+    // PHASEE-07: emit schema-v2 job with mandatory V2 identity fields.
+    schemaVersion: REPOSITORY_JOB_SCHEMA_V2,
     procedureRunId: ctx.procedureRunId,
     procedureStepId: ctx.stepId,
     workflowCycleId: ctx.workflowCycleId,
+    commandReceiptId: null, // populated when command receipt is available in ctx
+    repositoryRunId: repoRun?.id ?? null,
+    repositoryRunVersion: repoRun?.version ?? null,
     baseBranch: effectiveSettings.deployment.prTargetBranch.value,
     epicChild: Boolean(task.epicId),
     epicBranch: task.epic ? effectiveEpicBranchName(task.epic) : null,
