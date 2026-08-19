@@ -22,6 +22,7 @@
 //
 // Invoked as: pnpm exec tsx scripts/pm-verify-branch-pushed.ts <job-file>
 
+import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import { execFile } from "node:child_process";
 import {
   existsSync,
@@ -870,6 +871,10 @@ async function recordOperationalFailure(
 }
 
 async function main() {
+  await recordLegacyWorkflowBoundaryInvocation({
+    legacyBoundary: "review-submission-and-validation",
+    entryPoint: "main",
+  });
   const jobFile = process.argv[2];
   if (!jobFile) throw new Error("Usage: pm-verify-branch-pushed <job.json>");
   if (!existsSync(jobFile)) throw new Error(`Job file not found: ${jobFile}`);

@@ -12,6 +12,7 @@
 // there, which is how "who completed it / when" is audited without widening the
 // minimal row shape).
 
+import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import type { Prisma } from "@prisma/client";
 
 import { db } from "@/lib/db";
@@ -54,6 +55,11 @@ export async function createSubTaskItem(args: {
   actionPlanStepId?: string | null;
   client?: TxClient;
 }): Promise<{ id: string; created: boolean } | null> {
+  await recordLegacyWorkflowBoundaryInvocation({
+    legacyBoundary: "subtask-checklist-actions",
+    entryPoint: "createSubTaskItem",
+    client: args.client ?? db,
+  });
   const client = args.client ?? db;
   const text = args.text.trim().slice(0, MAX_SUBTASK_TEXT);
   if (!text) return null;
@@ -116,6 +122,11 @@ export async function setSubTaskCompletion(args: {
   expectTaskId?: string;
   client?: TxClient;
 }): Promise<{ id: string; taskId: string; completedAt: Date | null; minutesSpent: number | null } | null> {
+  await recordLegacyWorkflowBoundaryInvocation({
+    legacyBoundary: "subtask-checklist-actions",
+    entryPoint: "setSubTaskCompletion",
+    client: args.client ?? db,
+  });
   const client = args.client ?? db;
   const item = await client.subTask.findUnique({
     where: { id: args.subTaskId },
@@ -179,6 +190,11 @@ export async function deleteSubTaskItem(args: {
   expectTaskId?: string;
   client?: TxClient;
 }): Promise<{ taskId: string } | null> {
+  await recordLegacyWorkflowBoundaryInvocation({
+    legacyBoundary: "subtask-checklist-actions",
+    entryPoint: "deleteSubTaskItem",
+    client: args.client ?? db,
+  });
   const client = args.client ?? db;
   const item = await client.subTask.findUnique({
     where: { id: args.subTaskId },

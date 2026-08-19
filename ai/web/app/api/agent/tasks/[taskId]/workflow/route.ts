@@ -1,3 +1,4 @@
+import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import { revalidatePath } from "next/cache";
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
@@ -452,6 +453,10 @@ async function handleTaskWorkflowAction(
   ctx: { params: Promise<{ taskId: string }> },
   captured: WorkflowCapture,
 ) {
+  await recordLegacyWorkflowBoundaryInvocation({
+    legacyBoundary: "agent-task-workflow-route",
+    entryPoint: "handleTaskWorkflowAction",
+  });
   const { taskId } = await ctx.params;
   captured.taskId = taskId;
   let payload: {

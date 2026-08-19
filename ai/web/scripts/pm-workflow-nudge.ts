@@ -1,3 +1,4 @@
+import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import { db } from "@/lib/db";
 import {
   sendTaskWorkflowNotification,
@@ -120,6 +121,10 @@ function defaultRequiredAction(status: string, kind: string | undefined): string
 }
 
 async function main() {
+  await recordLegacyWorkflowBoundaryInvocation({
+    legacyBoundary: "auto-start-and-queue-refill",
+    entryPoint: "main",
+  });
   // This command is a short-lived producer. The generic enqueue path normally
   // schedules an in-process worker nudge, but this CLI used to call
   // process.exit(0) as soon as enqueue returned. The timer could claim the job

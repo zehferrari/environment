@@ -44,7 +44,7 @@ import { db } from "@/lib/db";
 import { updateTaskWorkflowCycleCandidate } from "@/lib/tasks/workflow-cycle";
 import { updateTaskRepositoryState } from "@/lib/tasks/repository-state";
 import { enqueueWorkflowEffects } from "@/lib/tasks/transition-kernel";
-import { resolveReviewOwnerIdFromSnapshot } from "@/lib/tasks/orchestrator/authorize";
+import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { registerStepHandler } from "@/lib/tasks/orchestrator/procedure-runner";
 import type { StepHandlerResult, StepHandlerContext } from "@/lib/tasks/orchestrator/procedure-runner";
 import type { TaskProcedureType } from "@/lib/tasks/orchestrator/types";
@@ -486,7 +486,7 @@ async function createReviewLease(ctx: StepHandlerContext): Promise<StepHandlerRe
     try { prepareOutput = JSON.parse(prepareStep.output); } catch { /* ignore */ }
   }
   const candidateSha = (prepareOutput?.candidateSha as string) ?? task.repositoryRun?.candidateSha ?? "no-repo";
-  const reviewerId = resolveReviewOwnerIdFromSnapshot({
+  const reviewerId = resolveReviewOwnerId({
     actingManagerId: task.actingManagerId,
     reporterId: task.reporterId,
     epic: task.epic ? { status: task.epic.status, actingManagerId: task.epic.actingManagerId } : null,
@@ -615,7 +615,7 @@ async function wakeReviewer(ctx: StepHandlerContext): Promise<StepHandlerResult>
   if (!task) {
     return { status: "completed", output: { skipped: true, reason: "task_not_found" } };
   }
-  const reviewerId = resolveReviewOwnerIdFromSnapshot({
+  const reviewerId = resolveReviewOwnerId({
     actingManagerId: task.actingManagerId,
     reporterId: task.reporterId,
     epic: task.epic ? { status: task.epic.status, actingManagerId: task.epic.actingManagerId } : null,

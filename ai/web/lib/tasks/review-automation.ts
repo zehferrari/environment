@@ -1,3 +1,4 @@
+import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import { db } from "@/lib/db";
 import { canSetTaskDoneForActor, resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { assignOpenEpicTasks, type EpicTaskAssignment } from "@/lib/epics/assignment";
@@ -219,6 +220,10 @@ export async function completeReviewedTaskAndAssignNext(args: {
   repositoryFinalized?: boolean;
   workflowAction?: PmChannelWorkflowActionArgs;
 }) {
+  await recordLegacyWorkflowBoundaryInvocation({
+    legacyBoundary: "review-decision-and-finalization",
+    entryPoint: "completeReviewedTaskAndAssignNext",
+  });
   const task = await db.task.findUnique({
     where: { id: args.taskId },
     select: {
@@ -733,6 +738,10 @@ export async function tryCompleteTaskFromReviewerComment(args: {
   agentUserId: string;
   agentSlug: string;
 }) {
+  await recordLegacyWorkflowBoundaryInvocation({
+    legacyBoundary: "review-decision-and-finalization",
+    entryPoint: "tryCompleteTaskFromReviewerComment",
+  });
   if (!isReviewerApprovalComment(args.body)) {
     return { completed: false as const, reason: "not_approval" as const };
   }

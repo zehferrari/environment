@@ -1,3 +1,4 @@
+import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import { db } from "@/lib/db";
 import { settleConsumedCheckpointBlocker } from "@/lib/tasks/checkpoint-blocker";
 import { resolveActiveMonitorAgent } from "@/lib/tasks/repository-state";
@@ -26,6 +27,10 @@ function checkpointPayload(payload: string | null) {
 }
 
 async function main() {
+  await recordLegacyWorkflowBoundaryInvocation({
+    legacyBoundary: "workflow-reconciler-and-repair-tools",
+    entryPoint: "main",
+  });
   const taskId = argument("--task-id");
   if (!taskId) throw new Error("Usage: repair-task-workflow-state --task-id <id> [--rotate-session] [--resume]");
   if (flag("--resume") && !process.env.AUTH_SECRET?.trim()) {

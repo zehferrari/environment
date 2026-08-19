@@ -1,3 +1,4 @@
+import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import { revalidatePath } from "next/cache";
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
@@ -144,6 +145,10 @@ export async function POST(
   req: NextRequest,
   ctx: { params: Promise<{ epicId: string }> },
 ) {
+  await recordLegacyWorkflowBoundaryInvocation({
+    legacyBoundary: "agent-epic-workflow-route",
+    entryPoint: "POST",
+  });
   const { epicId } = await ctx.params;
   let payload: {
     messageId?: unknown;
