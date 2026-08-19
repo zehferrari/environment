@@ -20,13 +20,22 @@ export type FinalizationProcedureCallback = {
   procedureStepId: string;
   workflowCycleId: string | null;
   jobId: string;
+  // PHASEE-07: V2 identity fields for exact callback correlation.
+  schemaVersion?: number;
+  commandReceiptId?: string | null;
+  repositoryRunId?: string | null;
+  repositoryRunVersion?: number | null;
+  candidateSha?: string | null;
+  baseSha?: string | null;
 };
 
-// ORCH-07/P0-4: apply a finalization callback to a waiting procedure step.
-// Called after the legacy finalization completes. If a procedure step is in
-// waiting_callback for this task, applies the callback so the procedure
-// engine can continue (verify_finalization → complete_review → Done).
-export async function applyFinalizationCallbackToProcedure(
+// PHASEE-07: Legacy v1 drain adapter for finalization callbacks.
+// DRAIN-ONLY: used for callbacks from jobs queued by older PM builds that
+// do not carry schemaVersion=2. This function still uses task-scoped lookup
+// to find the waiting step. It will be removed after the drain deadline.
+// REMOVAL CONDITION: zero task.workflow.callback.v1_drain activities for
+// two consecutive deploy cycles.
+export async function v1DrainFinalizationCallback(
   taskId: string,
   candidateSha: string | null,
   ok: boolean,
@@ -70,7 +79,7 @@ export async function applyFinalizationCallbackToProcedure(
             projectId: task.projectId,
             taskId,
             kind: "task.workflow.procedure_callback_rejected",
-            payload: JSON.stringify({ ...callback, candidateSha, reason: "Exact finalization procedure step not found for callback." }),
+            payload: JSON.stringify({ ...callback, candidateSha, reason: "Exact finalization procedure step not found for v1 drain callback.", drainPath: "v1" }),
           },
         });
       }
@@ -109,10 +118,75 @@ export async function applyFinalizationCallbackToProcedure(
             jobId,
             candidateSha,
             reason: result.reason,
+            drainPath: "v1",
           }),
         },
       });
     }
+  }
+}
+
+// PHASEE-07: V2-exact finalization callback application. Requires exact match
+// on all V2RepositoryJobIdentity fields — no task-search fallback.
+// A V2 callback that cannot be exactly correlated is rejected and recorded
+// as a deduplicated activity, never guessed.
+async function applyV2FinalizationCallback(
+  taskId: string,
+  candidateSha: string | null,
+  ok: boolean,
+  mergeSha: string | null | undefined,
+  error: string | undefined,
+  callback: FinalizationProcedureCallback,
+): Promise<void> {
+  const { applyProcedureCallback } = await import("@/lib/tasks/orchestrator/procedure-runner");
+  const result = await applyProcedureCallback({
+    procedureRunId: callback.procedureRunId,
+    stepId: callback.procedureStepId,
+    taskId,
+    workflowCycleId: callback.workflowCycleId,
+    jobId: callback.jobId,
+    candidateSha: callback.candidateSha ?? candidateSha,
+    baseSha: callback.baseSha,
+    schemaVersion: callback.schemaVersion,
+    commandReceiptId: callback.commandReceiptId,
+    repositoryRunId: callback.repositoryRunId,
+    repositoryRunVersion: callback.repositoryRunVersion,
+    data: { finalizationOk: ok, mergeSha: mergeSha ?? undefined, error: error ?? undefined },
+  });
+  if (!result.applied) {
+    const task = await db.task.findUnique({ where: { id: taskId }, select: { projectId: true } });
+    if (task) {
+      await db.activityLog.create({
+        data: {
+          projectId: task.projectId,
+          taskId,
+          kind: "task.workflow.procedure_callback_rejected",
+          payload: JSON.stringify({
+            ...callback,
+            candidateSha,
+            reason: result.reason,
+            correlationPath: "v2-exact",
+          }),
+        },
+      });
+    }
+  }
+}
+
+// PHASEE-07: Dispatcher for finalization callbacks. Routes V2 callbacks
+// through exact correlation and v1 callbacks through the legacy drain.
+export async function applyFinalizationCallbackToProcedure(
+  taskId: string,
+  candidateSha: string | null,
+  ok: boolean,
+  mergeSha?: string | null,
+  error?: string,
+  callback?: FinalizationProcedureCallback,
+): Promise<void> {
+  if (callback?.schemaVersion === 2) {
+    await applyV2FinalizationCallback(taskId, candidateSha, ok, mergeSha, error, callback);
+  } else {
+    await v1DrainFinalizationCallback(taskId, candidateSha, ok, mergeSha, error, callback);
   }
 }
 
