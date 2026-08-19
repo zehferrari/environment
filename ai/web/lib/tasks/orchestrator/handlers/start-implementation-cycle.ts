@@ -119,7 +119,7 @@ async function revalidateWorktree(ctx: StepHandlerContext): Promise<StepHandlerR
           const { submitWorkflowCommand } = await import("@/lib/tasks/orchestrator");
           await submitWorkflowCommand({
             taskId: ctx.taskId,
-            intent: "repository_validation_failed",
+            intent: "worktree_revalidation_failed",
             actor: { id: task.assigneeId ?? "procedure-engine", kind: "agent", username: "procedure-engine", role: "monitor" },
             expectedWorkflowVersion: task.workflowVersion,
             workflowCycleId: task.activeWorkflowCycleId,
@@ -129,11 +129,8 @@ async function revalidateWorktree(ctx: StepHandlerContext): Promise<StepHandlerR
             payload: {
               procedureRunId: ctx.procedureRunId,
               procedureStepId: ctx.stepId,
-              jobId: null,
-              candidateSha: null,
-              baseSha: null,
-              outcome: "failed",
               failureReason: `Worktree revalidation failed: ${message}`,
+              outcome: "failed",
             },
           });
         }

@@ -548,7 +548,7 @@ export async function createProcedureRun(
       triggerTransitionId: args.triggerTransitionId,
       type: args.type,
       definitionVersion: def.version,
-      inputSchemaVersion: def.version,
+      inputSchemaVersion: def.inputSchemaVersion,
       status: "queued",
       input: args.input ? JSON.stringify(args.input) : null,
     },
