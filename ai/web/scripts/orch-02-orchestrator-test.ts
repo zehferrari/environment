@@ -17,6 +17,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 const execFileP = promisify(execFile);
+import type { TaskWorkflowCommand } from "@/lib/tasks/orchestrator/types";
 
 async function freshDb(): Promise<{ dbUrl: string; cleanup: () => Promise<void> }> {
   const sandbox = await mkdtemp(path.join(tmpdir(), "orch02-"));
@@ -135,9 +136,10 @@ async function main() {
       actor: reviewerActor,
       expectedWorkflowVersion: 0,
       idempotencyKey: "orch02:approve:1",
-      source: "orch02-test",
+      source: "agent",
       evidence: { actionPlanId: "plan-1" },
-    });
+      payload: { actionPlanId: "plan-1", actionPlanVersion: 1 },
+    } as unknown as TaskWorkflowCommand);
     assert.equal(approveResult.status, "accepted", `approve_plan should be accepted, got ${JSON.stringify(approveResult)}`);
     const taskAfterApprove = await db.task.findUniqueOrThrow({ where: { id: task.id } });
     assert.equal(taskAfterApprove.status, "To Do");
@@ -150,11 +152,12 @@ async function main() {
       taskId: task.id,
       intent: "approve_plan",
       actor: reviewerActor,
-      expectedWorkflowVersion: 0, // stale version, but replay short-circuits
+      expectedWorkflowVersion: 0,
       idempotencyKey: "orch02:approve:1",
-      source: "orch02-test",
+      source: "agent",
       evidence: { actionPlanId: "plan-1" },
-    });
+      payload: { actionPlanId: "plan-1", actionPlanVersion: 1 },
+    } as unknown as TaskWorkflowCommand);
     // The kernel dedup happens at the transition level. Since approve_plan
     // goes through the kernel, the replay should return "replayed".
     assert.equal(replayResult.status, "replayed", `replay should return replayed, got ${JSON.stringify(replayResult)}`);
@@ -165,10 +168,11 @@ async function main() {
       taskId: task.id,
       intent: "start_implementation",
       actor: assigneeActor,
-      expectedWorkflowVersion: 99, // wrong version
+      expectedWorkflowVersion: 99,
       idempotencyKey: "orch02:start:stale",
-      source: "orch02-test",
-    });
+      source: "agent",
+      payload: {},
+    } as unknown as TaskWorkflowCommand);
     assert.equal(staleResult.status, "stale", `stale version should return stale, got ${JSON.stringify(staleResult)}`);
     console.log("[orch02] stale version PASS");
 
@@ -179,8 +183,9 @@ async function main() {
       actor: monitorActor,
       expectedWorkflowVersion: 1,
       idempotencyKey: "orch02:monitor-approve",
-      source: "orch02-test",
-    });
+      source: "agent",
+      payload: { actionPlanId: "plan-1", actionPlanVersion: 1 },
+    } as unknown as TaskWorkflowCommand);
     assert.equal(forbiddenResult.status, "forbidden", `monitor approve should be forbidden, got ${JSON.stringify(forbiddenResult)}`);
     console.log("[orch02] forbidden monitor PASS");
 
@@ -193,16 +198,18 @@ async function main() {
       actor: assigneeActor,
       expectedWorkflowVersion: taskAfterApprove.workflowVersion,
       idempotencyKey: "orch02:start:A",
-      source: "orch02-test-A",
-    });
+      source: "agent",
+      payload: {},
+    } as unknown as TaskWorkflowCommand);
     const startB = submitWorkflowCommand({
       taskId: task.id,
       intent: "start_implementation",
       actor: assigneeActor,
       expectedWorkflowVersion: taskAfterApprove.workflowVersion,
       idempotencyKey: "orch02:start:B",
-      source: "orch02-test-B",
-    });
+      source: "agent",
+      payload: {},
+    } as unknown as TaskWorkflowCommand);
     const [resultA, resultB] = await Promise.all([startA, startB]);
     const statuses = [resultA.status, resultB.status].sort();
     // One should be accepted, the other stale (version conflict).

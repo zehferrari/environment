@@ -76,7 +76,8 @@ async function main() {
       actor: { id: monitorUser.id, kind: "agent", username: "monitor", role: "monitor" },
       expectedWorkflowVersion: 1,
       idempotencyKey: "orch07:monitor-accept",
-      source: "orch07-test",
+      source: "agent",
+      payload: { reviewRunId: "rr-monitor", candidateSha: "cand-1" },
     });
     assert.equal(monitorAccept.status, "forbidden", "monitor cannot accept_review");
     console.log("[orch07] monitor cannot accept_review PASS");
@@ -88,7 +89,8 @@ async function main() {
       actor: { id: reviewerUser.id, kind: "human", username: "reviewer", role: "reviewer" },
       expectedWorkflowVersion: 1,
       idempotencyKey: "orch07:reviewer-accept",
-      source: "orch07-test",
+      source: "agent",
+      payload: { reviewRunId: "rr-1", candidateSha: "cand-1" },
     });
     assert.equal(reviewerAccept.status, "accepted", `reviewer accept accepted; got ${JSON.stringify(reviewerAccept)}`);
     assert.ok(reviewerAccept.procedureId, "finalization procedure created");
@@ -146,7 +148,8 @@ async function main() {
       actor: { id: reviewerUser.id, kind: "human", username: "reviewer", role: "reviewer" },
       expectedWorkflowVersion: 1,
       idempotencyKey: "orch07:feedback",
-      source: "orch07-test",
+      source: "agent",
+      payload: { reviewRunId: "rr-2", candidateSha: "cand-2", reviewerComment: "Needs changes" },
     });
     assert.equal(feedback.status, "accepted", "request_review_changes accepted");
     // Run the procedure.
@@ -191,7 +194,8 @@ async function main() {
       actor: { id: reviewerUser.id, kind: "human", username: "reviewer", role: "reviewer" },
       expectedWorkflowVersion: 1,
       idempotencyKey: "orch07:accept3",
-      source: "orch07-test",
+      source: "agent",
+      payload: { reviewRunId: "rr-3", candidateSha: "cand-3" },
     });
     assert.equal(accept3.status, "accepted", "first accept accepted");
     // Try to accept AGAIN with the same idempotency key — should be replayed.
@@ -201,7 +205,8 @@ async function main() {
       actor: { id: reviewerUser.id, kind: "human", username: "reviewer", role: "reviewer" },
       expectedWorkflowVersion: 1,
       idempotencyKey: "orch07:accept3",
-      source: "orch07-test",
+      source: "agent",
+      payload: { reviewRunId: "rr-3", candidateSha: "cand-3" },
     });
     assert.equal(accept3Replay.status, "replayed", "duplicate accept is replayed (idempotent)");
     console.log("[orch07] accepted lease not reused PASS");

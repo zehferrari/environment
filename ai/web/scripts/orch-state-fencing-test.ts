@@ -80,8 +80,8 @@ async function submitCommand(
     source: cmd.source,
     workflowCycleId: cmd.workflowCycleId ?? null,
     evidence: cmd.evidence,
-    payload: cmd.payload,
-  });
+    payload: cmd.payload ?? {},
+  } as any);
   return result as any;
 }
 
@@ -382,7 +382,8 @@ async function candidateMismatch(
       source: "test",
       workflowCycleId: activeCycleId,
       evidence: { candidateSha: "sha-v1" },
-    }, snapshot!);
+      payload: {},
+    } as any, snapshot!);
   });
 
   c.assertEqual(fenceResult.ok, false, "fence rejects candidate mismatch");
@@ -466,7 +467,8 @@ async function versionBumpedCheckpoint(
       idempotencyKey: "f4-checkpoint-stale",
       source: "test",
       workflowCycleId: activeCycleId,
-    }, snapshot!);
+      payload: {},
+    } as any, snapshot!);
   });
 
   c.assertEqual(fenceResult.ok, false, "fence rejects stale version");

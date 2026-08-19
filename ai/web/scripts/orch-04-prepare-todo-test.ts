@@ -86,8 +86,9 @@ async function main() {
       actor: { id: reviewerUser.id, kind: "human", username: "reviewer", role: "reviewer" },
       expectedWorkflowVersion: 0,
       idempotencyKey: "orch04:approve:1",
-      source: "orch04-test",
+      source: "agent",
       evidence: { actionPlanId: plan1.id },
+      payload: { actionPlanId: plan1.id, actionPlanVersion: 1 },
     });
     assert.equal(approve1.status, "accepted", `approve_plan accepted; got ${JSON.stringify(approve1)}`);
     assert.ok(approve1.procedureId, "approve_plan created a procedure");
@@ -134,8 +135,9 @@ async function main() {
       actor: { id: reviewerUser.id, kind: "human", username: "reviewer", role: "reviewer" },
       expectedWorkflowVersion: 0,
       idempotencyKey: "orch04:approve:1", // same key
-      source: "orch04-test",
+      source: "agent",
       evidence: { actionPlanId: plan1.id },
+      payload: { actionPlanId: plan1.id, actionPlanVersion: 1 },
     });
     assert.equal(replayApprove.status, "replayed", "repeated approval is replayed");
     const proceduresForTask1After = await db.taskProcedureRun.count({ where: { taskId: task1.id } });
@@ -167,8 +169,9 @@ async function main() {
       actor: { id: reviewerUser.id, kind: "human", username: "reviewer", role: "reviewer" },
       expectedWorkflowVersion: 0,
       idempotencyKey: "orch04:approve:2",
-      source: "orch04-test",
+      source: "agent",
       evidence: { actionPlanId: plan2.id },
+      payload: { actionPlanId: plan2.id, actionPlanVersion: 1 },
     });
     assert.equal(approve2.status, "accepted");
     // Manually move task2 to In Progress (simulating concurrent start).
@@ -200,8 +203,9 @@ async function main() {
       actor: { id: reviewerUser.id, kind: "human", username: "reviewer", role: "reviewer" },
       expectedWorkflowVersion: 0,
       idempotencyKey: "orch04:approve:3",
-      source: "orch04-test",
+      source: "agent",
       evidence: { actionPlanId: plan3.id },
+      payload: { actionPlanId: plan3.id, actionPlanVersion: 1 },
     });
     // The procedure was just created and should be in queued status.
     const projection = await buildTaskWorkflowProjection(task3.id);

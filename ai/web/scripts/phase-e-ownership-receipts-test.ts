@@ -70,7 +70,7 @@ async function createUser() {
   });
 }
 
-function makeCommand(taskId: string, overrides: Partial<TaskWorkflowCommand> = {}): TaskWorkflowCommand {
+function makeCommand(taskId: string, overrides: Record<string, unknown> = {}): TaskWorkflowCommand {
   return {
     taskId,
     intent: "checkpoint",
@@ -78,8 +78,9 @@ function makeCommand(taskId: string, overrides: Partial<TaskWorkflowCommand> = {
     expectedWorkflowVersion: 0,
     idempotencyKey: `test-key-${Math.random().toString(36).slice(2, 10)}`,
     source: "test",
+    payload: {},
     ...overrides,
-  };
+  } as TaskWorkflowCommand;
 }
 
 const acceptedResult: OrchestratorResult = {
@@ -304,7 +305,7 @@ async function testReceiptConflictOnDifferentPayload() {
   const command2 = makeCommand(task.id, {
     intent: "checkpoint",
     idempotencyKey: command1.idempotencyKey, // same key
-    payload: { different: true }, // different payload → different fingerprint
+    payload: { nextAction: "different" }, // different payload → different fingerprint
   });
 
   const fingerprint1 = computeRequestFingerprint(command1);
@@ -374,7 +375,7 @@ async function testRaceDeterministicP2002Conflict() {
   const differentFingerprint = computeRequestFingerprint(
     makeCommand(command.taskId, {
       idempotencyKey: command.idempotencyKey,
-      payload: { different: true },
+      payload: { nextAction: "different" },
     }),
   );
 
@@ -409,7 +410,7 @@ async function testFingerprintStability() {
   const command = makeCommand("task-1", {
     intent: "start_implementation",
     actor: { id: "actor-1", kind: "agent" },
-    payload: { b: 2, a: 1 },
+    payload: { worktreePath: "/tmp/a", branchName: "b" },
   });
 
   const fp1 = computeRequestFingerprint(command);
@@ -417,7 +418,7 @@ async function testFingerprintStability() {
   assert.equal(fp1, fp2, "identical commands must produce identical fingerprints");
 
   // Different intent → different fingerprint
-  const fp3 = computeRequestFingerprint({ ...command, intent: "checkpoint" });
+  const fp3 = computeRequestFingerprint({ ...command, intent: "checkpoint", payload: {} });
   assert.notEqual(fp1, fp3, "different intent must produce different fingerprint");
 
   // Different actor → different fingerprint
@@ -428,7 +429,7 @@ async function testFingerprintStability() {
   const commandReordered = makeCommand("task-1", {
     intent: "start_implementation",
     actor: { id: "actor-1", kind: "agent" },
-    payload: { a: 1, b: 2 }, // same values, different key order
+    payload: { branchName: "b", worktreePath: "/tmp/a" }, // same values, different key order
   });
   const fp5 = computeRequestFingerprint(commandReordered);
   assert.equal(fp1, fp5, "key order in payload must not affect fingerprint");
