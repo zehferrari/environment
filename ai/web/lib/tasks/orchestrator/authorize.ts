@@ -166,7 +166,7 @@ export function canExecuteMechanicalCallback(
 
 export function authorizeCommand(
   state: TaskStateSnapshot,
-  command: { intent: TaskWorkflowIntent; actor: WorkflowActor },
+  command: { intent: TaskWorkflowIntent; actor: WorkflowActor; payload?: Record<string, unknown> },
 ): AuthorizationResult {
   const { intent, actor } = command;
 
@@ -469,6 +469,66 @@ export function authorizeCommand(
         decisionActorId: actor.id,
         executorActorId: null,
       };
+    }
+
+    case "triage_task":
+    case "assign_task":
+    case "request_subtask": {
+      const reviewerId = resolveReviewOwnerId({
+        actingManagerId: state.actingManagerId,
+        reporterId: state.reporterId,
+        epic: state.epic
+          ? { status: state.epic.status, actingManagerId: state.epic.actingManagerId }
+          : null,
+      });
+      if (actor.id !== reviewerId) {
+        return {
+          allowed: false,
+          reason: "not_reviewer",
+          decisionActorId: null,
+          executorActorId: null,
+        };
+      }
+      return { allowed: true, reason: "ok", decisionActorId: actor.id, executorActorId: null };
+    }
+
+    case "publish_checkpoint": {
+      if (state.assigneeId !== actor.id) {
+        return { allowed: false, reason: "not_assignee", decisionActorId: null, executorActorId: null };
+      }
+      if (actor.codingCapability !== true) {
+        return { allowed: false, reason: "not_coding_capable", decisionActorId: null, executorActorId: null };
+      }
+      return { allowed: true, reason: "ok", decisionActorId: actor.id, executorActorId: null };
+    }
+
+    case "add_subtask":
+    case "complete_subtask":
+    case "remove_subtask": {
+      const subtaskKind = command.payload?.subtaskKind;
+      if (subtaskKind === "review") {
+        const reviewerId = resolveReviewOwnerId({
+          actingManagerId: state.actingManagerId,
+          reporterId: state.reporterId,
+          epic: state.epic
+            ? { status: state.epic.status, actingManagerId: state.epic.actingManagerId }
+            : null,
+        });
+        if (actor.id !== reviewerId) {
+          return { allowed: false, reason: "not_reviewer", decisionActorId: null, executorActorId: null };
+        }
+      } else if (state.assigneeId !== actor.id) {
+        return { allowed: false, reason: "not_assignee", decisionActorId: null, executorActorId: null };
+      }
+      return { allowed: true, reason: "ok", decisionActorId: actor.id, executorActorId: null };
+    }
+
+    case "request_task":
+    case "raise_scope_blocker": {
+      if (state.assigneeId !== actor.id) {
+        return { allowed: false, reason: "not_assignee", decisionActorId: null, executorActorId: null };
+      }
+      return { allowed: true, reason: "ok", decisionActorId: actor.id, executorActorId: null };
     }
 
     default:

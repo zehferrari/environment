@@ -80,6 +80,8 @@ function makeAuthCtx(overrides: Partial<NormalizerAuthContext> = {}): Normalizer
     idempotencyKey: "test-key-1",
     messageId: "msg-1",
     source: "agent",
+    blockerId: "blocker-1",
+    subtaskKind: "implementation",
     ...overrides,
   };
 }
@@ -144,14 +146,15 @@ test("isOperationalIntent identifies operational intents", () => {
   assert.ok(!isOperationalIntent("accept_review"));
 });
 
-test("WORKFLOW_PUBLIC_ACTIONS includes all 20 public actions", () => {
-  assert.equal(WORKFLOW_PUBLIC_ACTIONS.length, 20);
+test("WORKFLOW_PUBLIC_ACTIONS includes all 21 cross-transport public actions", () => {
+  assert.equal(WORKFLOW_PUBLIC_ACTIONS.length, 21);
   const required = [
     "start", "checkpoint", "publish_checkpoint", "ready_for_review",
     "submit_review", "review_feedback", "review_done", "triage_to_todo",
     "approve_plan", "submit_plan", "assign_task", "assign_after_plan_approval",
     "add_subtask", "complete_subtask", "remove_subtask", "request_subtask",
     "request_task", "flag_blocker", "clear_blocker", "flag_extra_work_blocker",
+    "override_status",
   ];
   for (const a of required) {
     assert.ok(WORKFLOW_PUBLIC_ACTIONS.includes(a as WorkflowPublicAction), `Missing action: ${a}`);
@@ -185,8 +188,8 @@ test("validateCommandPayload: approve_plan requires actionPlanId + actionPlanVer
   expectOk(validateCommandPayload("approve_plan", { actionPlanId: "plan-1", actionPlanVersion: 1 }));
 });
 
-test("validateCommandPayload: submit_for_review requires candidateSha/baseSha when repoTouched", () => {
-  expectFail(validateCommandPayload("submit_for_review", { repoTouched: true, candidateSha: null, baseSha: null }), "missing_evidence");
+test("validateCommandPayload: submit_for_review allows durable procedure candidate preparation", () => {
+  expectOk(validateCommandPayload("submit_for_review", { repoTouched: true, candidateSha: null, baseSha: null }));
   expectOk(validateCommandPayload("submit_for_review", { repoTouched: true, candidateSha: "abc123", baseSha: "def456" }));
   expectOk(validateCommandPayload("submit_for_review", { repoTouched: false, candidateSha: null, baseSha: null }));
 });
@@ -240,12 +243,12 @@ test("validateCommandPayload: clear_blocker requires blockerId + resolution", ()
 
 test("validateCommandPayload: add_subtask requires non-empty subtaskText", () => {
   expectFail(validateCommandPayload("add_subtask", { subtaskText: "" }), "invalid_payload");
-  expectOk(validateCommandPayload("add_subtask", { subtaskText: "Write tests" }));
+  expectOk(validateCommandPayload("add_subtask", { subtaskText: "Write tests", subtaskKind: "implementation" }));
 });
 
 test("validateCommandPayload: complete_subtask requires subtaskId + completed", () => {
   expectFail(validateCommandPayload("complete_subtask", { subtaskId: "s1" }), "invalid_payload");
-  expectOk(validateCommandPayload("complete_subtask", { subtaskId: "s1", completed: true, minutesSpent: 30 }));
+  expectOk(validateCommandPayload("complete_subtask", { subtaskId: "s1", subtaskKind: "implementation", completed: true, minutesSpent: 30 }));
 });
 
 test("validateCommandPayload: rejects untrusted client-supplied role", () => {
@@ -600,7 +603,7 @@ test("Cross-transport: oversized strings rejected in all transports", () => {
   }
 });
 
-test("Cross-transport: all 20 public actions map to canonical intents", () => {
+test("Cross-transport: all 21 public actions map to canonical intents", () => {
   const ctx = makeAuthCtx({ candidateSha: "abc", baseSha: "def", reviewRunId: "r1", actionPlanId: "p1", actionPlanVersion: 1 });
   for (const action of WORKFLOW_PUBLIC_ACTIONS) {
     const r = normalizePublicAction(action, getValidRawBodyForAction(action), ctx);
@@ -615,7 +618,7 @@ test("Cross-transport: null where required is rejected", () => {
 
 test("Cross-transport: wrong type for required field is rejected", () => {
   expectFail(validateCommandPayload("approve_plan", { actionPlanId: 123, actionPlanVersion: 1 }), "invalid_payload");
-  expectFail(validateCommandPayload("complete_subtask", { subtaskId: "s1", completed: "yes" }), "invalid_payload");
+  expectFail(validateCommandPayload("complete_subtask", { subtaskId: "s1", subtaskKind: "implementation", completed: "yes" }), "invalid_payload");
 });
 
 test("Validation rejects client-supplied workflowVersion", () => {
@@ -628,7 +631,7 @@ test("Validation rejects client-supplied workflowVersion", () => {
   );
 });
 
-// --- Helper for the "all 20 actions map" test ----------------------------
+// --- Helper for the "all 21 actions map" test ----------------------------
 
 function getValidRawBodyForAction(action: WorkflowPublicAction): Record<string, unknown> {
   switch (action) {
@@ -649,8 +652,8 @@ function getValidRawBodyForAction(action: WorkflowPublicAction): Record<string, 
     case "add_subtask": return { subtaskText: "Write tests" };
     case "complete_subtask": return { subtaskId: "s1", completed: true };
     case "remove_subtask": return { subtaskId: "s1" };
-    case "request_subtask": return { subtaskText: "Need help" };
-    case "request_task": return { taskTitle: "New task" };
+    case "request_subtask": return { subtaskText: "Need help", comment: "Needed for parity" };
+    case "request_task": return { taskTitle: "New task", comment: "Needed for parity" };
     case "flag_blocker": return {
       blockerReport: {
         blockedOn: "dependency", requestedActor: null, requestedAction: "Wait",
@@ -660,6 +663,7 @@ function getValidRawBodyForAction(action: WorkflowPublicAction): Record<string, 
     };
     case "clear_blocker": return { blockerId: "b1", resolution: "Fixed" };
     case "flag_extra_work_blocker": return { scopeDescription: "Extra work" };
+    case "override_status": return { targetStatus: "To Do" };
     default: return {};
   }
 }

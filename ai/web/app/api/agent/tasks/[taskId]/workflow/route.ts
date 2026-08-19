@@ -83,6 +83,14 @@ import {
 } from "@/lib/agents/episodes/rollover";
 import { recordWorkflowActionExecutionState } from "@/lib/agents/watchdog/transitions";
 import type { LegacyTaskWorkflowCommand, TaskWorkflowCommand, TaskWorkflowIntent } from "@/lib/tasks/orchestrator/types";
+import {
+  decorateAuthoritativeAgentResponseCache,
+  dispatchByDurableEngine,
+  isAgentWorkflowPublicAction,
+  submitAuthoritativeAgentWorkflowAction,
+  type AgentWorkflowPublicAction,
+} from "@/lib/tasks/orchestrator/agent-route-adapter";
+import { resolveEngineOwnership } from "@/lib/tasks/orchestrator/ownership";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -144,6 +152,7 @@ type WorkflowCapture = {
   action?: WorkflowAction;
   taskId?: string;
   agentSlug?: string;
+  authoritativeV2?: boolean;
   v2Comparison?: {
     prediction: V2Prediction;
     task: V2ComparisonTask;
@@ -360,34 +369,7 @@ async function runLegacyMutationWithV2Comparison<T>(
   }
 }
 
-const ACTIONS = [
-  "start",
-  "checkpoint",
-  "publish_checkpoint",
-  "ready_for_review",
-  "submit_review",
-  "review_feedback",
-  "review_done",
-  "triage_to_todo",
-  "approve_plan",
-  "submit_plan",
-  "assign_task",
-  "assign_after_plan_approval",
-  "add_subtask",
-  "complete_subtask",
-  "remove_subtask",
-  "request_subtask",
-  "request_task",
-  "flag_blocker",
-  "clear_blocker",
-  "flag_extra_work_blocker",
-] as const;
-
-type WorkflowAction = (typeof ACTIONS)[number];
-
-function isWorkflowAction(value: unknown): value is WorkflowAction {
-  return typeof value === "string" && (ACTIONS as readonly string[]).includes(value);
-}
+type WorkflowAction = AgentWorkflowPublicAction;
 
 // ENV-122: Look up the active PmChannelRun for a workflow action to wire
 // runId, provider, and model provenance into comment metadata.
@@ -453,35 +435,9 @@ async function handleTaskWorkflowAction(
   ctx: { params: Promise<{ taskId: string }> },
   captured: WorkflowCapture,
 ) {
-  await recordLegacyWorkflowBoundaryInvocation({
-    legacyBoundary: "agent-task-workflow-route",
-    entryPoint: "handleTaskWorkflowAction",
-  });
   const { taskId } = await ctx.params;
   captured.taskId = taskId;
-  let payload: {
-    messageId?: unknown;
-    token?: unknown;
-    action?: unknown;
-    comment?: unknown;
-    repoTouched?: unknown;
-    subtaskText?: unknown;
-    subtaskId?: unknown;
-    subtaskKind?: unknown;
-    completed?: unknown;
-    minutesSpent?: unknown;
-    assignee?: unknown;
-    authorizationCommentId?: unknown;
-    permissionKind?: unknown;
-    permissionScope?: unknown;
-    blockerReport?: unknown;
-    actionPlan?: unknown;
-    completedWork?: unknown;
-    evidence?: unknown;
-    openChecklist?: unknown;
-    nextAction?: unknown;
-    risks?: unknown;
-  };
+  let payload: Record<string, unknown>;
   try {
     payload = (await req.json()) as typeof payload;
   } catch {
@@ -492,7 +448,7 @@ async function handleTaskWorkflowAction(
   const token = typeof payload.token === "string" ? payload.token : "";
   const action = payload.action;
   const comment = typeof payload.comment === "string" ? payload.comment.trim() : "";
-  if (!messageId || !token || !isWorkflowAction(action)) {
+  if (!messageId || !token || !isAgentWorkflowPublicAction(action)) {
     return NextResponse.json(
       { error: "messageId, token, and valid action are required" },
       { status: 400 },
@@ -550,7 +506,7 @@ async function handleTaskWorkflowAction(
   const matchingRun = await db.pmChannelRun.findFirst({
     where: { taskId, agentSlug: grantAgentSlug, messageId },
     orderBy: { createdAt: "desc" },
-    select: { status: true, settledByAction: true, lastAction: true },
+    select: { id: true, status: true, settledByAction: true, lastAction: true },
   });
   const exactIdempotentReplay = matchingRun &&
     matchingRun.status === "completed" &&
@@ -679,6 +635,61 @@ async function handleTaskWorkflowAction(
   const isReviewer = reviewerId === agent.user.id;
   const canSetDone = canSetTaskDoneForActor(task, agent.user.id);
   const isAssignee = task.assigneeId === agent.user.id;
+
+  const ownership = await resolveEngineOwnership(db, task.id);
+  if (!ownership.ok) {
+    return NextResponse.json(
+      { error: ownership.reason, code: ownership.code },
+      { status: ownership.code === "task_not_found" ? 404 : 409 },
+    );
+  }
+  const authoritative = await dispatchByDurableEngine({
+    engine: ownership.engine,
+    runAuthoritative: async () => {
+      captured.authoritativeV2 = true;
+      try {
+        return await submitAuthoritativeAgentWorkflowAction({
+          taskId: task.id,
+          action,
+          rawBody: payload,
+          messageId,
+          pmChannelRunId: matchingRun?.id ?? null,
+          agent: {
+            id: agentUser.id,
+            username: agentUser.username,
+            slug: agent.slug,
+            registryRole: agent.role,
+          },
+        });
+      } catch (error) {
+        return {
+          status: 503,
+          body: {
+            error: error instanceof Error ? error.message : String(error),
+            code: "operational_error",
+            orchestratorStatus: "operational",
+          },
+        };
+      }
+    },
+    runLegacy: async () => null,
+  });
+  if (authoritative) {
+    if (authoritative.body.ok === true) {
+      decorateAuthoritativeAgentResponseCache({
+        taskId: task.id,
+        projectSlug: task.project.slug,
+      });
+    }
+    return NextResponse.json(authoritative.body, { status: authoritative.status });
+  }
+
+  // Legacy drain only. Once ownership resolves to V2 this counter and every
+  // retained comparison/direct-write branch below are mechanically unreachable.
+  await recordLegacyWorkflowBoundaryInvocation({
+    legacyBoundary: "agent-task-workflow-route",
+    entryPoint: "handleTaskWorkflowAction",
+  });
 
   // ORCH-09/10: V2 comparison probe is handled INSIDE each action block, AFTER
   // all safety gates (episode rollover, plan validation, coding-role, WIP,
@@ -2711,6 +2722,10 @@ export async function POST(
     }
     throw error;
   }
+  // V2 stored the exact action/episode projection in the command receipt and
+  // already ran the cache-only decorator. Never recompute it or write the
+  // legacy watcher execution strip after an authoritative result.
+  if (captured.authoritativeV2) return response;
   if (!response.ok || !captured.action) return response;
 
   let body: Record<string, unknown>;

@@ -442,6 +442,7 @@ async function loadTaskAggregateWithClient(
       where: {
         taskId: taskId,
         completedAt: null,
+        kind: { not: "review" },
       },
       select: { id: true },
     }),
@@ -1097,7 +1098,7 @@ export async function fenceState(
 
 export function mapFenceResultToOrchestratorResult(
   fence: FenceResult,
-): { status: "stale" | "invalid"; reason: string } {
+): { status: "stale" | "invalid"; reason: string; domainCode: FenceErrorCode } {
   if (fence.ok) {
     throw new Error("mapFenceResultToOrchestratorResult called with ok result");
   }
@@ -1105,7 +1106,7 @@ export function mapFenceResultToOrchestratorResult(
   // cycle_mismatch and lease_mismatch are stale states; candidate_mismatch
   // and stale_version are also stale. idempotency_conflict is invalid.
   if (fence.code === "idempotency_conflict") {
-    return { status: "invalid", reason };
+    return { status: "invalid", reason, domainCode: fence.code };
   }
-  return { status: "stale", reason };
+  return { status: "stale", reason, domainCode: fence.code };
 }

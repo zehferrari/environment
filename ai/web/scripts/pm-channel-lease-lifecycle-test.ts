@@ -85,7 +85,8 @@ async function main(): Promise<void> {
       // Queue a run
       await recordPmChannelRunQueued({ target, kind: "task-comment" });
 
-      // Dispatch (accept) — sets leaseExpiresAt
+      // HTTP dispatch only records delivery. The execution lease starts with
+      // the first admitted/streaming callback, not at gateway handoff.
       await recordPmChannelRunDispatch({
         target,
         result: { ok: true, status: 202, driver: "openclaw-pm-channel", transportMode: "http" },
@@ -96,12 +97,10 @@ async function main(): Promise<void> {
         select: { status: true, leaseExpiresAt: true, heartbeatAt: true, acceptedAt: true, admittedAt: true },
       });
       assertEqual(acceptedRun.status, "delivered", "run should be delivered after dispatch");
-      // ENV-159: lease is set at admission, not dispatch. Delivered runs don't have a lease yet.
-      assert(acceptedRun.heartbeatAt !== null, "heartbeatAt must be set on accept");
+      assertEqual(acceptedRun.heartbeatAt, null, "delivered run has no heartbeat before execution starts");
+      assertEqual(acceptedRun.leaseExpiresAt, null, "delivered run has no execution lease");
 
-      const leaseBefore = acceptedRun.leaseExpiresAt!.getTime();
-
-      // Streaming event renews the lease
+      // First streaming event starts the execution lease.
       await recordPmChannelRunEvent({ target, event: "token" });
 
       const streamingRun = await db.pmChannelRun.findUniqueOrThrow({
@@ -110,14 +109,22 @@ async function main(): Promise<void> {
       });
       assertEqual(streamingRun.status, "streaming", "run should be streaming after token event");
       assert(streamingRun.leaseExpiresAt !== null, "leaseExpiresAt must be renewed on streaming");
-      assert(
-        streamingRun.leaseExpiresAt.getTime() >= leaseBefore,
-        "renewed lease must be >= original lease",
-      );
       assert(streamingRun.heartbeatAt !== null, "heartbeatAt must be updated on streaming");
 
+      const leaseBefore = streamingRun.leaseExpiresAt.getTime();
+      await new Promise((r) => setTimeout(r, 10));
+      await recordPmChannelRunEvent({ target, event: "token" });
+      const renewedRun = await db.pmChannelRun.findUniqueOrThrow({
+        where: { targetKey },
+        select: { leaseExpiresAt: true },
+      });
+      assert(
+        renewedRun.leaseExpiresAt!.getTime() > leaseBefore,
+        "a later streaming event must renew the execution lease",
+      );
+
       // Tool event also renews the lease
-      const leaseBeforeTool = streamingRun.leaseExpiresAt.getTime();
+      const leaseBeforeTool = renewedRun.leaseExpiresAt!.getTime();
       await new Promise((r) => setTimeout(r, 10));
       await recordPmChannelRunEvent({ target, event: "tool:call" });
 
@@ -588,6 +595,10 @@ async function main(): Promise<void> {
         target: liveOld,
         result: { ok: true, status: 202, driver: "openclaw-pm-channel", transportMode: "http" },
       });
+      await db.pmChannelRun.update({
+        where: { targetKey: pmChannelRunTargetKey(liveOld) },
+        data: { admittedAt: new Date() },
+      });
       const liveReplacement = await recordPmChannelRunQueued({ target: liveNew, kind: "task-comment" });
       const liveFence = await fenceSupersededPmChannelRuns({
         replacementRunId: liveReplacement!.id,
@@ -624,6 +635,10 @@ async function main(): Promise<void> {
       await recordPmChannelRunDispatch({
         target: unfencedOld,
         result: { ok: true, status: 202, driver: "openclaw-pm-channel", transportMode: "http" },
+      });
+      await db.pmChannelRun.update({
+        where: { targetKey: pmChannelRunTargetKey(unfencedOld) },
+        data: { admittedAt: new Date() },
       });
       const unfencedReplacement = await recordPmChannelRunQueued({ target: unfencedNew, kind: "task-comment" });
       const rejectedFence = await fenceSupersededPmChannelRuns({

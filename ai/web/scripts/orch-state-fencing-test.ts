@@ -74,7 +74,12 @@ async function submitCommand(
   const result = await submitWorkflowCommand({
     taskId: cmd.taskId,
     intent: cmd.intent as Parameters<typeof submitWorkflowCommand>[0]["intent"],
-    actor: { id: cmd.actorId, kind: "agent", role: cmd.actorRole as any },
+    actor: {
+      id: cmd.actorId,
+      kind: "agent",
+      role: cmd.actorRole as any,
+      codingCapability: cmd.actorRole === "monitor" ? false : true,
+    },
     expectedWorkflowVersion: cmd.expectedWorkflowVersion,
     idempotencyKey: cmd.idempotencyKey,
     source: cmd.source,
@@ -221,7 +226,7 @@ async function staleCycleCallback(
     source: "test",
     workflowCycleId: activeCycleId,
     evidence: { candidateSha: "abc123", baseSha: "def456" },
-    payload: { candidateSha: "abc123" },
+    payload: { candidateSha: "abc123", baseSha: "def456", repoTouched: true },
   });
   c.assertEqual(submitResult.status, "accepted", "submit_for_review accepted");
 
@@ -306,23 +311,15 @@ async function candidateMismatch(
     source: "test",
     workflowCycleId: activeCycleId,
     evidence: { candidateSha: "sha-v1", baseSha: "base-sha" },
-    payload: { candidateSha: "sha-v1" },
+    payload: { candidateSha: "sha-v1", baseSha: "base-sha", repoTouched: true },
   });
 
-  // Simulate repository_validation_succeeded to move to Review.
-  // Mechanical intents require a monitor-role actor.
-  const version2 = await getTaskVersion(db, task.id);
-  await submitCommand(db, {
-    taskId: task.id,
-    intent: "repository_validation_succeeded",
-    actorId: world.agentUserId,
-    actorRole: "monitor",
-    expectedWorkflowVersion: version2,
-    idempotencyKey: "f3-validation",
-    source: "test",
-    workflowCycleId: activeCycleId,
-    evidence: { candidateSha: "sha-v1" },
-    payload: { candidateSha: "sha-v1" },
+  // The submit-review procedure owns the eventual validation callback and
+  // transition. This fence-focused fixture does not run that procedure, so
+  // place the task at the post-validation Review boundary explicitly.
+  await db.task.update({
+    where: { id: task.id },
+    data: { status: "Review", workflowVersion: { increment: 1 } },
   });
 
   // Verify the task is now in Review.

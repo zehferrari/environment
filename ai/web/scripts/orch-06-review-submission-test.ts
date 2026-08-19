@@ -74,7 +74,7 @@ async function main() {
     const submitResult = await submitWorkflowCommand({
       taskId: task.id,
       intent: "submit_for_review",
-      actor: { id: assigneeUser.id, kind: "agent", username: "impl", role: "assignee" },
+      actor: { id: assigneeUser.id, kind: "agent", username: "impl", role: "assignee", codingCapability: true },
       expectedWorkflowVersion: 1,
       workflowCycleId: cycle1.id,
       idempotencyKey: "orch06:submit:1",
@@ -124,7 +124,7 @@ async function main() {
     const submit2 = await submitWorkflowCommand({
       taskId: task.id,
       intent: "submit_for_review",
-      actor: { id: assigneeUser.id, kind: "agent", username: "impl", role: "assignee" },
+      actor: { id: assigneeUser.id, kind: "agent", username: "impl", role: "assignee", codingCapability: true },
       expectedWorkflowVersion: taskBeforeSubmit2.workflowVersion,
       workflowCycleId: cycle2.id,
       idempotencyKey: "orch06:submit:2",
@@ -182,7 +182,7 @@ async function main() {
     const submit4 = await submitWorkflowCommand({
       taskId: task4.id,
       intent: "submit_for_review",
-      actor: { id: assigneeUser.id, kind: "agent", username: "impl", role: "assignee" },
+      actor: { id: assigneeUser.id, kind: "agent", username: "impl", role: "assignee", codingCapability: true },
       expectedWorkflowVersion: 1,
       workflowCycleId: cycle4.id,
       idempotencyKey: "orch06:submit:4",

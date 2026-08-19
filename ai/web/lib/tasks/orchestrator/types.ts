@@ -194,6 +194,8 @@ export type WorkflowActor = {
   codingCapability?: boolean;
 };
 
+export type WorkflowSubtaskKind = "implementation" | "review";
+
 // ---------------------------------------------------------------------------
 // Per-intent payload types (discriminated union).
 // Each intent carries a concrete payload type instead of Record<string, unknown>.
@@ -276,7 +278,7 @@ export type RaiseBlockerPayload = {
     blockedOn: "person" | "permission" | "external_service" | "decision" | "dependency";
     requestedActor: string | null;
     requestedAction: string;
-    evidence: string[];
+    evidence: string | string[];
     diagnosticsAttempted: string[];
     resumeCondition: string;
     reporterCanResolve: boolean;
@@ -310,7 +312,7 @@ export type TriageTaskPayload = {
 
 export type AssignTaskPayload = {
   /** Username of the agent/human to assign. */
-  assigneeUsername: string;
+  assigneeUsername: string | null;
   /** Whether to assign after plan approval (vs. immediate). */
   afterPlanApproval: boolean;
 };
@@ -394,33 +396,40 @@ export type PublishCheckpointPayload = {
   /** Authorization comment ID from the owner grant. */
   authorizationCommentId: string;
   /** Candidate SHA to publish. */
-  candidateSha: string;
+  candidateSha?: string | null;
   /** Base SHA (Epic branch tip at the time). */
-  baseSha: string;
+  baseSha?: string | null;
+  /** Optional operator-facing note carried to the durable checkpoint job. */
+  comment?: string | null;
 };
 
 export type AddSubtaskPayload = {
   subtaskText: string;
+  subtaskKind: WorkflowSubtaskKind;
 };
 
 export type CompleteSubtaskPayload = {
   subtaskId: string;
+  subtaskKind: WorkflowSubtaskKind;
   completed: boolean;
   minutesSpent?: number | null;
 };
 
 export type RemoveSubtaskPayload = {
   subtaskId: string;
+  subtaskKind: WorkflowSubtaskKind;
 };
 
 export type RequestSubtaskPayload = {
   subtaskText: string;
+  reason: string;
 };
 
 export type RequestTaskPayload = {
   taskTitle: string;
   taskDescription?: string | null;
   epicId?: string | null;
+  reason: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -596,7 +605,8 @@ export type WorkflowEffect =
   | { type: "epic_cleanup"; key: string; payload: Record<string, unknown>; availableAt?: Date }
   | { type: "epic_completion_review"; key: string; payload: Record<string, unknown>; availableAt?: Date }
   | { type: "epic_completion_review_approval"; key: string; payload: Record<string, unknown>; availableAt?: Date }
-  | { type: "dependency_refill"; key: string; payload: Record<string, unknown>; availableAt?: Date };
+  | { type: "dependency_refill"; key: string; payload: Record<string, unknown>; availableAt?: Date }
+  | { type: "repository_checkpoint"; key: string; payload: Record<string, unknown>; availableAt?: Date };
 
 export type OrchestrationDecision = {
   fromStatus: TaskWorkflowStatus;
@@ -634,12 +644,50 @@ export type OrchestrationDecision = {
 // ---------------------------------------------------------------------------
 
 export type OrchestratorResult =
-  | { status: "replayed"; transitionId: string; workflowVersion: number; procedureId?: string | null }
-  | { status: "accepted"; transitionId: string; workflowVersion: number; procedureId?: string | null; cycleId?: string | null }
+  | {
+      status: "replayed";
+      transitionId: string | null;
+      workflowVersion: number;
+      procedureId?: string | null;
+      cycleId?: string | null;
+      actionEffect?: string;
+      episode?: AgentExecutionEpisodeProjection | null;
+      taskState?: string | null;
+      checkpoint?: string;
+      nextAction?: string;
+      disposition?: string;
+      turnComplete?: boolean;
+    }
+  | {
+      status: "accepted";
+      transitionId: string | null;
+      workflowVersion: number;
+      procedureId?: string | null;
+      cycleId?: string | null;
+      actionEffect?: string;
+      episode?: AgentExecutionEpisodeProjection | null;
+      taskState?: string | null;
+      checkpoint?: string;
+      nextAction?: string;
+      disposition?: string;
+      turnComplete?: boolean;
+    }
   | { status: "stale"; reason: string; domainCode?: DomainErrorCode }
   | { status: "forbidden"; reason: string; domainCode?: DomainErrorCode }
   | { status: "invalid"; reason: string; details?: Record<string, unknown>; domainCode?: DomainErrorCode }
   | { status: "operational"; reason: string; domainCode?: DomainErrorCode };
+
+export type AgentExecutionEpisodeProjection = {
+  episodeNo: number;
+  cycleCount: number;
+  cycleBudget: number;
+  cyclesRemaining: number;
+  toolCycleCount: number;
+  toolCycleBudget: number;
+  toolCyclesRemaining: number;
+  rolledOver: boolean;
+  nextEpisodeNo: number | null;
+};
 
 // ---------------------------------------------------------------------------
 // State snapshot passed to the decision function (unchanged).

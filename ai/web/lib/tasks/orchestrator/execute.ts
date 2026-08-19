@@ -53,7 +53,7 @@ export async function executeWorkflowCommand(
       if (!fence.ok) return mapFenceResultToOrchestratorResult(fence);
 
       const state = await refreshTaskAggregateForTx(tx, command.taskId);
-      if (!state) return { status: "invalid", reason: "Task not found inside transaction." };
+      if (!state) return { status: "invalid", reason: "Task not found inside transaction.", domainCode: "invalid_payload" };
 
       // TypeScript cannot preserve discriminated-union correlation through a
       // runtime map lookup, so capture the concrete key once and invoke its
@@ -116,8 +116,8 @@ export async function executeWorkflowCommand(
     }
     const message = error instanceof Error ? error.message : String(error);
     if (/version_conflict|status_conflict/i.test(message)) {
-      return { status: "stale", reason: message };
+      return { status: "stale", reason: message, domainCode: "stale_version" };
     }
-    return { status: "operational", reason: message };
+    return { status: "operational", reason: message, domainCode: "operational_error" };
   }
 }

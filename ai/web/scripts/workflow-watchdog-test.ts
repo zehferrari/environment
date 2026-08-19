@@ -115,10 +115,10 @@ function byDetector(findings: WatchdogFinding[], id: string): WatchdogFinding[] 
 // Registry
 // ------------------------------------------------------------------
 
-assertEqual(WATCHDOG_DETECTORS.length, 8, "all execution and pre-start failure modes have a detector");
+assertEqual(WATCHDOG_DETECTORS.length, 14, "all execution and pre-start failure modes have a detector");
 assertEqual(
   new Set(WATCHDOG_DETECTORS.map((detector) => detector.id)).size,
-  8,
+  14,
   "detector ids are unique",
 );
 for (const detector of WATCHDOG_DETECTORS) {

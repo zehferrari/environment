@@ -81,6 +81,8 @@ const TASK_ROUTE_ACTIONS = [
   "review_done",
   "triage_to_todo",
   "approve_plan",
+  "submit_plan",
+  "assign_task",
   "assign_after_plan_approval",
   "add_subtask",
   "complete_subtask",

@@ -137,12 +137,15 @@
     "export-pm-event-fixture": "tsx scripts/export-pm-event-fixture.ts",
     "workflow-watchdog": "tsx scripts/workflow-watchdog.ts",
     "workflow-doctor": "tsx scripts/pm-workflow-doctor.ts",
-    "test:phasee-07-repo-correlation": "tsx scripts/phasee-07-repo-correlation-test.ts",
+    "test:phasee-07-repo-correlation": "tsx scripts/phasee-07-repo-correlation-runner.ts",
     "test:orch-phasee-03": "tsx scripts/orch-phasee-03-test.ts",
     "test:orch-phasee-05": "tsx scripts/orch-phasee-05-episode-atomicity-test.ts",
     "test:orch-override-contract": "tsx scripts/orch-override-contract-test.ts",
     "test:orch-override-executor": "tsx scripts/orch-override-executor-test.ts",
-    "test:orch-phasee-10": "tsx scripts/orch-phasee-10-test.ts && tsx scripts/orch-phasee-10-dashboard-test.ts"
+    "test:orch-phasee-10": "tsx scripts/orch-phasee-10-test.ts && tsx scripts/orch-phasee-10-dashboard-test.ts",
+    "test:phasee-02a": "tsx scripts/phasee-02a-tests.ts",
+    "test:phasee-ownership": "tsx scripts/phase-e-ownership-receipts-test.ts",
+    "test:phasee-08-agent-route": "tsx scripts/phasee-08-agent-route-test.ts && tsx scripts/phasee-08-agent-route-integration-test.ts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.7.4",

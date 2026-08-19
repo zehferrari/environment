@@ -91,24 +91,29 @@ export async function resolveEngineOwnership(
       where: { id: task.activeWorkflowCycleId },
       select: { workflowEngine: true },
     });
-    if (cycle) {
-      if (!ALLOWED_ENGINES.has(cycle.workflowEngine)) {
-        return {
-          ok: false,
-          reason: `Cycle has unknown engine value: ${cycle.workflowEngine}`,
-          code: "invalid_engine",
-        };
-      }
-      cycleEngine = cycle.workflowEngine as WorkflowEngine;
+    if (!cycle) {
+      return {
+        ok: false,
+        reason: `Task points to missing active cycle ${task.activeWorkflowCycleId} — reconciler invariant violation.`,
+        code: "engine_mismatch",
+      };
+    }
+    if (!ALLOWED_ENGINES.has(cycle.workflowEngine)) {
+      return {
+        ok: false,
+        reason: `Cycle has unknown engine value: ${cycle.workflowEngine}`,
+        code: "invalid_engine",
+      };
+    }
+    cycleEngine = cycle.workflowEngine as WorkflowEngine;
 
-      // Invariant: task and active-cycle ownership must agree.
-      if (cycleEngine !== (taskEngine as WorkflowEngine)) {
-        return {
-          ok: false,
-          reason: `Task engine "${taskEngine}" disagrees with active cycle engine "${cycleEngine}" — reconciler invariant violation.`,
-          code: "engine_mismatch",
-        };
-      }
+    // Invariant: task and active-cycle ownership must agree.
+    if (cycleEngine !== (taskEngine as WorkflowEngine)) {
+      return {
+        ok: false,
+        reason: `Task engine "${taskEngine}" disagrees with active cycle engine "${cycleEngine}" — reconciler invariant violation.`,
+        code: "engine_mismatch",
+      };
     }
   }
 

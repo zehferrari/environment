@@ -429,12 +429,29 @@ export function decideCommand(
     case "raise_blocker":
     case "clear_blocker": {
       // No status change. Blocker state is recorded as evidence + activity.
+      const targetUserId = command.intent === "raise_blocker"
+        ? (state.resolvedReviewOwnerId ?? state.reporterId)
+        : state.assigneeId;
       return {
         fromStatus: state.status,
         toStatus: state.status,
         kernelIntent: "operator_override",
         cycleOperation: "none",
-        effects: [],
+        effects: targetUserId
+          ? [{
+              type: "task_notification",
+              key: `${command.intent}:${targetUserId}`,
+              payload: {
+                taskId: state.id,
+                targetUserId,
+                actor: command.actor,
+                reason: command.intent === "raise_blocker" ? "blocker" : "blocker_response",
+                body: command.intent === "raise_blocker"
+                  ? "A formal workflow blocker requires attention."
+                  : "The workflow blocker was cleared.",
+              },
+            }]
+          : [],
         evidence: { ...command.evidence ?? {}, decisionActorId, executorActorId, blocker: command.intent },
         decisionActorId,
         executorActorId,
@@ -457,12 +474,25 @@ export function decideCommand(
 
     case "submit_plan": {
       // No status change. The plan is recorded; the reviewer is notified.
+      const reviewerId = state.resolvedReviewOwnerId;
       return {
         fromStatus: state.status,
         toStatus: state.status,
         kernelIntent: "operator_override",
         cycleOperation: "none",
-        effects: [],
+        effects: reviewerId
+          ? [{
+              type: "task_notification",
+              key: `action-plan-review:${reviewerId}`,
+              payload: {
+                taskId: state.id,
+                targetUserId: reviewerId,
+                actor: command.actor,
+                reason: "action_plan_review_requested",
+                body: "A structured Action Plan is ready for review.",
+              },
+            }]
+          : [],
         evidence: { ...command.evidence ?? {}, decisionActorId, executorActorId, planSubmitted: true },
         decisionActorId,
         executorActorId,
@@ -488,23 +518,91 @@ export function decideCommand(
 
     case "assign_task":
     case "raise_scope_blocker":
-    case "publish_checkpoint":
     case "add_subtask":
     case "complete_subtask":
     case "remove_subtask":
     case "request_subtask":
     case "request_task": {
+      const payload = command.payload ?? {};
       return {
         fromStatus: state.status,
         toStatus: state.status,
         kernelIntent: "operator_override",
-        cycleOperation: command.intent === "publish_checkpoint" ? "update" : "none",
+        cycleOperation: "none",
         effects: command.intent === "assign_task"
           ? [{ type: "board_touch", key: "board-assignment", payload: {} }]
-          : [],
+          : command.intent === "request_subtask" && state.assigneeId
+            ? [{
+                type: "task_notification",
+                key: `subtask-request:${state.assigneeId}`,
+                payload: {
+                  taskId: state.id,
+                  targetUserId: state.assigneeId,
+                  actor: command.actor,
+                  reason: "subtask_requested",
+                  body: `A reviewer requested implementation sub-task: ${String(payload.subtaskText ?? "")}`,
+                },
+              }]
+            : command.intent === "request_task" && state.epic?.actingManagerId
+              ? [{
+                  type: "task_notification",
+                  key: `task-request:${state.epic.actingManagerId}`,
+                  payload: {
+                    taskId: state.id,
+                    targetUserId: state.epic.actingManagerId,
+                    actor: command.actor,
+                    reason: "task_requested",
+                    body: `The assignee requested a new Epic task: ${String(payload.taskTitle ?? "")}`,
+                  },
+                }]
+              : command.intent === "raise_scope_blocker" && state.resolvedReviewOwnerId
+                ? [{
+                    type: "task_notification",
+                    key: `extra-work-blocker:${state.resolvedReviewOwnerId}`,
+                    payload: {
+                      taskId: state.id,
+                      targetUserId: state.resolvedReviewOwnerId,
+                      actor: command.actor,
+                      reason: "extra_work_blocker",
+                      body: String(payload.scopeDescription ?? ""),
+                    },
+                  }]
+                : [],
         evidence: {
           ...command.evidence ?? {},
-          ...command.payload ?? {},
+          ...payload,
+          decisionActorId,
+          executorActorId,
+          operationalIntent: command.intent,
+        },
+        decisionActorId,
+        executorActorId,
+      };
+    }
+
+    case "publish_checkpoint": {
+      const payload = command.payload ?? {};
+      const authorizationCommentId = String(payload.authorizationCommentId ?? "");
+      return {
+        fromStatus: state.status,
+        toStatus: state.status,
+        kernelIntent: "operator_override",
+        cycleOperation: "none",
+        effects: [{
+          type: "repository_checkpoint",
+          key: `checkpoint:${authorizationCommentId}`,
+          payload: {
+            taskId: state.id,
+            projectId: state.projectId,
+            requestedByUserId: decisionActorId,
+            requestedByUsername: command.actor.username ?? "unknown",
+            authorizationCommentId,
+            note: payload.comment ?? "Authorized intermediate checkpoint",
+          },
+        }],
+        evidence: {
+          ...command.evidence ?? {},
+          ...payload,
           decisionActorId,
           executorActorId,
           operationalIntent: command.intent,

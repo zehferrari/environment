@@ -151,7 +151,11 @@ async function prepareCandidate(ctx: StepHandlerContext): Promise<StepHandlerRes
   const candidateSha = (procInput?.candidateSha as string) ?? task.repositoryRun?.candidateSha ?? null;
   const baseSha = task.repositoryRun?.baseSha ?? null;
   if (!candidateSha) {
-    return { status: "failed", error: "No candidate SHA available from procedure input or repository run.", retryable: true };
+    // The branch verifier is the sole owner of submission-commit creation. A
+    // dirty worktree therefore has no candidate SHA yet; carry null as the
+    // previous candidate and let the correlated verifier callback establish
+    // the authoritative candidate after it creates/validates the commit.
+    return { status: "completed", output: { codeTouching: true, candidateSha: null, baseSha } };
   }
   // Update the cycle with the candidate SHA.
   await db.$transaction((tx) =>
