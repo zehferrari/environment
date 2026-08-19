@@ -70,7 +70,17 @@ function isTokenScopedAttachmentRead(req: NextRequest, path: string) {
   );
 }
 
-function isTokenScopedAgentCallback(path: string) {
+// PHASEE-10 observability routes — agent Bearer token authenticates inside
+// the route handler. Without this, /api/agent/observability/* gets a 307
+// to /login despite the /api/agent/ prefix.
+function isTokenScopedObservabilityRoute(req: NextRequest, path: string) {
+  return (
+    req.method === "GET" &&
+    /^\/api\/agent\/observability\/(cohort|legacy-invocations)$/.test(path)
+  );
+}
+
+function isTokenScopedAgentCallback(req: NextRequest, path: string) {
   return (
     isTokenScopedAgentReply(path) ||
     isTokenScopedTaskReply(path) ||
@@ -80,7 +90,8 @@ function isTokenScopedAgentCallback(path: string) {
     isTokenScopedTaskWorkflow(path) ||
     isTokenScopedTaskWorkflowTurnRequest(path) ||
     isTokenScopedEpicWorkflow(path) ||
-    isTokenScopedAgentContextRead(path)
+    isTokenScopedAgentContextRead(path) ||
+    isTokenScopedObservabilityRoute(req, path)
   );
 }
 
@@ -134,7 +145,7 @@ export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
   if (
     isPublic(pathname) ||
-    isTokenScopedAgentCallback(pathname) ||
+    isTokenScopedAgentCallback(req, pathname) ||
     isTokenScopedAttachmentRead(req, pathname) ||
     isOpenClawPmChannelReply(pathname) ||
     isOpenClawPmChannelStream(pathname) ||
