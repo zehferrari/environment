@@ -105,7 +105,7 @@ async function main() {
       assert.ok(state, `case ${i}: state loaded`);
       // For review intents, set up a fake lease by adjusting the snapshot.
       const stateForCase = { ...state!, activeReviewRun: case_.intent === "accept_review" || case_.intent === "request_review_changes" || case_.intent === "repository_finalization_succeeded" || case_.intent === "repository_finalization_failed"
-        ? { id: "lease-1", status: case_.intent === "repository_finalization_succeeded" ? "accepted" : "awaiting_review", candidateSha: "sha-1", reviewerId: reviewerUser.id }
+        ? { id: "lease-1", status: case_.intent === "repository_finalization_succeeded" ? "accepted" : "awaiting_review", candidateSha: "sha-1", reviewerId: reviewerUser.id, baseSha: null, repoTouched: true, validationOutcome: "valid" }
         : state!.activeReviewRun };
       const result = authorizeCommand(stateForCase, { intent: case_.intent as never, actor: case_.actor });
       assert.equal(

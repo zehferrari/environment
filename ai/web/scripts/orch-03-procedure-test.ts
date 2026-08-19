@@ -99,9 +99,9 @@ async function main() {
     let aCalls = 0;
     let bCalls = 0;
     let cCalls = 0;
-    registerStepHandler("prepare_todo_task", "step_a", async () => { aCalls += 1; return { status: "completed", output: { a: aCalls } }; });
-    registerStepHandler("prepare_todo_task", "step_b", async () => { bCalls += 1; return { status: "completed", output: { b: bCalls } }; });
-    registerStepHandler("prepare_todo_task", "step_c", async () => { cCalls += 1; return { status: "completed", output: { c: cCalls } }; });
+    registerStepHandler("prepare_todo_task", 1, "step_a", async () => { aCalls += 1; return { status: "completed", output: { a: aCalls } }; });
+    registerStepHandler("prepare_todo_task", 1, "step_b", async () => { bCalls += 1; return { status: "completed", output: { b: bCalls } }; });
+    registerStepHandler("prepare_todo_task", 1, "step_c", async () => { cCalls += 1; return { status: "completed", output: { c: cCalls } }; });
 
     // Run once — only step_a should run (step_b's predecessor isn't done yet
     // at claim time, but after step_a completes, the next poll picks up
@@ -120,7 +120,7 @@ async function main() {
     clearStepHandlerRegistry();
     const run2 = await makeProcedureRun(["single_step"]);
     let callCount = 0;
-    registerStepHandler("prepare_todo_task", "single_step", async () => {
+    registerStepHandler("prepare_todo_task", 1, "single_step", async () => {
       callCount += 1;
       // Simulate slow handler so the second worker's claim races.
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -139,7 +139,7 @@ async function main() {
     clearStepHandlerRegistry();
     const run3 = await makeProcedureRun(["lease_step"]);
     let leaseCallCount = 0;
-    registerStepHandler("prepare_todo_task", "lease_step", async () => {
+    registerStepHandler("prepare_todo_task", 1, "lease_step", async () => {
       leaseCallCount += 1;
       // Simulate a crash: throw to make the handler "fail" without completing.
       // But we want to simulate a CRASH (lease expires) not a handler error.
@@ -188,14 +188,14 @@ async function main() {
     const task4 = await db.task.create({ data: { projectId: project.id, title: "Proc task 4", status: "To Do", approvedOn: new Date(), approvedById: owner.id } });
     clearStepHandlerRegistry();
     const run4 = await makeProcedureRunOnTask(task4.id, ["callback_step", "next_step"]);
-    registerStepHandler("prepare_todo_task", "callback_step", async () => {
+    registerStepHandler("prepare_todo_task", 1, "callback_step", async () => {
       return {
         status: "waiting_callback",
         jobId: "job-123",
         output: { started: true, candidateSha: "sha-1", baseSha: "base-1" },
       };
     });
-    registerStepHandler("prepare_todo_task", "next_step", async () => { return { status: "completed" }; });
+    registerStepHandler("prepare_todo_task", 1, "next_step", async () => { return { status: "completed" }; });
     // Run to get callback_step into waiting_callback.
     await runProcedureRunner({ limit: 1 });
     const step4 = await db.taskProcedureStep.findFirst({ where: { procedureRunId: run4.procedureRunId, name: "callback_step" } });
@@ -247,7 +247,7 @@ async function main() {
     const task5 = await db.task.create({ data: { projectId: project.id, title: "Proc task 5", status: "To Do", approvedOn: new Date(), approvedById: owner.id } });
     clearStepHandlerRegistry();
     const run5 = await makeProcedureRunOnTask(task5.id, ["cb_step"]);
-    registerStepHandler("prepare_todo_task", "cb_step", async () => ({ status: "waiting_callback", jobId: "job-5" }));
+    registerStepHandler("prepare_todo_task", 1, "cb_step", async () => ({ status: "waiting_callback", jobId: "job-5" }));
     await runProcedureRunner({ limit: 1 });
     const step5 = await db.taskProcedureStep.findFirst({ where: { procedureRunId: run5.procedureRunId } });
     assert.ok(step5);
@@ -272,7 +272,7 @@ async function main() {
     // Temporarily lower the max attempts by registering a handler that
     // always fails terminally.
     const run6 = await makeProcedureRunOnTask(task6.id, ["exhaust_step"]);
-    registerStepHandler("prepare_todo_task", "exhaust_step", async () => ({
+    registerStepHandler("prepare_todo_task", 1, "exhaust_step", async () => ({
       status: "failed",
       error: "permanent failure",
       retryable: false, // terminal immediately
