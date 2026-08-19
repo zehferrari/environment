@@ -325,8 +325,13 @@ export type RepositoryValidationSucceededPayload = {
    * invoked from a procedure context that does not have the original
    * jobId in scope — PHASEE-07 will fence on exact correlation. */
   jobId: string | null;
-  candidateSha: string;
-  baseSha: string;
+  /** Candidate SHA under validation. May be null when the callback
+   * context does not have the SHA in scope (PHASEE-07 will fence on
+   * exact correlation). */
+  candidateSha: string | null;
+  /** Base SHA of the Epic branch at callback time. May be null when
+   * absent — null means "skip the base-sha equality check", not "". */
+  baseSha: string | null;
   outcome: "succeeded";
 };
 
@@ -334,8 +339,8 @@ export type RepositoryValidationFailedPayload = {
   procedureRunId: string;
   procedureStepId: string;
   jobId: string | null;
-  candidateSha: string;
-  baseSha: string;
+  candidateSha: string | null;
+  baseSha: string | null;
   outcome: "failed";
   /** Failure reason / diagnostics. */
   failureReason?: string | null;
@@ -345,8 +350,8 @@ export type RepositoryFinalizationSucceededPayload = {
   procedureRunId: string;
   procedureStepId: string;
   jobId: string | null;
-  candidateSha: string;
-  baseSha: string;
+  candidateSha: string | null;
+  baseSha: string | null;
   outcome: "succeeded";
   /** Published Epic branch SHA after merge. */
   publishedSha?: string | null;
@@ -356,8 +361,8 @@ export type RepositoryFinalizationFailedPayload = {
   procedureRunId: string;
   procedureStepId: string;
   jobId: string | null;
-  candidateSha: string;
-  baseSha: string;
+  candidateSha: string | null;
+  baseSha: string | null;
   outcome: "failed";
   failureReason?: string | null;
 };

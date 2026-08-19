@@ -20,6 +20,33 @@ import type {
   WorkflowCommandSource,
   WorkflowPublicAction,
   WorkflowActor,
+  // Payload types — imported so buildPayload returns typed payloads,
+  // making the discriminated union enforceable at compile time.
+  SubmitPlanPayload,
+  ApprovePlanPayload,
+  RequestPlanChangesPayload,
+  StartImplementationPayload,
+  CheckpointPayload,
+  SubmitForReviewPayload,
+  RequestReviewChangesPayload,
+  AcceptReviewPayload,
+  RaiseBlockerPayload,
+  ClearBlockerPayload,
+  CancelTaskPayload,
+  ArchiveTaskPayload,
+  TriageTaskPayload,
+  AssignTaskPayload,
+  RaiseScopeBlockerPayload,
+  RepositoryValidationSucceededPayload,
+  RepositoryValidationFailedPayload,
+  RepositoryFinalizationSucceededPayload,
+  RepositoryFinalizationFailedPayload,
+  PublishCheckpointPayload,
+  AddSubtaskPayload,
+  CompleteSubtaskPayload,
+  RemoveSubtaskPayload,
+  RequestSubtaskPayload,
+  RequestTaskPayload,
 } from "@/lib/tasks/orchestrator/types";
 import {
   WORKFLOW_PUBLIC_ACTIONS,
@@ -198,20 +225,49 @@ function stripUntrusted(rawBody: Record<string, unknown>): Record<string, unknow
 // from authContext, returning the typed payload for the canonical intent.
 // ---------------------------------------------------------------------------
 
+type BuiltPayload =
+  | SubmitPlanPayload
+  | ApprovePlanPayload
+  | RequestPlanChangesPayload
+  | StartImplementationPayload
+  | CheckpointPayload
+  | SubmitForReviewPayload
+  | RequestReviewChangesPayload
+  | AcceptReviewPayload
+  | RaiseBlockerPayload
+  | ClearBlockerPayload
+  | CancelTaskPayload
+  | ArchiveTaskPayload
+  | TriageTaskPayload
+  | AssignTaskPayload
+  | RaiseScopeBlockerPayload
+  | RepositoryValidationSucceededPayload
+  | RepositoryValidationFailedPayload
+  | RepositoryFinalizationSucceededPayload
+  | RepositoryFinalizationFailedPayload
+  | PublishCheckpointPayload
+  | AddSubtaskPayload
+  | CompleteSubtaskPayload
+  | RemoveSubtaskPayload
+  | RequestSubtaskPayload
+  | RequestTaskPayload;
+
 function buildPayload(
   action: WorkflowPublicAction,
   intent: TaskWorkflowIntent,
   raw: Record<string, unknown>,
   ctx: NormalizerAuthContext,
-): Record<string, unknown> | NormalizerResult {
+): BuiltPayload | NormalizerResult {
   switch (intent) {
     // --- submit_plan ---
     case "submit_plan": {
       const actionPlan = getObject(raw, "actionPlan");
       if (!actionPlan) return fail("invalid_payload", "actionPlan is required");
       const inReplyTo = getString(raw, "inReplyToMessageId");
-      const payload: Record<string, unknown> = { actionPlan };
-      if (inReplyTo !== undefined) payload["inReplyToMessageId"] = inReplyTo;
+      const payload: SubmitPlanPayload = {
+        actionPlan: actionPlan as SubmitPlanPayload["actionPlan"],
+        ...(inReplyTo !== undefined ? { inReplyToMessageId: inReplyTo } : {}),
+      };
       return payload;
     }
 
@@ -222,8 +278,11 @@ function buildPayload(
       const actionPlanVersion = ctx.actionPlanVersion ?? getNumber(raw, "actionPlanVersion");
       if (actionPlanVersion === undefined) return fail("invalid_payload", "actionPlanVersion is required");
       const constraints = getString(raw, "constraints");
-      const payload: Record<string, unknown> = { actionPlanId, actionPlanVersion };
-      if (constraints !== undefined) payload["constraints"] = constraints;
+      const payload: ApprovePlanPayload = {
+        actionPlanId,
+        actionPlanVersion,
+        ...(constraints !== undefined ? { constraints } : {}),
+      };
       return payload;
     }
 
@@ -235,32 +294,35 @@ function buildPayload(
       if (actionPlanVersion === undefined) return fail("invalid_payload", "actionPlanVersion is required");
       const reviewerComment = getString(raw, "reviewerComment") ?? getString(raw, "comment");
       if (!reviewerComment) return fail("invalid_payload", "reviewerComment is required");
-      return { actionPlanId, actionPlanVersion, reviewerComment };
+      const payload: RequestPlanChangesPayload = { actionPlanId, actionPlanVersion, reviewerComment };
+      return payload;
     }
 
     // --- start_implementation ---
     case "start_implementation": {
-      const payload: Record<string, unknown> = {};
       const worktreePath = ctx.worktreePath ?? getString(raw, "worktreePath");
       const branchName = ctx.branchName ?? getString(raw, "branchName");
-      if (worktreePath !== undefined) payload["worktreePath"] = worktreePath;
-      if (branchName !== undefined) payload["branchName"] = branchName;
+      const payload: StartImplementationPayload = {
+        ...(worktreePath !== undefined ? { worktreePath } : {}),
+        ...(branchName !== undefined ? { branchName } : {}),
+      };
       return payload;
     }
 
     // --- checkpoint ---
     case "checkpoint": {
-      const payload: Record<string, unknown> = {};
       const completedWork = getStringArray(raw, "completedWork");
       const evidence = getStringArray(raw, "evidence");
       const openChecklist = getStringArray(raw, "openChecklist");
       const nextAction = getString(raw, "nextAction");
       const risks = getStringArray(raw, "risks");
-      if (completedWork !== undefined) payload["completedWork"] = completedWork;
-      if (evidence !== undefined) payload["evidence"] = evidence;
-      if (openChecklist !== undefined) payload["openChecklist"] = openChecklist;
-      if (nextAction !== undefined) payload["nextAction"] = nextAction;
-      if (risks !== undefined) payload["risks"] = risks;
+      const payload: CheckpointPayload = {
+        ...(completedWork !== undefined ? { completedWork } : {}),
+        ...(evidence !== undefined ? { evidence } : {}),
+        ...(openChecklist !== undefined ? { openChecklist } : {}),
+        ...(nextAction !== undefined ? { nextAction } : {}),
+        ...(risks !== undefined ? { risks } : {}),
+      };
       return payload;
     }
 
@@ -272,10 +334,14 @@ function buildPayload(
       const worktreePath = ctx.worktreePath ?? getString(raw, "worktreePath");
       const branchName = ctx.branchName ?? getString(raw, "branchName");
       const comment = getString(raw, "comment");
-      const payload: Record<string, unknown> = { candidateSha, baseSha, repoTouched };
-      if (worktreePath !== undefined) payload["worktreePath"] = worktreePath;
-      if (branchName !== undefined) payload["branchName"] = branchName;
-      if (comment !== undefined) payload["comment"] = comment;
+      const payload: SubmitForReviewPayload = {
+        candidateSha,
+        baseSha,
+        repoTouched,
+        ...(worktreePath !== undefined ? { worktreePath } : {}),
+        ...(branchName !== undefined ? { branchName } : {}),
+        ...(comment !== undefined ? { comment } : {}),
+      };
       return payload;
     }
 
@@ -287,7 +353,8 @@ function buildPayload(
       if (!candidateSha) return fail("invalid_payload", "candidateSha is required");
       const reviewerComment = getString(raw, "reviewerComment") ?? getString(raw, "comment");
       if (!reviewerComment) return fail("invalid_payload", "reviewerComment is required");
-      return { reviewRunId, candidateSha, reviewerComment };
+      const payload: RequestReviewChangesPayload = { reviewRunId, candidateSha, reviewerComment };
+      return payload;
     }
 
     // --- accept_review ---
@@ -296,7 +363,8 @@ function buildPayload(
       if (!reviewRunId) return fail("invalid_payload", "reviewRunId is required");
       const candidateSha = ctx.candidateSha ?? getString(raw, "candidateSha");
       if (!candidateSha) return fail("invalid_payload", "candidateSha is required");
-      return { reviewRunId, candidateSha };
+      const payload: AcceptReviewPayload = { reviewRunId, candidateSha };
+      return payload;
     }
 
     // --- raise_blocker ---
@@ -304,12 +372,14 @@ function buildPayload(
       const blockerReport = getObject(raw, "blockerReport");
       if (!blockerReport) return fail("invalid_payload", "blockerReport is required");
       const comment = getString(raw, "comment");
-      const permissionKind = getString(raw, "permissionKind");
+      const permissionKind = getString(raw, "permissionKind") as RaiseBlockerPayload["permissionKind"] | undefined;
       const permissionScope = getString(raw, "permissionScope");
-      const payload: Record<string, unknown> = { blockerReport };
-      if (comment !== undefined) payload["comment"] = comment;
-      if (permissionKind !== undefined) payload["permissionKind"] = permissionKind;
-      if (permissionScope !== undefined) payload["permissionScope"] = permissionScope;
+      const payload: RaiseBlockerPayload = {
+        blockerReport: blockerReport as RaiseBlockerPayload["blockerReport"],
+        ...(comment !== undefined ? { comment } : {}),
+        ...(permissionKind !== undefined ? { permissionKind } : {}),
+        ...(permissionScope !== undefined ? { permissionScope } : {}),
+      };
       return payload;
     }
 
@@ -319,18 +389,21 @@ function buildPayload(
       if (!blockerId) return fail("invalid_payload", "blockerId is required");
       const resolution = getString(raw, "resolution") ?? getString(raw, "comment");
       if (!resolution) return fail("invalid_payload", "resolution is required");
-      return { blockerId, resolution };
+      const payload: ClearBlockerPayload = { blockerId, resolution };
+      return payload;
     }
 
     // --- cancel_task ---
     case "cancel_task": {
       const reason = getString(raw, "reason");
-      return { reason: reason ?? null };
+      const payload: CancelTaskPayload = { reason: reason ?? null };
+      return payload;
     }
 
     // --- archive_task ---
     case "archive_task": {
-      return {};
+      const payload: ArchiveTaskPayload = {};
+      return payload;
     }
 
     // --- triage_task ---
@@ -340,8 +413,10 @@ function buildPayload(
         return fail("invalid_payload", "targetStatus must be 'To Do' or 'Backlog'");
       }
       const reason = getString(raw, "reason");
-      const payload: Record<string, unknown> = { targetStatus };
-      if (reason !== undefined) payload["reason"] = reason;
+      const payload: TriageTaskPayload = {
+        targetStatus,
+        ...(reason !== undefined ? { reason } : {}),
+      };
       return payload;
     }
 
@@ -351,7 +426,8 @@ function buildPayload(
       if (!assigneeUsername) return fail("invalid_payload", "assigneeUsername is required");
       // assign_after_plan_approval sets afterPlanApproval=true
       const afterPlanApproval = action === "assign_after_plan_approval" ? true : (getBoolean(raw, "afterPlanApproval") ?? false);
-      return { assigneeUsername, afterPlanApproval };
+      const payload: AssignTaskPayload = { assigneeUsername, afterPlanApproval };
+      return payload;
     }
 
     // --- raise_scope_blocker ---
@@ -360,16 +436,73 @@ function buildPayload(
       if (!scopeDescription) return fail("invalid_payload", "scopeDescription is required");
       const evidence = getStringArray(raw, "evidence");
       const requestedActor = getString(raw, "requestedActor");
-      const payload: Record<string, unknown> = { scopeDescription };
-      if (evidence !== undefined) payload["evidence"] = evidence;
-      if (requestedActor !== undefined) payload["requestedActor"] = requestedActor;
+      const payload: RaiseScopeBlockerPayload = {
+        scopeDescription,
+        ...(evidence !== undefined ? { evidence } : {}),
+        ...(requestedActor !== undefined ? { requestedActor } : {}),
+      };
       return payload;
     }
 
     // --- Mechanical intents (repository callbacks) ---
-    case "repository_validation_succeeded":
-    case "repository_validation_failed":
-    case "repository_finalization_succeeded":
+    case "repository_validation_succeeded": {
+      const procedureRunId = ctx.procedureRunId ?? getString(raw, "procedureRunId");
+      const procedureStepId = ctx.procedureStepId ?? getString(raw, "procedureStepId");
+      const jobId = ctx.jobId ?? getString(raw, "jobId");
+      const candidateSha = ctx.candidateSha ?? getString(raw, "candidateSha");
+      const baseSha = ctx.baseSha ?? getString(raw, "baseSha");
+      if (!procedureRunId) return fail("invalid_payload", "procedureRunId is required");
+      if (!procedureStepId) return fail("invalid_payload", "procedureStepId is required");
+      if (!jobId) return fail("invalid_payload", "jobId is required");
+      if (!candidateSha) return fail("invalid_payload", "candidateSha is required");
+      if (!baseSha) return fail("invalid_payload", "baseSha is required");
+      const payload: RepositoryValidationSucceededPayload = {
+        procedureRunId, procedureStepId, jobId, candidateSha, baseSha,
+        outcome: "succeeded",
+      };
+      return payload;
+    }
+
+    case "repository_validation_failed": {
+      const procedureRunId = ctx.procedureRunId ?? getString(raw, "procedureRunId");
+      const procedureStepId = ctx.procedureStepId ?? getString(raw, "procedureStepId");
+      const jobId = ctx.jobId ?? getString(raw, "jobId");
+      const candidateSha = ctx.candidateSha ?? getString(raw, "candidateSha");
+      const baseSha = ctx.baseSha ?? getString(raw, "baseSha");
+      if (!procedureRunId) return fail("invalid_payload", "procedureRunId is required");
+      if (!procedureStepId) return fail("invalid_payload", "procedureStepId is required");
+      if (!jobId) return fail("invalid_payload", "jobId is required");
+      if (!candidateSha) return fail("invalid_payload", "candidateSha is required");
+      if (!baseSha) return fail("invalid_payload", "baseSha is required");
+      const failureReason = getString(raw, "failureReason") ?? getString(raw, "reason") ?? null;
+      const payload: RepositoryValidationFailedPayload = {
+        procedureRunId, procedureStepId, jobId, candidateSha, baseSha,
+        outcome: "failed",
+        ...(failureReason !== null ? { failureReason } : {}),
+      };
+      return payload;
+    }
+
+    case "repository_finalization_succeeded": {
+      const procedureRunId = ctx.procedureRunId ?? getString(raw, "procedureRunId");
+      const procedureStepId = ctx.procedureStepId ?? getString(raw, "procedureStepId");
+      const jobId = ctx.jobId ?? getString(raw, "jobId");
+      const candidateSha = ctx.candidateSha ?? getString(raw, "candidateSha");
+      const baseSha = ctx.baseSha ?? getString(raw, "baseSha");
+      if (!procedureRunId) return fail("invalid_payload", "procedureRunId is required");
+      if (!procedureStepId) return fail("invalid_payload", "procedureStepId is required");
+      if (!jobId) return fail("invalid_payload", "jobId is required");
+      if (!candidateSha) return fail("invalid_payload", "candidateSha is required");
+      if (!baseSha) return fail("invalid_payload", "baseSha is required");
+      const publishedSha = getString(raw, "publishedSha") ?? null;
+      const payload: RepositoryFinalizationSucceededPayload = {
+        procedureRunId, procedureStepId, jobId, candidateSha, baseSha,
+        outcome: "succeeded",
+        ...(publishedSha !== null ? { publishedSha } : {}),
+      };
+      return payload;
+    }
+
     case "repository_finalization_failed": {
       const procedureRunId = ctx.procedureRunId ?? getString(raw, "procedureRunId");
       const procedureStepId = ctx.procedureStepId ?? getString(raw, "procedureStepId");
@@ -381,21 +514,12 @@ function buildPayload(
       if (!jobId) return fail("invalid_payload", "jobId is required");
       if (!candidateSha) return fail("invalid_payload", "candidateSha is required");
       if (!baseSha) return fail("invalid_payload", "baseSha is required");
-
-      const succeeded = intent === "repository_validation_succeeded" || intent === "repository_finalization_succeeded";
-      const payload: Record<string, unknown> = {
+      const failureReason = getString(raw, "failureReason") ?? getString(raw, "reason") ?? null;
+      const payload: RepositoryFinalizationFailedPayload = {
         procedureRunId, procedureStepId, jobId, candidateSha, baseSha,
-        outcome: succeeded ? "succeeded" : "failed",
+        outcome: "failed",
+        ...(failureReason !== null ? { failureReason } : {}),
       };
-
-      if (intent === "repository_finalization_succeeded") {
-        const publishedSha = getString(raw, "publishedSha") ?? null;
-        payload["publishedSha"] = publishedSha;
-      }
-      if (!succeeded) {
-        const failureReason = getString(raw, "failureReason") ?? getString(raw, "reason") ?? null;
-        payload["failureReason"] = failureReason;
-      }
       return payload;
     }
 
@@ -407,14 +531,16 @@ function buildPayload(
       if (!candidateSha) return fail("invalid_payload", "candidateSha is required");
       const baseSha = ctx.baseSha ?? getString(raw, "baseSha");
       if (!baseSha) return fail("invalid_payload", "baseSha is required");
-      return { authorizationCommentId, candidateSha, baseSha };
+      const payload: PublishCheckpointPayload = { authorizationCommentId, candidateSha, baseSha };
+      return payload;
     }
 
     // --- add_subtask ---
     case "add_subtask": {
       const subtaskText = getString(raw, "subtaskText");
       if (!subtaskText) return fail("invalid_payload", "subtaskText is required");
-      return { subtaskText };
+      const payload: AddSubtaskPayload = { subtaskText };
+      return payload;
     }
 
     // --- complete_subtask ---
@@ -423,8 +549,10 @@ function buildPayload(
       if (!subtaskId) return fail("invalid_payload", "subtaskId is required");
       const completed = getBoolean(raw, "completed") ?? true;
       const minutesSpent = getNumber(raw, "minutesSpent");
-      const payload: Record<string, unknown> = { subtaskId, completed };
-      if (minutesSpent !== undefined) payload["minutesSpent"] = minutesSpent;
+      const payload: CompleteSubtaskPayload = {
+        subtaskId, completed,
+        ...(minutesSpent !== undefined ? { minutesSpent } : {}),
+      };
       return payload;
     }
 
@@ -432,14 +560,16 @@ function buildPayload(
     case "remove_subtask": {
       const subtaskId = getString(raw, "subtaskId");
       if (!subtaskId) return fail("invalid_payload", "subtaskId is required");
-      return { subtaskId };
+      const payload: RemoveSubtaskPayload = { subtaskId };
+      return payload;
     }
 
     // --- request_subtask ---
     case "request_subtask": {
       const subtaskText = getString(raw, "subtaskText");
       if (!subtaskText) return fail("invalid_payload", "subtaskText is required");
-      return { subtaskText };
+      const payload: RequestSubtaskPayload = { subtaskText };
+      return payload;
     }
 
     // --- request_task ---
@@ -448,9 +578,11 @@ function buildPayload(
       if (!taskTitle) return fail("invalid_payload", "taskTitle is required");
       const taskDescription = getString(raw, "taskDescription") ?? getString(raw, "description");
       const epicId = getString(raw, "epicId");
-      const payload: Record<string, unknown> = { taskTitle };
-      if (taskDescription !== undefined) payload["taskDescription"] = taskDescription;
-      if (epicId !== undefined) payload["epicId"] = epicId;
+      const payload: RequestTaskPayload = {
+        taskTitle,
+        ...(taskDescription !== undefined ? { taskDescription } : {}),
+        ...(epicId !== undefined ? { epicId } : {}),
+      };
       return payload;
     }
 
@@ -506,15 +638,21 @@ export function normalizePublicAction(
     return payloadResult as NormalizerResult;
   }
 
-  const payload = payloadResult as Record<string, unknown>;
+  // buildPayload returns a BuiltPayload (typed per intent) or a NormalizerResult.
+  // After the guard above, payloadResult is a BuiltPayload. Each case in
+  // buildPayload annotates its local with the concrete payload type, so
+  // typos and wrong shapes fail at the construction site, not at runtime.
+  const payload = payloadResult;
 
   // Build the common command base.
   const base = buildBase(authContext, intent);
 
-  // Construct the typed command by spreading base and payload.
-  // The discriminated union is satisfied because `intent` narrows the
-  // expected payload type via the union's per-variant mapping.
-  const command: TaskWorkflowCommand = { ...base, payload } as TaskWorkflowCommand;
+  // Construct the typed command. The `as` cast is benign: buildPayload
+  // returns the concrete typed payload for this intent, and the discriminated
+  // union on `intent` guarantees the payload matches the variant. TypeScript
+  // cannot prove spread-narrowing, but each case's payload is compile-time
+  // checked against its variant's payload type.
+  const command = { ...base, payload } as TaskWorkflowCommand;
 
   return { ok: true, command };
 }

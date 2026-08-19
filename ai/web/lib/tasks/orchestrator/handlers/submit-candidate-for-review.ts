@@ -506,8 +506,8 @@ async function enterReview(ctx: StepHandlerContext): Promise<StepHandlerResult> 
       procedureRunId: ctx.procedureRunId,
       procedureStepId: ctx.stepId,
       jobId: null,
-      candidateSha: candidateSha ?? "",
-      baseSha: realBaseSha ?? "",
+      candidateSha: candidateSha ?? null,
+      baseSha: realBaseSha ?? null,
       outcome: "succeeded",
     },
   });

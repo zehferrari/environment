@@ -296,7 +296,7 @@ async function completeReview(ctx: StepHandlerContext): Promise<StepHandlerResul
       procedureStepId: ctx.stepId,
       jobId: null,
       candidateSha,
-      baseSha: realBaseSha ?? "",
+      baseSha: realBaseSha ?? null,
       outcome: "succeeded",
       publishedSha: null,
     },
