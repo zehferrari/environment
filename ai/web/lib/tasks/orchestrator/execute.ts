@@ -6,6 +6,14 @@
 
 import { db } from "@/lib/db";
 import {
+  applyAuthenticatedPmChannelWorkflowAction,
+  PmChannelExecutionContextError,
+} from "@/lib/agents/pm-channel/runs";
+import {
+  assertWorkflowCommandExecutionContext,
+  invokeWorkflowCommandCrashHook,
+} from "@/lib/agents/workflow/transactional-action";
+import {
   getIntentExecutor,
 } from "@/lib/tasks/orchestrator/intents";
 import {
@@ -33,7 +41,14 @@ export async function executeWorkflowCommand(
   preTransactionState: TaskStateSnapshot,
 ): Promise<OrchestratorResult> {
   try {
-    return await db.$transaction(async (tx) => {
+    if (command.executionContext) {
+      await invokeWorkflowCommandCrashHook(
+        "before_command_transaction",
+        command.executionContext.publicAction,
+      );
+    }
+    const committed = await db.$transaction(async (tx): Promise<OrchestratorResult> => {
+      assertWorkflowCommandExecutionContext(command);
       const fence = await fenceState(tx, command.taskId, command, preTransactionState);
       if (!fence.ok) return mapFenceResultToOrchestratorResult(fence);
 
@@ -51,12 +66,54 @@ export async function executeWorkflowCommand(
         command,
         decision,
         helpers: {
-          executeDecisionWrites: () => executeDecisionWrites({ tx, state, command, decision }),
+          executeDecisionWrites: () => executeDecisionWrites({
+            tx,
+            state,
+            command,
+            decision,
+            projectResult: command.executionContext
+              ? async (result) => {
+                  await invokeWorkflowCommandCrashHook(
+                    "after_domain_writes_before_execution_bookkeeping",
+                    command.executionContext!.publicAction,
+                  );
+                  const workflowAction = await applyAuthenticatedPmChannelWorkflowAction(tx, {
+                    taskId: command.taskId,
+                    executionContext: command.executionContext!,
+                    taskState: decision.toStatus,
+                    checkpoint: command.intent === "checkpoint" ? command.payload : null,
+                    countsAgainstEpisodeBudget: command.intent !== "checkpoint",
+                  });
+                  await invokeWorkflowCommandCrashHook(
+                    "after_execution_bookkeeping_before_receipt_projection",
+                    command.executionContext!.publicAction,
+                  );
+                  return { ...result, ...workflowAction };
+                }
+              : undefined,
+          }),
         },
       });
     }, { timeout: EXECUTE_TRANSACTION_TIMEOUT_MS });
+    if (command.executionContext) {
+      await invokeWorkflowCommandCrashHook(
+        "after_commit_before_response",
+        command.executionContext.publicAction,
+      );
+    }
+    return committed;
   } catch (error) {
     if (error instanceof IntentReceiptResolution) return error.result;
+    if (error instanceof PmChannelExecutionContextError) {
+      if (error.reason === "fenced" || error.reason === "already_consumed") {
+        return { status: "stale", reason: error.message, domainCode: "cycle_mismatch" };
+      }
+      return {
+        status: "invalid",
+        reason: error.message,
+        domainCode: "callback_correlation_mismatch",
+      };
+    }
     const message = error instanceof Error ? error.message : String(error);
     if (/version_conflict|status_conflict/i.test(message)) {
       return { status: "stale", reason: message };

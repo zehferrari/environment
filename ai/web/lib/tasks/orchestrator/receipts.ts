@@ -74,6 +74,7 @@ export type FingerprintInput = {
   jobId: string | null;
   normalizedPayload: string | null;
   normalizedEvidence: string | null;
+  normalizedExecutionContext: string | null;
   source: string;
   messageId: string | null;
 };
@@ -113,7 +114,10 @@ export function buildFingerprintInput(command: TaskWorkflowCommand): Fingerprint
     procedureRunId,
     jobId,
     normalizedPayload,
-        normalizedEvidence,
+    normalizedEvidence,
+    normalizedExecutionContext: command.executionContext
+      ? canonicalize(command.executionContext)
+      : null,
     source: command.source,
     messageId: command.messageId ?? null,
   };

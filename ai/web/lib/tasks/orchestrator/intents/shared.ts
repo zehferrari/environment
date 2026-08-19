@@ -52,6 +52,13 @@ export async function executeDecisionWrites(args: {
   state: TaskAggregate;
   command: TaskWorkflowCommand;
   decision: OrchestrationDecision;
+  /**
+   * Optional command-boundary projection applied after every domain,
+   * transition, procedure and outbox write, but before the durable receipt.
+   * PHASEE-05 uses it for PM run/episode bookkeeping so the receipt stores the
+   * exact committed disposition instead of a response-time reconstruction.
+   */
+  projectResult?: (result: OrchestratorResult) => Promise<OrchestratorResult>;
 }): Promise<OrchestratorResult> {
   const { tx, command, decision } = args;
   const isNoOp = decision.fromStatus === decision.toStatus
@@ -224,7 +231,7 @@ export async function executeDecisionWrites(args: {
     });
   }
 
-  const result: OrchestratorResult = kernelReplayed
+  const baseResult: OrchestratorResult = kernelReplayed
     ? { status: "replayed", transitionId: transitionId!, workflowVersion, procedureId }
     : {
         status: "accepted",
@@ -233,6 +240,9 @@ export async function executeDecisionWrites(args: {
         procedureId,
         cycleId,
       };
+  const result = args.projectResult
+    ? await args.projectResult(baseResult)
+    : baseResult;
   const receipt = await findOrCreateReceipt(
     tx,
     command,

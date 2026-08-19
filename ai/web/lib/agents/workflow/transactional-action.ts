@@ -26,9 +26,15 @@ import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import {
   applyPmChannelRunWorkflowAction,
+  PmChannelExecutionContextError,
   type PmChannelWorkflowActionArgs,
 } from "@/lib/agents/pm-channel/runs";
 import type { WorkflowActionResult } from "@/lib/agents/workflow/action-effect";
+import type {
+  TaskWorkflowCommand,
+  TaskWorkflowIntent,
+  WorkflowPublicAction,
+} from "@/lib/tasks/orchestrator/types";
 
 /**
  * SQLite interactive transactions default to a 5s window. A workflow action is
@@ -49,6 +55,72 @@ let crashHook: CrashHook | null = null;
 
 export function __setWorkflowActionCrashHook(hook: CrashHook | null) {
   crashHook = hook;
+}
+
+export type WorkflowCommandCrashBoundary =
+  | "before_command_transaction"
+  | "after_domain_writes_before_execution_bookkeeping"
+  | "after_execution_bookkeeping_before_receipt_projection"
+  | "after_commit_before_response";
+
+type WorkflowCommandCrashHook = (
+  boundary: WorkflowCommandCrashBoundary,
+  action: string,
+) => void | Promise<void>;
+let workflowCommandCrashHook: WorkflowCommandCrashHook | null = null;
+
+export function __setWorkflowCommandCrashHook(hook: WorkflowCommandCrashHook | null) {
+  workflowCommandCrashHook = hook;
+}
+
+export async function invokeWorkflowCommandCrashHook(
+  boundary: WorkflowCommandCrashBoundary,
+  action: string,
+) {
+  if (workflowCommandCrashHook) await workflowCommandCrashHook(boundary, action);
+}
+
+const INTENT_PUBLIC_ACTIONS: Readonly<
+  Partial<Record<TaskWorkflowIntent, readonly WorkflowPublicAction[]>>
+> = {
+  submit_plan: ["submit_plan"],
+  approve_plan: ["approve_plan"],
+  start_implementation: ["start"],
+  checkpoint: ["checkpoint"],
+  submit_for_review: ["ready_for_review", "submit_review"],
+  request_review_changes: ["review_feedback"],
+  accept_review: ["review_done"],
+  raise_blocker: ["flag_blocker"],
+  clear_blocker: ["clear_blocker"],
+  triage_task: ["triage_to_todo"],
+  assign_task: ["assign_task", "assign_after_plan_approval"],
+  raise_scope_blocker: ["flag_extra_work_blocker"],
+  override_status: ["override_status"],
+  publish_checkpoint: ["publish_checkpoint"],
+  add_subtask: ["add_subtask"],
+  complete_subtask: ["complete_subtask"],
+  remove_subtask: ["remove_subtask"],
+  request_subtask: ["request_subtask"],
+  request_task: ["request_task"],
+};
+
+/** Pure portion of the authenticated PM execution-context fence. */
+export function assertWorkflowCommandExecutionContext(command: TaskWorkflowCommand) {
+  const context = command.executionContext;
+  if (!context) return;
+  const allowedActions = INTENT_PUBLIC_ACTIONS[command.intent];
+  if (
+    command.source !== "agent" ||
+    command.actor.kind !== "agent" ||
+    command.actor.username !== context.agentSlug ||
+    command.messageId !== context.sourceMessageId ||
+    !allowedActions?.includes(context.publicAction)
+  ) {
+    throw new PmChannelExecutionContextError(
+      "mismatch",
+      "pm_execution_context_mismatch: command source, actor, message, or public action does not match",
+    );
+  }
 }
 
 export interface AtomicWorkflowActionOutcome<T> {
