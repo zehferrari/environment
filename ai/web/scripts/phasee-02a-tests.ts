@@ -170,7 +170,7 @@ test("validateCommandPayload: valid submit_plan payload", () => {
     },
   });
   expectOk(r);
-  assert.equal(r.payload.actionPlan.summary, "Build the feature");
+  if (r.ok) assert.equal((r.payload as { actionPlan: { summary: string } }).actionPlan.summary, "Build the feature");
 });
 
 test("validateCommandPayload: submit_plan rejects missing actionPlan", () => {

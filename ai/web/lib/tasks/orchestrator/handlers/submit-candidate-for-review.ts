@@ -490,8 +490,9 @@ async function enterReview(ctx: StepHandlerContext): Promise<StepHandlerResult> 
   // it may have changed since the procedure was created. Use the assignee's
   // user ID as the mechanical actor (the procedure acts on the assignee's
   // behalf; the decision actor is recorded separately by the orchestrator).
-  const freshTask = await db.task.findUniqueOrThrow({ where: { id: task.id }, select: { workflowVersion: true, activeWorkflowCycleId: true, assigneeId: true } });
+  const freshTask = await db.task.findUniqueOrThrow({ where: { id: task.id }, select: { workflowVersion: true, activeWorkflowCycleId: true, assigneeId: true, repositoryRun: { select: { baseSha: true } } } });
   const candidateSha = (leaseOutput?.candidateSha as string) ?? null;
+  const realBaseSha = freshTask.repositoryRun?.baseSha ?? null;
   const result = await submitWorkflowCommand({
     taskId: task.id,
     intent: "repository_validation_succeeded",
@@ -504,9 +505,9 @@ async function enterReview(ctx: StepHandlerContext): Promise<StepHandlerResult> 
     payload: {
       procedureRunId: ctx.procedureRunId,
       procedureStepId: ctx.stepId,
-      jobId: ctx.procedureRunId,
-      candidateSha,
-      baseSha: candidateSha,
+      jobId: null,
+      candidateSha: candidateSha ?? "",
+      baseSha: realBaseSha ?? "",
       outcome: "succeeded",
     },
   });

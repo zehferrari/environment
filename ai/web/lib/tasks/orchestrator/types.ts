@@ -321,7 +321,10 @@ export type RaiseScopeBlockerPayload = {
 export type RepositoryValidationSucceededPayload = {
   procedureRunId: string;
   procedureStepId: string;
-  jobId: string;
+  /** Job ID from the repository run. May be null when the callback is
+   * invoked from a procedure context that does not have the original
+   * jobId in scope — PHASEE-07 will fence on exact correlation. */
+  jobId: string | null;
   candidateSha: string;
   baseSha: string;
   outcome: "succeeded";
@@ -330,7 +333,7 @@ export type RepositoryValidationSucceededPayload = {
 export type RepositoryValidationFailedPayload = {
   procedureRunId: string;
   procedureStepId: string;
-  jobId: string;
+  jobId: string | null;
   candidateSha: string;
   baseSha: string;
   outcome: "failed";
@@ -341,7 +344,7 @@ export type RepositoryValidationFailedPayload = {
 export type RepositoryFinalizationSucceededPayload = {
   procedureRunId: string;
   procedureStepId: string;
-  jobId: string;
+  jobId: string | null;
   candidateSha: string;
   baseSha: string;
   outcome: "succeeded";
@@ -352,7 +355,7 @@ export type RepositoryFinalizationSucceededPayload = {
 export type RepositoryFinalizationFailedPayload = {
   procedureRunId: string;
   procedureStepId: string;
-  jobId: string;
+  jobId: string | null;
   candidateSha: string;
   baseSha: string;
   outcome: "failed";
@@ -400,8 +403,9 @@ export type RequestTaskPayload = {
 // ---------------------------------------------------------------------------
 
 /** Common fields shared by every command variant. */
-type TaskWorkflowCommandBase = {
+export type TaskWorkflowCommandBase = {
   taskId: string;
+  intent: TaskWorkflowIntent;
   actor: WorkflowActor;
   expectedWorkflowVersion: number;
   /** The cycle the command targets. For intents that open a cycle

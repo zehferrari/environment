@@ -155,7 +155,7 @@ async function finalizeRepository(ctx: StepHandlerContext): Promise<StepHandlerR
       assigneeId: true,
       assignee: { select: { id: true, username: true } },
       project: { select: { repositoryPath: true } },
-      repositoryRun: { select: { phase: true, candidateSha: true, reviewedSha: true, repoTouched: true, branchName: true } },
+      repositoryRun: { select: { phase: true, candidateSha: true, baseSha: true, reviewedSha: true, repoTouched: true, branchName: true } },
       reviewRuns: { where: { status: "accepted" }, orderBy: { updatedAt: "desc" }, take: 1, select: { id: true, candidateSha: true, reviewerId: true } },
     },
   });
@@ -280,7 +280,8 @@ async function completeReview(ctx: StepHandlerContext): Promise<StepHandlerResul
   // Use the assignee's user ID as the mechanical actor (the procedure acts on
   // the reviewer's behalf; the decision actor is recovered from the accepted
   // lease by authorize.ts).
-  const freshTask = await db.task.findUniqueOrThrow({ where: { id: task.id }, select: { workflowVersion: true, activeWorkflowCycleId: true, assigneeId: true } });
+  const freshTask = await db.task.findUniqueOrThrow({ where: { id: task.id }, select: { workflowVersion: true, activeWorkflowCycleId: true, assigneeId: true, repositoryRun: { select: { baseSha: true } } } });
+  const realBaseSha = freshTask.repositoryRun?.baseSha ?? null;
   const result = await submitWorkflowCommand({
     taskId: task.id,
     intent: "repository_finalization_succeeded",
@@ -293,9 +294,9 @@ async function completeReview(ctx: StepHandlerContext): Promise<StepHandlerResul
     payload: {
       procedureRunId: ctx.procedureRunId,
       procedureStepId: ctx.stepId,
-      jobId: ctx.procedureRunId,
+      jobId: null,
       candidateSha,
-      baseSha: candidateSha,
+      baseSha: realBaseSha ?? "",
       outcome: "succeeded",
       publishedSha: null,
     },

@@ -81,7 +81,7 @@ import {
   sealEpisodeRolloverBarrier,
 } from "@/lib/agents/episodes/rollover";
 import { recordWorkflowActionExecutionState } from "@/lib/agents/watchdog/transitions";
-import type { TaskWorkflowCommand, TaskWorkflowIntent } from "@/lib/tasks/orchestrator/types";
+import type { LegacyTaskWorkflowCommand, TaskWorkflowCommand, TaskWorkflowIntent } from "@/lib/tasks/orchestrator/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -198,7 +198,7 @@ async function computeV2Prediction(
       worktreePath: validatedContext.worktreePath ?? undefined,
       branchName: validatedContext.branchName ?? undefined,
     },
-  } as unknown as TaskWorkflowCommand;
+  } as LegacyTaskWorkflowCommand as TaskWorkflowCommand;
 
   try {
     const { loadTaskState, authorizeCommand, runGuards, decideCommand } = await import("@/lib/tasks/orchestrator");

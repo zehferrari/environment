@@ -15,6 +15,7 @@ import type {
   AgentExecutionContext,
   DomainErrorCode,
   TaskWorkflowCommand,
+  TaskWorkflowCommandBase,
   TaskWorkflowIntent,
   WorkflowCommandSource,
   WorkflowPublicAction,
@@ -156,7 +157,7 @@ function fail(code: DomainErrorCode, message: string): NormalizerResult {
 function buildBase(
   ctx: NormalizerAuthContext,
   intent: TaskWorkflowIntent,
-): Record<string, unknown> {
+): TaskWorkflowCommandBase {
   const actor: WorkflowActor = {
     id: ctx.actorId,
     kind: ctx.actorKind,
@@ -164,7 +165,7 @@ function buildBase(
     ...(ctx.actorRole !== undefined ? { role: ctx.actorRole } : {}),
   };
 
-  const base: Record<string, unknown> = {
+  const base: TaskWorkflowCommandBase = {
     taskId: ctx.taskId,
     intent,
     actor,
@@ -173,9 +174,9 @@ function buildBase(
     source: ctx.source,
   };
 
-  if (ctx.workflowCycleId !== null) base["workflowCycleId"] = ctx.workflowCycleId;
-  if (ctx.messageId !== null) base["messageId"] = ctx.messageId;
-  if (ctx.executionContext) base["executionContext"] = ctx.executionContext;
+  if (ctx.workflowCycleId !== null) base.workflowCycleId = ctx.workflowCycleId;
+  if (ctx.messageId !== null) base.messageId = ctx.messageId;
+  if (ctx.executionContext) base.executionContext = ctx.executionContext;
 
   return base;
 }
@@ -509,9 +510,13 @@ export function normalizePublicAction(
 
   // Build the common command base.
   const base = buildBase(authContext, intent);
-  base["payload"] = payload;
 
-  return { ok: true, command: base as unknown as TaskWorkflowCommand };
+  // Construct the typed command by spreading base and payload.
+  // The discriminated union is satisfied because `intent` narrows the
+  // expected payload type via the union's per-variant mapping.
+  const command: TaskWorkflowCommand = { ...base, payload } as TaskWorkflowCommand;
+
+  return { ok: true, command };
 }
 
 // ---------------------------------------------------------------------------

@@ -79,7 +79,7 @@ async function main() {
       workflowCycleId: cycle1.id,
       idempotencyKey: "orch06:submit:1",
       source: "agent",
-      payload: { candidateSha: "shared-sha" },
+      payload: { candidateSha: "shared-sha", baseSha: null, repoTouched: false },
     });
     assert.equal(submitResult.status, "accepted", `submit accepted; got ${JSON.stringify(submitResult)}`);
     assert.ok(submitResult.procedureId, "procedure created");
@@ -129,7 +129,7 @@ async function main() {
       workflowCycleId: cycle2.id,
       idempotencyKey: "orch06:submit:2",
       source: "agent",
-      payload: { candidateSha: "shared-sha" },
+      payload: { candidateSha: "shared-sha", baseSha: null, repoTouched: false },
     });
     assert.equal(submit2.status, "accepted", "second submit accepted (same candidate, new cycle)");
     // Run the procedure.
@@ -187,7 +187,7 @@ async function main() {
       workflowCycleId: cycle4.id,
       idempotencyKey: "orch06:submit:4",
       source: "agent",
-      payload: { candidateSha: "cand-4" },
+      payload: { candidateSha: "cand-4", baseSha: null, repoTouched: false },
     });
     assert.equal(submit4.status, "accepted");
     // Run until the run_validation step is waiting for callback.
