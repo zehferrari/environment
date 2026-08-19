@@ -1222,6 +1222,9 @@ model ActivityLog {
   @@index([targetAgent])
   @@index([targetFile])
   @@index([createdAt])
+  // PHASEE-10 — Composite index for legacy boundary invocation queries
+  // (kind + createdAt range scans in getLegacyInvocationSummary).
+  @@index([kind, createdAt])
   // PHASEE-10 — Partial unique index on dedupeKey. NULL values are excluded
   // by the filter so rows without a dedupe key are never constrained.
   @@unique([dedupeKey])

@@ -88,10 +88,39 @@ export async function getCohortSummary(projectId?: string): Promise<CohortSummar
  * ActivityLog rows). The counter is already live and wired via
  * recordLegacyWorkflowBoundaryInvocation in lib/tasks/legacy-workflow-boundary.ts.
  *
- * Read-only — uses the ActivityLog index on `kind`.
+ * Read-only — uses groupBy/count on the ActivityLog @@index([kind, createdAt])
+ * for efficient legacy boundary queries instead of fetching all rows and
+ * aggregating in JS.
  */
 export async function getLegacyInvocationSummary(projectId?: string): Promise<LegacyInvocationSummary> {
-  const rows = await db.activityLog.findMany({
+  // Use groupBy to count rows by payload boundary+entryPoint, avoiding
+  // fetching all rows into JS. We still need to parse payload to group by
+  // boundary/entryPoint since those are JSON fields not columns.
+  // However, we can use the count + max(createdAt) via groupBy on a computed
+  // key. Since Prisma groupBy cannot parse JSON, we fetch the distinct
+  // payloads via a targeted query and use count for totals.
+  //
+  // Optimization: use groupBy on kind to get the total count in one query,
+  // then fetch only the distinct payloads (boundary+entryPoint) with their
+  // last-seen timestamps. This avoids loading every row when there are
+  // thousands of invocations but only ~11 distinct boundary ids.
+
+  const totalCount = await db.activityLog.count({
+    where: {
+      kind: LEGACY_WORKFLOW_BOUNDARY_ACTIVITY_KIND,
+      ...(projectId ? { projectId } : {}),
+    },
+  });
+
+  // Fetch only the latest row per boundary+entryPoint to get lastInvokedAt.
+  // Then count per group with a separate groupBy query on the payload field.
+  // Since payload is a JSON string, we use findMany with distinct on the
+  // payload field but limited to the distinct boundaries.
+  //
+  // For efficiency with the @@index([kind, createdAt]) index, we query
+  // ordered by createdAt desc and deduplicate in JS — but only the latest
+  // row per boundary key, not every row.
+  const latestRows = await db.activityLog.findMany({
     where: {
       kind: LEGACY_WORKFLOW_BOUNDARY_ACTIVITY_KIND,
       ...(projectId ? { projectId } : {}),
@@ -101,11 +130,33 @@ export async function getLegacyInvocationSummary(projectId?: string): Promise<Le
       createdAt: true,
     },
     orderBy: { createdAt: "desc" },
+    // Only need one row per distinct boundary+entryPoint. With ~11 boundary
+    // ids and ~20 entry points, take a reasonable upper bound.
+    take: 500,
   });
 
-  const byBoundaryMap = new Map<string, LegacyInvocationEntry>();
+  const seenKeys = new Set<string>();
+  const byBoundary: LegacyInvocationEntry[] = [];
+  // Count per boundary+entryPoint using a single groupBy query.
+  // Since we cannot groupBy JSON payload, we count all rows per payload
+  // value — the payload is deterministic for the same boundary+entryPoint.
+  const countGroups = await db.activityLog.groupBy({
+    by: ["payload"],
+    where: {
+      kind: LEGACY_WORKFLOW_BOUNDARY_ACTIVITY_KIND,
+      ...(projectId ? { projectId } : {}),
+    },
+    _count: true,
+  });
 
-  for (const row of rows) {
+  // Build a map of payload → count for efficient lookup.
+  const countMap = new Map<string, number>();
+  for (const group of countGroups) {
+    const c = typeof group._count === "number" ? group._count : 0;
+    countMap.set(group.payload ?? "", c);
+  }
+
+  for (const row of latestRows) {
     let legacyBoundary = "unknown";
     let entryPoint = "unknown";
     try {
@@ -117,26 +168,22 @@ export async function getLegacyInvocationSummary(projectId?: string): Promise<Le
     }
 
     const key = `${legacyBoundary}:${entryPoint}`;
-    const existing = byBoundaryMap.get(key);
-    if (existing) {
-      existing.count++;
-      // Rows are ordered desc, so the first seen is the most recent.
-      // Only update lastInvokedAt if it's null (first row seen = most recent).
-    } else {
-      byBoundaryMap.set(key, {
-        legacyBoundary,
-        entryPoint,
-        count: 1,
-        lastInvokedAt: row.createdAt.toISOString(),
-      });
-    }
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+
+    const count = countMap.get(row.payload ?? "") ?? 0;
+    byBoundary.push({
+      legacyBoundary,
+      entryPoint,
+      count,
+      lastInvokedAt: row.createdAt.toISOString(),
+    });
   }
 
-  const byBoundary = Array.from(byBoundaryMap.values()).sort((a, b) => b.count - a.count);
-  const totalInvocations = byBoundary.reduce((sum, entry) => sum + entry.count, 0);
+  byBoundary.sort((a, b) => b.count - a.count);
 
   return {
-    totalInvocations,
+    totalInvocations: totalCount,
     byBoundary,
   };
 }

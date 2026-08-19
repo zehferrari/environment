@@ -11,14 +11,28 @@ import type { Prisma } from "@prisma/client";
 
 /**
  * Compute a stable dedup key from kind + taskId + payload.
- * Uses a simple hash to keep the key short and deterministic.
+ * Uses a recursive key-sorted canonical JSON stringify so nested objects
+ * are deterministically serialized — JSON.stringify with Object.keys().sort()
+ * only sorts top-level keys and leaves nested object key order unspecified.
  */
+function canonicalStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalStringify).join(",")}]`;
+  }
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj).sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalStringify(obj[k])}`).join(",")}}`;
+}
+
 export function computeActivityDedupeKey(
   kind: string,
   taskId: string | null,
   payload: Record<string, unknown>,
 ): string {
-  const payloadJson = JSON.stringify(payload, Object.keys(payload).sort());
+  const payloadJson = canonicalStringify(payload);
   // Simple FNV-1a hash for deterministic, short keys.
   let hash = 0x811c9dc5;
   const str = `${kind}:${taskId ?? "null"}:${payloadJson}`;

@@ -25,6 +25,7 @@ import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { getProcedureDefinition, getLatestProcedureDefinition } from "@/lib/tasks/orchestrator/procedures";
 import type { TaskProcedureType } from "@/lib/tasks/orchestrator/types";
+import { writeDeduplicatedActivity, computeActivityDedupeKey } from "@/lib/tasks/orchestrator/activity-dedup";
 
 const LEASE_MS = 2 * 60_000;
 const DEFAULT_BATCH = 20;
@@ -485,21 +486,28 @@ async function markStepTerminal(args: {
         where: { id: run.taskId, deletedAt: null },
         data: { alertReporter: true },
       });
-      await db.activityLog.create({
-        data: {
-          projectId: task.projectId,
-          taskId: run.taskId,
-          kind: "task.workflow.procedure_operational_error",
-          payload: JSON.stringify({
+      await writeDeduplicatedActivity({
+        projectId: task.projectId,
+        taskId: run.taskId,
+        kind: "task.workflow.procedure_operational_error",
+        payload: {
+          procedureRunId: args.procedureRunId,
+          procedureType: run.type,
+          stepId: args.stepId,
+          error: args.error.slice(0, 1000),
+          attempts: args.attempts,
+          retryable: args.retryable,
+          workerId: args.workerId,
+        },
+        dedupeKey: computeActivityDedupeKey(
+          "task.workflow.procedure_operational_error",
+          run.taskId,
+          {
             procedureRunId: args.procedureRunId,
-            procedureType: run.type,
             stepId: args.stepId,
             error: args.error.slice(0, 1000),
-            attempts: args.attempts,
-            retryable: args.retryable,
-            workerId: args.workerId,
-          }),
-        },
+          },
+        ),
       });
     }
   }

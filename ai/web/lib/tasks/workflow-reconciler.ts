@@ -32,7 +32,8 @@ export type WorkflowReconciliationKind =
   | "engine_ownership_mismatch"
   | "stale_receipt_without_transition"
   | "procedure_run_without_cycle"
-  | "dual_engine_active";
+  | "dual_engine_active"
+  | "unknown_engine_value";
 
 export type WorkflowReconciliationFinding = {
   kind: WorkflowReconciliationKind;
@@ -181,6 +182,8 @@ export async function runWorkflowReconciliation(options: {
       status: true,
       workflowVersion: true,
       activeWorkflowCycleId: true,
+      workflowEngine: true,
+      workflowEnginePinnedAt: true,
       repositoryRun: {
         select: {
           id: true,
@@ -224,7 +227,7 @@ export async function runWorkflowReconciliation(options: {
       },
       workflowCycles: {
         where: { status: "open" },
-        select: { id: true, sequence: true, status: true, outcome: true },
+        select: { id: true, sequence: true, status: true, outcome: true, workflowEngine: true },
       },
       procedureRuns: {
         where: { status: { in: ["queued", "running", "operational_error"] } },
@@ -235,10 +238,22 @@ export async function runWorkflowReconciliation(options: {
           status: true,
           currentStep: true,
           lastError: true,
+          workflowCycleId: true,
           steps: {
             where: { status: "waiting_callback" },
             select: { id: true, name: true, status: true, output: true, availableAt: true },
           },
+        },
+      },
+      commandReceipts: {
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        select: {
+          idempotencyKey: true,
+          intent: true,
+          status: true,
+          transitionId: true,
+          createdAt: true,
         },
       },
     },
@@ -542,18 +557,30 @@ export async function runWorkflowReconciliation(options: {
     }
 
     // --- PHASEE-10 invariant detectors -----------------------------------
+    // Read the open cycle's engine from the cycle row itself (not the task
+    // field) so detectEngineOwnershipMismatch compares two independent values.
+    const openCycle = task.workflowCycles.find((c) => c.status === "open") ?? null;
+    const lastReceipt = task.commandReceipts.length > 0 ? task.commandReceipts[0] : null;
     const phaseEFindings = detectPhaseEInvariants({
       taskId: task.id,
-      taskEngine: (task as { workflowEngine?: string }).workflowEngine ?? "legacy",
-      taskEnginePinnedAt: null,
-      activeCycle: task.activeWorkflowCycleId
-        ? { id: task.activeWorkflowCycleId, workflowEngine: (task as { workflowEngine?: string }).workflowEngine ?? "legacy", status: task.status }
+      taskEngine: task.workflowEngine,
+      taskEnginePinnedAt: task.workflowEnginePinnedAt,
+      activeCycle: openCycle
+        ? { id: openCycle.id, workflowEngine: openCycle.workflowEngine, status: task.status }
         : null,
-      lastReceipt: null, // Receipt data fetched separately if needed
+      lastReceipt: lastReceipt
+        ? {
+            idempotencyKey: lastReceipt.idempotencyKey,
+            intent: lastReceipt.intent,
+            status: lastReceipt.status,
+            transitionId: lastReceipt.transitionId,
+            createdAt: lastReceipt.createdAt,
+          }
+        : null,
       activeProcedureRuns: task.procedureRuns.map((p) => ({
         id: p.id,
         type: p.type,
-        workflowCycleId: null, // Not available in current select
+        workflowCycleId: p.workflowCycleId,
       })),
       taskStatus: task.status,
     });

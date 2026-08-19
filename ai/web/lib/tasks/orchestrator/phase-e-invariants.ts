@@ -12,7 +12,7 @@ export type PhaseEInvariantKind =
   | "engine_ownership_mismatch"
   | "stale_receipt_without_transition"
   | "procedure_run_without_cycle"
-  | "dual_engine_active";
+  | "unknown_engine_value";
 
 export type PhaseEInvariantFinding = {
   kind: PhaseEInvariantKind;
@@ -110,30 +110,25 @@ export function detectProcedureRunWithoutCycle(
 }
 
 /**
- * Detect dual engine active: legacy + V2 on the same task.
- * This should never happen — a task is owned by exactly one engine.
+ * Detect unknown engine value: task.workflowEngine is not a recognized engine.
+ * This fires regardless of whether a cycle is open, so it catches cycle-less
+ * tasks with a corrupt engine field. True dual-engine (two open cycles with
+ * different engines on the same task) is prevented by the unique constraint
+ * on open cycles (at most one open cycle per task), so it is not duplicated
+ * here.
  */
-export function detectDualEngineActive(
+export function detectUnknownEngineValue(
   input: PhaseEInvariantInput,
 ): PhaseEInvariantFinding | null {
-  if (!input.activeCycle) return null;
-  // The task engine and cycle engine must match (checked by engine_ownership_mismatch),
-  // but dual_engine_active checks for the impossible case where both engines
-  // have active mutations. We detect this by checking if the task engine is
-  // not a valid engine value, or if there are conflicting ownership signals.
   const validEngines = new Set(["legacy", "orchestrator_v2"]);
   if (!validEngines.has(input.taskEngine)) {
     return {
-      kind: "dual_engine_active",
+      kind: "unknown_engine_value",
       taskId: input.taskId,
       detail: `task has unknown engine value: ${input.taskEngine}`,
       repair: "escalate",
     };
   }
-  // If the cycle engine differs from the task engine, that's an ownership
-  // mismatch (already detected above). Dual engine would require both engines
-  // to have active cycles, which the unique constraint on open cycles prevents.
-  // This detector is a safety net for any future edge case.
   return null;
 }
 
@@ -149,7 +144,7 @@ export function detectPhaseEInvariants(
     detectEngineOwnershipMismatch,
     detectStaleReceiptWithoutTransition,
     detectProcedureRunWithoutCycle,
-    detectDualEngineActive,
+    detectUnknownEngineValue,
   ];
   for (const detector of detectors) {
     const finding = detector(input);

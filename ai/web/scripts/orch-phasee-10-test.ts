@@ -24,7 +24,7 @@ import {
   detectEngineOwnershipMismatch,
   detectStaleReceiptWithoutTransition,
   detectProcedureRunWithoutCycle,
-  detectDualEngineActive,
+  detectUnknownEngineValue,
   detectPhaseEInvariants,
   type PhaseEInvariantInput,
   type PhaseEInvariantFinding,
@@ -444,14 +444,14 @@ function invariantInput(overrides: Partial<PhaseEInvariantInput> = {}): PhaseEIn
   assertEqual(finding, null, "no procedure runs → no finding");
 }
 
-// --- detectDualEngineActive ---
+// --- detectUnknownEngineValue ---
 
 {
   const input = invariantInput({
     taskEngine: "orchestrator_v2",
     activeCycle: { id: "cycle-1", workflowEngine: "orchestrator_v2", status: "open" },
   });
-  const finding = detectDualEngineActive(input);
+  const finding = detectUnknownEngineValue(input);
   assertEqual(finding, null, "valid engine → no finding");
 }
 
@@ -460,7 +460,7 @@ function invariantInput(overrides: Partial<PhaseEInvariantInput> = {}): PhaseEIn
     taskEngine: "legacy",
     activeCycle: { id: "cycle-1", workflowEngine: "legacy", status: "open" },
   });
-  const finding = detectDualEngineActive(input);
+  const finding = detectUnknownEngineValue(input);
   assertEqual(finding, null, "legacy engine (valid) → no finding");
 }
 
@@ -469,16 +469,25 @@ function invariantInput(overrides: Partial<PhaseEInvariantInput> = {}): PhaseEIn
     taskEngine: "unknown_engine",
     activeCycle: { id: "cycle-1", workflowEngine: "orchestrator_v2", status: "open" },
   });
-  const finding = detectDualEngineActive(input);
+  const finding = detectUnknownEngineValue(input);
   assert(finding !== null, "unknown engine value → finding");
-  assertEqual(finding!.kind, "dual_engine_active", "finding kind");
+  assertEqual(finding!.kind, "unknown_engine_value", "finding kind");
   assertEqual(finding!.repair, "escalate", "repair is escalate");
 }
 
 {
   const input = invariantInput({ activeCycle: null });
-  const finding = detectDualEngineActive(input);
-  assertEqual(finding, null, "no active cycle → no dual engine finding");
+  // detectUnknownEngineValue fires on the task engine field regardless of cycle state
+  const finding = detectUnknownEngineValue(input);
+  assertEqual(finding, null, "no active cycle, valid engine → no finding");
+}
+
+{
+  const input = invariantInput({ taskEngine: "bad_engine", activeCycle: null });
+  // detectUnknownEngineValue fires even without a cycle (moved ahead of activeCycle guard)
+  const finding = detectUnknownEngineValue(input);
+  assert(finding !== null, "unknown engine with no cycle → finding fires");
+  assertEqual(finding!.kind, "unknown_engine_value", "finding kind for cycle-less unknown engine");
 }
 
 // --- detectPhaseEInvariants (aggregate) ---
@@ -516,12 +525,12 @@ function invariantInput(overrides: Partial<PhaseEInvariantInput> = {}): PhaseEIn
     activeCycle: { id: "cycle-1", workflowEngine: "orchestrator_v2", status: "open" },
   });
   const findings = detectPhaseEInvariants(input);
-  // engine_ownership_mismatch (task vs cycle) + dual_engine_active (unknown engine) + stale_receipt is null (receipt has transitionId)
+  // engine_ownership_mismatch (task vs cycle) + unknown_engine_value (bad engine) + stale_receipt is null (receipt has transitionId)
   // Actually receipt has transitionId "trans-1" in base, so no stale receipt.
-  // engine_ownership_mismatch + dual_engine_active = 2
-  assertEqual(findings.length, 2, "bad engine → 2 findings (mismatch + dual engine)");
+  // engine_ownership_mismatch + unknown_engine_value = 2
+  assertEqual(findings.length, 2, "bad engine → 2 findings (mismatch + unknown engine)");
   const kinds = findings.map((f) => f.kind).sort();
-  assertDeepEqual(kinds, ["dual_engine_active", "engine_ownership_mismatch"].sort(), "finding kinds for bad engine");
+  assertDeepEqual(kinds, ["engine_ownership_mismatch", "unknown_engine_value"].sort(), "finding kinds for bad engine");
 }
 
 // ===========================================================================
