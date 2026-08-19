@@ -103,7 +103,16 @@ export async function submitWorkflowCommand(command: TaskWorkflowCommand): Promi
       // Exact replay — return the stored result with replay status.
       const stored = JSON.parse(existingReceipt.result) as OrchestratorResult;
       if (stored.status === "accepted") {
-        return { status: "replayed", transitionId: stored.transitionId, workflowVersion: stored.workflowVersion, procedureId: stored.procedureId ?? null };
+        // Preserve the exact stored disposition/episode projection. Replay
+        // changes only the transport status; it never recomputes or drops the
+        // execution bookkeeping committed with the command.
+        return {
+          ...stored,
+          status: "replayed",
+          transitionId: stored.transitionId,
+          workflowVersion: stored.workflowVersion,
+          procedureId: stored.procedureId ?? null,
+        } as OrchestratorResult;
       }
       return stored;
     }
