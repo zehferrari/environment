@@ -1,3 +1,4 @@
+import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import type { Prisma } from "@prisma/client";
 import { applyTaskTransition } from "@/lib/tasks/transition-kernel";
 import { unresolvedTaskPrerequisites } from "@/lib/tasks/blocking";
@@ -103,6 +104,11 @@ export async function promoteEpicBacklogTasks(
     via: string;
   },
 ) {
+  await recordLegacyWorkflowBoundaryInvocation({
+    legacyBoundary: "auto-start-and-queue-refill",
+    entryPoint: "promoteEpicBacklogTasks",
+    client: tx,
+  });
   const tasks = await tx.task.findMany({
     where: {
       epicId: args.epicId,
@@ -157,6 +163,11 @@ export async function assignOpenEpicTasks(
     via: string;
   },
 ) {
+  await recordLegacyWorkflowBoundaryInvocation({
+    legacyBoundary: "auto-start-and-queue-refill",
+    entryPoint: "assignOpenEpicTasks",
+    client: tx,
+  });
   const openTasks = await tx.task.findMany({
     where: {
       epicId: args.epicId,

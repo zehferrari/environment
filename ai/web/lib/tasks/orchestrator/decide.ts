@@ -232,6 +232,42 @@ export function decideCommand(
       };
     }
 
+    case "worktree_revalidation_failed": {
+      // In Progress -> To Do (front). Cycle operation "close" with
+      // abandoned outcome. Used by the start_implementation_cycle procedure
+      // when worktree revalidation fails terminally — the worktree is
+      // unusable, not a validation failure. The assignee notification
+      // accurately describes the worktree failure, not a validation failure.
+      const effects: WorkflowEffect[] = [
+        { type: "board_touch", key: "board-worktree-revalidation-failed", payload: {} },
+      ];
+      if (state.assigneeId) {
+        effects.push({
+          type: "task_notification",
+          key: `worktree-revalidation-failed:${state.assigneeId}`,
+          payload: {
+            taskId: state.id,
+            targetUserId: state.assigneeId,
+            actor: command.actor,
+            reason: "worktree_failure",
+            body: "Worktree revalidation failed — the task returned to the front of To Do. The worktree could not be used.",
+          },
+        });
+      }
+      return {
+        fromStatus: "In Progress",
+        toStatus: "To Do",
+        kernelIntent: "worktree_revalidation_failed",
+        cycleOperation: "close",
+        cycleOutcome: "abandoned",
+        effects,
+        evidence: { ...command.evidence ?? {}, decisionActorId, executorActorId, mechanical: true },
+        decisionActorId,
+        executorActorId,
+        rank: "front",
+      };
+    }
+
     case "request_review_changes": {
       // Review -> To Do (front). Cycle operation "close" with
       // changes_requested outcome. The procedure (ORCH-07) sends the

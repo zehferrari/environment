@@ -167,6 +167,9 @@ const checkpointExecutor: IntentExecutor<"checkpoint"> = (context) =>
 const acceptReviewExecutor: IntentExecutor<"accept_review"> = (context) =>
   context.helpers.executeDecisionWrites();
 
+const worktreeRevalidationFailedExecutor: IntentExecutor<"worktree_revalidation_failed"> = (context) =>
+  context.helpers.executeDecisionWrites();
+
 const repositoryValidationSucceededExecutor: IntentExecutor<"repository_validation_succeeded"> = async (context) => {
   const cycleId = context.state.activeWorkflowCycleId;
   const candidateSha = context.command.payload.candidateSha
@@ -484,6 +487,7 @@ export const INTENT_EXECUTORS = {
   triage_task: executeRegisteredIntent,
   assign_task: assignTaskExecutor,
   raise_scope_blocker: raiseScopeBlockerExecutor,
+  worktree_revalidation_failed: worktreeRevalidationFailedExecutor,
   repository_validation_succeeded: repositoryValidationSucceededExecutor,
   repository_validation_failed: repositoryValidationFailedExecutor,
   repository_finalization_succeeded: repositoryFinalizationSucceededExecutor,

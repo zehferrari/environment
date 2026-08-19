@@ -24,7 +24,7 @@
 import type { Prisma } from "@prisma/client";
 import type { TaskWorkflowCommand } from "@/lib/tasks/orchestrator/types";
 import type { TaskStateSnapshot } from "@/lib/tasks/orchestrator/types";
-import { resolveReviewOwnerIdFromSnapshot } from "@/lib/tasks/orchestrator/authorize";
+import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 
 // ---------------------------------------------------------------------------
 // FENCE_ERROR_CODES — local declaration, structurally assignable to 02a's
@@ -544,7 +544,7 @@ async function loadTaskAggregateWithClient(
     }));
 
   // --- Resolve review owner for snapshot compatibility ---
-  const resolvedReviewOwnerId = resolveReviewOwnerIdFromSnapshot({
+  const resolvedReviewOwnerId = resolveReviewOwnerId({
     actingManagerId: task.actingManagerId,
     reporterId: task.reporterId,
     epic: task.epic
@@ -841,6 +841,55 @@ export async function fenceState(
       code: "cycle_mismatch",
       expected: "no active cycle",
       actual: `cycle=${aggregate.activeWorkflowCycleId}`,
+    };
+  }
+
+  // 4b. §10 fence recheck — project WIP (additive, PHASEE-03 Step 3)
+  // A concurrent start_implementation on another task in the same project
+  // by the same assignee may have committed between the guard pass and this
+  // transaction. The pure guardProjectWIP checked the pre-transaction
+  // snapshot; this recheck reads the authoritative state inside the tx.
+  if (
+    command.intent === "start_implementation" &&
+    aggregate.otherInProgressTaskForAssignee
+  ) {
+    return {
+      ok: false,
+      code: "stale_version",
+      expected: "no other In Progress task for assignee in project",
+      actual: `In Progress task "${aggregate.otherInProgressTaskForAssignee.title}" found`,
+    };
+  }
+
+  // 4c. §10 fence recheck — effective branch collision (additive, PHASEE-03 Step 3)
+  // A concurrent start_implementation on another task resolving to the same
+  // effective branch may have committed between the guard pass and this tx.
+  if (
+    command.intent === "start_implementation" &&
+    aggregate.otherInProgressTaskOnBranch
+  ) {
+    return {
+      ok: false,
+      code: "stale_version",
+      expected: "no other In Progress task on same effective branch",
+      actual: `In Progress task "${aggregate.otherInProgressTaskOnBranch.title}" on branch ${aggregate.otherInProgressTaskOnBranch.branchName ?? "(none)"}`,
+    };
+  }
+
+  // 4d. §10 fence recheck — unresolved prerequisites (additive, PHASEE-03 Step 3)
+  // A dependency may have been un-Done (or a new prerequisite added) between
+  // the guard pass and this transaction. The aggregate loader filters to
+  // non-Done prerequisites, so any entry here is an unresolved one.
+  if (
+    command.intent === "start_implementation" &&
+    aggregate.unresolvedPrerequisites.length > 0
+  ) {
+    const names = aggregate.unresolvedPrerequisites.map((d) => d.title).join(", ");
+    return {
+      ok: false,
+      code: "stale_version",
+      expected: "all prerequisites Done",
+      actual: `unresolved: ${names}`,
     };
   }
 

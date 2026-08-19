@@ -14,8 +14,8 @@ import {
   type TaskWorkflowIntent,
 } from "@/lib/tasks/orchestrator/types";
 import {
-  resolveReviewOwnerIdFromSnapshot,
-} from "@/lib/tasks/orchestrator/authorize";
+  resolveReviewOwnerId,
+} from "@/lib/tasks/workflow-actors";
 import { getActiveTaskWorkflowCycle } from "@/lib/tasks/workflow-cycle";
 import type { TaskStateSnapshot } from "@/lib/tasks/orchestrator/types";
 
@@ -94,7 +94,7 @@ export async function buildTaskWorkflowProjection(taskId: string): Promise<TaskW
   const reviewRun = activeCycle
     ? await db.reviewRun.findUnique({
         where: { workflowCycleId: activeCycle.id },
-        select: { id: true, status: true, candidateSha: true, reviewerId: true },
+        select: { id: true, status: true, candidateSha: true, reviewerId: true, baseSha: true, repoTouched: true, validationOutcome: true },
       })
     : null;
 
@@ -120,13 +120,13 @@ export async function buildTaskWorkflowProjection(taskId: string): Promise<TaskW
     approvedOn: task.approvedOn,
     approvedById: task.approvedById,
     activeWorkflowCycleId: task.activeWorkflowCycleId,
-    resolvedReviewOwnerId: resolveReviewOwnerIdFromSnapshot({
+    resolvedReviewOwnerId: resolveReviewOwnerId({
       actingManagerId: task.actingManagerId,
       reporterId: task.reporterId,
       epic: task.epic ? { status: task.epic.status, actingManagerId: task.epic.actingManagerId } : null,
     }),
     activeReviewRun: reviewRun
-      ? { id: reviewRun.id, status: reviewRun.status, candidateSha: reviewRun.candidateSha, reviewerId: reviewRun.reviewerId }
+      ? { id: reviewRun.id, status: reviewRun.status, candidateSha: reviewRun.candidateSha, reviewerId: reviewRun.reviewerId, baseSha: reviewRun.baseSha, repoTouched: reviewRun.repoTouched, validationOutcome: reviewRun.validationOutcome }
       : null,
     repositoryRun: task.repositoryRun
       ? {

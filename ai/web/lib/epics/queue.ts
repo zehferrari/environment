@@ -3,6 +3,7 @@
 // entry point fired by every "a worker may have just become free" or "the
 // queue may have new work" event: task Done, ready_for_review, human
 // unassign/pull-back, epic action-plan approval.
+import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import { db } from "@/lib/db";
 import { assignOpenEpicTasks } from "@/lib/epics/assignment";
 import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
@@ -25,6 +26,10 @@ export async function refillEpicQueue(args: {
   // the queue ("Previous epic task X was accepted...").
   contextLine?: string;
 }) {
+  await recordLegacyWorkflowBoundaryInvocation({
+    legacyBoundary: "auto-start-and-queue-refill",
+    entryPoint: "refillEpicQueue",
+  });
   const epic = await db.epic.findFirst({
     where: { id: args.epicId, deletedAt: null, private: false },
     select: {
@@ -83,6 +88,10 @@ export async function refillDependentEpicQueuesForDoneTask(args: {
   prerequisiteTaskId: string;
   actorUserId?: string | null;
 }) {
+  await recordLegacyWorkflowBoundaryInvocation({
+    legacyBoundary: "auto-start-and-queue-refill",
+    entryPoint: "refillDependentEpicQueuesForDoneTask",
+  });
   const prerequisite = await db.task.findUnique({
     where: { id: args.prerequisiteTaskId },
     select: {

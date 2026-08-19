@@ -9,6 +9,7 @@
 // HOMELAB-47 product call — agents can own an Epic by human assignment
 // but cannot self-assign.
 
+import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import { revalidatePath } from "next/cache";
 import type { CreateResult } from "@/lib/create/result";
 import { Prisma } from "@prisma/client";
@@ -483,6 +484,10 @@ export async function setEpicActingManager(formData: FormData) {
 // (epic status enum, no agent self-assign / self-acting-manager). Only
 // changed fields are written + activity-logged; a rule violation throws.
 export async function updateEpic(formData: FormData) {
+  await recordLegacyWorkflowBoundaryInvocation({
+    legacyBoundary: "epic-human-actions",
+    entryPoint: "updateEpic",
+  });
   const actor = await requireActor();
   const slug = String(formData.get("projectSlug") ?? "");
   const epicId = String(formData.get("epicId") ?? "");
@@ -1038,6 +1043,10 @@ export async function createTaskInEpic(
 }
 
 export async function setEpicStatus(formData: FormData) {
+  await recordLegacyWorkflowBoundaryInvocation({
+    legacyBoundary: "epic-human-actions",
+    entryPoint: "setEpicStatus",
+  });
   const actor = await requireActor();
   const slug = String(formData.get("projectSlug") ?? "");
   const epicId = String(formData.get("epicId") ?? "");

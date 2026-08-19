@@ -1,3 +1,4 @@
+import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { publishBoardTouch } from "@/lib/pm/board-events";
@@ -122,6 +123,10 @@ export async function startApprovedTodoTaskIfIdle(args: {
   actor: Actor;
   via: string;
 }): Promise<TaskAutoStartResult> {
+  await recordLegacyWorkflowBoundaryInvocation({
+    legacyBoundary: "auto-start-and-queue-refill",
+    entryPoint: "startApprovedTodoTaskIfIdle",
+  });
   const task = await db.task.findUnique({
     where: { id: args.taskId },
     select: {

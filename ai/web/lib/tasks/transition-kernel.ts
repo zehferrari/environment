@@ -35,6 +35,7 @@ export type TaskTransitionIntent =
   | "repository_validated"
   | "request_changes"
   | "repository_validation_failed"
+  | "worktree_revalidation_failed"
   | "repository_reopen"
   | "accept_review"
   | "triage"
@@ -51,6 +52,7 @@ const LEGAL_EDGES: Record<Exclude<TaskTransitionIntent, "operator_override">, Re
   repository_validated: [["In Progress", "Review"]],
   request_changes: [["Review", "To Do"]],
   repository_validation_failed: [["In Progress", "To Do"], ["Review", "To Do"]],
+  worktree_revalidation_failed: [["In Progress", "To Do"]],
   repository_reopen: [["Done", "Review"]],
   accept_review: [["Review", "Done"]],
   triage: [["Backlog", "To Do"]],
