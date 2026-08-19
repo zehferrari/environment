@@ -119,6 +119,7 @@ export const TASK_WORKFLOW_INTENTS = [
   "repository_validation_failed",
   "repository_finalization_succeeded",
   "repository_finalization_failed",
+  "worktree_revalidation_failed",
   // Operational intents (spec §15 design choice: typed in the command boundary)
   "publish_checkpoint",
   "add_subtask",
@@ -137,6 +138,7 @@ export const MECHANICAL_INTENTS: ReadonlySet<TaskWorkflowIntent> = new Set([
   "repository_validation_failed",
   "repository_finalization_succeeded",
   "repository_finalization_failed",
+  "worktree_revalidation_failed",
 ]);
 
 export function isMechanicalIntent(intent: TaskWorkflowIntent): boolean {
@@ -346,6 +348,14 @@ export type RepositoryValidationFailedPayload = {
   failureReason?: string | null;
 };
 
+export type WorktreeRevalidationFailedPayload = {
+  procedureRunId: string;
+  procedureStepId: string;
+  /** Worktree revalidation failure reason / diagnostics. */
+  failureReason: string;
+  outcome: "failed";
+};
+
 export type RepositoryFinalizationSucceededPayload = {
   procedureRunId: string;
   procedureStepId: string;
@@ -453,6 +463,7 @@ interface IntentPayloadMap {
   raise_scope_blocker: RaiseScopeBlockerPayload;
   repository_validation_succeeded: RepositoryValidationSucceededPayload;
   repository_validation_failed: RepositoryValidationFailedPayload;
+  worktree_revalidation_failed: WorktreeRevalidationFailedPayload;
   repository_finalization_succeeded: RepositoryFinalizationSucceededPayload;
   repository_finalization_failed: RepositoryFinalizationFailedPayload;
   publish_checkpoint: PublishCheckpointPayload;
@@ -575,6 +586,7 @@ export type OrchestrationDecision = {
     | "repository_validated"
     | "request_changes"
     | "repository_validation_failed"
+    | "worktree_revalidation_failed"
     | "repository_reopen"
     | "accept_review"
     | "triage"

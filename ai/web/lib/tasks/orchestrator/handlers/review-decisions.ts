@@ -4,6 +4,21 @@
 //   1. return_review_for_changes — triggered by request_review_changes.
 //   2. finalize_accepted_review — triggered by accept_review.
 //
+// §17 side-effect ownership audit (PHASEE-06):
+//   Row: review changes requested — command owns: comment, exact lease
+//   decision, To Do, cycle close, repo state, procedure. This procedure
+//   (return_review_for_changes) owns: invalidate mechanical effects,
+//   revalidation mark, wake. No dual ownership — handlers do not call
+//   applyTaskTransition.
+//   Row: review accepted — command owns: exact immutable acceptance,
+//   finalization procedure. This procedure (finalize_accepted_review) owns:
+//   repository finalization and verification. No dual ownership.
+//   Row: finalization succeeded — mechanical command owns: Done, cycle
+//   close, lease completion, lane release. This procedure owns: cleanup,
+//   refill, completion notification. complete_review uses
+//   submitWorkflowCommand (repository_finalization_succeeded) — no direct
+//   applyTaskTransition calls.
+//
 // Review feedback (§10.1): the reviewer decision transaction marks the lease
 // changes_requested, closes the cycle, moves Review -> To Do (front), and
 // creates the procedure. The procedure then invalidates finalization effects,
@@ -127,9 +142,9 @@ async function wakeAssigneeWithFeedback(ctx: StepHandlerContext): Promise<StepHa
 }
 
 export function registerReturnReviewForChangesHandlers(): void {
-  registerStepHandler(FEEDBACK_TYPE, "invalidate_finalization_effects", invalidateFinalizationEffects);
-  registerStepHandler(FEEDBACK_TYPE, "mark_worktree_for_revalidation", markWorktreeForRevalidation);
-  registerStepHandler(FEEDBACK_TYPE, "wake_assignee_with_feedback", wakeAssigneeWithFeedback);
+  registerStepHandler(FEEDBACK_TYPE, 1, "invalidate_finalization_effects", invalidateFinalizationEffects);
+  registerStepHandler(FEEDBACK_TYPE, 1, "mark_worktree_for_revalidation", markWorktreeForRevalidation);
+  registerStepHandler(FEEDBACK_TYPE, 1, "wake_assignee_with_feedback", wakeAssigneeWithFeedback);
 }
 
 // =====================================================================
@@ -406,10 +421,10 @@ async function notifyCompletion(ctx: StepHandlerContext): Promise<StepHandlerRes
 }
 
 export function registerFinalizeAcceptedReviewHandlers(): void {
-  registerStepHandler(FINALIZE_TYPE, "finalize_repository", finalizeRepository);
-  registerStepHandler(FINALIZE_TYPE, "verify_finalization", verifyFinalization);
-  registerStepHandler(FINALIZE_TYPE, "complete_review", completeReview);
-  registerStepHandler(FINALIZE_TYPE, "cleanup_worktree", cleanupWorktree);
-  registerStepHandler(FINALIZE_TYPE, "refill_queues", refillQueues);
-  registerStepHandler(FINALIZE_TYPE, "notify_completion", notifyCompletion);
+  registerStepHandler(FINALIZE_TYPE, 1, "finalize_repository", finalizeRepository);
+  registerStepHandler(FINALIZE_TYPE, 1, "verify_finalization", verifyFinalization);
+  registerStepHandler(FINALIZE_TYPE, 1, "complete_review", completeReview);
+  registerStepHandler(FINALIZE_TYPE, 1, "cleanup_worktree", cleanupWorktree);
+  registerStepHandler(FINALIZE_TYPE, 1, "refill_queues", refillQueues);
+  registerStepHandler(FINALIZE_TYPE, 1, "notify_completion", notifyCompletion);
 }
