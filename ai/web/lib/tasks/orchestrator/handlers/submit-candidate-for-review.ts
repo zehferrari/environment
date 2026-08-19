@@ -43,7 +43,7 @@
 import { db } from "@/lib/db";
 import { updateTaskWorkflowCycleCandidate } from "@/lib/tasks/workflow-cycle";
 import { updateTaskRepositoryState } from "@/lib/tasks/repository-state";
-import { enqueueWorkflowEffects, applyTaskTransition } from "@/lib/tasks/transition-kernel";
+import { enqueueWorkflowEffects } from "@/lib/tasks/transition-kernel";
 import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { registerStepHandler } from "@/lib/tasks/orchestrator/procedure-runner";
 import type { StepHandlerResult, StepHandlerContext } from "@/lib/tasks/orchestrator/procedure-runner";

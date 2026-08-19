@@ -4,6 +4,21 @@
 //   1. return_review_for_changes — triggered by request_review_changes.
 //   2. finalize_accepted_review — triggered by accept_review.
 //
+// §17 side-effect ownership audit (PHASEE-06):
+//   Row: review changes requested — command owns: comment, exact lease
+//   decision, To Do, cycle close, repo state, procedure. This procedure
+//   (return_review_for_changes) owns: invalidate mechanical effects,
+//   revalidation mark, wake. No dual ownership — handlers do not call
+//   applyTaskTransition.
+//   Row: review accepted — command owns: exact immutable acceptance,
+//   finalization procedure. This procedure (finalize_accepted_review) owns:
+//   repository finalization and verification. No dual ownership.
+//   Row: finalization succeeded — mechanical command owns: Done, cycle
+//   close, lease completion, lane release. This procedure owns: cleanup,
+//   refill, completion notification. complete_review uses
+//   submitWorkflowCommand (repository_finalization_succeeded) — no direct
+//   applyTaskTransition calls.
+//
 // Review feedback (§10.1): the reviewer decision transaction marks the lease
 // changes_requested, closes the cycle, moves Review -> To Do (front), and
 // creates the procedure. The procedure then invalidates finalization effects,

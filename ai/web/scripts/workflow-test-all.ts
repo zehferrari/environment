@@ -41,6 +41,7 @@ const SUITES: readonly string[] = [
   "test:orch-09-v2-dispatch",
   "test:orch-10-rollout-flags",
   "test:orch-state-fencing",
+  "test:orch-phasee-03",
   "test:workflow-reconciler",
   "test:workflow-agent-rules",
   "test:repository-workflow",
