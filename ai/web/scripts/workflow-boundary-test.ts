@@ -3,56 +3,92 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import ts from "typescript";
 
-const roots = ["app", "lib"];
-// Modules allowed to write Task.status, Task.workflowVersion,
-// Task.activeWorkflowCycleId, and ReviewRun.status (decision fields).
-const allowed = new Set([
-  path.normalize("lib/tasks/transition-kernel.ts"),
-  // The orchestrator's execute module writes taskData (approvedOn etc.) via
-  // the kernel; it also writes reviewRun decision fields (accepted/
-  // changes_requested) in the same transaction as the transition.
-  path.normalize("lib/tasks/orchestrator/execute.ts"),
-  // The cycle module writes Task.activeWorkflowCycleId.
-  path.normalize("lib/tasks/workflow-cycle.ts"),
-  // The procedure runner writes procedure/step status (not Task.status), but
-  // it is the approved module for procedure state.
-  path.normalize("lib/tasks/orchestrator/procedure-runner.ts"),
-  // The reconciler repairs stale state through the kernel, not directly.
-  // It does update Task.alertReporter directly, which is allowed (not a
-  // status/workflowVersion/cycle field).
-  path.normalize("lib/tasks/workflow-reconciler.ts"),
-  // Legacy modules that write ReviewRun decision fields. These are existing
-  // entry points that will be migrated to the orchestrator in a future
-  // phase. The boundary test enforces that NEW code does not write these
-  // fields directly.
-  path.normalize("lib/tasks/review-handoff.ts"),
-  path.normalize("lib/tasks/review-automation.ts"),
-  path.normalize("lib/tasks/orchestrator/handlers/review-decisions.ts"),
-  path.normalize("lib/deploy/epic-merge.ts"),
-  // The agent workflow route is the legacy entry point that will be migrated.
-  path.normalize("app/api/agent/tasks/[taskId]/workflow/route.ts"),
-]);
-// Fields that only the allowed modules may write to.
+type BoundaryRegistry = {
+  schemaVersion: number;
+  kernelInternals: Array<{ file: string; reason: string }>;
+  boundaries: Array<{
+    id: string;
+    files: string[];
+    entryPoints: string[];
+    currentOwner: string;
+    phaseEMigrationDestination: string;
+    instrumentation: { kind: string; labels: string[] };
+    responseParity: string;
+    sideEffectParity: string;
+  }>;
+};
+
+const registry = JSON.parse(
+  readFileSync("lib/tasks/legacy-workflow-boundary-registry.json", "utf8"),
+) as BoundaryRegistry;
+
+assert.equal(registry.schemaVersion, 1, "boundary registry schemaVersion must be 1");
+assert.ok(registry.boundaries.length > 0, "boundary registry must list legacy boundaries");
+
+const roots = ["app", "lib", "scripts"];
+const allowed = new Set<string>();
+for (const internal of registry.kernelInternals) {
+  allowed.add(path.normalize(internal.file));
+}
+for (const boundary of registry.boundaries) {
+  assert.match(boundary.id, /^[a-z0-9]+(?:-[a-z0-9]+)*$/, `boundary id ${boundary.id} is stable kebab-case`);
+  assert.ok(boundary.files.length > 0, `${boundary.id} must name at least one file`);
+  assert.ok(boundary.entryPoints.length > 0, `${boundary.id} must name file/function entry points`);
+  assert.ok(boundary.currentOwner.trim(), `${boundary.id} must name a current owner`);
+  assert.ok(boundary.phaseEMigrationDestination.trim(), `${boundary.id} must name a Phase E migration destination`);
+  assert.ok(boundary.instrumentation.kind.trim(), `${boundary.id} must name an instrumentation kind`);
+  assert.ok(boundary.instrumentation.labels.length > 0, `${boundary.id} must name stable instrumentation labels`);
+  assert.ok(boundary.responseParity.trim(), `${boundary.id} must document response parity`);
+  assert.ok(boundary.sideEffectParity.trim(), `${boundary.id} must document side-effect parity`);
+  for (const file of boundary.files) {
+    allowed.add(path.normalize(file));
+  }
+}
+
+// Fields/models that remain frozen while Phase E drains direct writers. New
+// direct writers must either go through the orchestrator command adapter/kernel
+// or be deliberately registered above with owner, migration destination, and
+// stable instrumentation labels.
 const PROTECTED_TASK_FIELDS = new Set([
   "status",
   "workflowVersion",
   "activeWorkflowCycleId",
 ]);
 const PROTECTED_REVIEW_RUN_FIELDS = new Set([
-  "status", // review decision: awaiting_review -> accepted/changes_requested
+  "status", // review decision: awaiting_review -> accepted/changes_requested/invalidated
   "reviewerId",
   "reviewedAt",
+  "validationOutcome",
+  "invalidatedAt",
+  "invalidatedReason",
 ]);
-const violations: string[] = [];
+const PROTECTED_WORKFLOW_MODELS = new Set([
+  "taskWorkflowCycle",
+  "taskProcedureRun",
+  "taskProcedureStep",
+  "taskRepositoryRun",
+  "workflowTransition",
+  "workflowOutbox",
+]);
+const WRITE_METHODS = new Set([
+  "create",
+  "createMany",
+  "update",
+  "updateMany",
+  "upsert",
+  "delete",
+  "deleteMany",
+]);
+const TRANSITION_KERNEL_CALLS = new Set(["applyTaskTransition", "transitionTask"]);
 
 function files(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
     const full = path.join(dir, name);
-    return statSync(full).isDirectory()
-      ? files(full)
-      : /\.(?:ts|tsx)$/.test(name)
-        ? [full]
-        : [];
+    if (name === "node_modules" || name === ".next") return [];
+    if (statSync(full).isDirectory()) return files(full);
+    if (!/\.(?:ts|tsx)$/.test(name)) return [];
+    if (/\.d\.ts$/.test(name) || /(?:^|-)test\.tsx?$/.test(name)) return [];
+    return [full];
   });
 }
 
@@ -61,12 +97,17 @@ function propertyName(node: ts.ObjectLiteralElementLike) {
   return ts.isIdentifier(node.name) || ts.isStringLiteral(node.name) ? node.name.text : null;
 }
 
-// Detect direct writes to protected Task fields via prisma.task.update/updateMany.
+function calledMember(call: ts.CallExpression): { model: string; method: string } | null {
+  if (!ts.isPropertyAccessExpression(call.expression)) return null;
+  const method = call.expression.name.text;
+  const modelNode = call.expression.expression;
+  if (!ts.isPropertyAccessExpression(modelNode)) return null;
+  return { model: modelNode.name.text, method };
+}
+
 function directTaskFieldWrite(call: ts.CallExpression): string[] {
-  if (!ts.isPropertyAccessExpression(call.expression)) return [];
-  if (call.expression.name.text !== "update" && call.expression.name.text !== "updateMany") return [];
-  const model = call.expression.expression;
-  if (!ts.isPropertyAccessExpression(model) || model.name.text !== "task") return [];
+  const member = calledMember(call);
+  if (!member || member.model !== "task" || (member.method !== "update" && member.method !== "updateMany")) return [];
   const args = call.arguments[0];
   if (!args || !ts.isObjectLiteralExpression(args)) return [];
   const data = args.properties.find((item) => propertyName(item) === "data");
@@ -81,15 +122,12 @@ function directTaskFieldWrite(call: ts.CallExpression): string[] {
   return found;
 }
 
-// Detect direct writes to protected ReviewRun fields via prisma.reviewRun.update/updateMany.
 function directReviewRunFieldWrite(call: ts.CallExpression): string[] {
-  if (!ts.isPropertyAccessExpression(call.expression)) return [];
-  if (call.expression.name.text !== "update" && call.expression.name.text !== "updateMany") return [];
-  const model = call.expression.expression;
-  if (!ts.isPropertyAccessExpression(model) || model.name.text !== "reviewRun") return [];
+  const member = calledMember(call);
+  if (!member || member.model !== "reviewRun" || (member.method !== "update" && member.method !== "updateMany" && member.method !== "upsert")) return [];
   const args = call.arguments[0];
   if (!args || !ts.isObjectLiteralExpression(args)) return [];
-  const data = args.properties.find((item) => propertyName(item) === "data");
+  const data = args.properties.find((item) => propertyName(item) === "data" || propertyName(item) === "create" || propertyName(item) === "update");
   if (!data || !ts.isPropertyAssignment(data) || !ts.isObjectLiteralExpression(data.initializer)) return [];
   const found: string[] = [];
   for (const item of data.initializer.properties) {
@@ -101,43 +139,88 @@ function directReviewRunFieldWrite(call: ts.CallExpression): string[] {
   return found;
 }
 
+function protectedWorkflowModelWrite(call: ts.CallExpression): string | null {
+  const member = calledMember(call);
+  if (!member || !PROTECTED_WORKFLOW_MODELS.has(member.model) || !WRITE_METHODS.has(member.method)) return null;
+  return `${member.model}.${member.method}`;
+}
+
+function directTransitionKernelCall(call: ts.CallExpression): string | null {
+  if (ts.isIdentifier(call.expression) && TRANSITION_KERNEL_CALLS.has(call.expression.text)) {
+    return call.expression.text;
+  }
+  return null;
+}
+
+function violationsForSource(filename: string, source: string, allowFile: boolean): string[] {
+  const parsed = ts.createSourceFile(
+    filename,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    filename.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+  const found: string[] = [];
+  const visit = (node: ts.Node) => {
+    if (ts.isCallExpression(node)) {
+      const line = parsed.getLineAndCharacterOfPosition(node.getStart()).line + 1;
+      const transitionCall = directTransitionKernelCall(node);
+      if (transitionCall && !allowFile) {
+        found.push(`${filename}:${line} direct ${transitionCall} call is not registered`);
+      }
+      const taskFields = directTaskFieldWrite(node);
+      for (const field of taskFields) {
+        if (!allowFile) found.push(`${filename}:${line} Task.${field}`);
+      }
+      const reviewFields = directReviewRunFieldWrite(node);
+      for (const field of reviewFields) {
+        if (!allowFile) found.push(`${filename}:${line} ReviewRun.${field}`);
+      }
+      const modelWrite = protectedWorkflowModelWrite(node);
+      if (modelWrite && !allowFile) {
+        found.push(`${filename}:${line} ${modelWrite}`);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(parsed);
+  if (!allowFile && /UPDATE\s+["`']?(?:tasks|Task)["`']?\s+SET\s+[\s\S]{0,200}\bstatus\b/i.test(source)) {
+    found.push(`${filename}: raw SQL task status update`);
+  }
+  return found;
+}
+
+const fixtureViolations = violationsForSource(
+  "__unregistered_workflow_writer_fixture__.ts",
+  `
+    import { applyTaskTransition } from "@/lib/tasks/transition-kernel";
+    export async function bad(tx: any) {
+      await applyTaskTransition(tx, {} as any);
+      await tx.task.update({ where: { id: "t" }, data: { status: "Done" } });
+      await tx.taskWorkflowCycle.create({ data: { taskId: "t", sequence: 1 } });
+    }
+  `,
+  false,
+);
+assert.ok(
+  fixtureViolations.some((line) => line.includes("direct applyTaskTransition"))
+    && fixtureViolations.some((line) => line.includes("Task.status"))
+    && fixtureViolations.some((line) => line.includes("taskWorkflowCycle.create")),
+  "boundary test fixture must prove unregistered direct callers/writers fail",
+);
+
+const violations: string[] = [];
 for (const root of roots) {
   for (const filename of files(root)) {
     const relative = path.normalize(filename);
-    if (allowed.has(relative)) continue;
     const source = readFileSync(filename, "utf8");
-    const parsed = ts.createSourceFile(
-      filename,
-      source,
-      ts.ScriptTarget.Latest,
-      true,
-      filename.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
-    );
-    const visit = (node: ts.Node) => {
-      if (ts.isCallExpression(node)) {
-        const taskFields = directTaskFieldWrite(node);
-        for (const field of taskFields) {
-          const line = parsed.getLineAndCharacterOfPosition(node.getStart()).line + 1;
-          violations.push(`${filename}:${line} Task.${field}`);
-        }
-        const reviewFields = directReviewRunFieldWrite(node);
-        for (const field of reviewFields) {
-          const line = parsed.getLineAndCharacterOfPosition(node.getStart()).line + 1;
-          violations.push(`${filename}:${line} ReviewRun.${field}`);
-        }
-      }
-      ts.forEachChild(node, visit);
-    };
-    visit(parsed);
-    if (/UPDATE\s+["`']?(?:tasks|Task)["`']?\s+SET\s+[\s\S]{0,200}\bstatus\b/i.test(source)) {
-      violations.push(`${filename}: raw SQL task status update`);
-    }
+    violations.push(...violationsForSource(filename, source, allowed.has(relative)));
   }
 }
 
 assert.deepEqual(
   violations,
   [],
-  `Protected workflow fields are owned by transition-kernel/workflow-cycle/orchestrator; direct writes found:\n${violations.join("\n")}`,
+  `Protected workflow mutation boundaries must be registered in lib/tasks/legacy-workflow-boundary-registry.json or moved behind the orchestrator command adapter; direct writes/callers found:\n${violations.join("\n")}`,
 );
-console.log("[workflow-boundary] PASS");
+console.log(`[workflow-boundary] PASS — ${registry.boundaries.length} registered legacy boundaries frozen`);
