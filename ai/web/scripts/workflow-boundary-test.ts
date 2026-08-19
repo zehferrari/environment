@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import ts from "typescript";
+import { INTENT_EXECUTORS } from "@/lib/tasks/orchestrator/intents";
+import { TASK_WORKFLOW_INTENTS } from "@/lib/tasks/orchestrator/types";
 
 type BoundaryRegistry = {
   schemaVersion: number;
@@ -38,6 +40,7 @@ assert.deepEqual(
 );
 
 const roots = ["app", "lib", "scripts"];
+const intentRoot = `${path.normalize("lib/tasks/orchestrator/intents")}${path.sep}`;
 const kernelInternals = new Set<string>();
 const registeredFiles = new Map<string, { boundaryId: string; expectedCount: number }>();
 for (const internal of registry.kernelInternals) {
@@ -244,6 +247,7 @@ const violations: string[] = [];
 for (const root of roots) {
   for (const filename of files(root)) {
     const relative = path.normalize(filename);
+    if (relative.startsWith(intentRoot)) continue;
     const found = violationsForSource(filename, readFileSync(filename, "utf8"));
     if (kernelInternals.has(relative)) continue;
     const registered = registeredFiles.get(relative);
@@ -263,4 +267,54 @@ assert.deepEqual(
   [],
   `Protected workflow mutation boundaries must be registered at their frozen direct-mutation count or moved behind the orchestrator command adapter; findings:\n${violations.join("\n")}`,
 );
+
+assert.deepEqual(
+  Object.keys(INTENT_EXECUTORS).sort(),
+  [...TASK_WORKFLOW_INTENTS].sort(),
+  "Every TaskWorkflowIntent must have exactly one registered executor",
+);
+
+const executeSource = readFileSync("lib/tasks/orchestrator/execute.ts", "utf8");
+assert.equal(
+  (executeSource.match(/getIntentExecutor\(/g) ?? []).length,
+  1,
+  "execute.ts must resolve exactly one registered executor",
+);
+assert.equal(
+  /\btx\.[A-Za-z]\w*\.(?:create|createMany|update|updateMany|upsert|delete|deleteMany)\s*\(/.test(executeSource),
+  false,
+  "execute.ts must not perform direct domain writes",
+);
+
+const forbiddenIntentImports = [
+  "@/lib/db",
+  "node:fs",
+  "node:http",
+  "node:https",
+  "node:child_process",
+  "next/cache",
+  "repository-runner",
+  "openclaw",
+  "spool",
+];
+for (const filename of files("lib/tasks/orchestrator/intents")) {
+  const source = readFileSync(filename, "utf8");
+  for (const forbidden of forbiddenIntentImports) {
+    assert.equal(
+      source.includes(`from \"${forbidden}`) || source.includes(`from '${forbidden}`),
+      false,
+      `${filename} must not import ${forbidden}`,
+    );
+  }
+}
+
+const sharedSource = readFileSync("lib/tasks/orchestrator/intents/shared.ts", "utf8");
+const openPosition = sharedSource.indexOf("openTaskWorkflowCycle(");
+const updatePosition = sharedSource.indexOf("updateTaskWorkflowCycleCandidate(");
+const transitionPosition = sharedSource.indexOf("applyTaskTransition(");
+const closePosition = sharedSource.indexOf("closeTaskWorkflowCycle(");
+assert.ok(openPosition >= 0 && openPosition < transitionPosition, "cycle open must precede the kernel transition");
+assert.ok(updatePosition >= 0 && updatePosition < transitionPosition, "cycle update must precede the kernel transition");
+assert.ok(closePosition > transitionPosition, "cycle close must follow the kernel transition");
+
 console.log(`[workflow-boundary] PASS — ${registry.boundaries.length} registered legacy boundaries frozen`);
