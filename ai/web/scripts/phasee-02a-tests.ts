@@ -411,6 +411,37 @@ test("validateCommandPayload: repository callback with null jobId/candidateSha/b
   expectOk(validateCommandPayload("repository_finalization_failed", { ...nullish, outcome: "failed", failureReason: "boom" }));
 });
 
+test("validateCommandPayload: empty-string jobId/candidateSha/baseSha normalized to null, not admitted as \"\"", () => {
+  // Empty strings are malformed evidence — they must not survive the boundary as "".
+  // procedure-runner.ts treats null as "absent, skip check" but "" fails equality and produces spurious mismatches.
+  const emptyish = { procedureRunId: "p1", procedureStepId: "s1", jobId: "", candidateSha: "", baseSha: "", outcome: "succeeded" };
+  const vr = validateCommandPayload("repository_validation_succeeded", emptyish);
+  assert.ok(vr.ok, `expected validation OK, got ${JSON.stringify(vr)}`);
+  const vp = (vr as { ok: true; payload: { jobId: string | null; candidateSha: string | null; baseSha: string | null } }).payload;
+  assert.strictEqual(vp.jobId, null, "empty jobId should be normalized to null");
+  assert.strictEqual(vp.candidateSha, null, "empty candidateSha should be normalized to null");
+  assert.strictEqual(vp.baseSha, null, "empty baseSha should be normalized to null");
+  // All four callback intents normalize empty strings to null
+  const vf = validateCommandPayload("repository_validation_failed", { ...emptyish, outcome: "failed" });
+  assert.ok(vf.ok);
+  const vfp = (vf as { ok: true; payload: { jobId: string | null; candidateSha: string | null; baseSha: string | null } }).payload;
+  assert.strictEqual(vfp.jobId, null);
+  assert.strictEqual(vfp.candidateSha, null);
+  assert.strictEqual(vfp.baseSha, null);
+  const fs = validateCommandPayload("repository_finalization_succeeded", { ...emptyish, publishedSha: "pub1" });
+  assert.ok(fs.ok);
+  const fsp = (fs as { ok: true; payload: { jobId: string | null; candidateSha: string | null; baseSha: string | null } }).payload;
+  assert.strictEqual(fsp.jobId, null);
+  assert.strictEqual(fsp.candidateSha, null);
+  assert.strictEqual(fsp.baseSha, null);
+  const ff = validateCommandPayload("repository_finalization_failed", { ...emptyish, outcome: "failed", failureReason: "boom" });
+  assert.ok(ff.ok);
+  const ffp = (ff as { ok: true; payload: { jobId: string | null; candidateSha: string | null; baseSha: string | null } }).payload;
+  assert.strictEqual(ffp.jobId, null);
+  assert.strictEqual(ffp.candidateSha, null);
+  assert.strictEqual(ffp.baseSha, null);
+});
+
 test("normalizePublicAction: is a pure function (no side effects)", () => {
   const ctx = makeAuthCtx();
   const rawBody = { reviewerComment: "test" };

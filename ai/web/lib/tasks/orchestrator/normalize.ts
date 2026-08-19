@@ -454,7 +454,10 @@ function buildPayload(
       if (!procedureRunId) return fail("invalid_payload", "procedureRunId is required");
       if (!procedureStepId) return fail("invalid_payload", "procedureStepId is required");
       const payload: RepositoryValidationSucceededPayload = {
-        procedureRunId, procedureStepId, jobId, candidateSha, baseSha,
+        procedureRunId, procedureStepId,
+        jobId: jobId === "" ? null : jobId,
+        candidateSha: candidateSha === "" ? null : candidateSha,
+        baseSha: baseSha === "" ? null : baseSha,
         outcome: "succeeded",
       };
       return payload;
@@ -470,7 +473,10 @@ function buildPayload(
       if (!procedureStepId) return fail("invalid_payload", "procedureStepId is required");
       const failureReason = getString(raw, "failureReason") ?? getString(raw, "reason") ?? null;
       const payload: RepositoryValidationFailedPayload = {
-        procedureRunId, procedureStepId, jobId, candidateSha, baseSha,
+        procedureRunId, procedureStepId,
+        jobId: jobId === "" ? null : jobId,
+        candidateSha: candidateSha === "" ? null : candidateSha,
+        baseSha: baseSha === "" ? null : baseSha,
         outcome: "failed",
         ...(failureReason !== null ? { failureReason } : {}),
       };
@@ -487,7 +493,10 @@ function buildPayload(
       if (!procedureStepId) return fail("invalid_payload", "procedureStepId is required");
       const publishedSha = getString(raw, "publishedSha") ?? null;
       const payload: RepositoryFinalizationSucceededPayload = {
-        procedureRunId, procedureStepId, jobId, candidateSha, baseSha,
+        procedureRunId, procedureStepId,
+        jobId: jobId === "" ? null : jobId,
+        candidateSha: candidateSha === "" ? null : candidateSha,
+        baseSha: baseSha === "" ? null : baseSha,
         outcome: "succeeded",
         ...(publishedSha !== null ? { publishedSha } : {}),
       };
@@ -504,7 +513,10 @@ function buildPayload(
       if (!procedureStepId) return fail("invalid_payload", "procedureStepId is required");
       const failureReason = getString(raw, "failureReason") ?? getString(raw, "reason") ?? null;
       const payload: RepositoryFinalizationFailedPayload = {
-        procedureRunId, procedureStepId, jobId, candidateSha, baseSha,
+        procedureRunId, procedureStepId,
+        jobId: jobId === "" ? null : jobId,
+        candidateSha: candidateSha === "" ? null : candidateSha,
+        baseSha: baseSha === "" ? null : baseSha,
         outcome: "failed",
         ...(failureReason !== null ? { failureReason } : {}),
       };

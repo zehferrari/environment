@@ -450,12 +450,18 @@ function validateRepositoryCallback(raw: Record<string, unknown>, expectedOutcom
     return fail("invalid_payload", `outcome must be "${expectedOutcome}" for ${intentName}`);
   }
 
+  // Empty strings are malformed evidence for SHAs and job IDs — normalize to null
+  // so they skip equality checks in procedure-runner instead of producing spurious mismatches.
+  const normalizedJobId = jobId.value === "" ? null : jobId.value;
+  const normalizedCandidateSha = candidateSha.value === "" ? null : candidateSha.value;
+  const normalizedBaseSha = baseSha.value === "" ? null : baseSha.value;
+
   const payload: Record<string, unknown> = {
     procedureRunId: procedureRunId.value,
     procedureStepId: procedureStepId.value,
-    jobId: jobId.value,
-    candidateSha: candidateSha.value,
-    baseSha: baseSha.value,
+    jobId: normalizedJobId,
+    candidateSha: normalizedCandidateSha,
+    baseSha: normalizedBaseSha,
     outcome: expectedOutcome,
   };
 
