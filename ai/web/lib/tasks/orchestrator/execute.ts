@@ -38,6 +38,11 @@ import type {
   OrchestratorResult,
   TaskWorkflowCommand,
 } from "@/lib/tasks/orchestrator/types";
+import {
+  fenceState,
+  mapFenceResultToOrchestratorResult,
+} from "@/lib/tasks/orchestrator/state";
+import type { TaskStateSnapshot } from "@/lib/tasks/orchestrator/types";
 
 const EXECUTE_TRANSACTION_TIMEOUT_MS = 15_000;
 
@@ -68,10 +73,20 @@ function toKernelEffect(effect: OrchestrationDecision["effects"][number]): Kerne
 export async function executeWorkflowCommand(
   command: TaskWorkflowCommand,
   decision: OrchestrationDecision,
+  preTransactionState: TaskStateSnapshot,
 ): Promise<OrchestratorResult> {
   try {
     return await db.$transaction(
       async (tx) => {
+        // --- Transaction-time fence (ORCH-02b) --------------------------
+        // Re-read and re-validate authoritative state inside the transaction,
+        // before any writes. The pre-transaction snapshot load remains for
+        // guard/decision purity, but this fence is the authoritative check.
+        const fence = await fenceState(tx, command.taskId, command, preTransactionState);
+        if (!fence.ok) {
+          return mapFenceResultToOrchestratorResult(fence);
+        }
+
         const isNoOp = decision.fromStatus === decision.toStatus && decision.kernelIntent === "operator_override";
 
         // --- Cycle operation (open/update BEFORE transition, close AFTER) --

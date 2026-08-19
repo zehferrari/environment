@@ -232,7 +232,7 @@ export async function submitWorkflowCommand(command: TaskWorkflowCommand): Promi
   const orchestrationDecision = decision as OrchestrationDecision;
 
   // --- Execute (atomic) --------------------------------------------------
-  return executeWorkflowCommand(command, orchestrationDecision);
+  return executeWorkflowCommand(command, orchestrationDecision, state);
 }
 
 // Re-export the public API so routes can import from a single module.
@@ -241,5 +241,18 @@ export { runGuards } from "@/lib/tasks/orchestrator/guards";
 export { decideCommand } from "@/lib/tasks/orchestrator/decide";
 export { executeWorkflowCommand } from "@/lib/tasks/orchestrator/execute";
 export { buildTaskWorkflowProjection } from "@/lib/tasks/orchestrator/projection";
+export {
+  loadTaskAggregate,
+  refreshTaskAggregateForTx,
+  fenceState,
+  mapFenceResultToOrchestratorResult,
+  FENCE_ERROR_CODES,
+  type TaskAggregate,
+  type FenceResult,
+  type FenceErrorCode,
+} from "@/lib/tasks/orchestrator/state";
+// Backward-compatible re-export: loadTaskStateSnapshot is now a thin wrapper
+// over the new aggregate loader. The existing guards/decide/authorize consume
+// TaskStateSnapshot, which is structurally compatible with TaskAggregate.
 export { loadTaskStateSnapshot as loadTaskState };
 export type { TaskWorkflowCommand, OrchestratorResult, OrchestrationDecision, TaskStateSnapshot };
