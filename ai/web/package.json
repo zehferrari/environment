@@ -83,6 +83,7 @@
     "test:middleware-public-protocol": "tsx scripts/middleware-public-protocol-test.ts",
     "test:auth-session-recovery": "tsx scripts/auth-session-recovery-test.ts",
     "test:work-item-proposal-authorization": "tsx scripts/work-item-proposal-authorization-test.ts",
+    "test:work-item-proposal-smoke": "tsx scripts/work-item-proposal-smoke.ts",
     "test:pm-event-privacy": "tsx scripts/pm-event-privacy-test.ts",
     "test:client-recovery": "tsx scripts/client-recovery-test.ts",
     "test:deploy-review-prompt": "tsx scripts/deploy-review-prompt-test.ts",
