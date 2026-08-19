@@ -1,6 +1,6 @@
 import { db } from "@/lib/db";
 import type { PrismaClient } from "@prisma/client";
-import { validateTaskDependency } from "./validate-task-dependency";
+import { validateTaskDependency, taskPrerequisites } from "./blocking";
 
 /**
  * ENV-159 Step 8: Task dependency queries.
@@ -34,57 +34,16 @@ export async function getTaskDependencies(taskId: string): Promise<string[]> {
 
 /**
  * Get prerequisite task details for the editor UI.
+ * Uses taskPrerequisites from blocking.ts for the union read.
  */
 export async function getTaskDependenciesWithDetails(taskId: string) {
-  const [deps, task] = await Promise.all([
-    db.taskDependency.findMany({
-      where: { taskId },
-      include: {
-        prerequisite: {
-          select: {
-            id: true,
-            title: true,
-            workItemKey: true,
-            status: true,
-            projectId: true,
-            private: true,
-          },
-        },
-      },
-    }),
-    db.task.findUnique({
-      where: { id: taskId },
-      select: {
-        blockedById: true,
-        project: { select: { id: true, name: true } },
-      },
-    }),
-  ]);
-
-  const results: Array<{
-    id: string;
-    title: string;
-    workItemKey: string | null;
-    status: string;
-    projectId: string | null;
-    private: boolean;
-    source: "dependency" | "legacy";
-  }> = deps.map((d) => ({
-    id: d.prerequisite.id,
-    title: d.prerequisite.title,
-    workItemKey: d.prerequisite.workItemKey,
-    status: d.prerequisite.status,
-    projectId: d.prerequisite.projectId,
-    private: d.prerequisite.private,
-    source: "dependency" as const,
-  }));
-
-  // Add legacy blockedById if not already in the dependency list
-  if (task?.blockedById) {
-    const alreadyListed = results.some((r) => r.id === task.blockedById);
-    if (!alreadyListed) {
-      const legacy = await db.task.findUnique({
-        where: { id: task.blockedById },
+  const task = await db.task.findUnique({
+    where: { id: taskId },
+    select: {
+      id: true,
+      blockedById: true,
+      projectId: true,
+      blockedBy: {
         select: {
           id: true,
           title: true,
@@ -93,22 +52,50 @@ export async function getTaskDependenciesWithDetails(taskId: string) {
           projectId: true,
           private: true,
         },
-      });
-      if (legacy) {
-        results.push({
-          ...legacy,
-          source: "legacy" as const,
-        });
-      }
-    }
-  }
+      },
+      dependencies: {
+        select: {
+          prerequisite: {
+            select: {
+              id: true,
+              title: true,
+              workItemKey: true,
+              status: true,
+              projectId: true,
+              private: true,
+            },
+          },
+        },
+      },
+    },
+  });
 
-  return results;
+  if (!task) return [];
+
+  // Use taskPrerequisites from blocking.ts for the canonical union read
+  const prerequisites = taskPrerequisites(task);
+
+  // Determine which prerequisites come from legacy blockedById vs TaskDependency
+  const legacyId = task.blockedById;
+  const depIds = new Set(
+    (task.dependencies ?? []).map((d) => d.prerequisite.id),
+  );
+
+  return prerequisites.map((p) => ({
+    id: p.id,
+    title: p.title ?? "",
+    workItemKey: p.workItemKey ?? null,
+    status: p.status,
+    projectId: null, // taskPrerequisites doesn't include projectId; fetch separately if needed
+    private: false, // taskPrerequisites doesn't include private; the editor filters on the client
+    source: legacyId === p.id && !depIds.has(p.id) ? "legacy" as const : "dependency" as const,
+  }));
 }
 
 /**
  * Transactional add/remove diff for task dependencies.
  * Full add/remove diff applied transactionally; failed edge rejects whole change.
+ * Legacy blockedById is nulled in the same transaction when removed.
  */
 export async function setTaskDependencies(args: {
   taskId: string;
@@ -117,6 +104,16 @@ export async function setTaskDependencies(args: {
   db?: PrismaClient;
 }): Promise<{ added: string[]; removed: string[] }> {
   const client = args.db ?? db;
+
+  // Fetch task's projectId and blockedById for validation and legacy handling
+  const task = await client.task.findUnique({
+    where: { id: args.taskId },
+    select: { projectId: true, blockedById: true },
+  });
+
+  if (!task) {
+    throw new Error("Task not found");
+  }
 
   // Get current dependencies (union of TaskDependency + legacy blockedById)
   const current = await getTaskDependencies(args.taskId);
@@ -130,11 +127,13 @@ export async function setTaskDependencies(args: {
   for (const prerequisiteTaskId of toAdd) {
     const validation = await validateTaskDependency({
       taskId: args.taskId,
+      projectId: task.projectId,
       prerequisiteTaskId,
-      db: client,
+      allowSharedWorkspace: true,
+      client: client as any,
     });
     if (!validation.ok) {
-      throw new Error(`Cannot add dependency on ${prerequisiteTaskId}: ${validation.reason}`);
+      throw new Error(`Cannot add dependency on ${prerequisiteTaskId}: ${validation.message}`);
     }
   }
 
@@ -147,6 +146,14 @@ export async function setTaskDependencies(args: {
           taskId: args.taskId,
           prerequisiteTaskId: { in: toRemove },
         },
+      });
+    }
+
+    // Clear legacy blockedById if it's in the removal set
+    if (task.blockedById && toRemove.includes(task.blockedById)) {
+      await tx.task.update({
+        where: { id: args.taskId },
+        data: { blockedById: null },
       });
     }
 

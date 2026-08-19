@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { getViewer } from "@/lib/auth/permissions";
+import { getViewer, canAccessTask } from "@/lib/auth/permissions";
 import {
   getTaskDependenciesWithDetails,
   setTaskDependencies,
@@ -12,7 +12,7 @@ import {
  * GET  — returns current dependencies with task details (key, title, status)
  * POST — accepts { prerequisiteTaskIds: string[] } for full diff replacement
  *
- * Server-side validation via validateTaskDependency for each new edge.
+ * Server-side validation via validateTaskDependency (blocking.ts) for each new edge.
  * Full add/remove diff applied transactionally; failed edge rejects whole change.
  * Manager-created/cross-project dependency edges not editable by current user
  * are rendered read-only and preserved on save.
@@ -29,10 +29,15 @@ export async function GET(
 
   const { id: taskId } = await ctx.params;
 
-  // Verify the task exists and is accessible
+  // Authorization: viewer must have access to this task
+  const hasAccess = await canAccessTask(viewer, taskId);
+  if (!hasAccess) {
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+
   const task = await db.task.findUnique({
     where: { id: taskId },
-    select: { id: true, private: true, projectId: true, deletedAt: true },
+    select: { id: true, deletedAt: true },
   });
 
   if (!task || task.deletedAt) {
@@ -54,10 +59,15 @@ export async function POST(
 
   const { id: taskId } = await ctx.params;
 
-  // Verify the task exists and is accessible
+  // Authorization: viewer must have access to this task
+  const hasAccess = await canAccessTask(viewer, taskId);
+  if (!hasAccess) {
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+
   const task = await db.task.findUnique({
     where: { id: taskId },
-    select: { id: true, private: true, projectId: true, deletedAt: true },
+    select: { id: true, deletedAt: true, projectId: true },
   });
 
   if (!task || task.deletedAt) {
@@ -88,10 +98,42 @@ export async function POST(
     }
   }
 
+  // Preserve cross-project (manager-created) edges that the viewer cannot remove.
+  // The submitted set is merged with preserved edges so that omitting a
+  // read-only edge does not delete it.
+  const existingDeps = await db.taskDependency.findMany({
+    where: { taskId },
+    select: { prerequisiteTaskId: true, prerequisite: { select: { projectId: true } } },
+  });
+  const legacyTask = await db.task.findUnique({
+    where: { id: taskId },
+    select: { blockedById: true, blockedBy: { select: { projectId: true } } },
+  });
+
+  const preservedIds: string[] = [];
+  for (const dep of existingDeps) {
+    if (dep.prerequisite.projectId !== task.projectId) {
+      preservedIds.push(dep.prerequisiteTaskId);
+    }
+  }
+  // Check legacy blockedById for cross-project
+  if (legacyTask?.blockedById && legacyTask.blockedBy && legacyTask.blockedBy.projectId !== task.projectId) {
+    if (!preservedIds.includes(legacyTask.blockedById)) {
+      preservedIds.push(legacyTask.blockedById);
+    }
+  }
+
+  // Merge: preserved edges are always kept; submitted edges are added on top
+  const submittedSet = new Set(body.prerequisiteTaskIds);
+  for (const preservedId of preservedIds) {
+    submittedSet.add(preservedId);
+  }
+  const mergedPrerequisiteTaskIds = [...submittedSet];
+
   try {
     const result = await setTaskDependencies({
       taskId,
-      prerequisiteTaskIds: body.prerequisiteTaskIds,
+      prerequisiteTaskIds: mergedPrerequisiteTaskIds,
       actorUserId: viewer.id,
     });
     return NextResponse.json({
