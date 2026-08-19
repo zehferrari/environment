@@ -53,6 +53,10 @@
       ],
       "triggerSurface": "Native PM task workflow callback for assignee/reviewer workflow actions.",
       "currentOwner": "PM agent workflow route",
+      "actorSource": "Authenticated native PM callback token resolved to the durable agent or human principal named by the workflow turn.",
+      "authorizationAndGuards": "Canonical task command authorization, assignment/reviewer authority, expected workflow version, plan, prerequisite, Epic, WIP, branch, cycle, and procedure guards.",
+      "idempotencyIdentity": "Task id plus public action, PM message id, execution run/cycle evidence, and the route's stable action-specific idempotency key.",
+      "replacementCommand": "Normalized TaskWorkflowCommand submitted by submitAuthoritativeAgentWorkflowAction; durable legacy ownership remains a separately fenced drain only.",
       "stateTouched": [
         "Task status via transition kernel",
         "ActionPlan approval state",
@@ -111,6 +115,10 @@
       ],
       "triggerSurface": "Native PM epic workflow callback for completion review, deploy review, manager queueing, and task requests.",
       "currentOwner": "PM epic workflow route",
+      "actorSource": "Authenticated native PM callback token resolved to the Epic reviewer, deploy reviewer, acting manager, reporter, or mechanical service principal.",
+      "authorizationAndGuards": "Epic reviewer/manager authority, Epic status and deployment state, approved-plan and dependency rules, child-task command authorization, and expected task workflow versions.",
+      "idempotencyIdentity": "Epic id plus public action, PM message id, relevant completion/deploy review revision, and deterministic child-task command keys.",
+      "replacementCommand": "Typed Epic workflow adapter with canonical child TaskWorkflowCommand fanout and exact repository/deployment callbacks.",
       "stateTouched": [
         "Epic status/deploy review fields",
         "child Task status via transition kernel",
@@ -147,154 +155,7 @@
         "request_task/request_subtask"
       ],
       "expectedDirectMutationCounts": {
-        "app/api/agent/epics/[epicId]/workflow/route.ts": 2
-      }
-    },
-    {
-      "id": "browser-board-move-actions",
-      "title": "Browser/server board move actions",
-      "files": [
-        "lib/tasks/move-status.ts",
-        "app/(app)/projects/[slug]/page.tsx",
-        "app/(app)/workspaces/[slug]/page.tsx",
-        "app/(app)/workspaces/(landing)/page.tsx"
-      ],
-      "triggerSurface": "Authenticated browser board drag/drop and status-change server actions on project and workspace boards.",
-      "currentOwner": "Board server actions with lib/tasks/move-status guard layer",
-      "stateTouched": [
-        "Task status via transition kernel",
-        "ReviewRun/taskRepositoryRun decision/finalization state through review automation",
-        "rank movement"
-      ],
-      "sideEffects": [
-        "review completion/finalization",
-        "task cache revalidation",
-        "board touch",
-        "Epic child assignment",
-        "agent notifications"
-      ],
-      "phaseEMigrationDestination": "Board move command adapter that delegates every status edge to orchestrator commands.",
-      "instrumentation": {
-        "kind": "task.move payload via/source",
-        "labels": [
-          "human-board-move",
-          "agent-board-move",
-          "board-move",
-          "board_move",
-          "human-workspace-board-move",
-          "agent-workspace-board-move",
-          "human-workspace-landing-move",
-          "agent-workspace-landing-move"
-        ]
-      },
-      "responseParity": "Preserve redirect/action result semantics, guard messages, and board UI revalidation.",
-      "sideEffectParity": "Preserve human/operator authorization, rank calculation, review acceptance handoff, outbox effects, and cache invalidation.",
-      "entryPoints": [
-        "moveTaskStatus",
-        "completeReviewedTaskAndAssignNext",
-        "project board moveTask action",
-        "workspace board moveTask action",
-        "workspace landing board moveTask action"
-      ],
-      "expectedDirectMutationCounts": {
-        "lib/tasks/move-status.ts": 2,
-        "app/(app)/projects/[slug]/page.tsx": 0,
-        "app/(app)/workspaces/[slug]/page.tsx": 2,
-        "app/(app)/workspaces/(landing)/page.tsx": 2
-      }
-    },
-    {
-      "id": "task-detail-server-actions",
-      "title": "Task detail server actions",
-      "files": [
-        "app/(app)/projects/[slug]/tasks/[taskId]/page.tsx"
-      ],
-      "triggerSurface": "Task editor form/server actions for task status changes and Action Plan approval.",
-      "currentOwner": "Task detail page server actions",
-      "stateTouched": [
-        "Task status via move-status/transition kernel",
-        "ActionPlan approval fields",
-        "approval revision state"
-      ],
-      "sideEffects": [
-        "auto-start after action-plan approval",
-        "task detail revalidation",
-        "activity rows",
-        "agent wakes"
-      ],
-      "phaseEMigrationDestination": "Task detail command adapter for plan approval and status intents.",
-      "instrumentation": {
-        "kind": "task.move payload via/source or action-plan activity kind",
-        "labels": [
-          "task-edit",
-          "action-plan-approval",
-          "task.action_plan.approve"
-        ]
-      },
-      "responseParity": "Preserve form validation, redirects, and rendered error messages.",
-      "sideEffectParity": "Preserve plan revision approval, approval comments, auto-start, and cache invalidation.",
-      "entryPoints": [
-        "updateTask form action",
-        "approveActionPlan form action",
-        "startApprovedTodoTaskIfIdle after approval"
-      ],
-      "expectedDirectMutationCounts": {
-        "app/(app)/projects/[slug]/tasks/[taskId]/page.tsx": 1
-      }
-    },
-    {
-      "id": "auto-start-and-queue-refill",
-      "title": "Auto-start, queue refill, and dependency release",
-      "files": [
-        "lib/tasks/auto-start.ts",
-        "lib/tasks/reviewer-assignment.ts",
-        "lib/epics/assignment.ts",
-        "lib/epics/queue.ts",
-        "scripts/pm-workflow-nudge.ts"
-      ],
-      "triggerSurface": "Reviewer plan approval, Epic open/status changes, dependency completion effects, and workflow nudge automation.",
-      "currentOwner": "Task auto-start and Epic assignment helpers",
-      "stateTouched": [
-        "Task status via transition kernel",
-        "assignee and approval reset fields",
-        "WorkflowOutbox dependency_refill effects"
-      ],
-      "sideEffects": [
-        "worktree provisioning",
-        "Action Plan reset when ownership changes",
-        "task.assign activity",
-        "agent notifications",
-        "board touch"
-      ],
-      "phaseEMigrationDestination": "Prepare/start implementation command adapters and dependency-release command adapter.",
-      "instrumentation": {
-        "kind": "task.move payload via/source or task.assign/task.action_plan.reset activity kind",
-        "labels": [
-          "reviewer-plan-approval",
-          "agent-action-plan-approval",
-          "action-plan-approval",
-          "pm-workflow-nudge",
-          "dependency-completed",
-          "epic_open",
-          "epic_status",
-          "task.assign",
-          "task.action_plan.reset"
-        ]
-      },
-      "responseParity": "Preserve idle-worker checks, worktree errors, and no-op assignment results.",
-      "sideEffectParity": "Preserve one-active-task guard, worktree claim behavior, queue ordering, approval reset, assignment activity, and wake effects.",
-      "entryPoints": [
-        "startApprovedTodoTaskIfIdle",
-        "assignOpenEpicTasks",
-        "assignTasksAfterDependencyCompleted",
-        "pm-workflow-nudge autoStart"
-      ],
-      "expectedDirectMutationCounts": {
-        "lib/tasks/auto-start.ts": 1,
-        "lib/tasks/reviewer-assignment.ts": 1,
-        "lib/epics/assignment.ts": 1,
-        "lib/epics/queue.ts": 0,
-        "scripts/pm-workflow-nudge.ts": 0
+        "app/api/agent/epics/[epicId]/workflow/route.ts": 0
       }
     },
     {
@@ -307,6 +168,10 @@
       ],
       "triggerSurface": "ready_for_review workflow action, repository verification callback, and branch-pushed verifier utility.",
       "currentOwner": "Review handoff/repository validation helpers",
+      "actorSource": "Authenticated assignee submission or mechanical repository executor callback with server-resolved identity.",
+      "authorizationAndGuards": "Assignee authority, open-checklist and repository-contract guards, plus exact task/cycle/procedure/step/repository-run/candidate/base SHA callback correlation.",
+      "idempotencyIdentity": "Submission receipt or exact repository callback tuple including task, cycle, procedure, step, repository run, candidate SHA, and base SHA.",
+      "replacementCommand": "submit_candidate_for_review command and repository_validation_succeeded/failed mechanical callback commands; legacy-v1 drain stays ownership-fenced.",
       "stateTouched": [
         "Task status via transition kernel",
         "TaskRepositoryRun phase/version/candidate state",
@@ -353,6 +218,10 @@
       ],
       "triggerSurface": "review_done/review_feedback, repository finalization jobs, Epic checkpoint/merge workers, and completion review automation.",
       "currentOwner": "Review automation and Epic merge/finalization helpers",
+      "actorSource": "Authenticated resolved reviewer decision or mechanical finalization/Epic-merge executor callback.",
+      "authorizationAndGuards": "Immutable review-lease authority and exact task/cycle/procedure/step/repository-run/candidate/base SHA correlation, with Epic completion and deployment gates.",
+      "idempotencyIdentity": "Review decision receipt or exact finalization/merge callback tuple, including review lease and repository run identities.",
+      "replacementCommand": "accept_review/return_review commands plus repository_finalization_succeeded/failed mechanical callbacks and typed Epic completion command fanout.",
       "stateTouched": [
         "Task status via transition kernel",
         "ReviewRun accepted/changes_requested/finalization state",
@@ -395,7 +264,7 @@
       ],
       "expectedDirectMutationCounts": {
         "lib/tasks/review-automation.ts": 6,
-        "lib/deploy/epic-merge.ts": 4
+        "lib/deploy/epic-merge.ts": 3
       }
     },
     {
@@ -406,6 +275,10 @@
       ],
       "triggerSurface": "Epic create/update/status/action-plan server actions that cascade or queue child tasks.",
       "currentOwner": "Epic action helpers",
+      "actorSource": "Authenticated browser human or PM Epic manager/reviewer principal resolved server-side.",
+      "authorizationAndGuards": "Project membership, Epic acting-manager/reviewer authority, approved-plan state, Epic status transitions, child dependency/rank rules, and expected child task versions.",
+      "idempotencyIdentity": "Epic action plus authenticated actor, Epic revision, target state, and deterministic per-child task command key.",
+      "replacementCommand": "Typed Epic command adapter with canonical child task commands; browser revalidation stays outside command transactions.",
       "stateTouched": [
         "Epic status/action-plan fields",
         "child Task status via transition kernel",
@@ -437,7 +310,7 @@
         "open epic child queue assignment"
       ],
       "expectedDirectMutationCounts": {
-        "lib/epics/actions.ts": 1
+        "lib/epics/actions.ts": 0
       }
     },
     {
@@ -450,6 +323,10 @@
       ],
       "triggerSurface": "Agent/human application of approved work-item proposals.",
       "currentOwner": "Work-item proposal apply helpers and proposal API route",
+      "actorSource": "Authenticated project principal approving the proposal, with proposal ownership and project scope resolved server-side.",
+      "authorizationAndGuards": "Proposal approval authority, normalized operation validation, temporary-reference/dependency resolution, expected workflow versions, and transaction-wide command admission.",
+      "idempotencyIdentity": "Proposal id and approval revision plus deterministic operation index/temp reference and per-task command identity.",
+      "replacementCommand": "Atomic proposal batch adapter invoking transaction-capable canonical task executors; any rejection rolls back every proposal-owned write and effect.",
       "stateTouched": [
         "Task/Epic/SubTask creation",
         "Task status via transition kernel",
@@ -484,64 +361,52 @@
         "agent proposal POST/commit handlers"
       ],
       "expectedDirectMutationCounts": {
-        "lib/work-items/apply.ts": 1,
+        "lib/work-items/apply.ts": 0,
         "lib/work-items/actions.ts": 0,
         "app/api/agent/projects/[projectId]/proposals/route.ts": 0
       }
     },
     {
       "id": "workflow-reconciler-and-repair-tools",
-      "title": "Workflow reconciler, watchdog, and operator repair tools",
+      "title": "Workflow reconciler and outbox drain",
       "files": [
         "lib/tasks/workflow-reconciler.ts",
-        "lib/tasks/workflow-outbox-drain.ts",
-        "scripts/repair-accepted-finalization.ts",
-        "scripts/repair-task-workflow-state.ts",
-        "scripts/reopen-tasks-with-open-subtasks.ts"
+        "lib/tasks/workflow-outbox-drain.ts"
       ],
-      "triggerSurface": "Monitor reconciliation, workflow outbox drain failures, and explicit operator repair scripts.",
-      "currentOwner": "Workflow reconciler/repair tooling",
+      "triggerSurface": "Monitor reconciliation and workflow outbox delivery.",
+      "currentOwner": "Mechanical workflow reconciliation and outbox workers",
+      "actorSource": "The PM monitor/reconciler service executing recorded durable effects and invariant detectors.",
+      "authorizationAndGuards": "Reconciliation may only requeue an existing durable effect, retry an existing cancellation fence, or record an idempotent escalation; the outbox drain may only claim and settle recorded effects.",
+      "idempotencyIdentity": "Existing outbox row/dedupe key, cancellation run identity, or invariant kind plus row identity.",
+      "replacementCommand": "Mechanical callback/requeue operations only; missing workflow decisions are report-only and require a separately authenticated typed command.",
       "stateTouched": [
-        "Task status via transition kernel or guarded repair",
         "WorkflowOutbox dispatch state",
-        "ReviewRun repair/invalidated state",
-        "TaskRepositoryRun repair state",
-        "Task.alertReporter"
+        "TaskExecutionState escalation projection",
+        "idempotent reconciliation/effect-failure activity"
       ],
       "sideEffects": [
-        "operational error activity",
-        "repair comments",
-        "board touch effects",
-        "review finalization retry",
-        "blocker clear activity"
+        "dispatch of already-recorded durable effects",
+        "runner cancellation retry",
+        "operational escalation activity"
       ],
-      "phaseEMigrationDestination": "Reconciler/repair command adapter with explicit incident and repair command types.",
+      "phaseEMigrationDestination": "Mechanical reconciler/outbox workers with explicit typed commands for every domain repair.",
       "instrumentation": {
-        "kind": "task.move payload via/source or repair/reconciler activity kind",
+        "kind": "reconciler/outbox activity kind",
         "labels": [
           "workflow-reconciliation",
           "workflow_outbox",
-          "operator-finalization-repair",
-          "reopen-open-subtasks",
-          "task.workflow.finalization_repair",
           "task.workflow.effect_failed"
         ]
       },
-      "responseParity": "Preserve CLI dry-run/apply behavior, reconciler no-op behavior, and retry/error logging.",
-      "sideEffectParity": "Preserve guarded compare-and-set repairs, reporter alerting, generated comments, outbox retry state, and activity evidence.",
+      "responseParity": "Preserve reconciler dry-run reports, worker no-op behavior, and retry/error logging without fabricating domain decisions.",
+      "sideEffectParity": "Preserve compare-and-set outbox claims/requeues, cancellation fences, effect dispatch, and idempotent escalation evidence.",
       "entryPoints": [
-        "reconcileWorkflowState",
-        "drainWorkflowOutbox",
-        "repairAcceptedFinalization",
-        "repair-task-workflow-state",
-        "reopen-tasks-with-open-subtasks"
+        "runWorkflowReconciliation",
+        "drainWorkflowOutbox"
       ],
       "expectedDirectMutationCounts": {
-        "lib/tasks/workflow-reconciler.ts": 2,
-        "lib/tasks/workflow-outbox-drain.ts": 3,
-        "scripts/repair-accepted-finalization.ts": 6,
-        "scripts/repair-task-workflow-state.ts": 0,
-        "scripts/reopen-tasks-with-open-subtasks.ts": 1
+        "lib/tasks/workflow-reconciler.ts": 1,
+        "lib/tasks/workflow-outbox-drain.ts": 3
       }
     },
     {
@@ -552,6 +417,10 @@
       ],
       "triggerSurface": "PM workflow add/complete/remove_subtask actions and work-item proposal subtask creation.",
       "currentOwner": "Task checklist helper",
+      "actorSource": "Authenticated PM workflow principal resolved to the visible task assignee or resolved reviewer for review-kind checklist rows.",
+      "authorizationAndGuards": "Task assignment/reviewer authority, approved Action Plan, task status, subtask kind ownership, completion/removal rules, and expected task identity.",
+      "idempotencyIdentity": "Task id, workflow message/action identity, subtask id or normalized text, checklist kind, and requested completion state.",
+      "replacementCommand": "add_subtask, complete_subtask, and remove_subtask TaskWorkflowCommand executors.",
       "stateTouched": [
         "SubTask create/update/delete/rank state",
         "minutesSpent/completedAt progress fields"

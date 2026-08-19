@@ -31,6 +31,7 @@ type OutboxRow = {
   id: string;
   taskId: string;
   projectId: string;
+  transitionId: string | null;
   effectType: string;
   payload: string;
   dedupeKey: string;
@@ -71,6 +72,19 @@ async function dispatch(row: OutboxRow) {
         : typeof payload.stepId === "string" ? payload.stepId : undefined,
       workflowCycleId: typeof payload.workflowCycleId === "string" || payload.workflowCycleId === null
         ? payload.workflowCycleId
+        : undefined,
+      schemaVersion: typeof payload.schemaVersion === "number" ? payload.schemaVersion : undefined,
+      commandReceiptId: typeof payload.commandReceiptId === "string" || payload.commandReceiptId === null
+        ? payload.commandReceiptId
+        : undefined,
+      repositoryRunId: typeof payload.repositoryRunId === "string" || payload.repositoryRunId === null
+        ? payload.repositoryRunId
+        : undefined,
+      repositoryRunVersion: typeof payload.repositoryRunVersion === "number" || payload.repositoryRunVersion === null
+        ? payload.repositoryRunVersion
+        : undefined,
+      baseSha: typeof payload.baseSha === "string" || payload.baseSha === null
+        ? payload.baseSha
         : undefined,
     });
     if (result.blockedByFailedJob) {
@@ -158,6 +172,10 @@ async function dispatch(row: OutboxRow) {
     await refillDependentEpicQueuesForDoneTask({
       prerequisiteTaskId: String(payload.prerequisiteTaskId),
       actorUserId: typeof payload.actorUserId === "string" ? payload.actorUserId : null,
+      trigger: {
+        kind: row.transitionId ? "workflow_transition" : "command_receipt",
+        id: row.transitionId ?? row.id,
+      },
     });
     return;
   }
@@ -178,10 +196,6 @@ async function escalate(row: OutboxRow, message: string) {
           completionReviewStatus: "Operational Error",
           completionReviewLastError: message,
         },
-      }),
-      db.task.updateMany({
-        where: { id: row.taskId, deletedAt: null },
-        data: { alertReporter: true },
       }),
     ]);
     await writeDeduplicatedActivity({
@@ -205,12 +219,6 @@ async function escalate(row: OutboxRow, message: string) {
     });
     return;
   }
-  await db.$transaction([
-    db.task.updateMany({
-      where: { id: row.taskId, deletedAt: null },
-      data: { alertReporter: true },
-    }),
-  ]);
   await writeDeduplicatedActivity({
     projectId: row.projectId,
     taskId: row.taskId,
@@ -281,6 +289,7 @@ export async function drainWorkflowOutbox(args: {
         id: true,
         taskId: true,
         projectId: true,
+        transitionId: true,
         effectType: true,
         payload: true,
         dedupeKey: true,

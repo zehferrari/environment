@@ -18,9 +18,12 @@ import { authorizeCommand } from "@/lib/tasks/orchestrator/authorize";
 import { runGuards } from "@/lib/tasks/orchestrator/guards";
 import { decideCommand } from "@/lib/tasks/orchestrator/decide";
 import { executeWorkflowCommand } from "@/lib/tasks/orchestrator/execute";
+import { executeWorkflowCommandInTransaction } from "@/lib/tasks/orchestrator/execute";
 import { computeRequestFingerprint } from "@/lib/tasks/orchestrator/receipts";
 import { validateCommandPayload } from "@/lib/tasks/orchestrator/command-schema";
 import { resolveEngineOwnership, ENGINE_LEGACY } from "@/lib/tasks/orchestrator/ownership";
+import { refreshTaskAggregateForTx } from "@/lib/tasks/orchestrator/state";
+import type { Prisma } from "@prisma/client";
 import type {
   DomainErrorCode,
   OrchestrationDecision,
@@ -55,6 +58,27 @@ export async function loadTaskStateSnapshot(taskId: string): Promise<TaskStateSn
  * every workflow mutation. Returns an OrchestratorResult.
  */
 export async function submitWorkflowCommand(command: TaskWorkflowCommand): Promise<OrchestratorResult> {
+  return submitWorkflowCommandWithClient(db, command, false);
+}
+
+/**
+ * Submit a canonical workflow command inside a caller-owned transaction.
+ * This is intentionally narrow: batch transports receive no alternate
+ * mutation API, and a rejected result can be promoted to an exception by the
+ * caller so every operation in the batch rolls back together.
+ */
+export async function submitWorkflowCommandInTransaction(
+  tx: Prisma.TransactionClient,
+  command: TaskWorkflowCommand,
+): Promise<OrchestratorResult> {
+  return submitWorkflowCommandWithClient(tx, command, true);
+}
+
+async function submitWorkflowCommandWithClient(
+  client: Prisma.TransactionClient | typeof db,
+  command: TaskWorkflowCommand,
+  inTransaction: boolean,
+): Promise<OrchestratorResult> {
   const validated = validateCommandPayload(command.intent, command.payload);
   if (!validated.ok) {
     return {
@@ -66,7 +90,9 @@ export async function submitWorkflowCommand(command: TaskWorkflowCommand): Promi
   }
   command = { ...command, payload: validated.payload } as TaskWorkflowCommand;
 
-  const state = await loadTaskStateSnapshot(command.taskId);
+  const state = inTransaction
+    ? await refreshTaskAggregateForTx(client as Prisma.TransactionClient, command.taskId)
+    : await loadTaskStateSnapshot(command.taskId);
   if (!state) {
     return { status: "invalid", reason: "Task not found.", domainCode: "invalid_payload" };
   }
@@ -83,7 +109,7 @@ export async function submitWorkflowCommand(command: TaskWorkflowCommand): Promi
   // mutation path for all tasks, and legacy ownership simply means "not
   // yet migrated." Hard rejection of legacy tasks belongs to Phase E
   // step 8 (authoritative adapter), not step 1.
-  const ownership = await resolveEngineOwnership(db, command.taskId);
+  const ownership = await resolveEngineOwnership(client, command.taskId);
   if (!ownership.ok) {
     return {
       status: ownership.code === "task_not_found" ? "invalid" : "stale",
@@ -104,7 +130,7 @@ export async function submitWorkflowCommand(command: TaskWorkflowCommand): Promi
   // transitions committed before the receipt migration. Every existing
   // transition has an idempotencyKey and no receipt, so without this
   // fallback replays across the legacy drain window would re-execute.
-  const existingReceipt = await db.taskWorkflowCommandReceipt.findUnique({
+  const existingReceipt = await client.taskWorkflowCommandReceipt.findUnique({
     where: {
       taskId_idempotencyKey: {
         taskId: command.taskId,
@@ -143,7 +169,7 @@ export async function submitWorkflowCommand(command: TaskWorkflowCommand): Promi
     // Legacy drain compatibility only. V2 receipts are the sole replay
     // authority for a V2-owned attempt; a V2 miss must never be reconstructed
     // from a legacy transition or substring activity scan.
-    const existingTransition = await db.workflowTransition.findUnique({
+    const existingTransition = await client.workflowTransition.findUnique({
       where: {
         taskId_idempotencyKey: {
           taskId: command.taskId,
@@ -155,7 +181,7 @@ export async function submitWorkflowCommand(command: TaskWorkflowCommand): Promi
     if (existingTransition) {
       return { status: "replayed", transitionId: existingTransition.id, workflowVersion: existingTransition.workflowVersion, procedureId: null };
     }
-    const existingActivity = await db.activityLog.findFirst({
+    const existingActivity = await client.activityLog.findFirst({
       where: {
         taskId: command.taskId,
         kind: { startsWith: "task.workflow." },
@@ -197,7 +223,9 @@ export async function submitWorkflowCommand(command: TaskWorkflowCommand): Promi
   const orchestrationDecision = decision as OrchestrationDecision;
 
   // --- Execute (atomic) --------------------------------------------------
-  return executeWorkflowCommand(command, orchestrationDecision, state);
+  return inTransaction
+    ? executeWorkflowCommandInTransaction(client as Prisma.TransactionClient, command, orchestrationDecision, state)
+    : executeWorkflowCommand(command, orchestrationDecision, state);
 }
 
 // Re-export the public API so routes can import from a single module.
@@ -205,6 +233,7 @@ export { authorizeCommand } from "@/lib/tasks/orchestrator/authorize";
 export { runGuards } from "@/lib/tasks/orchestrator/guards";
 export { decideCommand } from "@/lib/tasks/orchestrator/decide";
 export { executeWorkflowCommand } from "@/lib/tasks/orchestrator/execute";
+export { executeWorkflowCommandInTransaction } from "@/lib/tasks/orchestrator/execute";
 export { buildTaskWorkflowProjection } from "@/lib/tasks/orchestrator/projection";
 export {
   loadTaskAggregate,

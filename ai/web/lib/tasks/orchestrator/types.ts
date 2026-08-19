@@ -116,6 +116,7 @@ export const TASK_WORKFLOW_INTENTS = [
   "assign_task",
   "raise_scope_blocker",
   "override_status",
+  "epic_child_update",
   // Mechanical intents (monitor/worker only)
   "repository_validation_succeeded",
   "repository_validation_failed",
@@ -322,6 +323,29 @@ export type OverrideStatusPayload = {
   reason?: string | null;
 };
 
+/**
+ * Internal Epic adapter command. This is intentionally not a public workflow
+ * action: authenticated Epic/browser transports use it to keep child status,
+ * queue rank, assignment, archive, and plan-revision writes in one canonical
+ * command transaction.
+ */
+export type EpicChildUpdatePayload = {
+  epicId: string;
+  targetStatus: "Backlog" | "To Do" | "In Progress" | "Review" | "Done";
+  reason: string;
+  rank: "front" | "back";
+  clearAssignee: boolean;
+  clearArchive: boolean;
+  archive: boolean;
+  resetPlanApproval: boolean;
+  comment?: string | null;
+  notification?: {
+    targetUserId: string;
+    reason: string;
+    body: string;
+  } | null;
+};
+
 export type RaiseScopeBlockerPayload = {
   /** Description of the extra work needed. */
   scopeDescription: string;
@@ -482,6 +506,7 @@ interface IntentPayloadMap {
   assign_task: AssignTaskPayload;
   raise_scope_blocker: RaiseScopeBlockerPayload;
   override_status: OverrideStatusPayload;
+  epic_child_update: EpicChildUpdatePayload;
   repository_validation_succeeded: RepositoryValidationSucceededPayload;
   repository_validation_failed: RepositoryValidationFailedPayload;
   worktree_revalidation_failed: WorktreeRevalidationFailedPayload;

@@ -20,13 +20,10 @@ import {
 } from "@/lib/epics/completion-review";
 import { drainWorkflowOutbox } from "@/lib/tasks/workflow-outbox-drain";
 import { validateTaskDependency } from "@/lib/tasks/blocking";
-import { markActionPlanRevisionRequired } from "@/lib/tasks/action-plan-store";
+import { submitEpicChildUpdateInTransaction } from "@/lib/epics/task-workflow-adapter";
 import {
-  applyTaskTransition,
   enqueueWorkflowEffects,
   isTaskWorkflowStatus,
-  type TaskTransitionIntent,
-  type TaskWorkflowStatus,
 } from "@/lib/tasks/transition-kernel";
 
 export const runtime = "nodejs";
@@ -474,25 +471,9 @@ export async function POST(
         created: boolean;
       };
       if (flaggedTask) {
-        const commentRow = await tx.comment.create({
-          data: {
-            taskId: flaggedTask.id,
-            userId: agent.user!.id,
-            authorAgentSlug: agent.slug,
-            commentKind: "workflow_action",
-            isGenerated: true,
-            body: `Whole-Epic acceptance review returned this task for repair:\n\n${reportBody}`,
-          },
-          select: { id: true },
-        });
-        const effects = [
-          ...(flaggedTask.assigneeId ? [{
-            type: "task_notification" as const,
-            key: `completion-review-reject-notify:${messageId}`,
-            payload: {
-              taskId: flaggedTask.id,
+        const notification = flaggedTask.assigneeId
+          ? {
               targetUserId: flaggedTask.assigneeId,
-              actor,
               reason: "review_feedback",
               body: [
                 `Whole-Epic acceptance returned "${flaggedTask.title}" to To Do at the front of the queue.`,
@@ -500,96 +481,33 @@ export async function POST(
                 "Call action=submit_plan with a revised structured Action Plan and move the task through its normal start/review lifecycle. A new combined candidate review will run after every Epic task is Done again.",
                 "Do not post an acknowledgement-only response.",
               ].join("\n"),
-            },
-          }] : []),
-          { type: "board_touch" as const, key: `completion-review-reject-board:${messageId}`, payload: {} },
-        ];
-        const resetPlan = await markActionPlanRevisionRequired({
+            }
+          : null;
+        const childUpdate = await submitEpicChildUpdateInTransaction(tx, {
           taskId: flaggedTask.id,
-          client: tx,
-        });
-        if (resetPlan.changed) {
-          await tx.activityLog.create({
-            data: {
-              projectId: epic.projectId,
-              taskId: flaggedTask.id,
-              userId: agent.user!.id,
-              kind: "task.action_plan.reset",
-              targetAgent: agent.slug,
-              payload: JSON.stringify({
-                reason: "completion_review_reject",
-                actionPlanId: resetPlan.actionPlanId,
-                previousVersion: resetPlan.version,
-                commentId: commentRow.id,
-              }),
-            },
-          });
-        }
-        if (flaggedTask.status === "To Do") {
-          await tx.task.update({
-            where: { id: flaggedTask.id },
-            data: {
-              archivedAt: null,
-              archivedById: null,
-              approvedOn: null,
-              approvedById: null,
-              rank: (minRank._min.rank ?? 0) - 1,
-            },
-          });
-          await enqueueWorkflowEffects(tx, {
-            taskId: flaggedTask.id,
-            projectId: epic.projectId,
-            aggregateVersion: flaggedTask.workflowVersion,
-            effects,
-          });
-          await tx.activityLog.create({
-            data: {
-              projectId: epic.projectId,
-              taskId: flaggedTask.id,
-              userId: agent.user!.id,
-              kind: "task.workflow.requeued",
-              targetAgent: agent.slug,
-              payload: JSON.stringify({
-                status: "To Do",
-                via: "completion_review_reject",
-                commentId: commentRow.id,
-              }),
-            },
-          });
-        } else {
-          const intent: TaskTransitionIntent = flaggedTask.status === "Backlog"
-            ? "triage"
-            : flaggedTask.status === "In Progress"
-              ? "queue"
-              : flaggedTask.status === "Review"
-                ? "request_changes"
-                : "reopen";
-          await applyTaskTransition(tx, {
-            taskId: flaggedTask.id,
-            projectId: epic.projectId,
-            actorUserId: agent.user!.id,
-            intent,
-            from: flaggedTask.status as TaskWorkflowStatus,
-            to: "To Do",
-            source: "completion_review_reject",
-            idempotencyKey: `completion-review-reject:${messageId}:v${flaggedTask.workflowVersion}`,
-            expectedVersion: flaggedTask.workflowVersion,
+          workflowVersion: flaggedTask.workflowVersion,
+          actor: { ...actor, role: "operator" },
+          source: "agent",
+          idempotencyKey: `completion-review-reject:${messageId}:v${flaggedTask.workflowVersion}`,
+          payload: {
+            epicId: epic.id,
+            targetStatus: "To Do",
+            reason: "completion_review_reject",
             rank: "front",
-            taskData: {
-              archivedAt: null,
-              archivedById: null,
-              approvedOn: null,
-              approvedById: null,
-            },
-            evidence: { epicId: epic.id, commentId: commentRow.id },
-            effects,
-          });
-        }
+            clearAssignee: false,
+            clearArchive: true,
+            archive: false,
+            resetPlanApproval: true,
+            comment: `Whole-Epic acceptance review returned this task for repair:\n\n${reportBody}`,
+            notification,
+          },
+          evidence: { epicId: epic.id, candidateSha: epic.completionReviewCandidateSha },
+        });
         task = {
           id: flaggedTask.id,
           title: flaggedTask.title,
           assigneeId: flaggedTask.assigneeId,
-          workflowVersion: flaggedTask.workflowVersion + (flaggedTask.status === "To Do" ? 0 : 1),
+          workflowVersion: childUpdate.workflowVersion,
           created: false,
         };
       } else {
@@ -817,25 +735,9 @@ export async function POST(
         },
       });
       if (flaggedTask) {
-        const commentRow = await tx.comment.create({
-          data: {
-            taskId: flaggedTask.id,
-            userId: agent.user!.id,
-            authorAgentSlug: agent.slug,
-            commentKind: "workflow_action",
-            isGenerated: true,
-            body: `Deploy review flagged this task and returned it to To Do:\n\n${reason}`,
-          },
-          select: { id: true },
-        });
-        const effects = [
-          ...(flaggedTask.assigneeId ? [{
-            type: "task_notification" as const,
-            key: `deploy-review-reject-notify:${messageId}`,
-            payload: {
-              taskId: flaggedTask.id,
+        const notification = flaggedTask.assigneeId
+          ? {
               targetUserId: flaggedTask.assigneeId,
-              actor,
               reason: "review_feedback",
               body: [
                 `Deploy review flagged "${flaggedTask.title}" and moved it back to To Do (front of the queue).`,
@@ -843,67 +745,28 @@ export async function POST(
                 "Address it before starting or resuming any other task, then move it back through Review through the workflow endpoint.",
                 "Do not post an acknowledgement-only response.",
               ].join("\n"),
-            },
-          }] : []),
-          {
-            type: "board_touch" as const,
-            key: `deploy-review-reject-board:${messageId}`,
-            payload: { projectId: epic.projectId },
-          },
-        ];
-        if (flaggedTask.status === "To Do") {
-          const minRank = await tx.task.aggregate({
-            where: { projectId: epic.projectId, status: "To Do", deletedAt: null },
-            _min: { rank: true },
-          });
-          await tx.task.update({
-            where: { id: flaggedTask.id },
-            data: {
-              archivedAt: null,
-              archivedById: null,
-              rank: (minRank._min.rank ?? 0) - 1,
-            },
-          });
-          await enqueueWorkflowEffects(tx, {
-            taskId: flaggedTask.id,
-            projectId: epic.projectId,
-            aggregateVersion: flaggedTask.workflowVersion,
-            effects,
-          });
-          await tx.activityLog.create({
-            data: {
-              projectId: epic.projectId,
-              taskId: flaggedTask.id,
-              userId: agent.user!.id,
-              kind: "task.workflow.requeued",
-              targetAgent: agent.slug,
-              payload: JSON.stringify({ status: "To Do", via: "deploy_review_reject", commentId: commentRow.id }),
-            },
-          });
-        } else {
-          const intent: TaskTransitionIntent = flaggedTask.status === "Backlog"
-            ? "triage"
-            : flaggedTask.status === "In Progress"
-              ? "queue"
-              : flaggedTask.status === "Review"
-                ? "request_changes"
-                : "reopen";
-          await applyTaskTransition(tx, {
-            taskId: flaggedTask.id,
-            projectId: epic.projectId,
-            actorUserId: agent.user!.id,
-            intent,
-            from: flaggedTask.status as TaskWorkflowStatus,
-            to: "To Do",
-            source: "deploy_review_reject",
-            idempotencyKey: `deploy-review-reject:${messageId}:v${flaggedTask.workflowVersion}`,
-            expectedVersion: flaggedTask.workflowVersion,
+            }
+          : null;
+        await submitEpicChildUpdateInTransaction(tx, {
+          taskId: flaggedTask.id,
+          workflowVersion: flaggedTask.workflowVersion,
+          actor: { ...actor, role: "operator" },
+          source: "agent",
+          idempotencyKey: `deploy-review-reject:${messageId}:v${flaggedTask.workflowVersion}`,
+          payload: {
+            epicId: epic.id,
+            targetStatus: "To Do",
+            reason: "deploy_review_reject",
             rank: "front",
-            taskData: { archivedAt: null, archivedById: null },
-            evidence: { epicId: epic.id, commentId: commentRow.id },
-            effects,
-          });
-        }
+            clearAssignee: false,
+            clearArchive: true,
+            archive: false,
+            resetPlanApproval: false,
+            comment: `Deploy review flagged this task and returned it to To Do:\n\n${reason}`,
+            notification,
+          },
+          evidence: { epicId: epic.id, candidateSha: epic.completionReviewCandidateSha },
+        });
       }
       await tx.agentChatMessage.create({
         data: {

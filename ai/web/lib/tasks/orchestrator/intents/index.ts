@@ -1,5 +1,6 @@
 import {
   createChecklistAndDelegatableTasksFromPlan,
+  markActionPlanRevisionRequired,
   persistActionPlan,
 } from "@/lib/tasks/action-plan-store";
 import {
@@ -31,6 +32,7 @@ async function createWorkflowComment<I extends TaskWorkflowIntent>(
   context: IntentExecutorContext<I>,
   body: string,
   commentKind = "workflow_action",
+  isGenerated = false,
 ) {
   return context.tx.comment.create({
     data: {
@@ -41,7 +43,7 @@ async function createWorkflowComment<I extends TaskWorkflowIntent>(
         ? context.command.actor.username ?? null
         : null,
       commentKind,
-      isGenerated: false,
+      isGenerated,
       runId: context.command.executionContext?.pmChannelRunId ?? null,
     },
     select: { id: true },
@@ -169,8 +171,31 @@ const requestReviewChangesExecutor: IntentExecutor<"request_review_changes"> = a
   return context.helpers.executeDecisionWrites();
 };
 
-const startImplementationExecutor: IntentExecutor<"start_implementation"> = (context) =>
-  context.helpers.executeDecisionWrites();
+const startImplementationExecutor: IntentExecutor<"start_implementation"> = async (context) => {
+  if (context.state.epicId && context.state.epic?.status === "To Do") {
+    const promoted = await context.tx.epic.updateMany({
+      where: { id: context.state.epicId, status: "To Do" },
+      data: { status: "In Progress", statusChangedAt: new Date() },
+    });
+    if (promoted.count === 1) {
+      await context.tx.activityLog.create({
+        data: {
+          projectId: context.state.projectId,
+          userId: context.decision.decisionActorId,
+          kind: "epic.status",
+          payload: JSON.stringify({
+            epicId: context.state.epicId,
+            from: "To Do",
+            to: "In Progress",
+            via: context.command.source === "pm-service" ? "pm-policy-start" : "task-start",
+            taskId: context.command.taskId,
+          }),
+        },
+      });
+    }
+  }
+  return context.helpers.executeDecisionWrites();
+};
 
 const checkpointExecutor: IntentExecutor<"checkpoint"> = (context) =>
   context.helpers.executeDecisionWrites();
@@ -371,6 +396,53 @@ const overrideStatusExecutor: IntentExecutor<"override_status"> = async (context
   return context.helpers.executeDecisionWrites();
 };
 
+const epicChildUpdateExecutor: IntentExecutor<"epic_child_update"> = async (context) => {
+  const payload = context.command.payload;
+  let commentId: string | null = null;
+  if (payload.comment) {
+    const comment = await createWorkflowComment(context, payload.comment, "workflow_action", true);
+    commentId = comment.id;
+    context.decision.evidence.commentId = comment.id;
+  }
+
+  if (payload.resetPlanApproval) {
+    const reset = await markActionPlanRevisionRequired({
+      taskId: context.command.taskId,
+      client: context.tx,
+    });
+    if (reset.changed) {
+      await createDomainActivity(context, "task.action_plan.reset", {
+        reason: payload.reason,
+        actionPlanId: reset.actionPlanId,
+        previousVersion: reset.version,
+        commentId,
+      });
+    }
+  }
+
+  if (payload.archive) {
+    context.decision.taskData = {
+      ...context.decision.taskData,
+      archivedAt: new Date(),
+      archivedById: context.decision.decisionActorId,
+    };
+  }
+  if (payload.targetStatus === "To Do") {
+    await createDomainActivity(context, "task.workflow.requeued", {
+      status: "To Do",
+      via: payload.reason,
+      commentId,
+    });
+  }
+  if (payload.archive) {
+    await createDomainActivity(context, "task.archive", {
+      epicId: payload.epicId,
+      via: payload.reason,
+    });
+  }
+  return context.helpers.executeDecisionWrites();
+};
+
 const cancelTaskExecutor: IntentExecutor<"cancel_task"> = (context) =>
   context.helpers.executeDecisionWrites();
 
@@ -393,7 +465,7 @@ const assignTaskExecutor: IntentExecutor<"assign_task"> = async (context) => {
       assignedTasks: {
         none: {
           projectId: context.state.projectId,
-          status: "In Progress",
+          status: { in: ["To Do", "In Progress"] },
           deletedAt: null,
         },
       },
@@ -407,13 +479,36 @@ const assignTaskExecutor: IntentExecutor<"assign_task"> = async (context) => {
     data: { assigneeId: assignee.id },
   });
   if (assigned.count !== 1) throw new Error("task_already_assigned");
+  const resetUnapprovedPlan = context.command.source === "pm-service"
+    && context.command.evidence?.resetUnapprovedPlan === true
+    && !context.state.approvedOn;
+  if (resetUnapprovedPlan) {
+    const reset = await markActionPlanRevisionRequired({
+      taskId: context.command.taskId,
+      client: context.tx,
+    });
+    if (reset.changed) {
+      await createDomainActivity(context, "task.action_plan.reset", {
+        reason: "assignee_changed",
+        actionPlanId: reset.actionPlanId,
+        previousVersion: reset.version,
+        via: context.command.evidence?.policy ?? "pm-service",
+      });
+    }
+  }
   await createDomainActivity(context, "task.assign", {
     from: null,
     to: assignee.username,
     assigneeId: assignee.id,
-    assignedBy: "reviewer",
+    assignedBy: context.command.source === "pm-service"
+      ? context.command.evidence?.policy ?? "pm-service"
+      : "reviewer",
     afterPlanApproval: context.command.payload.afterPlanApproval,
   });
+  const notification = context.command.evidence?.notification;
+  const policyNotification = notification && typeof notification === "object" && !Array.isArray(notification)
+    ? notification as Record<string, unknown>
+    : null;
   await enqueueWorkflowEffects(context.tx, {
     taskId: context.command.taskId,
     projectId: context.state.projectId,
@@ -426,10 +521,14 @@ const assignTaskExecutor: IntentExecutor<"assign_task"> = async (context) => {
         taskId: context.command.taskId,
         targetUserId: assignee.id,
         actor: context.command.actor,
-        reason: context.state.approvedOn ? "todo_start_required" : "backlog_plan_requested",
-        body: context.state.approvedOn
-          ? "You were assigned an approved task. Start it when the lane is available."
-          : "You were assigned this task. Submit its structured Action Plan before implementation.",
+        reason: typeof policyNotification?.reason === "string"
+          ? policyNotification.reason
+          : context.state.approvedOn ? "todo_start_required" : "backlog_plan_requested",
+        body: typeof policyNotification?.body === "string"
+          ? policyNotification.body
+          : context.state.approvedOn
+            ? "You were assigned an approved task. Start it when the lane is available."
+            : "You were assigned this task. Submit its structured Action Plan before implementation.",
       },
     }],
   });
@@ -658,6 +757,7 @@ export const INTENT_EXECUTORS = {
   assign_task: assignTaskExecutor,
   raise_scope_blocker: raiseScopeBlockerExecutor,
   override_status: overrideStatusExecutor,
+  epic_child_update: epicChildUpdateExecutor,
   worktree_revalidation_failed: worktreeRevalidationFailedExecutor,
   repository_validation_succeeded: repositoryValidationSucceededExecutor,
   repository_validation_failed: repositoryValidationFailedExecutor,

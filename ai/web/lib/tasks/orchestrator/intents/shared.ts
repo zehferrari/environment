@@ -117,6 +117,20 @@ export async function executeDecisionWrites(args: {
     workflowVersion = result.transition.workflowVersion;
     kernelReplayed = result.replayed;
   } else {
+    if (decision.taskData && Object.keys(decision.taskData).length > 0) {
+      const updated = await tx.task.updateMany({
+        where: {
+          id: command.taskId,
+          status: decision.fromStatus,
+          workflowVersion: command.expectedWorkflowVersion,
+          deletedAt: null,
+        },
+        data: decision.taskData as Prisma.TaskUncheckedUpdateManyInput,
+      });
+      if (updated.count !== 1) {
+        throw new Error("version_conflict: task changed while committing workflow no-op data");
+      }
+    }
     await tx.activityLog.create({
       data: {
         projectId: args.state.projectId,

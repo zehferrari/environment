@@ -42,6 +42,17 @@ async function main() {
     const worker = await db.user.create({
       data: { username: "worker", email: "worker@example.invalid", kind: "agent", agentId: agent.id },
     });
+    const monitorAgent = await db.agent.create({
+      data: { slug: "policy-monitor", name: "Policy Monitor", role: "monitor" },
+    });
+    const policyService = await db.user.create({
+      data: {
+        username: "policy-monitor",
+        email: "policy-monitor@example.invalid",
+        kind: "agent",
+        agentId: monitorAgent.id,
+      },
+    });
     const [projectA, projectB, projectC] = await Promise.all([
       db.project.create({ data: { slug: "dependency-a", name: "A" } }),
       db.project.create({ data: { slug: "dependency-b", name: "B" } }),
@@ -118,7 +129,7 @@ async function main() {
     const blockedAssignment = await db.$transaction((tx) => assignOpenEpicTasks(tx, {
       epicId: epic.id,
       projectId: projectA.id,
-      actorUserId: manager.id,
+      actorUserId: policyService.id,
       excludeUserIds: [manager.id],
       via: "dependency-test",
     }));
@@ -142,12 +153,25 @@ async function main() {
     const unblockedAssignment = await db.$transaction((tx) => assignOpenEpicTasks(tx, {
       epicId: epic.id,
       projectId: projectA.id,
-      actorUserId: manager.id,
+      actorUserId: policyService.id,
       excludeUserIds: [manager.id],
       via: "dependency-test",
     }));
     assert.equal(unblockedAssignment.assignments.length, 1);
     assert.equal(unblockedAssignment.assignments[0].task.id, dependent.id);
+    const assignedDependent = await db.task.findUniqueOrThrow({
+      where: { id: dependent.id },
+      select: { assigneeId: true },
+    });
+    assert.equal(assignedDependent.assigneeId, worker.id, "PM-service assign_task must commit the selected worker");
+    const policyReceipt = await db.taskWorkflowCommandReceipt.findFirstOrThrow({
+      where: { taskId: dependent.id, intent: "assign_task", source: "pm-service" },
+      select: { idempotencyKey: true, actorUserId: true, status: true },
+    });
+    assert.match(policyReceipt.idempotencyKey, /^pm-policy:assign:policy_event:dependency-test:/);
+    assert.equal(policyReceipt.actorUserId, policyService.id,
+      "the receipt must preserve the PM service actor instead of fabricating the assignee/reviewer");
+    assert.equal(policyReceipt.status, "accepted");
 
     const cycleA = await db.task.create({ data: { projectId: projectA.id, title: "Cycle A" } });
     const cycleB = await db.task.create({

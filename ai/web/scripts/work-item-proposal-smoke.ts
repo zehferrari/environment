@@ -534,6 +534,96 @@ async function main(): Promise<void> {
       (await prisma.task.findUnique({ where: { id: tTodo.id }, select: { blockedById: true } }))?.blockedById === null,
     );
 
+    const statusTarget = await prisma.task.create({
+      data: {
+        projectId: P,
+        title: "Canonical proposal status target",
+        status: "To Do",
+        rank: 29,
+        statusChangedAt: new Date(),
+      },
+    });
+    const statusProposal = await prisma.workItemProposal.create({
+      data: {
+        planId: `status-${randomUUID()}`,
+        projectId: P,
+        agentSlug: agent.slug,
+        proposedByUserId: agentUser.id,
+        status: "pending",
+        operations: JSON.stringify([{ op: "update_task", target: statusTarget.id, status: "Backlog" }]),
+      },
+      select: { id: true },
+    });
+    const statusResult = await commitProposal(statusProposal.id, human.id);
+    const statusState = await prisma.task.findUnique({
+      where: { id: statusTarget.id },
+      select: { status: true, workflowVersion: true },
+    });
+    check(
+      "proposal status update enters canonical command boundary",
+      statusResult.ok && statusState?.status === "Backlog" && statusState.workflowVersion === 1,
+      { statusResult, statusState },
+    );
+    check(
+      "non-Done proposal override creates wait-for-human blocker atomically",
+      await prisma.activityLog.count({
+        where: { taskId: statusTarget.id, kind: "task.blocker", payload: { contains: "wait_for_human" } },
+      }) === 1,
+    );
+    check(
+      "proposal status command stores deterministic receipt",
+      await prisma.taskWorkflowCommandReceipt.count({
+        where: { taskId: statusTarget.id, idempotencyKey: `proposal:${statusProposal.id}:op:0:status` },
+      }) === 1,
+    );
+
+    const rollbackTarget = await prisma.task.create({
+      data: {
+        projectId: P,
+        title: "Rollback target",
+        status: "To Do",
+        rank: 30,
+        statusChangedAt: new Date(),
+      },
+    });
+    const rollbackProposal = await prisma.workItemProposal.create({
+      data: {
+        planId: `rollback-${randomUUID()}`,
+        projectId: P,
+        agentSlug: agent.slug,
+        proposedByUserId: agentUser.id,
+        status: "pending",
+        operations: JSON.stringify([
+          { op: "create_task", ref: "tmp:must-rollback", title: "Must Roll Back" },
+          { op: "update_task", target: rollbackTarget.id, status: "Backlog" },
+        ]),
+      },
+      select: { id: true },
+    });
+    await prisma.taskWorkflowCommandReceipt.create({
+      data: {
+        taskId: rollbackTarget.id,
+        idempotencyKey: `proposal:${rollbackProposal.id}:op:1:status`,
+        requestFingerprint: "intentionally-conflicting-fingerprint",
+        intent: "override_status",
+        source: "browser",
+        actorUserId: human.id,
+        expectedWorkflowVersion: 0,
+        resultingWorkflowVersion: 0,
+        status: "accepted",
+        result: JSON.stringify({ status: "accepted", transitionId: null, workflowVersion: 0 }),
+      },
+    });
+    const rollbackResult = await commitProposal(rollbackProposal.id, human.id);
+    check(
+      "rejected proposal command rolls back the entire batch",
+      !rollbackResult.ok
+        && (rollbackResult.error ?? "").includes("idempotency_conflict")
+        && await prisma.task.count({ where: { projectId: P, title: "Must Roll Back" } }) === 0
+        && (await prisma.workItemProposal.findUnique({ where: { id: rollbackProposal.id }, select: { status: true } }))?.status === "pending",
+      rollbackResult,
+    );
+
     const reapply = await commitProposal(applyProposal.id, human.id);
     check("re-apply blocked (already applied)", !reapply.ok && (reapply.error ?? "").includes("already"), reapply);
 

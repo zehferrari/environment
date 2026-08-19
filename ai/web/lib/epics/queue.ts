@@ -3,11 +3,11 @@
 // entry point fired by every "a worker may have just become free" or "the
 // queue may have new work" event: task Done, ready_for_review, human
 // unassign/pull-back, epic action-plan approval.
-import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import { db } from "@/lib/db";
-import { assignOpenEpicTasks } from "@/lib/epics/assignment";
+import { assignOpenEpicTasks, type PolicyEvidenceTrigger } from "@/lib/epics/assignment";
 import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
 import { unresolvedTaskPrerequisites } from "@/lib/tasks/blocking";
+import { startApprovedTodoTaskIfIdle } from "@/lib/tasks/auto-start";
 
 type Actor = {
   id: string;
@@ -25,11 +25,8 @@ export async function refillEpicQueue(args: {
   // Optional first line for the assignee notification, e.g. what event freed
   // the queue ("Previous epic task X was accepted...").
   contextLine?: string;
+  trigger?: PolicyEvidenceTrigger;
 }) {
-  await recordLegacyWorkflowBoundaryInvocation({
-    legacyBoundary: "auto-start-and-queue-refill",
-    entryPoint: "refillEpicQueue",
-  });
   const epic = await db.epic.findFirst({
     where: { id: args.epicId, deletedAt: null, private: false },
     select: {
@@ -57,25 +54,10 @@ export async function refillEpicQueue(args: {
       excludeUserIds: [epic.actingManagerId, epic.reporterId],
       preferUserId: args.preferUserId,
       via: args.via,
+      notificationContextLine: args.contextLine,
+      trigger: args.trigger,
     }),
   );
-
-  for (const assigned of assignment.assignments) {
-    await sendTaskWorkflowNotification({
-      taskId: assigned.task.id,
-      targetUserId: assigned.worker.id,
-      actor: args.actor,
-      reason: "todo_start_required",
-      body: [
-        ...(args.contextLine ? [args.contextLine] : []),
-        `Task "${assigned.task.title}" is now assigned to you in To Do.`,
-        assigned.approvedPlan
-          ? "Its Action Plan is already approved: move the task to In Progress through the workflow endpoint and start immediately."
-          : "Before starting work, call action=submit_plan with one structured technical Action Plan and wait for reviewer/reporter approval. A plain chat reply is discussion only.",
-        "If you have unresolved review feedback on another Review-stage task, address that feedback first — it stays your top priority.",
-      ].join("\n"),
-    });
-  }
 
   return { ...assignment, epic };
 }
@@ -87,11 +69,8 @@ export async function refillEpicQueue(args: {
 export async function refillDependentEpicQueuesForDoneTask(args: {
   prerequisiteTaskId: string;
   actorUserId?: string | null;
+  trigger?: PolicyEvidenceTrigger;
 }) {
-  await recordLegacyWorkflowBoundaryInvocation({
-    legacyBoundary: "auto-start-and-queue-refill",
-    entryPoint: "refillDependentEpicQueuesForDoneTask",
-  });
   const prerequisite = await db.task.findUnique({
     where: { id: args.prerequisiteTaskId },
     select: {
@@ -170,14 +149,40 @@ export async function refillDependentEpicQueuesForDoneTask(args: {
       epicId,
       actor,
       via: "dependency-completed",
+      trigger: args.trigger ?? {
+        kind: "policy_event",
+        id: `dependency:${args.prerequisiteTaskId}`,
+      },
       contextLine: `Prerequisite ${prerequisite.workItemKey ?? args.prerequisiteTaskId} is Done; this task is now eligible if all other prerequisites are also Done.`,
     });
   }
 
   // A human may have deliberately assigned a blocked Task before its
   // prerequisites cleared. It is not an open queue claim, so refill cannot
-  // rediscover it; wake that assignee explicitly once the full graph clears.
+  // rediscover it. Approved tasks enter through the same PM-service start
+  // command as plan auto-start; unapproved/busy tasks receive a deduplicated
+  // wake only and remain in To Do.
   for (const task of newlyEligible.filter((candidate) => candidate.assigneeId)) {
+    if (task.approvedOn) {
+      const autoStart = await startApprovedTodoTaskIfIdle({
+        taskId: task.id,
+        actor,
+        via: "dependency-completed",
+        trigger: args.trigger ?? {
+          kind: "policy_event",
+          id: `dependency:${args.prerequisiteTaskId}:${task.id}`,
+        },
+        selectionReason: "all_prerequisites_done_for_preassigned_approved_task",
+      });
+      if (autoStart.started) continue;
+      if (autoStart.reason === "command_rejected") {
+        const rejection = autoStart.commandResult;
+        const detail = rejection && "reason" in rejection ? rejection.reason : "unknown";
+        throw new Error(
+          `dependency_release_start_rejected:${task.id}:${rejection?.status ?? "unknown"}:${detail}`,
+        );
+      }
+    }
     await sendTaskWorkflowNotification({
       taskId: task.id,
       targetUserId: task.assigneeId!,

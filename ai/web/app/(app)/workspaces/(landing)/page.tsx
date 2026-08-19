@@ -1,41 +1,23 @@
-import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import Link from "next/link";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
-import { checkStatusTransition } from "@/lib/workflow";
 import { reorderTasks } from "@/lib/tasks/reorder";
 import { binTask } from "@/lib/bin/actions";
 import { publishBoardTouch } from "@/lib/pm/board-events";
-import { promoteEpicOnTaskInProgress } from "@/lib/epics/promote-on-start";
-import { syncEpicOnHumanTaskStatus } from "@/lib/epics/sync-on-human-task-move";
-import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
-import { refillEpicQueue } from "@/lib/epics/queue";
-import { runTaskReviewHandoff } from "@/lib/tasks/review-handoff";
-import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation";
 import { revalidateTaskShell } from "@/lib/tasks/cache";
-import { ensureTaskCodeWorktree, TaskWorktreeError } from "@/lib/tasks/worktree-claim";
 import { activeFormalBlockersByTask } from "@/lib/tasks/formal-blocker";
-import {
-  REPOSITORY_FINALIZATION_FENCE_MESSAGE,
-  repositoryFinalizationFenceSelect,
-  repositoryFinalizationOwnsTask,
-} from "@/lib/tasks/repository-finalization";
-import {
-  transitionTask,
-  type TaskTransitionIntent,
-  type TaskWorkflowStatus,
-  type WorkflowEffect,
-} from "@/lib/tasks/transition-kernel";
-import { drainWorkflowOutbox } from "@/lib/tasks/workflow-outbox-drain";
 import { createWorkspace, restoreWorkspace } from "@/lib/workspaces/service";
 import { workspaceLogoPublicUrl } from "@/lib/workspaces/storage";
 import { uploadAttachment } from "@/lib/attachments/actions";
 import { attachmentMaxBytes } from "@/lib/attachments/storage";
 import Board from "../../projects/[slug]/board-client";
-import { COLUMNS, COLUMN_IDS } from "../../projects/[slug]/columns";
-import type { MoveTaskResult } from "../../projects/[slug]/page";
-import type { MoveTaskOptions } from "@/lib/tasks/move-status";
+import { COLUMNS } from "../../projects/[slug]/columns";
+import type { MoveTaskOptions, MoveTaskResult } from "@/lib/tasks/move-status";
+import {
+  isTaskWorkflowStatus,
+  submitBrowserStatusOverride,
+} from "@/lib/tasks/orchestrator/browser-status-adapter";
 import {
   accessibleProjectWhere,
   accessibleTaskWhere,
@@ -156,37 +138,27 @@ async function moveTask(
   taskId: string,
   status: string,
   _scopeSlug: string,
-  options?: MoveTaskOptions,
+  _options?: MoveTaskOptions,
 ): Promise<MoveTaskResult> {
   "use server";
-  await recordLegacyWorkflowBoundaryInvocation({
-    legacyBoundary: "browser-board-move-actions",
-    entryPoint: "moveTask",
-  });
   const actor = await requireViewer();
-  if (!COLUMN_IDS.includes(status)) {
+  if (!isTaskWorkflowStatus(status)) {
     return { ok: false, code: "UNKNOWN_COLUMN", message: `Unknown column: ${status}` };
   }
   const current = await db.task.findFirst({
     where: accessibleTaskWhere(actor, { id: taskId }),
     select: {
       id: true,
-      title: true,
       status: true,
       workflowVersion: true,
       projectId: true,
-      assigneeId: true,
-      actingManagerId: true,
-      reporterId: true,
-      approvedOn: true,
       deletedAt: true,
-      epicId: true,
-      repositoryRun: { select: repositoryFinalizationFenceSelect },
-      project: { select: { slug: true, onlyReportersCanApproveActionPlans: true, onlyReportersCanSetTasksDone: true } },
-      epic: { select: { status: true, actingManagerId: true } },
+      project: { select: { slug: true } },
     },
   });
-  if (!current || current.deletedAt) return { ok: false, code: "UNKNOWN_COLUMN", message: "Task not found" };
+  if (!current || current.deletedAt || !isTaskWorkflowStatus(current.status)) {
+    return { ok: false, code: "UNKNOWN_COLUMN", message: "Task not found" };
+  }
   await requireProjectAccess(actor, { id: current.projectId });
   const workspaceProject = await db.workspaceProject.findFirst({
     where: {
@@ -195,230 +167,26 @@ async function moveTask(
     },
     select: { id: true },
   });
-  if (!workspaceProject) return { ok: false, code: "UNKNOWN_COLUMN", message: "Task not found" };
-  if (current.status === status) return { ok: true };
-
-  // Operator override — same admin-only break-glass contract as the project
-  // board (lib/tasks/move-status.ts): kernel CAS + audited "operator_override"
-  // intent, skipping all gates and side effects beyond a board repaint.
-  if (options?.operatorOverride) {
-    if (actor.kind !== "human" || !actor.isOwner) {
-      return {
-        ok: false,
-        code: "EXPLICIT_USER_ACTION_REQUIRED",
-        message: "Operator override is restricted to the human operator (admin).",
-      };
-    }
-    await transitionTask({
-      taskId,
-      projectId: current.projectId,
-      actorUserId: actor.id,
-      intent: "operator_override",
-      from: current.status as TaskWorkflowStatus,
-      to: status as TaskWorkflowStatus,
-      source: "human-workspace-landing-move",
-      idempotencyKey: `workspace-landing-override:${actor.id}:v${current.workflowVersion + 1}:${status}`,
-      expectedVersion: current.workflowVersion,
-      evidence: { operatorOverride: true },
-      effects: [{ type: "board_touch", key: "board:operator_override", payload: {} }],
-    });
-    await drainWorkflowOutbox({ limit: 1 }).catch(() => {});
-    revalidateTaskShell(taskId);
-    revalidatePath(`/projects/${current.project.slug}`);
-    revalidatePath("/workspaces");
-    publishBoardTouch(current.projectId);
-    return { ok: true };
+  if (!workspaceProject) {
+    return { ok: false, code: "UNKNOWN_COLUMN", message: "Task not found" };
   }
 
-  if (repositoryFinalizationOwnsTask(current.repositoryRun)) {
-    return {
-      ok: false,
-      code: "EXPLICIT_USER_ACTION_REQUIRED",
-      message: REPOSITORY_FINALIZATION_FENCE_MESSAGE,
-    };
-  }
-
-  if (actor.kind !== "human") {
-    const check = checkStatusTransition({ from: current.status, to: status, actor });
-    if (!check.ok) return { ok: false, code: check.code, message: check.message };
-  }
-  if (status === "In Progress" && !current.approvedOn) {
-    return {
-      ok: false,
-      code: "EXPLICIT_USER_ACTION_REQUIRED",
-      message: "Action Plan must be approved before this task can move to In Progress.",
-    };
-  }
-  if (status === "In Progress") {
-    if (!current.assigneeId) {
-      return {
-        ok: false,
-        code: "EXPLICIT_USER_ACTION_REQUIRED",
-        message: "Assign an implementation owner before moving this task to In Progress.",
-      };
-    }
-    try {
-      await ensureTaskCodeWorktree(current.id, current.assigneeId);
-    } catch (err) {
-      return {
-        ok: false,
-        code: "EXPLICIT_USER_ACTION_REQUIRED",
-        message: err instanceof TaskWorktreeError
-          ? err.message
-          : "Task worktree could not be created or validated.",
-      };
-    }
-  }
-
-  if (current.status === "Review" && status === "Done") {
-    const actorUser = await db.user.findUnique({ where: { id: actor.id }, select: { username: true } });
-    const completion = await completeReviewedTaskAndAssignNext({
-      taskId,
-      actor: { id: actor.id, username: actorUser?.username ?? "unknown", kind: actor.kind },
-      via: "board-move",
-    });
-    if (!completion.completed) {
-      return { ok: false, code: "EXPLICIT_USER_ACTION_REQUIRED", message: "Could not complete this reviewed task." };
-    }
-    revalidateTaskShell(taskId);
-    revalidatePath(`/projects/${current.project.slug}`);
-    revalidatePath("/workspaces");
-    for (const next of completion.nextTasks ?? []) {
-      revalidateTaskShell(next.id);
-      revalidatePath(`/projects/${current.project.slug}/tasks/${next.id}`);
-    }
-    publishBoardTouch(current.projectId);
-    return { ok: true };
-  }
-
-  if (status === "Review") {
-    if (current.status !== "In Progress") {
-      return {
-        ok: false,
-        code: "EXPLICIT_USER_ACTION_REQUIRED",
-        message: "A task can enter Review only through validation from In Progress.",
-      };
-    }
-    const actorUser = await db.user.findUnique({ where: { id: actor.id }, select: { username: true } });
-    const handoff = await runTaskReviewHandoff({
-      taskId,
-      actor: { id: actor.id, kind: actor.kind, username: actorUser?.username ?? null },
-      via: "human-board-move",
-      movedFromStatus: current.status,
-    });
-    for (const assigned of handoff.refillAssignments) {
-      revalidateTaskShell(assigned.taskId);
-      revalidatePath(`/projects/${current.project.slug}/tasks/${assigned.taskId}`);
-    }
-    revalidateTaskShell(taskId);
-    revalidatePath("/workspaces");
-    publishBoardTouch(current.projectId);
-    return { ok: true };
-  }
-
-  const edge = `${current.status}->${status}`;
-  const intentByEdge: Record<string, TaskTransitionIntent> = {
-    "Backlog->To Do": "triage",
-    "To Do->In Progress": "start",
-    "In Progress->To Do": "queue",
-    "Review->To Do": "request_changes",
-    "Done->To Do": "reopen",
-    "To Do->Backlog": "cancel",
-    "In Progress->Backlog": "cancel",
-    "Review->Backlog": "cancel",
-  };
-  const intent = intentByEdge[edge];
-  if (!intent) {
-    return {
-      ok: false,
-      code: "EXPLICIT_USER_ACTION_REQUIRED",
-      message: `The ${edge} edge requires a dedicated workflow action; board drag cannot override it.`,
-    };
-  }
-  const effects: WorkflowEffect[] = [{ type: "board_touch", key: `board:${intent}`, payload: {} }];
-  if (status === "To Do" && current.assigneeId) {
-    const approved = Boolean(current.approvedOn);
-    effects.push({
-      type: "task_notification",
-      key: `todo-start-required:${current.assigneeId}`,
-      payload: {
-        taskId,
-        targetUserId: current.assigneeId,
-        actor,
-        reason: "todo_start_required",
-        body: approved
-          ? [
-              `Task "${current.title}" is now in To Do and assigned to you.`,
-              "The Action Plan is approved. Move it to In Progress through the workflow endpoint and start work immediately.",
-              "Do not post a visible acknowledgement unless you have new task information to add.",
-            ].join("\n")
-          : [
-              `Task "${current.title}" is now in To Do and assigned to you.`,
-              "Before starting work, call action=submit_plan with one structured technical Action Plan and wait for reviewer/reporter approval. Plain chat text is discussion only.",
-              "Do not move it to In Progress until approved_on is set.",
-            ].join("\n"),
-      },
-    });
-  }
-  await transitionTask({
+  const result = await submitBrowserStatusOverride({
+    actor,
     taskId,
-    projectId: current.projectId,
-    actorUserId: actor.id,
-    intent,
-    from: current.status as TaskWorkflowStatus,
-    to: status as TaskWorkflowStatus,
-    source: actor.kind === "human" ? "human-workspace-landing-move" : "agent-workspace-landing-move",
-    idempotencyKey: `workspace-landing:${actor.id}:v${current.workflowVersion + 1}:${status}`,
-    expectedVersion: current.workflowVersion,
-    rank: current.status === "Review" && status === "To Do" ? "front" : "back",
-    effects,
-    mutate: async ({ tx }) => {
-      await syncEpicOnHumanTaskStatus(tx, {
-        epicId: current.epicId,
-        projectId: current.projectId,
-        taskId,
-        actorId: actor.id,
-        actorKind: actor.kind,
-        targetStatus: status,
-        via: "human-board-move",
-      });
-      if (status === "In Progress" && current.epicId) {
-        await promoteEpicOnTaskInProgress(tx, {
-          epicId: current.epicId,
-          projectId: current.projectId,
-          actorId: actor.id,
-          via: "board_move",
-        });
-      }
-    },
+    currentStatus: current.status,
+    targetStatus: status,
+    expectedWorkflowVersion: current.workflowVersion,
+    surface: "workspace-landing",
   });
-  await drainWorkflowOutbox({ limit: effects.length }).catch(() => {});
-  // Proactive queue refill — same trigger as the project board: a human
-  // completing a task or parking one unassigned frees capacity now.
-  if (
-    current.epicId &&
-    (status === "Done" || ((status === "To Do" || status === "Backlog") && !current.assigneeId))
-  ) {
-    const refill = await refillEpicQueue({
-      epicId: current.epicId,
-      actor,
-      via: "board-move",
-      contextLine: status === "Done"
-        ? `"${current.title}" was completed.`
-        : `"${current.title}" was returned to the queue.`,
-    });
-    for (const assigned of refill.assignments) {
-      revalidateTaskShell(assigned.task.id);
-      revalidatePath(`/projects/${current.project.slug}/tasks/${assigned.task.id}`);
-    }
-  }
+  if (!result.ok) return result;
+
   revalidateTaskShell(taskId);
   revalidatePath(`/projects/${current.project.slug}`);
   revalidatePath("/workspaces");
   publishBoardTouch(current.projectId);
   return { ok: true };
 }
-
 export const dynamic = "force-dynamic";
 
 export default async function WorkspacesLandingPage({ searchParams }: { searchParams?: Promise<{ archived?: string }> }) {

@@ -92,11 +92,13 @@ assert(!subjectHasCommitPrefix("V23-30 Add another task", "V23-3"), "a longer hu
 
 const root = process.cwd();
 const workflowRoute = readFileSync(join(root, "app/api/agent/epics/[epicId]/workflow/route.ts"), "utf8");
+const intentExecutors = readFileSync(join(root, "lib/tasks/orchestrator/intents/index.ts"), "utf8");
 assert(!workflowRoute.includes("effectiveEpicBranchName(epic)"), "Epic manager workflow must not persist a generated branch");
 assert(workflowRoute.includes("branchName: null"), "Epic-created Tasks must keep a null branch override");
 assert(workflowRoute.includes("commitPrefix: null"), "Epic-created Tasks must keep a null commit-prefix override");
 assert(
-  workflowRoute.includes("markActionPlanRevisionRequired") &&
+  intentExecutors.includes("markActionPlanRevisionRequired") &&
+    intentExecutors.includes("payload.resetPlanApproval") &&
     workflowRoute.includes('reason: "completion_review_reject"'),
   "whole-Epic rejection must preserve plan history while requiring a new repair revision",
 );
@@ -380,12 +382,18 @@ assert(
   "the shared WIP gate must scope the busy check to the task's project",
 );
 assert(
-  autoStartLib.includes("findInProgressStartConflict(tx"),
-  "auto-start must consume the shared gate inside its transaction",
+  autoStartLib.includes("findInProgressStartConflict(db") &&
+    autoStartLib.includes("submitWorkflowCommand({") &&
+    autoStartLib.includes('intent: "start_implementation"') &&
+    autoStartLib.includes('source: "pm-service"'),
+  "auto-start selection must submit the canonical PM-service start command",
 );
 assert(
-  autoStartLib.includes("ensureTaskCodeWorktree(task.id"),
-  "auto-start must refuse In Progress without a validated linked worktree",
+  !autoStartLib.includes("applyTaskTransition") &&
+    !autoStartLib.includes("ensureTaskCodeWorktree") &&
+    autoStartLib.includes("expectedWorkflowVersion: task.workflowVersion") &&
+    autoStartLib.includes("assigneeLane"),
+  "auto-start must leave workflow/repository writes to canonical command guards and procedures",
 );
 assert(
   autoStartLib.includes('task.assignee.agent.role !== "coding"'),
@@ -400,8 +408,9 @@ assert(ackRoute.includes("transitioned: false"), "ack must always report transit
 const workflowLib = readFileSync(join(root, "lib/workflow.ts"), "utf8");
 assert(!workflowLib.includes("export function autoTransitionOnAck"), "lib/workflow must not export the ack auto-transition");
 
-// P5: one shared Review-entry handoff, called by the agent route AND every
-// human board-move surface, with the epicChild fields the verifier consumes.
+// P5: ordinary agent Review entry keeps the shared handoff. Explicit browser
+// moves are authoritative human overrides and must not invoke legacy Review
+// automation or worktree preparation outside the command boundary.
 const reviewHandoff = readFileSync(join(root, "lib/tasks/review-handoff.ts"), "utf8");
 assert(reviewHandoff.includes("export async function runTaskReviewHandoff"), "review-handoff must export runTaskReviewHandoff");
 assert(reviewHandoff.includes("epicChild"), "the verify job must carry epicChild");
@@ -418,27 +427,25 @@ for (const pagePath of [
   "app/(app)/workspaces/(landing)/page.tsx",
 ]) {
   const pageSource = readFileSync(join(root, pagePath), "utf8");
-  assert(pageSource.includes("runTaskReviewHandoff"), `${pagePath} must run the shared Review handoff on human moves to Review`);
-  assert(pageSource.includes("human-board-move"), `${pagePath} must audit human moves with via: human-board-move`);
-  assert(
-    pageSource.includes("syncEpicOnHumanTaskStatus"),
-    `${pagePath} must keep a parent Epic actionable after a human child-task move`,
-  );
-  assert(
-    pageSource.includes("ensureTaskCodeWorktree"),
-    `${pagePath} must provision/validate the linked worktree before a human In Progress move`,
-  );
+  assert(pageSource.includes("submitBrowserStatusOverride"), `${pagePath} must submit the canonical human override command`);
+  assert(!pageSource.includes("runTaskReviewHandoff"), `${pagePath} must not run Review automation outside the command`);
+  assert(!pageSource.includes("ensureTaskCodeWorktree"), `${pagePath} must not prepare a worktree for a blocked human override`);
 }
 assert(
-  taskPage.includes('moveTaskStatus as transitionTaskStatus') &&
-    taskPage.includes('transitionTaskStatus(taskId, statusChangedTo, slug)'),
-  "task editor status changes must delegate to the authoritative browser transition action",
+  taskPage.includes("submitBrowserStatusOverride") &&
+    !taskPage.includes("transitionTaskStatus(taskId, statusChangedTo, slug)"),
+  "task editor status changes must submit the authoritative browser override command",
 );
 
 assert(
-  taskPage.includes("await reserveTaskRepositoryState(task.id)") &&
-    !taskPage.includes("await ensureTaskCodeWorktree(task.id, actor.id, { reconcile: true })"),
-  "human Action Plan approval must reserve the repository contract without provisioning a worktree",
+  taskPage.includes("submitBrowserPlanApproval") &&
+    !taskPage.includes("await reserveTaskRepositoryState(task.id)"),
+  "human Action Plan approval must enter the canonical approval command",
+);
+const prepareTodoHandler = readFileSync(join(root, "lib/tasks/orchestrator/handlers/prepare-todo-task.ts"), "utf8");
+assert(
+  prepareTodoHandler.includes("reserveTaskRepositoryState(task.id)"),
+  "the canonical prepare_todo_task procedure must reserve the repository contract",
 );
 const repositoryJob = readFileSync(join(root, "scripts/pm-epic-merge-job.ts"), "utf8");
 assert(repositoryJob.includes('job.kind === "claim"'), "the unsandboxed repository runner must execute worktree claim jobs");

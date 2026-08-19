@@ -19,6 +19,8 @@
 import type { Prisma } from "@prisma/client";
 import type { Task, TaskWorkflowCycle } from "@prisma/client";
 
+type OwnershipDbClient = Prisma.TransactionClient | typeof import("@/lib/db").db;
+
 // --- Engine constants ----------------------------------------------------
 
 export const ENGINE_LEGACY = "legacy" as const;
@@ -61,7 +63,7 @@ export type UnpinResult =
  * resolves.
  */
 export async function resolveEngineOwnership(
-  tx: Prisma.TransactionClient,
+  tx: OwnershipDbClient,
   taskId: string,
 ): Promise<OwnershipResolution> {
   const task = await tx.task.findUnique({

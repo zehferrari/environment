@@ -1,4 +1,3 @@
-import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import { db } from "@/lib/db";
 import {
   sendTaskWorkflowNotification,
@@ -121,10 +120,6 @@ function defaultRequiredAction(status: string, kind: string | undefined): string
 }
 
 async function main() {
-  await recordLegacyWorkflowBoundaryInvocation({
-    legacyBoundary: "auto-start-and-queue-refill",
-    entryPoint: "main",
-  });
   // This command is a short-lived producer. The generic enqueue path normally
   // schedules an in-process worker nudge, but this CLI used to call
   // process.exit(0) as soon as enqueue returned. The timer could claim the job
@@ -348,6 +343,11 @@ async function main() {
       taskId: task.id,
       actor,
       via: "pm-workflow-nudge",
+      trigger: {
+        kind: "monitor_incident",
+        id: args.messageId ?? `${args.kind ?? "pm-todo-not-started"}:${task.statusChangedAt?.toISOString() ?? task.id}`,
+      },
+      selectionReason: "monitor_detected_approved_todo_task_with_idle_lane",
     });
     if (autoStart.started) {
       autoStarted = true;
@@ -366,6 +366,12 @@ async function main() {
       return;
     } else if (autoStart.reason === "not_approved") {
       requiredAction = "Call action=submit_plan with the structured actionPlan payload now, then stop for reviewer approval. A plain Action Plan chat reply is discussion only and cannot satisfy approved_on.";
+    } else if (autoStart.reason === "command_rejected") {
+      const rejection = autoStart.commandResult;
+      const rejectionReason = rejection && "reason" in rejection ? rejection.reason : "unknown";
+      throw new Error(
+        `pm_policy_auto_start_rejected:${task.id}:${rejection?.status ?? "unknown"}:${rejectionReason}`,
+      );
     }
   }
   const body = [

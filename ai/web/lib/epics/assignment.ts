@@ -1,7 +1,7 @@
-import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import type { Prisma } from "@prisma/client";
-import { applyTaskTransition } from "@/lib/tasks/transition-kernel";
 import { unresolvedTaskPrerequisites } from "@/lib/tasks/blocking";
+import { submitWorkflowCommandInTransaction } from "@/lib/tasks/orchestrator";
+import type { OrchestratorResult, WorkflowActor } from "@/lib/tasks/orchestrator/types";
 
 // "One active Task per project" (docs/agent-pm-api.md § Role permissions):
 // a worker holding a task in any of these statuses is not eligible for another
@@ -92,6 +92,39 @@ export type EpicTaskAssignment = {
   approvedPlan: boolean;
 };
 
+export type PolicyEvidenceTrigger = {
+  kind: "command_receipt" | "workflow_transition" | "monitor_incident" | "policy_event";
+  id: string;
+};
+
+export class PolicyCommandRejected extends Error {
+  constructor(
+    readonly operation: "promote" | "assign",
+    readonly taskId: string,
+    readonly result: Exclude<OrchestratorResult, { status: "accepted" | "replayed" }>,
+  ) {
+    super(`pm_policy_${operation}_rejected:${taskId}:${result.status}:${result.reason}`);
+    this.name = "PolicyCommandRejected";
+  }
+}
+
+async function loadPolicyActor(tx: Prisma.TransactionClient, actorUserId: string): Promise<WorkflowActor> {
+  const actor = await tx.user.findFirst({
+    where: { id: actorUserId, status: "active" },
+    select: { id: true, username: true, kind: true },
+  });
+  if (!actor) throw new Error(`pm_policy_actor_not_found:${actorUserId}`);
+  return {
+    id: actor.id,
+    username: actor.username,
+    kind: actor.kind === "agent" ? "agent" : "human",
+  };
+}
+
+function identityPart(value: string) {
+  return value.trim().replace(/[^a-zA-Z0-9._:-]+/g, "-").slice(0, 160) || "unspecified";
+}
+
 // Promote every open Backlog task of the epic to the To Do queue (rank after
 // the current To Do tail). Shared by the epic-manager workflow advance_queue
 // action and the engine-side epic-approval path.
@@ -102,13 +135,10 @@ export async function promoteEpicBacklogTasks(
     projectId: string;
     actorUserId: string;
     via: string;
+    trigger?: PolicyEvidenceTrigger;
   },
 ) {
-  await recordLegacyWorkflowBoundaryInvocation({
-    legacyBoundary: "auto-start-and-queue-refill",
-    entryPoint: "promoteEpicBacklogTasks",
-    client: tx,
-  });
+  const actor = await loadPolicyActor(tx, args.actorUserId);
   const tasks = await tx.task.findMany({
     where: {
       epicId: args.epicId,
@@ -123,24 +153,30 @@ export async function promoteEpicBacklogTasks(
   });
   if (tasks.length === 0) return [];
 
-  const maxRank = await tx.task.aggregate({
-    where: { projectId: args.projectId, status: "To Do", archivedAt: null, deletedAt: null },
-    _max: { rank: true },
-  });
-  let nextRank = (maxRank._max.rank ?? 0) + 1;
+  const trigger = args.trigger ?? { kind: "policy_event" as const, id: args.via };
   for (const task of tasks) {
-    await applyTaskTransition(tx, {
+    const result = await submitWorkflowCommandInTransaction(tx, {
       taskId: task.id,
-      projectId: args.projectId,
-      actorUserId: args.actorUserId,
-      intent: "triage",
-      from: "Backlog",
-      to: "To Do",
-      source: args.via,
-      idempotencyKey: `advance-queue:${args.epicId}:v${task.workflowVersion + 1}`,
-      rank: nextRank++,
-      evidence: { action: "advance_queue", epicId: args.epicId },
+      intent: "triage_task",
+      actor,
+      expectedWorkflowVersion: task.workflowVersion,
+      workflowCycleId: null,
+      idempotencyKey: `pm-policy:promote:${identityPart(trigger.kind)}:${identityPart(trigger.id)}:${args.epicId}:${task.id}:v${task.workflowVersion}`,
+      source: "pm-service",
+      payload: { targetStatus: "To Do", reason: "Epic queue advanced" },
+      evidence: {
+        policy: "epic_queue_promotion",
+        trigger,
+        selectionReason: "open_epic_backlog_task_in_rank_order",
+        selectedTaskId: task.id,
+        expectedWorkflowVersion: task.workflowVersion,
+        epicId: args.epicId,
+        via: args.via,
+      },
     });
+    if (result.status !== "accepted" && result.status !== "replayed") {
+      throw new PolicyCommandRejected("promote", task.id, result);
+    }
   }
   return tasks;
 }
@@ -161,13 +197,11 @@ export async function assignOpenEpicTasks(
     // 2b: the worker that just freed itself, preferred for the next task.
     preferUserId?: string | null;
     via: string;
+    notificationContextLine?: string;
+    trigger?: PolicyEvidenceTrigger;
   },
 ) {
-  await recordLegacyWorkflowBoundaryInvocation({
-    legacyBoundary: "auto-start-and-queue-refill",
-    entryPoint: "assignOpenEpicTasks",
-    client: tx,
-  });
+  const actor = await loadPolicyActor(tx, args.actorUserId);
   const openTasks = await tx.task.findMany({
     where: {
       epicId: args.epicId,
@@ -184,6 +218,8 @@ export async function assignOpenEpicTasks(
       title: true,
       actingManagerId: true,
       approvedOn: true,
+      workflowVersion: true,
+      updatedAt: true,
       blockedById: true,
       blockedBy: { select: { id: true, status: true, workItemKey: true } },
       dependencies: {
@@ -222,6 +258,7 @@ export async function assignOpenEpicTasks(
   }
 
   const assignments: EpicTaskAssignment[] = [];
+  const trigger = args.trigger ?? { kind: "policy_event" as const, id: args.via };
   for (const task of tasks) {
     // Never assign a task to its own resolved reviewer: the per-task
     // actingManagerId is added to the epic-level exclusions so the review
@@ -239,50 +276,61 @@ export async function assignOpenEpicTasks(
     // flow) survives the assignment — the new assignee starts immediately.
     // Only an unapproved task gets the plan slate wiped.
     const approvedPlan = Boolean(task.approvedOn);
-    // Atomic claim: refills can race (two ready_for_review calls landing
-    // together). Only the transaction that flips assigneeId from null wins;
-    // the loser skips the task instead of silently overwriting.
-    const claimed = await tx.task.updateMany({
-      where: { id: task.id, assigneeId: null, status: "To Do" },
-      data: approvedPlan
-        ? { assigneeId: worker.id }
-        : { assigneeId: worker.id, approvedOn: null, approvedById: null },
-    });
-    if (claimed.count !== 1) continue;
-    await tx.activityLog.create({
-      data: {
-        projectId: args.projectId,
-        taskId: task.id,
-        userId: args.actorUserId,
-        kind: "task.assign",
-        payload: JSON.stringify({
-          from: null,
-          to: worker.username,
-          via: args.via,
-          // The engine decided this assignment; actorUserId is merely the
-          // request that triggered the refill (may equal the new assignee on
-          // the ready_for_review continuation path). The self-assignment
-          // guard treats attributed payloads as authorized.
-          assignedBy: "engine",
-          epicId: args.epicId,
-          approvedPlanPreserved: approvedPlan,
-        }),
+    const selectionReason = args.preferUserId === worker.id
+      ? "preferred_freed_worker_for_next_unblocked_task"
+      : "first_free_epic_worker_for_unblocked_queue_head";
+    const queueGeneration = task.updatedAt.toISOString();
+    const result = await submitWorkflowCommandInTransaction(tx, {
+      taskId: task.id,
+      intent: "assign_task",
+      actor,
+      expectedWorkflowVersion: task.workflowVersion,
+      workflowCycleId: null,
+      idempotencyKey: [
+        "pm-policy:assign",
+        identityPart(trigger.kind),
+        identityPart(trigger.id),
+        identityPart(selectionReason),
+        queueGeneration,
+        args.epicId,
+        task.id,
+        worker.id,
+        `v${task.workflowVersion}`,
+      ].join(":"),
+      source: "pm-service",
+      payload: {
+        assigneeUsername: worker.username,
+        afterPlanApproval: approvedPlan,
+      },
+      evidence: {
+        policy: "epic_queue_refill",
+        trigger,
+        selectionReason,
+        queueGeneration,
+        assigneeLane: `${args.projectId}:${worker.id}`,
+        selectedTaskId: task.id,
+        selectedAssigneeId: worker.id,
+        selectedAssigneeUsername: worker.username,
+        expectedWorkflowVersion: task.workflowVersion,
+        epicId: args.epicId,
+        via: args.via,
+        approvedPlanPreserved: approvedPlan,
+        resetUnapprovedPlan: !approvedPlan,
+        notification: {
+          reason: "todo_start_required",
+          body: [
+            ...(args.notificationContextLine ? [args.notificationContextLine] : []),
+            `Task "${task.title}" is now assigned to you in To Do.`,
+            approvedPlan
+              ? "Its Action Plan is already approved: move the task to In Progress through the workflow endpoint and start immediately."
+              : "Before starting work, call action=submit_plan with one structured technical Action Plan and wait for reviewer/reporter approval. A plain chat reply is discussion only.",
+            "If you have unresolved review feedback on another Review-stage task, address that feedback first — it stays your top priority.",
+          ].join("\n"),
+        },
       },
     });
-    if (!approvedPlan) {
-      await tx.activityLog.create({
-        data: {
-          projectId: args.projectId,
-          taskId: task.id,
-          userId: args.actorUserId,
-          kind: "task.action_plan.reset",
-          payload: JSON.stringify({
-            reason: "epic_queue_assignment",
-            via: args.via,
-            epicId: args.epicId,
-          }),
-        },
-      });
+    if (result.status !== "accepted" && result.status !== "replayed") {
+      throw new PolicyCommandRejected("assign", task.id, result);
     }
     assignments.push({ task, worker, approvedPlan });
   }

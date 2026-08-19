@@ -39,6 +39,7 @@ export function decideCommand(
   command: {
     intent: TaskWorkflowIntent;
     actor: { id: string; username?: string | null };
+    source?: string;
     evidence?: Record<string, unknown>;
     payload?: Record<string, unknown>;
   },
@@ -80,6 +81,67 @@ export function decideCommand(
       };
     }
 
+    case "epic_child_update": {
+      const targetStatus = command.payload?.targetStatus;
+      const epicId = command.payload?.epicId;
+      if (
+        typeof epicId !== "string" ||
+        (targetStatus !== "Backlog" &&
+          targetStatus !== "To Do" &&
+          targetStatus !== "In Progress" &&
+          targetStatus !== "Review" &&
+          targetStatus !== "Done")
+      ) {
+        return { status: "invalid", reason: "epic_child_update requires an Epic and workflow targetStatus" };
+      }
+      const closesCycle = Boolean(state.activeWorkflowCycleId) &&
+        (targetStatus === "Backlog" || targetStatus === "To Do" || targetStatus === "Done");
+      const notification = command.payload?.notification;
+      return {
+        fromStatus: state.status,
+        toStatus: targetStatus,
+        kernelIntent: "operator_override",
+        cycleOperation: closesCycle ? "close" : "none",
+        cycleOutcome: closesCycle
+          ? targetStatus === "Done"
+            ? "completed"
+            : state.status === "Review"
+              ? "changes_requested"
+              : "cancelled"
+          : undefined,
+        rank: command.payload?.rank === "front" ? "front" : "back",
+        taskData: {
+          ...(command.payload?.clearAssignee === true ? { assigneeId: null } : {}),
+          ...(command.payload?.clearArchive === true ? { archivedAt: null, archivedById: null } : {}),
+          ...(command.payload?.resetPlanApproval === true ? { approvedOn: null, approvedById: null } : {}),
+        },
+        effects: [
+          { type: "board_touch", key: `epic-child:${epicId}`, payload: { epicId } },
+          ...(notification && typeof notification === "object"
+            ? [{
+                type: "task_notification" as const,
+                key: `epic-child:${epicId}:${String((notification as Record<string, unknown>).targetUserId ?? "unknown")}`,
+                payload: notification as Record<string, unknown>,
+              }]
+            : []),
+        ],
+        evidence: {
+          ...command.evidence ?? {},
+          decisionActorId,
+          executorActorId,
+          epicId,
+          epicChildUpdate: true,
+          reason: command.payload?.reason ?? null,
+          clearAssignee: command.payload?.clearAssignee === true,
+          clearArchive: command.payload?.clearArchive === true,
+          archive: command.payload?.archive === true,
+          resetPlanApproval: command.payload?.resetPlanApproval === true,
+        },
+        decisionActorId,
+        executorActorId,
+      };
+    }
+
     case "approve_plan": {
       // Backlog -> To Do. Opens the prepare_todo_task procedure (ORCH-04).
       // Cycle operation is "none" — the cycle opens at start_implementation,
@@ -106,7 +168,11 @@ export function decideCommand(
       return {
         fromStatus: state.status,
         toStatus: "To Do",
-        kernelIntent: "approve_plan",
+        // Approval promotes Backlog work into the executable queue. A task
+        // already queued in To Do still needs the same atomic plan/checklist
+        // writes and prepare procedure, but there is no workflow edge to
+        // traverse; record that approval as the canonical audited no-op.
+        kernelIntent: state.status === "Backlog" ? "approve_plan" : "operator_override",
         cycleOperation: "none",
         procedureType: "prepare_todo_task",
         effects,
@@ -524,10 +590,14 @@ export function decideCommand(
     case "request_subtask":
     case "request_task": {
       const payload = command.payload ?? {};
+      const policyAssignPromotes = command.intent === "assign_task"
+        && command.source === "pm-service"
+        && command.payload?.afterPlanApproval === true
+        && state.status === "Backlog";
       return {
         fromStatus: state.status,
-        toStatus: state.status,
-        kernelIntent: "operator_override",
+        toStatus: policyAssignPromotes ? "To Do" : state.status,
+        kernelIntent: policyAssignPromotes ? "triage" : "operator_override",
         cycleOperation: "none",
         effects: command.intent === "assign_task"
           ? [{ type: "board_touch", key: "board-assignment", payload: {} }]

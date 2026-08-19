@@ -1,14 +1,7 @@
-import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import { db } from "@/lib/db";
 import { inspectValidatedCandidateWorktree } from "@/lib/deploy/epic-merge-git";
-import { recordWorkflowActionExecutionState } from "@/lib/agents/watchdog/transitions";
 import { resolveActiveMonitorAgent } from "@/lib/tasks/repository-state";
-import {
-  applyTaskTransition,
-  isTaskWorkflowStatus,
-  type TaskWorkflowStatus,
-} from "@/lib/tasks/transition-kernel";
-import { drainWorkflowOutbox } from "@/lib/tasks/workflow-outbox-drain";
+import { isTaskWorkflowStatus } from "@/lib/tasks/transition-kernel";
 
 function argument(name: string) {
   const index = process.argv.indexOf(name);
@@ -35,10 +28,6 @@ function stringField(payload: Record<string, unknown>, key: string) {
 }
 
 async function main() {
-  await recordLegacyWorkflowBoundaryInvocation({
-    legacyBoundary: "workflow-reconciler-and-repair-tools",
-    entryPoint: "main",
-  });
   const taskId = argument("--task-id");
   const expectedCandidateSha = argument("--candidate-sha");
   const supersededTransitionId = argument("--supersede-transition-id");
@@ -211,106 +200,12 @@ async function main() {
     apply,
   };
 
-  if (!apply) {
-    console.log(JSON.stringify({ ok: true, dryRun: true, ...report }, null, 2));
-    return;
+  if (apply) {
+    throw new Error(
+      "--apply is retired: this tool is read-only. Submit the authenticated operator finalization-repair command with the exact evidence printed below.",
+    );
   }
-
-  const actor = { ...monitor.user, kind: "agent" as const };
-  const transition = await db.$transaction(async (tx) => applyTaskTransition(tx, {
-    taskId: task.id,
-    projectId: task.projectId,
-    actorUserId: actor.id,
-    intent: "operator_override",
-    from: task.status as TaskWorkflowStatus,
-    to: "Review",
-    source: "operator-finalization-repair",
-    idempotencyKey: `restore-accepted-finalization:${supersededTransitionId}:${expectedCandidateSha}`,
-    expectedVersion: task.workflowVersion,
-    evidence: {
-      operatorRepair: true,
-      candidateSha: expectedCandidateSha,
-      acceptedActivityId: accepted.id,
-      mergeActivityId: merge.id,
-      reviewRunId: reviewRun.id,
-      supersededTransitionId,
-    },
-    effects: [
-      {
-        type: "review_finalize",
-        key: `repair-finalize:${expectedCandidateSha}:${supersededTransitionId}`,
-        payload: {
-          taskId: task.id,
-          projectId: task.projectId,
-          requestedByUserId: actor.id,
-          requestedByUsername: actor.username,
-          candidateSha: expectedCandidateSha,
-        },
-      },
-      { type: "board_touch", key: `board-finalization-repair:${expectedCandidateSha}`, payload: {} },
-    ],
-    mutate: async ({ tx: inner }) => {
-      const restoredRepository = await inner.taskRepositoryRun.updateMany({
-        where: { id: task.repositoryRun!.id, version: task.repositoryRun!.version },
-        data: {
-          phase: "finalizing",
-          candidateSha: expectedCandidateSha,
-          reviewedSha: expectedCandidateSha,
-          validationOutcome,
-          lastError: null,
-          version: { increment: 1 },
-        },
-      });
-      if (restoredRepository.count !== 1) {
-        throw new Error("Repository state changed concurrently during repair.");
-      }
-      await inner.reviewRun.update({
-        where: { id: reviewRun.id },
-        data: {
-          status: "accepted",
-          validationOutcome,
-          invalidatedAt: null,
-          invalidatedReason: null,
-        },
-      });
-      await inner.activityLog.create({
-        data: {
-          projectId: task.projectId,
-          taskId: task.id,
-          userId: actor.id,
-          kind: "task.workflow.finalization_repair",
-          payload: JSON.stringify(report),
-        },
-      });
-      if (latestBlocker && latestBlocker.kind !== "task.blocker.cleared") {
-        const blockerPayload = objectPayload(latestBlocker.payload);
-        await inner.activityLog.create({
-          data: {
-            projectId: task.projectId,
-            taskId: task.id,
-            userId: actor.id,
-            kind: "task.blocker.cleared",
-            payload: JSON.stringify({
-              via: "operator-finalization-repair",
-              blockerActivityId: latestBlocker.id,
-              blockerCommentId: stringField(blockerPayload, "commentId"),
-              candidateSha: expectedCandidateSha,
-              evidence: "The accepted immutable candidate was restored to repository finalization.",
-            }),
-          },
-        });
-      }
-    },
-  }));
-
-  await drainWorkflowOutbox({ limit: 10 });
-  await recordWorkflowActionExecutionState({
-    taskId: task.id,
-    projectId: task.projectId,
-    action: "review_done",
-    status: "Review",
-  });
-  console.log(JSON.stringify({ ok: true, dryRun: false, transition: transition.transition.id, ...report }, null, 2));
+  console.log(JSON.stringify({ ok: true, dryRun: true, validationOutcome, latestBlockerId: latestBlocker?.id ?? null, ...report }, null, 2));
 }
 
 main().catch((error) => {
