@@ -307,26 +307,25 @@ export function guardSubmitForReviewChecklist(
 }
 
 // --- §10.5: Unresolved blocker guard --------------------------------------
-// NOTE: state.activeBlocker is currently hardcoded to null in state.ts
-// (loadTaskAggregate) because the formal blocker aggregate is not yet
-// wired. This guard is structurally correct and will enforce the §10.5
-// criterion once activeBlocker is populated by the aggregate loader.
-// The guard is kept in runGuards so that when activeBlocker is wired,
-// it is enforced immediately without further code changes.
-// Follow-up: wire activeBlocker in loadTaskAggregate (PHASEE-05 or later).
 export function guardNoUnresolvedBlocker(
   state: TaskStateSnapshot,
   intent: TaskWorkflowIntent,
 ): GuardResult {
   const blocker = state.activeBlocker;
-  if (blocker) {
-    const detail = blocker.permissionRequest
-      ? `an unresolved formal blocker with a pending permission request exists`
-      : `an unresolved wait-for-human blocker exists (task was moved by a human status override)`;
+  const waitForHuman = blocker?.override?.kind === "wait_for_human";
+  const unresolvedPermission = Boolean(
+    blocker?.permissionRequest && !blocker.permissionGrant?.authorizationCommentId,
+  );
+  if (waitForHuman || unresolvedPermission) {
+    const detail = waitForHuman
+      ? `an unresolved wait-for-human blocker exists (task was moved by a human status override)`
+      : `an unresolved formal blocker with a pending permission request exists`;
     return {
       ok: false,
       status: "invalid",
-      reason: `[blocker_unresolved] Intent ${intent} rejected: ${detail}. The assigned agent must stop and await explicit human instructions; only an authorized human clear_blocker (or a human status override) can resolve it.`,
+      reason: waitForHuman
+        ? `[blocker_unresolved] Intent ${intent} rejected: ${detail}. The assigned agent must stop and await explicit human instructions; only an authorized human clear_blocker (or a human status override) can resolve it.`
+        : `[blocker_unresolved] Intent ${intent} rejected: ${detail}.`,
     };
   }
   return { ok: true };
@@ -559,11 +558,16 @@ export function runGuards(
       ]);
 
     case "clear_blocker":
-      // Clearing a blocker is a human operator action, not an agent cycle
-      // action: it must be allowed even when no workflow cycle is active
-      // (e.g. resolving a wait-for-human blocker raised by a status override).
+      if (state.activeBlocker?.override?.kind === "wait_for_human") {
+        // A human override may move the task to any non-Done status and does
+        // not require an active agent cycle, so its dedicated blocker must be
+        // clearable from Backlog as well.
+        return guardStatus(state, command.intent, ["Backlog", "To Do", "In Progress", "Review"]);
+      }
+      // Ordinary agent-raised blockers retain the legacy cycle guard.
       return runGuardsChain([
         guardStatus(state, command.intent, ["In Progress", "To Do", "Review"]),
+        guardCyclePrecondition(state, command.intent, command.workflowCycleId),
       ]);
 
     case "cancel_task":

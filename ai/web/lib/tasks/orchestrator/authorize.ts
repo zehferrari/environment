@@ -407,26 +407,35 @@ export function authorizeCommand(
     }
 
     case "clear_blocker": {
-      // Clearing a blocker is a human decision: the wait-for-human blocker
-      // created by a human status override must be resolvable by an
-      // authorized human (reporter, acting manager, or admin) — not only the
-      // assignee, who is deliberately fenced out while the blocker is active.
-      if (actor.kind !== "human") {
+      if (state.activeBlocker?.override?.kind === "wait_for_human") {
+        // A human status override deliberately fences the assignee. Only an
+        // authorized human workflow owner may release that dedicated blocker.
+        if (actor.kind !== "human") {
+          return {
+            allowed: false,
+            reason: "human_required",
+            decisionActorId: null,
+            executorActorId: null,
+          };
+        }
+        if (
+          actor.id !== state.reporterId &&
+          actor.id !== state.actingManagerId &&
+          actor.role !== "admin"
+        ) {
+          return {
+            allowed: false,
+            reason: "not_authorized_for_plan",
+            decisionActorId: null,
+            executorActorId: null,
+          };
+        }
+      } else if (!canSubmitImplementationIntent(state, actor)) {
+        // Preserve legacy parity for agent-raised operational/scope blockers:
+        // the assignee that raised the blocker remains able to clear it.
         return {
           allowed: false,
-          reason: "human_required",
-          decisionActorId: null,
-          executorActorId: null,
-        };
-      }
-      if (
-        actor.id !== state.reporterId &&
-        actor.id !== state.actingManagerId &&
-        actor.role !== "admin"
-      ) {
-        return {
-          allowed: false,
-          reason: "not_authorized_for_plan",
+          reason: "not_assignee",
           decisionActorId: null,
           executorActorId: null,
         };

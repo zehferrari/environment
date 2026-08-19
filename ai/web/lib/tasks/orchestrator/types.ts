@@ -694,6 +694,15 @@ export type TaskStateSnapshot = {
   activeBlocker?: {
     commentId: string | null;
     permissionRequest: { kind: string; scope: string } | null;
+    permissionGrant?: {
+      authorizationCommentId: string | null;
+      grantedAt: Date | null;
+    } | null;
+    override?: {
+      kind: "wait_for_human";
+      targetStatus: string | null;
+      reason: string | null;
+    } | null;
   } | null;
   actionPlan?: {
     id: string;

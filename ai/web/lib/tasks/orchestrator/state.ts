@@ -25,7 +25,7 @@ import type { Prisma } from "@prisma/client";
 import type { TaskWorkflowCommand } from "@/lib/tasks/orchestrator/types";
 import type { TaskStateSnapshot } from "@/lib/tasks/orchestrator/types";
 import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
-import { activeFormalBlockersByTask } from "@/lib/tasks/formal-blocker";
+import { activeFormalBlockerStatesByTask } from "@/lib/tasks/formal-blocker";
 
 // ---------------------------------------------------------------------------
 // FENCE_ERROR_CODES — local declaration, structurally assignable to 02a's
@@ -168,6 +168,11 @@ export type TaskAggregate = TaskStateSnapshot & {
     permissionGrant: {
       authorizationCommentId: string | null;
       grantedAt: Date | null;
+    } | null;
+    override: {
+      kind: "wait_for_human";
+      targetStatus: string | null;
+      reason: string | null;
     } | null;
   } | null;
 
@@ -512,7 +517,14 @@ async function loadTaskAggregateWithClient(
     client.activityLog.findMany({
       where: {
         taskId: taskId,
-        kind: { in: ["task.blocker", "task.extra_work.blocker", "task.blocker.cleared"] },
+        kind: {
+          in: [
+            "task.blocker",
+            "task.extra_work.blocker",
+            "task.blocker.cleared",
+            "task.blocker.permission.granted",
+          ],
+        },
       },
       select: {
         taskId: true,
@@ -578,7 +590,7 @@ async function loadTaskAggregateWithClient(
   // newest-first resolver returns the active blocker for this task, which
   // guardNoUnresolvedBlocker uses to refuse agent commands until a human
   // clears it.
-  const activeBlocker = activeFormalBlockersByTask(blockerActivityRows).get(taskId) ?? null;
+  const activeBlocker = activeFormalBlockerStatesByTask(blockerActivityRows).get(taskId) ?? null;
 
   // --- Build the aggregate ---
   const aggregate: TaskAggregate = {
@@ -699,7 +711,17 @@ async function loadTaskAggregateWithClient(
                 scope: activeBlocker.permissionRequest.scope,
               }
             : null,
-          permissionGrant: null,
+          permissionGrant: activeBlocker.permissionGrant
+            ? {
+                authorizationCommentId: activeBlocker.permissionGrant.authorizationCommentId,
+                grantedAt: activeBlocker.permissionGrant.grantedAt instanceof Date
+                  ? activeBlocker.permissionGrant.grantedAt
+                  : activeBlocker.permissionGrant.grantedAt != null
+                    ? new Date(activeBlocker.permissionGrant.grantedAt)
+                    : null,
+              }
+            : null,
+          override: activeBlocker.override,
         }
       : null,
 

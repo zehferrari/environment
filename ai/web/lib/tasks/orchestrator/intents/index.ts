@@ -338,9 +338,11 @@ const overrideStatusExecutor: IntentExecutor<"override_status"> = async (context
         requestedActor: "human owner",
         requestedAction: "Provide explicit instructions and clear the wait-for-human blocker with clear_blocker.",
         evidence: `Human status override to ${targetStatus} recorded as an authoritative decision.`,
-        diagnosticsAttempted: [],
+        diagnosticsAttempted: [
+          "Confirmed this blocker was created by an authoritative human status override, not an agent-diagnosable technical failure.",
+        ],
         resumeCondition: "An authorized human clears the wait-for-human blocker.",
-        reporterCanResolve: false,
+        reporterCanResolve: true,
       },
       override: {
         kind: "wait_for_human",

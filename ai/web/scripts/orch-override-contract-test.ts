@@ -202,6 +202,8 @@ async function main(): Promise<void> {
     const agentActor: TestActor = { id: "agent-1", kind: "agent", username: "barekbaal", role: "assignee", codingCapability: true };
     const monitorActor: TestActor = { id: "mon-1", kind: "agent", username: "monitor", role: "monitor" };
     const adminHumanActor: TestActor = { id: "admin-1", kind: "human", username: "admin", role: "admin" };
+    const assigneeActor: TestActor = { id: "assignee", kind: "agent", username: "agent", role: "assignee", codingCapability: true };
+    const reporterHumanActor: TestActor = { id: "reporter", kind: "human", username: "reporter", role: "reporter" };
 
     // Human (reporter) is allowed; decision actor is the human, executor null.
     const humanRes = authorizeCommand(makeState({}) as any, {
@@ -247,8 +249,48 @@ async function main(): Promise<void> {
     assert.equal(adminAgentRes.allowed, false, "admin-role agent should still be rejected");
     assert.equal(adminAgentRes.reason, "human_required", "agent admin rejection reason is human_required");
 
-    console.log("  Auth: human allowed (decisionActorId=human, executor=null), agents/monitor rejected ✓");
-    passed += 6;
+    const ordinaryBlockerState = makeState({
+      activeBlocker: {
+        commentId: "ordinary-blocker",
+        permissionRequest: null,
+        permissionGrant: null,
+        override: null,
+      },
+    });
+    const assigneeClear = authorizeCommand(ordinaryBlockerState as any, {
+      intent: "clear_blocker",
+      actor: assigneeActor as any,
+    });
+    assert.equal(assigneeClear.allowed, true, "assignee may clear an ordinary agent-raised blocker");
+    const reporterOrdinaryClear = authorizeCommand(ordinaryBlockerState as any, {
+      intent: "clear_blocker",
+      actor: reporterHumanActor as any,
+    });
+    assert.equal(reporterOrdinaryClear.allowed, false, "non-assignee reporter may not clear an ordinary blocker");
+    assert.equal(reporterOrdinaryClear.reason, "not_assignee", "ordinary blocker retains assignee authorization");
+
+    const waitForHumanBlockerState = makeState({
+      activeBlocker: {
+        commentId: "wait-for-human-blocker",
+        permissionRequest: null,
+        permissionGrant: null,
+        override: { kind: "wait_for_human", targetStatus: "In Progress", reason: null },
+      },
+    });
+    const agentWaitClear = authorizeCommand(waitForHumanBlockerState as any, {
+      intent: "clear_blocker",
+      actor: assigneeActor as any,
+    });
+    assert.equal(agentWaitClear.allowed, false, "assignee may not clear a wait-for-human override blocker");
+    assert.equal(agentWaitClear.reason, "human_required", "override blocker requires a human");
+    const reporterWaitClear = authorizeCommand(waitForHumanBlockerState as any, {
+      intent: "clear_blocker",
+      actor: reporterHumanActor as any,
+    });
+    assert.equal(reporterWaitClear.allowed, true, "authorized human may clear a wait-for-human override blocker");
+
+    console.log("  Auth: override is human-only; ordinary blockers remain assignee-clearable ✓");
+    passed += 13;
   } catch (e) {
     failed++;
     console.error(`FAIL [auth]: ${(e as Error).message}`);
@@ -292,6 +334,7 @@ async function main(): Promise<void> {
         report: { blockedOn: "decision", requestedActor: "zeh", requestedAction: "decide", evidence: "e", diagnosticsAttempted: [], resumeCondition: "human decision", reporterCanResolve: true },
         permissionRequest: { kind: "publish_checkpoint", scope: "x" },
         permissionGrant: null,
+        override: null,
       },
       repositoryRun: { phase: "validating" },
       activeWorkflowCycleId: "c1",
@@ -325,12 +368,13 @@ async function main(): Promise<void> {
           requestedActor: "human owner",
           requestedAction: "Provide explicit instructions and clear the wait-for-human blocker with clear_blocker.",
           evidence: "human status override",
-          diagnosticsAttempted: [],
+          diagnosticsAttempted: ["Confirmed the blocker came from a human status override."],
           resumeCondition: "human decision",
-          reporterCanResolve: false,
+          reporterCanResolve: true,
         },
         permissionRequest: null,
         permissionGrant: null,
+        override: { kind: "wait_for_human", targetStatus: "In Progress", reason: null },
       },
     });
     const agentRefused = runGuards(waitForHumanState as any, {
@@ -353,12 +397,111 @@ async function main(): Promise<void> {
     });
     assert.equal(overrideOk.ok, true, "override_status must be allowed while a wait-for-human blocker is active");
 
+    const ordinaryBlockerState = makeState({
+      status: "In Progress",
+      approvedOn: new Date(),
+      activeWorkflowCycleId: "c1",
+      activeBlocker: {
+        commentId: "c-ordinary",
+        permissionRequest: null,
+        permissionGrant: null,
+        override: null,
+      },
+    });
+    const ordinarySubmit = runGuards(ordinaryBlockerState as any, {
+      intent: "submit_for_review",
+      expectedWorkflowVersion: 7,
+      workflowCycleId: "c1",
+    });
+    assert.equal(ordinarySubmit.ok, true, "ordinary agent blocker does not widen submit_for_review guards");
+    const ordinaryClear = runGuards(ordinaryBlockerState as any, {
+      intent: "clear_blocker",
+      expectedWorkflowVersion: 7,
+      workflowCycleId: "c1",
+    });
+    assert.equal(ordinaryClear.ok, true, "ordinary blocker remains clearable inside its active cycle");
+    const ordinaryClearWithoutCycle = runGuards(
+      makeState({ ...ordinaryBlockerState, activeWorkflowCycleId: null }) as any,
+      { intent: "clear_blocker", expectedWorkflowVersion: 7, workflowCycleId: null },
+    );
+    assert.equal(ordinaryClearWithoutCycle.ok, false, "ordinary blocker clear retains the active-cycle guard");
+
+    const grantedPermissionState = makeState({
+      status: "In Progress",
+      approvedOn: new Date(),
+      activeWorkflowCycleId: "c1",
+      activeBlocker: {
+        commentId: "c-permission",
+        permissionRequest: { kind: "publish_checkpoint", scope: "publish phase-e" },
+        permissionGrant: { authorizationCommentId: "grant-1", grantedAt: new Date() },
+        override: null,
+      },
+    });
+    const grantedSubmit = runGuards(grantedPermissionState as any, {
+      intent: "submit_for_review",
+      expectedWorkflowVersion: 7,
+      workflowCycleId: "c1",
+    });
+    assert.equal(grantedSubmit.ok, true, "granted permission round is agent-actionable, not unresolved");
+
+    const backlogWaitState = makeState({
+      status: "Backlog",
+      activeWorkflowCycleId: null,
+      activeBlocker: {
+        commentId: "c-backlog-wfh",
+        permissionRequest: null,
+        permissionGrant: null,
+        override: { kind: "wait_for_human", targetStatus: "Backlog", reason: null },
+      },
+    });
+    const backlogClear = runGuards(backlogWaitState as any, {
+      intent: "clear_blocker",
+      expectedWorkflowVersion: 7,
+      workflowCycleId: null,
+    });
+    assert.equal(backlogClear.ok, true, "Backlog override blocker is human-clearable without an agent cycle");
+
     console.log("  Guards: version CAS enforced, edge/plan/blocker/WIP/repository deliberately bypassed ✓");
-    console.log("  Guards: wait-for-human blocker refuses agent intents, allows clear_blocker/override_status ✓");
-    passed += 8;
+    console.log("  Guards: override blockers fully fence; ordinary/granted blocker paths retain parity ✓");
+    passed += 13;
   } catch (e) {
     failed++;
     console.error(`FAIL [guards]: ${(e as Error).message}`);
+  }
+
+  // --- Persisted blocker marker and report validity --------------------------
+  console.log("\n=== Override Blocker Metadata Tests ===");
+  try {
+    const {
+      blockerMetadataFromPayload,
+      validateFormalBlockerReport,
+    } = await import("@/lib/tasks/formal-blocker");
+    const blockerReport = {
+      blockedOn: "decision",
+      requestedActor: "human owner",
+      requestedAction: "Provide explicit instructions and clear the wait-for-human blocker.",
+      evidence: "Human status override to Review recorded as an authoritative decision.",
+      diagnosticsAttempted: [
+        "Confirmed this blocker was created by an authoritative human status override.",
+      ],
+      resumeCondition: "An authorized human clears the wait-for-human blocker.",
+      reporterCanResolve: true,
+    };
+    const metadata = blockerMetadataFromPayload(JSON.stringify({
+      commentId: "comment-1",
+      blockerReport,
+      permissionRequest: null,
+      override: { kind: "wait_for_human", targetStatus: "Review", reason: "manual priority" },
+    }));
+    assert.equal(metadata.override?.kind, "wait_for_human", "override marker survives payload parsing");
+    assert.equal(metadata.override?.targetStatus, "Review", "override target status survives payload parsing");
+    assert.equal(metadata.override?.reason, "manual priority", "override reason survives payload parsing");
+    assert.equal(validateFormalBlockerReport(metadata.report).ok, true, "synthesized override report revalidates");
+    console.log("  Marker: wait_for_human metadata survives aggregate parsing and report revalidation ✓");
+    passed += 4;
+  } catch (e) {
+    failed++;
+    console.error(`FAIL [blocker metadata]: ${(e as Error).message}`);
   }
 
   // --- Decide: transition + cycle + effect -------------------------------------------------
