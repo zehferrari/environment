@@ -134,7 +134,8 @@
     "export-pm-event-fixture": "tsx scripts/export-pm-event-fixture.ts",
     "workflow-watchdog": "tsx scripts/workflow-watchdog.ts",
     "workflow-doctor": "tsx scripts/pm-workflow-doctor.ts",
-    "test:orch-phasee-03": "tsx scripts/orch-phasee-03-test.ts"
+    "test:orch-phasee-03": "tsx scripts/orch-phasee-03-test.ts",
+    "test:orch-phasee-10": "tsx scripts/orch-phasee-10-test.ts && tsx scripts/orch-phasee-10-dashboard-test.ts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.7.4",
