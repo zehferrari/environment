@@ -516,6 +516,7 @@ durable effect or retrying an already-recorded process cancellation fence.
 | [PM.md](./PM.md) | Detailed current PM workflow and lifecycle reference |
 | [docs/agent-pm-api.md](./docs/agent-pm-api.md) | Agent live-context read API |
 | [docs/agent-interaction.md](./docs/agent-interaction.md) | PM-channel replies, grants, proposals, drafts, and workflow actions |
+| [docs/phase-e-effectful-admission.md](./docs/phase-e-effectful-admission.md) | Effectful V2 admission, rollback, rollout gates, and E2 canary runbook |
 | [deploy/README.md](./deploy/README.md) | Host installation, services, switchers, verifier, and recovery |
 | [deploy/MULTI_AGENT_WORKTREES.md](./deploy/MULTI_AGENT_WORKTREES.md) | Worktree and live-preview design |
 | [lib/pm-dispatch/README.md](./lib/pm-dispatch/README.md) | Legacy/non-chat PM event emitter |

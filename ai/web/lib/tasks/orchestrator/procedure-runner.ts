@@ -646,10 +646,17 @@ async function advanceProcedure(procedureRunId: string): Promise<void> {
   });
   const allCompleted = steps.length > 0 && steps.every((s) => s.status === "completed");
   if (allCompleted) {
-    await db.taskProcedureRun.update({
-      where: { id: procedureRunId },
-      data: { status: "completed", currentStep: null, completedAt: new Date() },
-    });
+    const completedAt = new Date();
+    await db.$transaction([
+      db.taskProcedureRun.update({
+        where: { id: procedureRunId },
+        data: { status: "completed", currentStep: null, completedAt },
+      }),
+      db.taskWorkflowCommandReceipt.updateMany({
+        where: { procedureRunId, status: "accepted" },
+        data: { status: "completed" },
+      }),
+    ]);
   } else {
     // Wake the procedure so the next runnable step is picked up.
     await db.taskProcedureRun.update({
