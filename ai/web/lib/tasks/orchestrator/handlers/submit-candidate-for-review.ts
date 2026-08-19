@@ -292,10 +292,13 @@ async function runValidation(ctx: StepHandlerContext): Promise<StepHandlerResult
     lastError: null,
     incrementAttempt: true,
   });
-  // PHASEE-07 Fix #2a: Read publicationState to detect a replay (crash-recovery
-  // re-enqueue of the same job). If the row is already in "published" state,
-  // this is a replay — transition to "pending" and increment replayCount.
-  // Then set to "publishing" for the new enqueue.
+  // PHASEE-07: Publication lifecycle:
+  //   publishing  → set here at enqueue time.
+  //   published   → set by procedure-runner when the callback is applied (step completes).
+  //   pending     → set by procedure-runner when a duplicate callback arrives for an
+  //                 already-completed step; replayCount is incremented there.
+  // A re-enqueue after crash-recovery sees publicationState="published" and
+  // increments replayCount here, then sets "publishing" for the new enqueue.
   // PHASEE-07 Fix #3: Store full V2 identity packet in waiting_callback output
   // so a crash-replay can re-publish the same job deterministically.
   const existingRepoRun = await db.taskRepositoryRun.findUnique({
@@ -320,8 +323,11 @@ async function runValidation(ctx: StepHandlerContext): Promise<StepHandlerResult
     commandReceiptId: null,
     repositoryRunId: repoRun?.id ?? null,
     repositoryRunVersion: repoRun?.version ?? null,
-    candidateSha: task.repositoryRun?.candidateSha ?? null,
-    baseSha: task.repositoryRun?.baseSha ?? null,
+    // PHASEE-07 Fix #1: Use the same source as job.previousCandidateSha/job.baseSha
+    // (candidateOutput) so exact correlation never rejects a legitimate callback.
+    // The DB row's candidateSha can lag behind on resubmission after review_feedback.
+    candidateSha: typeof candidateOutput?.candidateSha === "string" ? candidateOutput.candidateSha : task.repositoryRun?.candidateSha ?? null,
+    baseSha: typeof candidateOutput?.baseSha === "string" ? candidateOutput.baseSha : task.repositoryRun?.baseSha ?? null,
   };
   return { status: "waiting_callback", jobId, output: { ...v2Identity, branchName } };
 }

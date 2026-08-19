@@ -474,6 +474,63 @@ async function test10_StepNotFoundMismatchRecorded(): Promise<void> {
   }
 }
 
+async function test11_DifferentShaResubmissionCallbackApplies(): Promise<void> {
+  console.log("\n--- Test 11: Different-SHA resubmission across two cycles — second callback applies (Fix #1) ---");
+  // Regression test for the blocking review finding:
+  //   Cycle 1 submits SHA A; repositoryRun.candidateSha = A.
+  //   Reviewer sends review_feedback — reviewedSha cleared but candidateSha stays A.
+  //   Cycle 2 submits SHA B; procInput.candidateSha = B.
+  //   The job's previousCandidateSha = B (from candidateOutput), but the step output
+  //   v2Identity.candidateSha must ALSO be B (not repositoryRun.candidateSha = A).
+  //   The runner echoes B; exact correlation must match and the callback must apply.
+  const { taskId, projectId, procedureRunId, stepId, workflowCycleId } = await setupTestTask();
+  try {
+    // Simulate cycle 1: DB row has candidateSha = "sha-A".
+    await setupTestRepoRun(taskId);
+    await db.taskRepositoryRun.update({
+      where: { taskId },
+      data: { candidateSha: "sha-A", publicationState: "published" },
+    });
+
+    // Simulate cycle 2: step output carries candidateSha = "sha-B" (the new
+    // candidate from candidateOutput, NOT the stale DB row value "sha-A").
+    // This is what the fix produces: v2Identity.candidateSha uses candidateOutput.candidateSha.
+    await db.taskProcedureStep.update({
+      where: { id: stepId },
+      data: {
+        status: "waiting_callback",
+        output: JSON.stringify({
+          jobId: "test-job-1",
+          candidateSha: "sha-B",  // Fix #1: step output now carries the same SHA as the job
+          baseSha: "def456",
+          schemaVersion: REPOSITORY_JOB_SCHEMA_V2,
+        }),
+      },
+    });
+
+    // The runner echoes candidateSha = "sha-B" (matching job.previousCandidateSha).
+    const callback: ProcedureCallback = {
+      procedureRunId,
+      stepId,
+      taskId,
+      workflowCycleId,
+      jobId: "test-job-1",
+      candidateSha: "sha-B",
+      baseSha: "def456",
+      schemaVersion: REPOSITORY_JOB_SCHEMA_V2,
+      data: { validationOutcome: "valid" },
+    };
+    const result = await applyProcedureCallback(callback);
+    assert(result.applied === true, `Different-SHA resubmission callback should apply (Fix #1), got: ${result.reason}`);
+
+    // Verify step is completed.
+    const step = await db.taskProcedureStep.findUnique({ where: { id: stepId } });
+    assert(step?.status === "completed", "Step should be completed after different-SHA resubmission callback");
+  } finally {
+    await cleanupTestTask(taskId, projectId);
+  }
+}
+
 async function main() {
   console.log("=== PHASEE-07: Exact repository job and callback correlation tests ===\n");
 
@@ -487,6 +544,7 @@ async function main() {
   await test8_MismatchedCallbackNoUserComments();
   await test9_V2RepositoryJobIdentityTypeAndGuard();
   await test10_StepNotFoundMismatchRecorded();
+  await test11_DifferentShaResubmissionCallbackApplies();
 
   console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
   if (failed > 0) {
