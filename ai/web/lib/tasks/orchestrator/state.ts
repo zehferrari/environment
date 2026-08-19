@@ -250,7 +250,7 @@ type DbClient = Prisma.TransactionClient;
 // ---------------------------------------------------------------------------
 
 export async function loadTaskAggregate(taskId: string): Promise<TaskAggregate | null> {
-  return loadTaskAggregateWithClient(undefined as unknown as DbClient, taskId, false);
+  return loadTaskAggregateWithClient(undefined, taskId, false);
 }
 
 // ---------------------------------------------------------------------------
@@ -271,14 +271,14 @@ export async function refreshTaskAggregateForTx(
 // ---------------------------------------------------------------------------
 
 async function loadTaskAggregateWithClient(
-  tx: DbClient,
+  tx: DbClient | undefined,
   taskId: string,
   useTx: boolean,
 ): Promise<TaskAggregate | null> {
   // We need to use either the tx client or the global db. When useTx is false,
-  // tx is a dummy — we import db lazily.
+  // tx is undefined — we import db lazily.
   const client = useTx
-    ? tx
+    ? tx!
     : (await import("@/lib/db")).db;
 
   const task = await client.task.findUnique({
@@ -774,28 +774,10 @@ export async function fenceState(
   command: TaskWorkflowCommand,
   preTransactionState: TaskStateSnapshot,
 ): Promise<FenceResult> {
-  // Re-read the critical fields inside the transaction.
-  const task = await tx.task.findUnique({
-    where: { id: taskId, deletedAt: null },
-    select: {
-      id: true,
-      status: true,
-      workflowVersion: true,
-      activeWorkflowCycleId: true,
-      approvedOn: true,
-      workflowEngine: true,
-      actionPlan: {
-        select: {
-          id: true,
-          version: true,
-          status: true,
-          approvedOn: true,
-        },
-      },
-    },
-  });
+  // Re-read the full aggregate inside the transaction via the shared loader.
+  const aggregate = await refreshTaskAggregateForTx(tx, taskId);
 
-  if (!task) {
+  if (!aggregate) {
     return {
       ok: false,
       code: "stale_version",
@@ -805,59 +787,70 @@ export async function fenceState(
   }
 
   // 1. Workflow version check (invariant 2: optimistic concurrency)
-  if (task.workflowVersion !== command.expectedWorkflowVersion) {
+  if (aggregate.workflowVersion !== command.expectedWorkflowVersion) {
     return {
       ok: false,
       code: "stale_version",
       expected: `workflowVersion=${command.expectedWorkflowVersion}`,
-      actual: `workflowVersion=${task.workflowVersion}`,
+      actual: `workflowVersion=${aggregate.workflowVersion}`,
     };
   }
 
   // 2. Status check — the status must not have changed between snapshot and
   //    transaction. The decision was computed from preTransactionState.status;
   //    if the task moved, the decision is invalid.
-  if (task.status !== preTransactionState.status) {
+  if (aggregate.status !== preTransactionState.status) {
     return {
       ok: false,
       code: "stale_version",
       expected: `status=${preTransactionState.status}`,
-      actual: `status=${task.status}`,
+      actual: `status=${aggregate.status}`,
     };
   }
 
-  // 3. Active cycle check
+  // 3. Engine owner check — a concurrent engine-ownership flip must not pass
+  //    the fence. TaskStateSnapshot doesn't carry workflowEngine, so we compare
+  //    the aggregate's task-level workflowEngine against the active cycle's
+  //    frozen workflowEngine (set at cycle open time). If they diverge, an
+  //    engine-ownership change occurred between snapshot and transaction.
+  if (aggregate.activeCycle && aggregate.activeCycle.workflowEngine !== aggregate.workflowEngine) {
+    return {
+      ok: false,
+      code: "stale_version",
+      expected: `workflowEngine=${aggregate.activeCycle.workflowEngine} (from active cycle)`,
+      actual: `workflowEngine=${aggregate.workflowEngine} (task-level)`,
+    };
+  }
+
+  // 4. Active cycle check
   if (command.workflowCycleId) {
-    if (task.activeWorkflowCycleId !== command.workflowCycleId) {
+    if (aggregate.activeWorkflowCycleId !== command.workflowCycleId) {
       return {
         ok: false,
         code: "cycle_mismatch",
         expected: `cycle=${command.workflowCycleId}`,
-        actual: `cycle=${task.activeWorkflowCycleId ?? "null"}`,
+        actual: `cycle=${aggregate.activeWorkflowCycleId ?? "null"}`,
       };
     }
   }
 
   // For start_implementation, verify no active cycle exists.
-  if (command.intent === "start_implementation" && task.activeWorkflowCycleId) {
+  if (command.intent === "start_implementation" && aggregate.activeWorkflowCycleId) {
     return {
       ok: false,
       code: "cycle_mismatch",
       expected: "no active cycle",
-      actual: `cycle=${task.activeWorkflowCycleId}`,
+      actual: `cycle=${aggregate.activeWorkflowCycleId}`,
     };
   }
 
-  // 4. Lease status/identity check for review intents
+  // 5. Lease status/identity check for review intents
   if (
     (command.intent === "accept_review" ||
       command.intent === "request_review_changes") &&
-    task.activeWorkflowCycleId
+    aggregate.activeWorkflowCycleId
   ) {
-    const lease = await tx.reviewRun.findUnique({
-      where: { workflowCycleId: task.activeWorkflowCycleId },
-      select: { id: true, status: true, candidateSha: true, reviewerId: true },
-    });
+    const lease = aggregate.activeReviewRun;
 
     if (!lease) {
       return {
@@ -877,7 +870,7 @@ export async function fenceState(
       };
     }
 
-    // 5. Candidate SHA check for accept_review
+    // 6. Candidate SHA check for accept_review
     if (
       command.intent === "accept_review" &&
       preTransactionState.activeReviewRun &&
@@ -892,13 +885,30 @@ export async function fenceState(
     }
   }
 
-  // 6. Action Plan revision check (when the command depends on plan approval)
+  // 7. Repository run phase check — a concurrent repository-run phase advance
+  //    (e.g. validation completed between snapshot and transaction) must not
+  //    pass the fence. Compare the phase recorded in the pre-transaction
+  //    snapshot against the phase re-read inside the transaction.
+  if (
+    preTransactionState.repositoryRun &&
+    aggregate.repositoryRun &&
+    aggregate.repositoryRun.phase !== preTransactionState.repositoryRun.phase
+  ) {
+    return {
+      ok: false,
+      code: "stale_version",
+      expected: `repositoryRun phase=${preTransactionState.repositoryRun.phase}`,
+      actual: `repositoryRun phase=${aggregate.repositoryRun.phase}`,
+    };
+  }
+
+  // 8. Action Plan revision check (when the command depends on plan approval)
   if (
     command.intent === "start_implementation" ||
     command.intent === "checkpoint" ||
     command.intent === "submit_for_review"
   ) {
-    if (!task.approvedOn) {
+    if (!aggregate.approvedOn) {
       return {
         ok: false,
         code: "stale_version",
@@ -907,29 +917,29 @@ export async function fenceState(
       };
     }
 
-    if (preTransactionState.approvedOn && task.approvedOn) {
+    if (preTransactionState.approvedOn && aggregate.approvedOn) {
       // Check that the approval didn't change (different approval timestamp
       // means a different plan revision was approved).
-      if (task.approvedOn.getTime() !== preTransactionState.approvedOn.getTime()) {
+      if (aggregate.approvedOn.getTime() !== preTransactionState.approvedOn.getTime()) {
         return {
           ok: false,
           code: "stale_version",
           expected: `approvedOn=${preTransactionState.approvedOn.toISOString()}`,
-          actual: `approvedOn=${task.approvedOn.toISOString()}`,
+          actual: `approvedOn=${aggregate.approvedOn.toISOString()}`,
         };
       }
     }
   }
 
-  // 7. Active-procedure uniqueness check
+  // 9. Active-procedure uniqueness check
   // For intents that start a procedure, verify no duplicate active procedure
   // of the same type exists for this cycle. The decision function declares
   // the procedureType; we check it here in the transaction.
-  if (task.activeWorkflowCycleId) {
+  if (aggregate.activeWorkflowCycleId) {
     const activeProcedures = await tx.taskProcedureRun.findMany({
       where: {
         taskId: taskId,
-        workflowCycleId: task.activeWorkflowCycleId,
+        workflowCycleId: aggregate.activeWorkflowCycleId,
         status: { in: ["queued", "running"] },
       },
       select: { id: true, type: true },
