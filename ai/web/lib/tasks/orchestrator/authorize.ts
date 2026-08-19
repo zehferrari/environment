@@ -47,6 +47,7 @@ export type AuthorizationReason =
   | "not_authorized_for_done"
   | "not_coding_capable"
   | "monitor_cannot_decide"
+  | "human_required"
   | "lease_not_owned"
   | "no_active_lease"
   | "ok";
@@ -221,6 +222,26 @@ export function authorizeCommand(
   }
 
   switch (intent) {
+    case "override_status": {
+      // Project access is established by the authenticated transport before
+      // aggregate loading. Reject every agent/mechanical actor here so this
+      // remains an explicit human decision.
+      if (actor.kind !== "human") {
+        return {
+          allowed: false,
+          reason: "human_required",
+          decisionActorId: null,
+          executorActorId: null,
+        };
+      }
+      return {
+        allowed: true,
+        reason: "ok",
+        decisionActorId: actor.id,
+        executorActorId: null,
+      };
+    }
+
     case "submit_plan":
     case "checkpoint":
     case "submit_for_review":
@@ -367,13 +388,45 @@ export function authorizeCommand(
       };
     }
 
-    case "raise_blocker":
-    case "clear_blocker": {
-      // Blocker intents are assignee-owned (the assignee reports blockers).
+    case "raise_blocker": {
+      // Raising a blocker is assignee-owned (the assignee reports blockers).
       if (!canSubmitImplementationIntent(state, actor)) {
         return {
           allowed: false,
           reason: "not_assignee",
+          decisionActorId: null,
+          executorActorId: null,
+        };
+      }
+      return {
+        allowed: true,
+        reason: "ok",
+        decisionActorId: actor.id,
+        executorActorId: null,
+      };
+    }
+
+    case "clear_blocker": {
+      // Clearing a blocker is a human decision: the wait-for-human blocker
+      // created by a human status override must be resolvable by an
+      // authorized human (reporter, acting manager, or admin) — not only the
+      // assignee, who is deliberately fenced out while the blocker is active.
+      if (actor.kind !== "human") {
+        return {
+          allowed: false,
+          reason: "human_required",
+          decisionActorId: null,
+          executorActorId: null,
+        };
+      }
+      if (
+        actor.id !== state.reporterId &&
+        actor.id !== state.actingManagerId &&
+        actor.role !== "admin"
+      ) {
+        return {
+          allowed: false,
+          reason: "not_authorized_for_plan",
           decisionActorId: null,
           executorActorId: null,
         };

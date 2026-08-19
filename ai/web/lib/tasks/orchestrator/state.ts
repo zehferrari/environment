@@ -25,6 +25,7 @@ import type { Prisma } from "@prisma/client";
 import type { TaskWorkflowCommand } from "@/lib/tasks/orchestrator/types";
 import type { TaskStateSnapshot } from "@/lib/tasks/orchestrator/types";
 import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
+import { activeFormalBlockersByTask } from "@/lib/tasks/formal-blocker";
 
 // ---------------------------------------------------------------------------
 // FENCE_ERROR_CODES — local declaration, structurally assignable to 02a's
@@ -383,6 +384,7 @@ async function loadTaskAggregateWithClient(
     otherInProgressForAssignee,
     pmChannelRun,
     activeEpisode,
+    blockerActivityRows,
   ] = await Promise.all([
     // Active review run
     task.activeWorkflowCycleId
@@ -505,6 +507,21 @@ async function loadTaskAggregateWithClient(
       },
       orderBy: { episodeNo: "desc" },
     }),
+
+    // Formal blocker activity rows (newest first) for active-blocker resolution.
+    client.activityLog.findMany({
+      where: {
+        taskId: taskId,
+        kind: { in: ["task.blocker", "task.extra_work.blocker", "task.blocker.cleared"] },
+      },
+      select: {
+        taskId: true,
+        kind: true,
+        payload: true,
+        createdAt: true,
+      },
+      orderBy: { createdAt: "desc" },
+    }),
   ]);
 
   // --- Other In Progress task on same effective branch ---
@@ -554,6 +571,14 @@ async function loadTaskAggregateWithClient(
         }
       : null,
   });
+
+  // --- Resolve the active formal blocker (wait-for-human or permission) ---
+  // The override executor raises a task.blocker activity for every non-Done
+  // human status override; clear_blocker writes task.blocker.cleared. The
+  // newest-first resolver returns the active blocker for this task, which
+  // guardNoUnresolvedBlocker uses to refuse agent commands until a human
+  // clears it.
+  const activeBlocker = activeFormalBlockersByTask(blockerActivityRows).get(taskId) ?? null;
 
   // --- Build the aggregate ---
   const aggregate: TaskAggregate = {
@@ -659,10 +684,24 @@ async function loadTaskAggregateWithClient(
     },
 
     // Active blocker (resolved from activity log — formal blocker state)
-    // For now, we don't load the full formal blocker in the aggregate;
-    // the guard can query it separately if needed. The field is null
-    // until the formal blocker is wired into the aggregate.
-    activeBlocker: null,
+    activeBlocker: activeBlocker
+      ? {
+          commentId: activeBlocker.commentId,
+          raisedAt: activeBlocker.raisedAt instanceof Date
+            ? activeBlocker.raisedAt
+            : activeBlocker.raisedAt != null
+              ? new Date(activeBlocker.raisedAt)
+              : null,
+          report: activeBlocker.report,
+          permissionRequest: activeBlocker.permissionRequest
+            ? {
+                kind: activeBlocker.permissionRequest.kind,
+                scope: activeBlocker.permissionRequest.scope,
+              }
+            : null,
+          permissionGrant: null,
+        }
+      : null,
 
     // Active cycle
     activeCycle: activeCycle

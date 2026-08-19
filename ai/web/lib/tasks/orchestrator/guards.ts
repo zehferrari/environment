@@ -319,12 +319,14 @@ export function guardNoUnresolvedBlocker(
   intent: TaskWorkflowIntent,
 ): GuardResult {
   const blocker = state.activeBlocker;
-  if (blocker && blocker.permissionRequest) {
+  if (blocker) {
+    const detail = blocker.permissionRequest
+      ? `an unresolved formal blocker with a pending permission request exists`
+      : `an unresolved wait-for-human blocker exists (task was moved by a human status override)`;
     return {
       ok: false,
       status: "invalid",
-      reason: `[blocker_unresolved] Intent ${intent} rejected: an unresolved formal blocker with a pending permission request exists.`,
-
+      reason: `[blocker_unresolved] Intent ${intent} rejected: ${detail}. The assigned agent must stop and await explicit human instructions; only an authorized human clear_blocker (or a human status override) can resolve it.`,
     };
   }
   return { ok: true };
@@ -440,6 +442,12 @@ export function runGuards(
   if (!versionGuard.ok) return versionGuard;
 
   switch (command.intent) {
+    case "override_status":
+      // Deliberately bypass ordinary edge/plan/cycle/blocker/repository guards.
+      // The workflow-version guard above remains authoritative and is fenced
+      // again inside the transaction.
+      return { ok: true };
+
     case "submit_plan":
       // §10.1: status Backlog/To Do, no existing approved plan
       return runGuardsChain([
@@ -545,10 +553,17 @@ export function runGuards(
     }
 
     case "raise_blocker":
-    case "clear_blocker":
       return runGuardsChain([
         guardStatus(state, command.intent, ["In Progress", "To Do", "Review"]),
         guardCyclePrecondition(state, command.intent, command.workflowCycleId),
+      ]);
+
+    case "clear_blocker":
+      // Clearing a blocker is a human operator action, not an agent cycle
+      // action: it must be allowed even when no workflow cycle is active
+      // (e.g. resolving a wait-for-human blocker raised by a status override).
+      return runGuardsChain([
+        guardStatus(state, command.intent, ["In Progress", "To Do", "Review"]),
       ]);
 
     case "cancel_task":
