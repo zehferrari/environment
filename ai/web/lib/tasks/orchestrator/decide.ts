@@ -404,7 +404,54 @@ export function decideCommand(
       };
     }
 
-    default:
-      return { status: "invalid", reason: `decideCommand: unsupported intent ${command.intent}` };
+    case "triage_task": {
+      const targetStatus = command.payload?.targetStatus;
+      if (targetStatus !== "To Do" && targetStatus !== "Backlog") {
+        return { status: "invalid", reason: "triage_task requires targetStatus To Do or Backlog" };
+      }
+      return {
+        fromStatus: state.status,
+        toStatus: targetStatus,
+        kernelIntent: "triage",
+        cycleOperation: "none",
+        effects: [{ type: "board_touch", key: "board-triage", payload: {} }],
+        evidence: { ...command.evidence ?? {}, decisionActorId, executorActorId, triaged: true },
+        decisionActorId,
+        executorActorId,
+      };
+    }
+
+    case "assign_task":
+    case "raise_scope_blocker":
+    case "publish_checkpoint":
+    case "add_subtask":
+    case "complete_subtask":
+    case "remove_subtask":
+    case "request_subtask":
+    case "request_task": {
+      return {
+        fromStatus: state.status,
+        toStatus: state.status,
+        kernelIntent: "operator_override",
+        cycleOperation: command.intent === "publish_checkpoint" ? "update" : "none",
+        effects: command.intent === "assign_task"
+          ? [{ type: "board_touch", key: "board-assignment", payload: {} }]
+          : [],
+        evidence: {
+          ...command.evidence ?? {},
+          ...command.payload ?? {},
+          decisionActorId,
+          executorActorId,
+          operationalIntent: command.intent,
+        },
+        decisionActorId,
+        executorActorId,
+      };
+    }
+
+    default: {
+      const exhaustiveIntent: never = command.intent;
+      return { status: "invalid", reason: `decideCommand: unsupported intent ${exhaustiveIntent}` };
+    }
   }
 }
