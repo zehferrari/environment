@@ -409,6 +409,28 @@ function validateTriageTask(raw: Record<string, unknown>): PayloadValidationResu
   return ok(payload);
 }
 
+function validateOverrideStatus(raw: Record<string, unknown>): PayloadValidationResult {
+  const targetStatus = raw["targetStatus"];
+  if (
+    targetStatus !== "Backlog" &&
+    targetStatus !== "To Do" &&
+    targetStatus !== "In Progress" &&
+    targetStatus !== "Review" &&
+    targetStatus !== "Done"
+  ) {
+    return fail(
+      "invalid_payload",
+      "targetStatus must be 'Backlog', 'To Do', 'In Progress', 'Review', or 'Done'",
+    );
+  }
+  const reason = requireStringOrNull(raw, "reason", MAX_REASON);
+  if (!reason.ok) return fail("invalid_payload", reason.message);
+
+  const payload: Record<string, unknown> = { targetStatus };
+  if (reason.value !== null) payload["reason"] = reason.value;
+  return ok(payload);
+}
+
 function validateAssignTask(raw: Record<string, unknown>): PayloadValidationResult {
   const assigneeUsername = requireString(raw, "assigneeUsername", MAX_ID);
   if (!assigneeUsername.ok) return fail("invalid_payload", assigneeUsername.message);
@@ -588,6 +610,7 @@ export function validateCommandPayload(
     case "triage_task": return validateTriageTask(raw);
     case "assign_task": return validateAssignTask(raw);
     case "raise_scope_blocker": return validateRaiseScopeBlocker(raw);
+    case "override_status": return validateOverrideStatus(raw);
     case "repository_validation_succeeded":
       return validateRepositoryCallback(raw, "succeeded", "repository_validation_succeeded");
     case "repository_validation_failed":

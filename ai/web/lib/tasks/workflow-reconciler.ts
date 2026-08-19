@@ -4,6 +4,7 @@ import { fenceSupersededPmChannelRuns } from "@/lib/agents/pm-channel/supersessi
 import { writeTaskExecutionState } from "@/lib/agents/watchdog/state";
 import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation";
 import { resolveActiveMonitorAgent } from "@/lib/tasks/repository-state";
+import { detectPhaseEInvariants, type PhaseEInvariantFinding } from "@/lib/tasks/orchestrator/phase-e-invariants";
 
 const DEFAULT_STALE_MS = 10 * 60_000;
 const DEFAULT_LIMIT = 100;
@@ -26,7 +27,13 @@ export type WorkflowReconciliationKind =
   | "finalization_completed_no_done_transition"
   | "multiple_open_cycles"
   | "procedure_step_waiting_on_terminal_job"
-  | "done_cycle_incomplete";
+  | "done_cycle_incomplete"
+  // PHASEE-10 invariant detectors
+  | "engine_ownership_mismatch"
+  | "stale_receipt_without_transition"
+  | "procedure_run_without_cycle"
+  | "dual_engine_active"
+  | "unknown_engine_value";
 
 export type WorkflowReconciliationFinding = {
   kind: WorkflowReconciliationKind;
@@ -175,6 +182,8 @@ export async function runWorkflowReconciliation(options: {
       status: true,
       workflowVersion: true,
       activeWorkflowCycleId: true,
+      workflowEngine: true,
+      workflowEnginePinnedAt: true,
       repositoryRun: {
         select: {
           id: true,
@@ -218,7 +227,7 @@ export async function runWorkflowReconciliation(options: {
       },
       workflowCycles: {
         where: { status: "open" },
-        select: { id: true, sequence: true, status: true, outcome: true },
+        select: { id: true, sequence: true, status: true, outcome: true, workflowEngine: true },
       },
       procedureRuns: {
         where: { status: { in: ["queued", "running", "operational_error"] } },
@@ -229,10 +238,22 @@ export async function runWorkflowReconciliation(options: {
           status: true,
           currentStep: true,
           lastError: true,
+          workflowCycleId: true,
           steps: {
             where: { status: "waiting_callback" },
             select: { id: true, name: true, status: true, output: true, availableAt: true },
           },
+        },
+      },
+      commandReceipts: {
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        select: {
+          idempotencyKey: true,
+          intent: true,
+          status: true,
+          transitionId: true,
+          createdAt: true,
         },
       },
     },
@@ -533,6 +554,46 @@ export async function runWorkflowReconciliation(options: {
           });
         }
       }
+    }
+
+    // --- PHASEE-10 invariant detectors -----------------------------------
+    // Read the open cycle's engine from the cycle row itself (not the task
+    // field) so detectEngineOwnershipMismatch compares two independent values.
+    const openCycle = task.workflowCycles.find((c) => c.status === "open") ?? null;
+    const lastReceipt = task.commandReceipts.length > 0 ? task.commandReceipts[0] : null;
+    const phaseEFindings = detectPhaseEInvariants({
+      taskId: task.id,
+      taskEngine: task.workflowEngine,
+      taskEnginePinnedAt: task.workflowEnginePinnedAt,
+      activeCycle: openCycle
+        ? { id: openCycle.id, workflowEngine: openCycle.workflowEngine, status: task.status }
+        : null,
+      lastReceipt: lastReceipt
+        ? {
+            idempotencyKey: lastReceipt.idempotencyKey,
+            intent: lastReceipt.intent,
+            status: lastReceipt.status,
+            transitionId: lastReceipt.transitionId,
+            createdAt: lastReceipt.createdAt,
+          }
+        : null,
+      activeProcedureRuns: task.procedureRuns.map((p) => ({
+        id: p.id,
+        type: p.type,
+        workflowCycleId: p.workflowCycleId,
+      })),
+      taskStatus: task.status,
+    });
+    for (const finding of phaseEFindings) {
+      add({
+        kind: finding.kind as WorkflowReconciliationKind,
+        taskId: finding.taskId,
+        rowId: finding.taskId,
+        detail: finding.detail,
+        repair: finding.repair,
+        repaired: false,
+        error: null,
+      });
     }
   }
 
