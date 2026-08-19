@@ -4,6 +4,7 @@ import { fenceSupersededPmChannelRuns } from "@/lib/agents/pm-channel/supersessi
 import { writeTaskExecutionState } from "@/lib/agents/watchdog/state";
 import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation";
 import { resolveActiveMonitorAgent } from "@/lib/tasks/repository-state";
+import { detectPhaseEInvariants, type PhaseEInvariantFinding } from "@/lib/tasks/orchestrator/phase-e-invariants";
 
 const DEFAULT_STALE_MS = 10 * 60_000;
 const DEFAULT_LIMIT = 100;
@@ -26,7 +27,12 @@ export type WorkflowReconciliationKind =
   | "finalization_completed_no_done_transition"
   | "multiple_open_cycles"
   | "procedure_step_waiting_on_terminal_job"
-  | "done_cycle_incomplete";
+  | "done_cycle_incomplete"
+  // PHASEE-10 invariant detectors
+  | "engine_ownership_mismatch"
+  | "stale_receipt_without_transition"
+  | "procedure_run_without_cycle"
+  | "dual_engine_active";
 
 export type WorkflowReconciliationFinding = {
   kind: WorkflowReconciliationKind;
@@ -533,6 +539,34 @@ export async function runWorkflowReconciliation(options: {
           });
         }
       }
+    }
+
+    // --- PHASEE-10 invariant detectors -----------------------------------
+    const phaseEFindings = detectPhaseEInvariants({
+      taskId: task.id,
+      taskEngine: (task as { workflowEngine?: string }).workflowEngine ?? "legacy",
+      taskEnginePinnedAt: null,
+      activeCycle: task.activeWorkflowCycleId
+        ? { id: task.activeWorkflowCycleId, workflowEngine: (task as { workflowEngine?: string }).workflowEngine ?? "legacy", status: task.status }
+        : null,
+      lastReceipt: null, // Receipt data fetched separately if needed
+      activeProcedureRuns: task.procedureRuns.map((p) => ({
+        id: p.id,
+        type: p.type,
+        workflowCycleId: null, // Not available in current select
+      })),
+      taskStatus: task.status,
+    });
+    for (const finding of phaseEFindings) {
+      add({
+        kind: finding.kind as WorkflowReconciliationKind,
+        taskId: finding.taskId,
+        rowId: finding.taskId,
+        detail: finding.detail,
+        repair: finding.repair,
+        repaired: false,
+        error: null,
+      });
     }
   }
 

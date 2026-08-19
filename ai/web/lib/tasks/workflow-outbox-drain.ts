@@ -1,5 +1,6 @@
 import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import { db } from "@/lib/db";
+import { writeDeduplicatedActivity, computeActivityDedupeKey } from "@/lib/tasks/orchestrator/activity-dedup";
 import { enqueueBranchVerifyJob, type BranchVerifyJob } from "@/lib/deploy/branch-verify";
 import {
   enqueueEpicCompletionReview,
@@ -165,23 +166,26 @@ async function escalate(row: OutboxRow, message: string) {
         where: { id: row.taskId, deletedAt: null },
         data: { alertReporter: true },
       }),
-      db.activityLog.create({
-        data: {
-          projectId: row.projectId,
-          taskId: row.taskId,
-          kind: "epic.completion_review.operational_error",
-          payload: JSON.stringify({
-            epicId,
-            outboxId: row.id,
-            dedupeKey: row.dedupeKey,
-            effectType: row.effectType,
-            attempts: row.attempts,
-            error: message,
-            via: "workflow_outbox",
-          }),
-        },
-      }),
     ]);
+    await writeDeduplicatedActivity({
+      projectId: row.projectId,
+      taskId: row.taskId,
+      kind: "epic.completion_review.operational_error",
+      payload: {
+        epicId,
+        outboxId: row.id,
+        dedupeKey: row.dedupeKey,
+        effectType: row.effectType,
+        attempts: row.attempts,
+        error: message,
+        via: "workflow_outbox",
+      },
+      dedupeKey: computeActivityDedupeKey("epic.completion_review.operational_error", row.taskId, {
+        outboxId: row.id,
+        effectType: row.effectType,
+        error: message,
+      }),
+    });
     return;
   }
   await db.$transaction([
@@ -189,21 +193,24 @@ async function escalate(row: OutboxRow, message: string) {
       where: { id: row.taskId, deletedAt: null },
       data: { alertReporter: true },
     }),
-    db.activityLog.create({
-      data: {
-        projectId: row.projectId,
-        taskId: row.taskId,
-        kind: "task.workflow.effect_failed",
-        payload: JSON.stringify({
-          outboxId: row.id,
-          dedupeKey: row.dedupeKey,
-          effectType: row.effectType,
-          attempts: row.attempts,
-          error: message,
-        }),
-      },
-    }),
   ]);
+  await writeDeduplicatedActivity({
+    projectId: row.projectId,
+    taskId: row.taskId,
+    kind: "task.workflow.effect_failed",
+    payload: {
+      outboxId: row.id,
+      dedupeKey: row.dedupeKey,
+      effectType: row.effectType,
+      attempts: row.attempts,
+      error: message,
+    },
+    dedupeKey: computeActivityDedupeKey("task.workflow.effect_failed", row.taskId, {
+      outboxId: row.id,
+      effectType: row.effectType,
+      error: message,
+    }),
+  });
 }
 
 export async function drainWorkflowOutbox(args: {

@@ -1208,6 +1208,12 @@ model ActivityLog {
   // PM project data.
   targetAgent String?
   targetFile  String?
+  // PHASEE-10 — Optional dedup key for structured deduplicated activities.
+  // When set, the partial unique index ensures replaying the same failure
+  // produces exactly one row. NULL keys are not constrained (multiple rows
+  // without dedupe keys remain valid). Shared-schema change: additive and
+  // NULL-tolerant so it sequences cleanly against PHASEE-08/09 migrations.
+  dedupeKey   String?  @map("dedupe_key")
   createdAt   DateTime @default(now())
 
   @@index([projectId])
@@ -1216,6 +1222,9 @@ model ActivityLog {
   @@index([targetAgent])
   @@index([targetFile])
   @@index([createdAt])
+  // PHASEE-10 — Partial unique index on dedupeKey. NULL values are excluded
+  // by the filter so rows without a dedupe key are never constrained.
+  @@unique([dedupeKey])
 }
 
 model DeploymentPullRequest {
