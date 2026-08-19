@@ -168,7 +168,8 @@ export async function loadWorkflowInvariantSnapshot(
       messageId: true,
       status: true,
       createdAt: true,
-      acceptedAt: true,
+      admittedAt: true,
+      acceptedAt: true, // ENV-159: legacy compatibility read
       streamingAt: true,
       completedAt: true,
       failedAt: true,
@@ -331,6 +332,7 @@ export async function loadWorkflowInvariantSnapshot(
     messageId: run.messageId,
     status: run.status,
     createdAt: run.createdAt.getTime(),
+    admittedAt: ms(run.admittedAt ?? run.acceptedAt),
     acceptedAt: ms(run.acceptedAt),
     streamingAt: ms(run.streamingAt),
     completedAt: ms(run.completedAt),

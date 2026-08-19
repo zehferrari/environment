@@ -64,6 +64,10 @@ const SUITES: readonly string[] = [
   "test:action-plan-structured",
   "test:env122-comment-metadata",
   "test:env122-comment-provenance",
+  // ENV-159 provider-neutral + multi-prerequisite + ENV-151 boundary.
+  "test:env159-provider-neutral",
+  "test:env159-multi-prerequisite",
+  "test:env151-boundary",
   // The twelve-case regression family, via its own aggregate runner.
   "test:workflow-regression",
 ];

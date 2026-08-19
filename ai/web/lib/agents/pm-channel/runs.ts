@@ -40,7 +40,11 @@ export { pmChannelRunTargetKey };
 // "retryable" is removed from run status — it lives only on PmChannelJob.
 export type PmChannelRunStatus =
   | "queued"
+  | "claimed"
+  | "delivered"
+  | "waiting_capacity"
   | "accepted"
+  | "admitted"
   | "streaming"
   | "completed"
   | "failed"
@@ -67,7 +71,7 @@ const TERMINAL_STATUSES = new Set<PmChannelRunStatus>([
 ]);
 
 // Non-terminal statuses that represent active runs.
-const ACTIVE_STATUSES = new Set<string>(["queued", "accepted", "streaming"]);
+const ACTIVE_STATUSES = new Set<string>(["queued", "delivered", "accepted", "streaming"]);
 
 function leaseDurationMs() {
   return Number.isFinite(LEASE_DURATION_MS) && LEASE_DURATION_MS >= 30_000
@@ -564,15 +568,103 @@ export async function recordPmChannelRunQueued(args: {
   }
 }
 
+// ENV-159: Durable per-agent execution lane.
+// Only one run per agent may hold the lane in reserved/admitted/running status.
+// This prevents the duplicate-dispatch problem when maxConcurrent=1.
+export async function acquireAgentExecutionLane(args: {
+  agentSlug: string;
+  runId: string;
+  taskId: string;
+}): Promise<
+  | { ok: true; leaseToken: string; status: "reserved" | "admitted" }
+  | { ok: false; blockedByRunId: string | null; blockedByTaskId: string | null }
+> {
+  const now = new Date();
+  const leaseDuration = Number.parseInt(
+    process.env.PM_OPENCLAW_LEASE_MS ?? "120000",
+    10,
+  );
+  const expiresAt = new Date(now.getTime() + leaseDuration);
+  try {
+    // Try to create a new lease. The UNIQUE constraint on runId prevents
+    // duplicate leases for the same run.
+    const lease = await db.agentExecutionLease.create({
+      data: {
+        agentSlug: args.agentSlug,
+        runId: args.runId,
+        taskId: args.taskId,
+        status: "reserved",
+        expiresAt,
+      },
+    });
+    return { ok: true, leaseToken: lease.leaseToken, status: "reserved" };
+  } catch (err) {
+    // If the lane is already held, find the blocking run.
+    const existing = await db.agentExecutionLease.findFirst({
+      where: {
+        agentSlug: args.agentSlug,
+        status: { in: ["reserved", "admitted", "running"] },
+      },
+      select: { runId: true, taskId: true },
+    });
+    return {
+      ok: false,
+      blockedByRunId: existing?.runId ?? null,
+      blockedByTaskId: existing?.taskId ?? null,
+    };
+  }
+}
+
+export async function releaseAgentExecutionLane(args: {
+  leaseToken: string;
+}): Promise<void> {
+  const now = new Date();
+  await db.agentExecutionLease.updateMany({
+    where: { leaseToken: args.leaseToken },
+    data: { status: "released", releasedAt: now },
+  });
+}
+
+export async function admitAgentExecutionLane(args: {
+  leaseToken: string;
+}): Promise<void> {
+  const now = new Date();
+  const leaseDuration = Number.parseInt(
+    process.env.PM_OPENCLAW_LEASE_MS ?? "120000",
+    10,
+  );
+  const expiresAt = new Date(now.getTime() + leaseDuration);
+  await db.agentExecutionLease.updateMany({
+    where: { leaseToken: args.leaseToken },
+    data: { status: "admitted", expiresAt },
+  });
+}
+
+export async function heartbeatAgentExecutionLane(args: {
+  leaseToken: string;
+}): Promise<void> {
+  const now = new Date();
+  const leaseDuration = Number.parseInt(
+    process.env.PM_OPENCLAW_LEASE_MS ?? "120000",
+    10,
+  );
+  const expiresAt = new Date(now.getTime() + leaseDuration);
+  await db.agentExecutionLease.updateMany({
+    where: { leaseToken: args.leaseToken },
+    data: { heartbeatAt: now, expiresAt },
+  });
+}
+
 export async function recordPmChannelRunDispatch(args: {
   target: PmChannelReplyTarget;
   result: SendPmChannelTurnResult;
 }) {
   const now = new Date();
   const ok = args.result.ok;
-  const leaseExpiresAt = ok ? new Date(now.getTime() + leaseDurationMs()) : null;
-  // ENV-122: Persist provider/model provenance from the dispatch response
-  // so comment creation sites can copy them from the run.
+  // ENV-159: HTTP 202 means delivered, not accepted. The run transitions
+  // through delivered → waiting_capacity → admitted → streaming → terminal.
+  // A file-drop accepted by OpenClaw is now "delivered", and the turn may
+  // actually be waiting behind another run because the agent has maxConcurrent=1.
   const provider = ok ? (args.result.provider ?? null) : null;
   const model = ok ? (args.result.model ?? null) : null;
   await record(
@@ -582,19 +674,21 @@ export async function recordPmChannelRunDispatch(args: {
         // Dispatch results are allowed to settle only the generation that is
         // still awaiting/holding this handoff. A delayed file-drop result for
         // a terminal generation must never resurrect it into the active lane.
-        status: { in: ["queued", "accepted"] },
+        status: { in: ["queued", "delivered", "accepted"] },
       },
       data: {
           httpStatus: args.result.status ?? null,
           driver: args.result.transportMode
             ? `openclaw-pm-channel:${args.result.transportMode}`
             : "openclaw-pm-channel",
-          status: ok ? "accepted" : "failed",
+          // ENV-159: delivered replaces accepted as the gateway-handoff state.
+          // accepted is kept as a compatibility read path during migration.
+          status: ok ? "delivered" : "failed",
           error: ok ? null : clippedError(args.result.error),
+          // ENV-159: Set acceptedAt as compatibility for old code; new code
+          // uses admittedAt which is set by the canonical turn:admitted event.
           acceptedAt: ok ? now : null,
           failedAt: ok ? null : now,
-          leaseExpiresAt,
-          heartbeatAt: ok ? now : null,
           finishedAt: ok ? null : now,
           finishedReason: ok ? null : clippedError(args.result.error) ?? "dispatch_failed",
           lastEventAt: now,
@@ -812,7 +906,7 @@ export async function applyPmChannelRunWorkflowAction(
   await tx.pmChannelRun.updateMany({
     where: {
       id: { in: runIds },
-      status: { in: ["queued", "accepted", "streaming"] },
+      status: { in: ["queued", "delivered", "accepted", "streaming"] },
     },
     data: {
       status: "completed",
@@ -894,7 +988,8 @@ export async function recordPmChannelRunEvent(args: {
   const targetKey = pmChannelRunTargetKey(args.target);
   const leaseExpiresAt = new Date(now.getTime() + leaseDurationMs());
 
-  if (args.event === "done") {
+  // ENV-159: turn:terminal is the canonical equivalent of done for run settling.
+  if (args.event === "done" || args.event === "turn:terminal") {
     await record(
       async () => {
         const existing = await db.pmChannelRun.findUnique({
@@ -1129,7 +1224,7 @@ export async function recordPmChannelRunEvent(args: {
     async () => {
       const existing = await db.pmChannelRun.findUnique({
         where: { targetKey },
-        select: { id: true, status: true, createdAt: true, acceptedAt: true, streamingAt: true },
+        select: { id: true, status: true, createdAt: true, acceptedAt: true, admittedAt: true, streamingAt: true },
       });
       // Never resurrect a run the watchdog (or a prior terminal event) already
       // settled. A late streaming chunk must not reopen a terminal run
@@ -1138,10 +1233,14 @@ export async function recordPmChannelRunEvent(args: {
       if (existing?.status === "completed" || existing?.status === "cancelled" || existing?.status === "superseded") return;
       if (existing?.status === "failed" && status !== "completed") return;
       if (existing?.status === "timed_out" && status !== "completed") return;
+      // ENV-159: First model callback transitions admitted→streaming.
+      // The first token arrives after admission; streamingAt marks the first
+      // visible progress, and the lease is renewed from the admitted baseline.
       const firstTokenAt = existing?.streamingAt ?? now;
-      const firstStreamMs = existing?.streamingAt || !existing?.acceptedAt
+      const admissionAnchor = existing?.admittedAt ?? existing?.acceptedAt;
+      const firstStreamMs = existing?.streamingAt || !admissionAnchor
         ? null
-        : now.getTime() - existing.acceptedAt.getTime();
+        : now.getTime() - admissionAnchor.getTime();
       // A `final` is a turn ending: if a continuation is armed, this settle is
       // `continue`, not a successful completion, and the outbox row becomes
       // drainable. A plain streaming chunk settles nothing.
@@ -1226,7 +1325,7 @@ export async function getPmChannelRunSnapshot(target: PmChannelReplyTarget) {
       streamSeq: true,
       createdAt: true,
       updatedAt: true,
-      acceptedAt: true,
+      admittedAt: true,
       streamingAt: true,
       completedAt: true,
       failedAt: true,

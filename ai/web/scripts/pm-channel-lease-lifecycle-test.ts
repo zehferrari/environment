@@ -93,13 +93,13 @@ async function main(): Promise<void> {
 
       const acceptedRun = await db.pmChannelRun.findUniqueOrThrow({
         where: { targetKey },
-        select: { status: true, leaseExpiresAt: true, heartbeatAt: true, acceptedAt: true },
+        select: { status: true, leaseExpiresAt: true, heartbeatAt: true, acceptedAt: true, admittedAt: true },
       });
-      assertEqual(acceptedRun.status, "accepted", "run should be accepted after dispatch");
-      assert(acceptedRun.leaseExpiresAt !== null, "leaseExpiresAt must be set on accept");
+      assertEqual(acceptedRun.status, "delivered", "run should be delivered after dispatch");
+      // ENV-159: lease is set at admission, not dispatch. Delivered runs don't have a lease yet.
       assert(acceptedRun.heartbeatAt !== null, "heartbeatAt must be set on accept");
 
-      const leaseBefore = acceptedRun.leaseExpiresAt.getTime();
+      const leaseBefore = acceptedRun.leaseExpiresAt!.getTime();
 
       // Streaming event renews the lease
       await recordPmChannelRunEvent({ target, event: "token" });
@@ -174,7 +174,7 @@ async function main(): Promise<void> {
         where: { targetKey: key1 },
         select: { id: true, status: true },
       });
-      assertEqual(run1.status, "accepted", "first run should be accepted");
+      assertEqual(run1.status, "delivered", "first run should be delivered");
 
       // Create second run for same task+agent — should supersede first
       await recordPmChannelRunQueued({ target: target2, kind: "task-comment" });
@@ -227,7 +227,7 @@ async function main(): Promise<void> {
           messageId: randomUUID(),
           taskId: reconTask.id,
           status: "accepted",
-          acceptedAt: new Date(Date.now() - 60000),
+          acceptedAt: new Date(Date.now() - 60000), admittedAt: new Date(Date.now() - 60000),
           lastEventAt: new Date(Date.now() - 60000),
         },
       });
@@ -414,7 +414,7 @@ async function main(): Promise<void> {
 
       const beforeRetry = await db.pmChannelRun.findUniqueOrThrow({
         where: { targetKey },
-        select: { acceptedAt: true, streamingAt: true, leaseExpiresAt: true, heartbeatAt: true },
+        select: { acceptedAt: true, admittedAt: true, streamingAt: true, leaseExpiresAt: true, heartbeatAt: true },
       });
       assert(beforeRetry.acceptedAt !== null, "acceptedAt must be set before retry");
       assert(beforeRetry.streamingAt !== null, "streamingAt must be set before retry");
@@ -426,7 +426,7 @@ async function main(): Promise<void> {
         where: { targetKey },
         select: {
           status: true,
-          acceptedAt: true,
+          acceptedAt: true, admittedAt: true,
           streamingAt: true,
           completedAt: true,
           failedAt: true,
@@ -488,7 +488,7 @@ async function main(): Promise<void> {
             messageId: randomUUID(),
             taskId: idxTask.id,
             status: "accepted",
-            acceptedAt: new Date(),
+            acceptedAt: new Date(), admittedAt: new Date(),
             lastEventAt: new Date(),
           },
         });

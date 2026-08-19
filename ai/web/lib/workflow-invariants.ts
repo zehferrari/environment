@@ -50,9 +50,14 @@ export function isWorkflowDisposition(
 
 // Run statuses that mean "the system still believes this turn is running".
 // ENV-117 moved "retryable" off the run and onto PmChannelJob.
+// ENV-159: Added delivered, waiting_capacity, admitted to the active lifecycle.
 export const ACTIVE_RUN_STATUSES = [
   "queued",
-  "accepted",
+  "claimed",
+  "delivered",
+  "waiting_capacity",
+  "accepted", // ENV-159: legacy compatibility
+  "admitted",
   "streaming",
 ] as const;
 
@@ -149,7 +154,8 @@ export interface RunRecord {
   messageId: string;
   status: string;
   createdAt: number;
-  acceptedAt: number | null;
+  admittedAt: number | null;
+  acceptedAt?: number | null; // ENV-159: legacy compatibility read (optional post-migration)
   streamingAt: number | null;
   completedAt: number | null;
   failedAt: number | null;
@@ -248,7 +254,7 @@ function result(violations: InvariantViolation[]): InvariantResult {
 // ------------------------------------------------------------------
 
 export function runLeaseAnchor(run: RunRecord): number {
-  return run.heartbeatAt ?? run.lastEventAt ?? run.streamingAt ?? run.acceptedAt ?? run.createdAt;
+  return run.heartbeatAt ?? run.lastEventAt ?? run.streamingAt ?? run.admittedAt ?? run.acceptedAt ?? run.createdAt;
 }
 
 export function runLeaseExpired(

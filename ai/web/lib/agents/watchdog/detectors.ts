@@ -66,7 +66,8 @@ export interface WatchdogRunRecord {
   status: string;
   sessionKey: string | null;
   createdAt: number;
-  acceptedAt: number | null;
+  admittedAt: number | null;
+  acceptedAt?: number | null; // ENV-159: legacy compatibility read (optional post-migration)
   streamingAt: number | null;
   lastEventAt: number | null;
   /** Most recent workflow action recorded against this run, settling or not. */
@@ -74,6 +75,9 @@ export interface WatchdogRunRecord {
   lastActionAt: number | null;
   settledByAction: string | null;
   disposition: string | null;
+  // ENV-159: provider/model for tool telemetry coverage detection
+  provider?: string | null;
+  model?: string | null;
 }
 
 /** Statuses in which a continuation still owes the task a turn. */
@@ -178,7 +182,7 @@ function stallGrace(snapshot: WatchdogSnapshot): number {
 }
 
 function leaseAnchor(run: WatchdogRunRecord): number {
-  return run.lastEventAt ?? run.streamingAt ?? run.acceptedAt ?? run.createdAt;
+  return run.lastEventAt ?? run.streamingAt ?? run.admittedAt ?? run.acceptedAt ?? run.createdAt;
 }
 
 /** Reuses the invariant module's lease derivation so the two cannot drift. */
@@ -192,7 +196,7 @@ function leaseIsExpired(run: WatchdogRunRecord, snapshot: WatchdogSnapshot): boo
       messageId: "",
       status: run.status,
       createdAt: run.createdAt,
-      acceptedAt: run.acceptedAt,
+      admittedAt: run.admittedAt ?? run.acceptedAt ?? null,
       streamingAt: run.streamingAt,
       completedAt: null,
       failedAt: null,
@@ -255,7 +259,7 @@ function idleSince(task: WatchdogTaskRecord, snapshot: WatchdogSnapshot): number
     if (run.taskId !== task.id) continue;
     anchor = Math.max(
       anchor,
-      run.lastEventAt ?? run.streamingAt ?? run.acceptedAt ?? run.createdAt,
+      run.lastEventAt ?? run.streamingAt ?? run.admittedAt ?? run.acceptedAt ?? run.createdAt,
     );
   }
   return snapshot.now - anchor;
@@ -529,7 +533,7 @@ const SESSION_CHURN: WatchdogDetector = {
         lane,
         Math.max(
           latestLaneActivity.get(lane) ?? 0,
-          run.lastEventAt ?? run.streamingAt ?? run.acceptedAt ?? run.createdAt,
+          run.lastEventAt ?? run.streamingAt ?? run.admittedAt ?? run.acceptedAt ?? run.createdAt,
         ),
       );
       if (runIsLive(run, snapshot)) liveLanes.add(lane);
@@ -578,6 +582,199 @@ const SESSION_CHURN: WatchdogDetector = {
   },
 };
 
+// ENV-159: Provider-neutral execution admission detectors.
+
+// 6a — a run is accepted/admitted but never started streaming. This is the
+// core incident detector: the gateway accepted the dispatch, but no model
+// actually started. Without this, the UI shows "accepted" as execution
+// even when nothing is running.
+const ACCEPTED_NO_STREAMING: WatchdogDetector = {
+  id: "accepted_no_streaming",
+  statement:
+    "A run that is accepted/admitted but has not started streaming within the stall grace window is settled as failed rather than left appearing to run.",
+  detect: (snapshot) => {
+    const findings: WatchdogFinding[] = [];
+    for (const run of snapshot.runs) {
+      if (!run.taskId) continue;
+      if (run.status !== "accepted" && run.status !== "admitted") continue;
+      const admissionTime = run.admittedAt ?? run.acceptedAt ?? run.createdAt;
+      if (snapshot.now - admissionTime < stallGrace(snapshot)) continue;
+      if (run.streamingAt) continue;
+      const ageSec = Math.round((snapshot.now - admissionTime) / 1000);
+      findings.push({
+        detectorId: "accepted_no_streaming",
+        taskId: run.taskId,
+        runId: run.id,
+        agentSlug: run.agentSlug,
+        state: "stalled",
+        reasonCode: "accepted_without_streaming",
+        reasonDetail: `run is ${run.status} for ${ageSec}s but never started streaming`,
+        repair: "settle_run",
+        priority: 85,
+      });
+    }
+    return findings;
+  },
+};
+
+// 6b — a run is tool-capable (has a model/provider) but reports zero tool
+// events despite being streaming or completed. This catches the Ollama
+// zero-count gap: if tool:start is not emitted, the episode safety boundary
+// is effectively disabled.
+const TOOL_CAPABLE_ZERO_TOOLS: WatchdogDetector = {
+  id: "tool_capable_zero_tools",
+  statement:
+    "A completed or streaming run with a known provider/model that recorded zero tool cycles may have a tool telemetry coverage gap.",
+  detect: (snapshot) => {
+    const findings: WatchdogFinding[] = [];
+    for (const run of snapshot.runs) {
+      if (!run.taskId) continue;
+      if (run.status !== "streaming" && run.status !== "completed") continue;
+      if (!run.provider || !run.model) continue;
+      // Check if the run has been streaming long enough to expect tool calls
+      const streamStart = run.streamingAt ?? run.createdAt;
+      if (snapshot.now - streamStart < 60_000) continue; // 1 min grace
+      // Zero tool events on a tool-capable run that has been streaming for a while
+      // This is a telemetry finding, not a repair — escalate for investigation
+      findings.push({
+        detectorId: "tool_capable_zero_tools",
+        taskId: run.taskId,
+        runId: run.id,
+        agentSlug: run.agentSlug,
+        state: "stalled",
+        reasonCode: "zero_tool_events_on_tool_capable_run",
+        reasonDetail: `${run.provider}/${run.model} run has been streaming for ${Math.round((snapshot.now - streamStart) / 1000)}s with zero tool cycles`,
+        repair: "escalate",
+        priority: 50,
+      });
+    }
+    return findings;
+  },
+};
+
+// 6c — two active lanes for one agent. The AgentExecutionLease partial
+// unique index should prevent this, but the detector catches DB corruption
+// or race conditions.
+const TWO_ACTIVE_LANES_ONE_AGENT: WatchdogDetector = {
+  id: "two_active_lanes_one_agent",
+  statement:
+    "Two simultaneous active runs for a single agent indicate a lane constraint violation.",
+  detect: (snapshot) => {
+    const findings: WatchdogFinding[] = [];
+    const agentActiveRuns = new Map<string, typeof snapshot.runs>();
+    for (const run of snapshot.runs) {
+      if (!isActiveRunStatus(run.status)) continue;
+      const bucket = agentActiveRuns.get(run.agentSlug) ?? [];
+      bucket.push(run);
+      agentActiveRuns.set(run.agentSlug, bucket);
+    }
+    for (const [agentSlug, runs] of agentActiveRuns) {
+      if (runs.length <= 1) continue;
+      for (const run of runs) {
+        if (!run.taskId) continue;
+        findings.push({
+          detectorId: "two_active_lanes_one_agent",
+          taskId: run.taskId,
+          runId: run.id,
+          agentSlug,
+          state: "stalled",
+          reasonCode: "duplicate_active_lane",
+          reasonDetail: `agent ${agentSlug} has ${runs.length} simultaneous active runs`,
+          repair: "escalate",
+          priority: 90,
+        });
+      }
+    }
+    return findings;
+  },
+};
+
+// 6d — provider/model missing after admission. A run that is admitted or
+// streaming without provider/model metadata cannot be properly enforced.
+const MISSING_PROVIDER_AFTER_ADMISSION: WatchdogDetector = {
+  id: "missing_provider_after_admission",
+  statement:
+    "A run that is admitted or streaming without provider/model metadata cannot be properly enforced by the episode policy.",
+  detect: (snapshot) => {
+    const findings: WatchdogFinding[] = [];
+    for (const run of snapshot.runs) {
+      if (!run.taskId) continue;
+      if (run.status !== "admitted" && run.status !== "streaming") continue;
+      if (run.provider && run.model) continue;
+      const admissionTime = run.admittedAt ?? run.acceptedAt ?? run.createdAt;
+      if (snapshot.now - admissionTime < 30_000) continue; // 30s grace
+      findings.push({
+        detectorId: "missing_provider_after_admission",
+        taskId: run.taskId,
+        runId: run.id,
+        agentSlug: run.agentSlug,
+        state: "stalled",
+        reasonCode: "provider_model_missing_after_admission",
+        reasonDetail: `run is ${run.status} but has no provider/model metadata`,
+        repair: "escalate",
+        priority: 70,
+      });
+    }
+    return findings;
+  },
+};
+
+const CAPACITY_WAIT_STALE: WatchdogDetector = {
+  id: "capacity_wait_stale",
+  statement:
+    "A run stuck in waiting_capacity for more than 10 minutes indicates the agent lane is occupied or the blocking run never released its lease.",
+  detect: (snapshot) => {
+    const findings: WatchdogFinding[] = [];
+    const staleMs = Number(process.env.PM_CAPACITY_WAIT_STALE_MS ?? 600_000);
+    for (const run of snapshot.runs) {
+      if (!run.taskId) continue;
+      if (run.status !== "waiting_capacity") continue;
+      const blockedAt = run.lastEventAt ?? run.createdAt;
+      if (snapshot.now - blockedAt < staleMs) continue;
+      findings.push({
+        detectorId: "capacity_wait_stale",
+        taskId: run.taskId,
+        runId: run.id,
+        agentSlug: run.agentSlug,
+        state: "stalled",
+        reasonCode: "capacity_wait_stale",
+        reasonDetail: `run waiting_capacity for ${Math.round((snapshot.now - blockedAt) / 1000)}s`,
+        repair: "escalate",
+        priority: 75,
+      });
+    }
+    return findings;
+  },
+};
+
+const DELIVERED_NO_ADMISSION: WatchdogDetector = {
+  id: "delivered_no_admission",
+  statement:
+    "A run in delivered status for more than 60 seconds means the gateway accepted the file-drop but the agent never admitted the turn.",
+  detect: (snapshot) => {
+    const findings: WatchdogFinding[] = [];
+    const staleMs = Number(process.env.PM_DELIVERED_STALE_MS ?? 60_000);
+    for (const run of snapshot.runs) {
+      if (!run.taskId) continue;
+      if (run.status !== "delivered") continue;
+      const deliveredAt = run.lastEventAt ?? run.createdAt;
+      if (snapshot.now - deliveredAt < staleMs) continue;
+      findings.push({
+        detectorId: "delivered_no_admission",
+        taskId: run.taskId,
+        runId: run.id,
+        agentSlug: run.agentSlug,
+        state: "stalled",
+        reasonCode: "delivered_no_admission",
+        reasonDetail: `run delivered for ${Math.round((snapshot.now - deliveredAt) / 1000)}s without admission`,
+        repair: "escalate",
+        priority: 72,
+      });
+    }
+    return findings;
+  },
+};
+
 export const WATCHDOG_DETECTORS: readonly WatchdogDetector[] = [
   BLOCKER_CLEAR_LOOP,
   SESSION_CHURN,
@@ -587,6 +784,13 @@ export const WATCHDOG_DETECTORS: readonly WatchdogDetector[] = [
   IN_PROGRESS_NO_ACTIVE_RUN,
   STARTED_NO_WORK,
   OPEN_CHECKLIST_NO_CONTINUATION,
+  // ENV-159 provider-neutral execution admission detectors
+  ACCEPTED_NO_STREAMING,
+  TOOL_CAPABLE_ZERO_TOOLS,
+  TWO_ACTIVE_LANES_ONE_AGENT,
+  MISSING_PROVIDER_AFTER_ADMISSION,
+  CAPACITY_WAIT_STALE,
+  DELIVERED_NO_ADMISSION,
 ];
 
 export function watchdogDetectorById(id: string): WatchdogDetector | null {

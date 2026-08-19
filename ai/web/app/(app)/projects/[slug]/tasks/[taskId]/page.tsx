@@ -114,6 +114,7 @@ import PmOptions from "@/components/pm-options";
 import { findPmOptionResolution, parsePmOptions, isPmOptionsTargetedAtCurrentUser } from "@/lib/pm-options";
 import AvatarCombobox, { type AvatarComboboxOption } from "@/components/avatar-combobox";
 import TaskEpicPicker from "./task-epic-picker";
+import { TaskPrerequisiteEditor } from "./task-prerequisite-editor";
 import DeploymentTab, { DeploymentStatusSelect, canShowDeploymentAction, canShowDeploymentTab, type DeploymentPrRow } from "@/components/deployment-tab";
 import { checkDeploymentStatusWrite, isDeploymentStatus } from "@/lib/deploy/deployment-status";
 import {
@@ -2292,32 +2293,12 @@ export default async function TaskDetailPage({
                       </div>
                     ) : null}
 
-                    {/* Legacy primary prerequisite editor (ENV-62). */}
-                    {currentBlockerVisible ? <div className="space-y-1 rounded-card border border-line bg-panel-soft p-card">
-                      <label className="block">
-                        <span className="mb-1 flex items-center gap-1.5 text-micro font-semibold uppercase tracking-wider text-text-muted">
-                          <LockIcon />
-                          Primary prerequisite
-                        </span>
-                        <select
-                          form="taskMain"
-                          name="blockedById"
-                          defaultValue={task.blockedById ?? ""}
-                          aria-label="Primary prerequisite"
-                          className="w-full rounded-lg border border-line bg-bg px-2 py-1.5 text-caption outline-none focus:border-accent"
-                        >
-                          <option value="">None</option>
-                          {blockerCandidates.map((candidate) => (
-                            <option key={candidate.id} value={candidate.id}>
-                              {(candidate.workItemKey ? `${candidate.workItemKey} — ` : "") + candidate.title} ({candidate.status})
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <p className="text-nano text-text-muted">
-                        Human-edited same-project prerequisite. Manager-created multi-project dependencies are listed above.
-                      </p>
-                    </div> : null}
+                    {/* Multi-prerequisite editor (ENV-159 step 8). */}
+                    {currentBlockerVisible ? <TaskPrerequisiteEditor
+                      taskId={task.id}
+                      projectSlug={slug}
+                      canEdit={true}
+                    /> : null}
 
                     <div data-task-actions className="grid grid-cols-2 gap-3">
                       <form

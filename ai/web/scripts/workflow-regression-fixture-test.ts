@@ -914,7 +914,7 @@ async function main(): Promise<void> {
           sessionKey: String(historicalRun.sessionKey ?? "replay-e4-session"),
           status: "accepted",
           createdAt: abandonedAt,
-          acceptedAt: abandonedAt,
+          acceptedAt: abandonedAt, admittedAt: abandonedAt,
           lastEventAt: abandonedAt,
         },
       });
@@ -1038,7 +1038,7 @@ async function main(): Promise<void> {
         comments: await db.comment.count(),
         checklist: await db.subTask.count(),
       };
-      const observed = await checkWorkflowInvariants({ projectId: world.projectId, now: Date.now() });
+      const observed = await checkWorkflowInvariants({ projectId: world.projectId, now: Date.now(), sinceMs: 365 * 24 * 60 * 60 * 1000 });
       const after = {
         runs: await db.pmChannelRun.count(),
         tasks: await db.task.count(),

@@ -125,7 +125,7 @@ async function main(): Promise<void> {
           sessionKey: "session-a",
           status: args.status,
           createdAt: args.at,
-          acceptedAt: args.at,
+          acceptedAt: args.at, admittedAt: args.at,
           lastEventAt: args.at,
           lastAction: args.lastAction ?? null,
           lastActionAt: args.lastAction ? args.at : null,

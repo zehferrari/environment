@@ -316,6 +316,7 @@ export default async function SystemActivityPage({
               kind: true,
               status: true,
               createdAt: true,
+              admittedAt: true,
               acceptedAt: true,
               streamingAt: true,
               completedAt: true,
@@ -510,6 +511,7 @@ type PmRun = {
   status: string;
   createdAt: Date;
   acceptedAt: Date | null;
+  admittedAt: Date | null;
   streamingAt: Date | null;
   completedAt: Date | null;
   failedAt: Date | null;

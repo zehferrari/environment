@@ -1,6 +1,7 @@
 export type PmChannelLatencySource = {
   createdAt: Date;
-  acceptedAt: Date | null;
+  admittedAt: Date | null;
+  acceptedAt: Date | null; // ENV-159: legacy compatibility read
   streamingAt: Date | null;
   completedAt: Date | null;
   failedAt?: Date | null;
@@ -16,9 +17,11 @@ function spanMs(start: Date | null | undefined, end: Date | null | undefined) {
 export function pmChannelLatencySpans(run: PmChannelLatencySource) {
   const firstTokenAt = run.streamingAt ?? run.completedAt ?? null;
   const finalAt = run.completedAt ?? run.failedAt ?? null;
+  // ENV-159: Use admittedAt (canonical) with acceptedAt fallback for compatibility
+  const admissionTime = run.admittedAt ?? run.acceptedAt;
   return {
-    sendToAcceptedMs: spanMs(run.createdAt, run.acceptedAt),
-    acceptedToFirstTokenMs: spanMs(run.acceptedAt ?? run.createdAt, firstTokenAt),
+    sendToAcceptedMs: spanMs(run.createdAt, admissionTime),
+    acceptedToFirstTokenMs: spanMs(admissionTime ?? run.createdAt, firstTokenAt),
     firstTokenToFinalMs: run.streamingAt ? spanMs(run.streamingAt, finalAt) : null,
     sendToFinalMs: spanMs(run.createdAt, finalAt),
   };

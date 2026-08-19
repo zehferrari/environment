@@ -50,7 +50,8 @@ async function main(): Promise<void> {
       taskId: true,
       lastEventAt: true,
       createdAt: true,
-      acceptedAt: true,
+      admittedAt: true,
+      acceptedAt: true, // ENV-159: legacy compatibility read
       streamingAt: true,
     },
     orderBy: { lastEventAt: "asc" },
