@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { validateTaskDependency } from "@/lib/tasks/blocking";
+import { setTaskDependencies } from "@/lib/tasks/task-dependency-queries";
 import type { PrismaClient } from "@prisma/client";
 
 /**
@@ -257,10 +258,371 @@ export async function testNonexistentPrerequisite() {
 }
 
 // ---------------------------------------------------------------------------
+// Extended mock for setTaskDependencies route-level tests
+// Adds $transaction, taskDependency.deleteMany/create, task.update,
+// activityLog.create, task.findMany to the in-memory store.
+// ---------------------------------------------------------------------------
+
+function createExtendedMockDb(opts: {
+  tasks?: MockTask[];
+  dependencies?: MockDependency[];
+} = {}) {
+  const tasks = new Map((opts.tasks ?? []).map((t) => [t.id, {
+    ...t,
+    epic: t.epic ?? null,
+    parent: t.parent ?? null,
+  }]));
+  const deps = new Map((opts.dependencies ?? []).map((d) => [`${d.taskId}|${d.prerequisiteTaskId}`, d]));
+  const activityLogs: Array<{ taskId: string; userId: string; payload: string }> = [];
+
+  function getDepsForTask(taskId: string): MockDependency[] {
+    const results: MockDependency[] = [];
+    for (const [, dep] of deps) {
+      if (dep.taskId === taskId) results.push(dep);
+    }
+    return results;
+  }
+
+  const base = {
+    taskDependency: {
+      findUnique: async ({ where }: { where: { taskId_prerequisiteTaskId: { taskId: string; prerequisiteTaskId: string } } }) => {
+        const key = `${where.taskId_prerequisiteTaskId.taskId}|${where.taskId_prerequisiteTaskId.prerequisiteTaskId}`;
+        return deps.get(key) ?? null;
+      },
+      findMany: async ({ where }: { where: { taskId: string } }) => {
+        return getDepsForTask(where.taskId);
+      },
+      deleteMany: async ({ where }: { where: { taskId: string; prerequisiteTaskId: { in: string[] } } }) => {
+        let count = 0;
+        for (const prereqId of where.prerequisiteTaskId.in) {
+          const key = `${where.taskId}|${prereqId}`;
+          if (deps.has(key)) {
+            deps.delete(key);
+            count++;
+          }
+        }
+        return { count };
+      },
+      create: async ({ data }: { data: { taskId: string; prerequisiteTaskId: string } }) => {
+        const id = `dep-${data.taskId}-${data.prerequisiteTaskId}`;
+        deps.set(`${data.taskId}|${data.prerequisiteTaskId}`, { id, taskId: data.taskId, prerequisiteTaskId: data.prerequisiteTaskId });
+        return { id };
+      },
+      upsert: async ({ where: upWhere }: { where: { taskId_prerequisiteTaskId: { taskId: string; prerequisiteTaskId: string } } }) => {
+        const key = `${upWhere.taskId_prerequisiteTaskId.taskId}|${upWhere.taskId_prerequisiteTaskId.prerequisiteTaskId}`;
+        if (!deps.has(key)) {
+          deps.set(key, { id: `dep-${key}`, taskId: upWhere.taskId_prerequisiteTaskId.taskId, prerequisiteTaskId: upWhere.taskId_prerequisiteTaskId.prerequisiteTaskId });
+        }
+        return deps.get(key);
+      },
+    },
+    task: {
+      findUnique: async ({ where }: { where: { id: string } }) => {
+        const t = tasks.get(where.id);
+        if (!t) return null;
+        const taskDeps = getDepsForTask(where.id);
+        return {
+          ...t,
+          dependencies: taskDeps.map((d) => ({ prerequisiteTaskId: d.prerequisiteTaskId })),
+          epic: t.epic ?? null,
+          parent: t.parent ?? null,
+        };
+      },
+      findMany: async ({ where }: { where: { id: { in: string[] } } }) => {
+        return where.id.in.map((id: string) => {
+          const t = tasks.get(id);
+          if (!t) return null;
+          return { id, projectId: t.projectId, private: t.private };
+        }).filter(Boolean);
+      },
+      update: async ({ where, data }: { where: { id: string }; data: { blockedById?: null | string } }) => {
+        const t = tasks.get(where.id);
+        if (t && data.blockedById !== undefined) {
+          t.blockedById = data.blockedById;
+        }
+        return { id: where.id };
+      },
+    },
+    activityLog: {
+      create: async ({ data }: { data: { kind: string; taskId: string; userId: string; payload: string } }) => {
+        activityLogs.push({ taskId: data.taskId, userId: data.userId, payload: data.payload });
+        return { id: `log-${activityLogs.length}` };
+      },
+    },
+    workspaceProject: {
+      findFirst: async () => null,
+    },
+    $transaction: async (fn: (tx: any) => Promise<any>) => {
+      return fn(base);
+    },
+  } as unknown as PrismaClient;
+
+  (base as any)._activityLogs = activityLogs;
+  (base as any)._deps = deps;
+  (base as any)._tasks = tasks;
+
+  return base;
+}
+
+// ---------------------------------------------------------------------------
+// Test 11: setTaskDependencies — add new dependency
+// ---------------------------------------------------------------------------
+
+export async function testSetAddNewDependency() {
+  const mockDb = createExtendedMockDb({
+    tasks: [
+      { id: "t1", private: false, deletedAt: null, projectId: "p1", blockedById: null },
+      { id: "t2", private: false, deletedAt: null, projectId: "p1", blockedById: null },
+    ],
+  });
+
+  const result = await setTaskDependencies({
+    taskId: "t1",
+    prerequisiteTaskIds: ["t2"],
+    actorUserId: "user-1",
+    db: mockDb as any,
+  });
+
+  assert.deepEqual(result.added, ["t2"]);
+  assert.deepEqual(result.removed, []);
+  const created = (mockDb as any)._deps.get("t1|t2");
+  assert.ok(created, "Dependency edge should exist in store");
+}
+
+// ---------------------------------------------------------------------------
+// Test 12: setTaskDependencies — remove existing dependency
+// ---------------------------------------------------------------------------
+
+export async function testSetRemoveDependency() {
+  const mockDb = createExtendedMockDb({
+    tasks: [
+      { id: "t1", private: false, deletedAt: null, projectId: "p1", blockedById: null },
+      { id: "t2", private: false, deletedAt: null, projectId: "p1", blockedById: null },
+    ],
+    dependencies: [{ id: "dep-1", taskId: "t1", prerequisiteTaskId: "t2" }],
+  });
+
+  const result = await setTaskDependencies({
+    taskId: "t1",
+    prerequisiteTaskIds: [],
+    actorUserId: "user-1",
+    db: mockDb as any,
+  });
+
+  assert.deepEqual(result.added, []);
+  assert.deepEqual(result.removed, ["t2"]);
+  const deleted = (mockDb as any)._deps.get("t1|t2");
+  assert.equal(deleted, undefined, "Dependency edge should be removed from store");
+}
+
+// ---------------------------------------------------------------------------
+// Test 13: setTaskDependencies — preserve existing, add new
+// ---------------------------------------------------------------------------
+
+export async function testSetPreserveAndAdd() {
+  const mockDb = createExtendedMockDb({
+    tasks: [
+      { id: "t1", private: false, deletedAt: null, projectId: "p1", blockedById: null },
+      { id: "t2", private: false, deletedAt: null, projectId: "p1", blockedById: null },
+      { id: "t3", private: false, deletedAt: null, projectId: "p1", blockedById: null },
+    ],
+    dependencies: [{ id: "dep-1", taskId: "t1", prerequisiteTaskId: "t2" }],
+  });
+
+  const result = await setTaskDependencies({
+    taskId: "t1",
+    prerequisiteTaskIds: ["t2", "t3"],
+    actorUserId: "user-1",
+    db: mockDb as any,
+  });
+
+  assert.deepEqual(result.added, ["t3"]);
+  assert.deepEqual(result.removed, []);
+  assert.ok((mockDb as any)._deps.get("t1|t2"), "Existing edge t1→t2 should be preserved");
+  assert.ok((mockDb as any)._deps.get("t1|t3"), "New edge t1→t3 should be created");
+}
+
+// ---------------------------------------------------------------------------
+// Test 14: setTaskDependencies — legacy blockedById nulled when removed
+// ---------------------------------------------------------------------------
+
+export async function testLegacyBlockedByIdNulledOnRemoval() {
+  const mockDb = createExtendedMockDb({
+    tasks: [
+      { id: "t1", private: false, deletedAt: null, projectId: "p1", blockedById: "t2" },
+      { id: "t2", private: false, deletedAt: null, projectId: "p1", blockedById: null },
+    ],
+  });
+
+  const result = await setTaskDependencies({
+    taskId: "t1",
+    prerequisiteTaskIds: [],
+    actorUserId: "user-1",
+    db: mockDb as any,
+  });
+
+  assert.deepEqual(result.added, []);
+  assert.deepEqual(result.removed, ["t2"]);
+  const task = (mockDb as any)._tasks.get("t1");
+  assert.equal(task.blockedById, null, "Legacy blockedById should be nulled when prerequisite is removed");
+}
+
+// ---------------------------------------------------------------------------
+// Test 15: setTaskDependencies — legacy blockedById preserved when kept in set
+// ---------------------------------------------------------------------------
+
+export async function testLegacyBlockedByIdPreservedWhenInSet() {
+  const mockDb = createExtendedMockDb({
+    tasks: [
+      { id: "t1", private: false, deletedAt: null, projectId: "p1", blockedById: "t2" },
+      { id: "t2", private: false, deletedAt: null, projectId: "p1", blockedById: null },
+    ],
+  });
+
+  const result = await setTaskDependencies({
+    taskId: "t1",
+    prerequisiteTaskIds: ["t2"],
+    actorUserId: "user-1",
+    db: mockDb as any,
+  });
+
+  assert.deepEqual(result.added, []);
+  assert.deepEqual(result.removed, []);
+  const task = (mockDb as any)._tasks.get("t1");
+  assert.equal(task.blockedById, "t2", "Legacy blockedById should be preserved when prerequisite is kept");
+}
+
+// ---------------------------------------------------------------------------
+// Test 16: setTaskDependencies — validation rejects invalid edge, no changes applied
+// ---------------------------------------------------------------------------
+
+export async function testSetRejectsInvalidEdgeNoChanges() {
+  const mockDb = createExtendedMockDb({
+    tasks: [
+      { id: "t1", private: false, deletedAt: null, projectId: "p1", blockedById: null },
+      { id: "t2", private: true, deletedAt: null, projectId: "p1", blockedById: null },
+    ],
+    // No existing dependencies — t2 is NOT already a prerequisite
+  });
+
+  await assert.rejects(
+    async () => setTaskDependencies({
+      taskId: "t1",
+      prerequisiteTaskIds: ["t2"],
+      actorUserId: "user-1",
+      db: mockDb as any,
+    }),
+    /Cannot add dependency/,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Test 17: setTaskDependencies — add and remove simultaneously
+// ---------------------------------------------------------------------------
+
+export async function testSetAddAndRemoveSimultaneously() {
+  const mockDb = createExtendedMockDb({
+    tasks: [
+      { id: "t1", private: false, deletedAt: null, projectId: "p1", blockedById: null },
+      { id: "t2", private: false, deletedAt: null, projectId: "p1", blockedById: null },
+      { id: "t3", private: false, deletedAt: null, projectId: "p1", blockedById: null },
+    ],
+    dependencies: [{ id: "dep-1", taskId: "t1", prerequisiteTaskId: "t2" }],
+  });
+
+  const result = await setTaskDependencies({
+    taskId: "t1",
+    prerequisiteTaskIds: ["t3"],
+    actorUserId: "user-1",
+    db: mockDb as any,
+  });
+
+  assert.deepEqual(result.added, ["t3"]);
+  assert.deepEqual(result.removed, ["t2"]);
+  assert.ok((mockDb as any)._deps.get("t1|t3"), "New edge t1→t3 should exist");
+  assert.equal((mockDb as any)._deps.get("t1|t2"), undefined, "Old edge t1→t2 should be removed");
+}
+
+// ---------------------------------------------------------------------------
+// Test 18: setTaskDependencies — activity log recorded on changes
+// ---------------------------------------------------------------------------
+
+export async function testActivityLogRecordedOnChanges() {
+  const mockDb = createExtendedMockDb({
+    tasks: [
+      { id: "t1", private: false, deletedAt: null, projectId: "p1", blockedById: null },
+      { id: "t2", private: false, deletedAt: null, projectId: "p1", blockedById: null },
+    ],
+  });
+
+  await setTaskDependencies({
+    taskId: "t1",
+    prerequisiteTaskIds: ["t2"],
+    actorUserId: "user-1",
+    db: mockDb as any,
+  });
+
+  const logs = (mockDb as any)._activityLogs as Array<{ taskId: string; userId: string; payload: string }>;
+  assert.equal(logs.length, 1, "One activity log entry should be created");
+  assert.equal(logs[0].taskId, "t1");
+  assert.equal(logs[0].userId, "user-1");
+  const payload = JSON.parse(logs[0].payload);
+  assert.deepEqual(payload.added, ["t2"]);
+  assert.deepEqual(payload.removed, []);
+}
+
+// ---------------------------------------------------------------------------
+// Test 19: setTaskDependencies — no changes, no activity log
+// ---------------------------------------------------------------------------
+
+export async function testNoChangesNoActivityLog() {
+  const mockDb = createExtendedMockDb({
+    tasks: [
+      { id: "t1", private: false, deletedAt: null, projectId: "p1", blockedById: null },
+      { id: "t2", private: false, deletedAt: null, projectId: "p1", blockedById: null },
+    ],
+    dependencies: [{ id: "dep-1", taskId: "t1", prerequisiteTaskId: "t2" }],
+  });
+
+  const result = await setTaskDependencies({
+    taskId: "t1",
+    prerequisiteTaskIds: ["t2"],
+    actorUserId: "user-1",
+    db: mockDb as any,
+  });
+
+  assert.deepEqual(result.added, []);
+  assert.deepEqual(result.removed, []);
+  const logs = (mockDb as any)._activityLogs;
+  assert.equal(logs.length, 0, "No activity log entry should be created when nothing changes");
+}
+
+// ---------------------------------------------------------------------------
+// Test 20: setTaskDependencies — nonexistent task throws
+// ---------------------------------------------------------------------------
+
+export async function testSetNonexistentTaskThrows() {
+  const mockDb = createExtendedMockDb({
+    tasks: [],
+  });
+
+  await assert.rejects(
+    async () => setTaskDependencies({
+      taskId: "nonexistent",
+      prerequisiteTaskIds: [],
+      actorUserId: "user-1",
+      db: mockDb as any,
+    }),
+    /Task not found/,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Run all tests
 // ---------------------------------------------------------------------------
 
 export async function runEnv159MultiPrerequisiteTests() {
+  // validateTaskDependency tests (1-10)
   await testRejectSelfDependency();
   await testRejectPrivateTask();
   await testRejectPrivateEpicTask();
@@ -271,7 +633,18 @@ export async function runEnv159MultiPrerequisiteTests() {
   await testTransitiveCycleViaLegacyBlockedBy();
   await testPrivateTaskRejected();
   await testNonexistentPrerequisite();
-  console.log("✓ ENV-159 multi-prerequisite editor tests (10 tests) passed");
+  // setTaskDependencies route-level tests (11-20)
+  await testSetAddNewDependency();
+  await testSetRemoveDependency();
+  await testSetPreserveAndAdd();
+  await testLegacyBlockedByIdNulledOnRemoval();
+  await testLegacyBlockedByIdPreservedWhenInSet();
+  await testSetRejectsInvalidEdgeNoChanges();
+  await testSetAddAndRemoveSimultaneously();
+  await testActivityLogRecordedOnChanges();
+  await testNoChangesNoActivityLog();
+  await testSetNonexistentTaskThrows();
+  console.log("✓ ENV-159 multi-prerequisite editor tests (20 tests) passed");
 }
 
 // Self-execute when run directly

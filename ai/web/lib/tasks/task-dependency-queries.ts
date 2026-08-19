@@ -13,13 +13,14 @@ import { validateTaskDependency, taskPrerequisites } from "./blocking";
  * Get all prerequisite task IDs for a task, from both TaskDependency table
  * and legacy blockedById (union).
  */
-export async function getTaskDependencies(taskId: string): Promise<string[]> {
+export async function getTaskDependencies(taskId: string, client?: PrismaClient): Promise<string[]> {
+  const c = client ?? db;
   const [deps, task] = await Promise.all([
-    db.taskDependency.findMany({
+    c.taskDependency.findMany({
       where: { taskId },
       select: { prerequisiteTaskId: true },
     }),
-    db.task.findUnique({
+    c.task.findUnique({
       where: { id: taskId },
       select: { blockedById: true },
     }),
@@ -81,15 +82,28 @@ export async function getTaskDependenciesWithDetails(taskId: string) {
     (task.dependencies ?? []).map((d) => d.prerequisite.id),
   );
 
-  return prerequisites.map((p) => ({
-    id: p.id,
-    title: p.title ?? "",
-    workItemKey: p.workItemKey ?? null,
-    status: p.status,
-    projectId: null, // taskPrerequisites doesn't include projectId; fetch separately if needed
-    private: false, // taskPrerequisites doesn't include private; the editor filters on the client
-    source: legacyId === p.id && !depIds.has(p.id) ? "legacy" as const : "dependency" as const,
-  }));
+  // Fetch real projectId and private for each prerequisite from the DB
+  const prereqIds = prerequisites.map((p) => p.id);
+  const prereqMeta = prereqIds.length > 0
+    ? await db.task.findMany({
+        where: { id: { in: prereqIds } },
+        select: { id: true, projectId: true, private: true },
+      })
+    : [];
+  const metaMap = new Map(prereqMeta.map((m) => [m.id, m]));
+
+  return prerequisites.map((p) => {
+    const meta = metaMap.get(p.id);
+    return {
+      id: p.id,
+      title: p.title ?? "",
+      workItemKey: p.workItemKey ?? null,
+      status: p.status,
+      projectId: meta?.projectId ?? null,
+      private: meta?.private ?? false,
+      source: legacyId === p.id && !depIds.has(p.id) ? "legacy" as const : "dependency" as const,
+    };
+  });
 }
 
 /**
@@ -116,7 +130,7 @@ export async function setTaskDependencies(args: {
   }
 
   // Get current dependencies (union of TaskDependency + legacy blockedById)
-  const current = await getTaskDependencies(args.taskId);
+  const current = await getTaskDependencies(args.taskId, client);
   const currentSet = new Set(current);
   const newSet = new Set(args.prerequisiteTaskIds);
 

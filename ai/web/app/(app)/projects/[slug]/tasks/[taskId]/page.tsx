@@ -1521,21 +1521,6 @@ export default async function TaskDetailPage({
     ? blockerPermissionGrantForComment(allActivity, activeFormalBlocker.commentId)
     : null;
 
-  // Candidate blockers for the "Blocked by" picker: other live tasks in this
-  // project. Cycles are rejected server-side on save (lib/tasks/blocking.ts).
-  const blockerCandidates = await db.task.findMany({
-    where: accessibleTaskWhere(viewer, {
-      projectId: task.project.id,
-      id: { not: task.id },
-      OR: [
-        { deletedAt: null, archivedAt: null },
-        ...(task.blockedById ? [{ id: task.blockedById }] : []),
-      ],
-    }),
-    orderBy: [{ status: "asc" }, { workItemKey: "asc" }],
-    select: { id: true, workItemKey: true, title: true, status: true },
-  });
-  const currentBlockerVisible = !task.blockedById || blockerCandidates.some((candidate) => candidate.id === task.blockedById);
   const agentUsernames = mentionableUsers.filter((user) => user.kind === "agent").map((user) => user.username);
   const targetedCommentIds = new Set(targetedCommentRows.map((row) => row.originCommentId).filter(Boolean));
   const mentionables = mentionableUsers
@@ -2264,41 +2249,28 @@ export default async function TaskDetailPage({
                         task is a subset of "not executing". */}
                     <TaskExecutionStrip executionState={task.executionState} />
 
-                    {task.dependencies.length > 0 ? (
-                      <div className="space-y-1.5 rounded-card border border-line bg-panel-soft p-card">
-                        <div className="flex items-center gap-1.5 text-micro font-semibold uppercase tracking-wider text-text-muted">
-                          <LockIcon />
-                          Workflow prerequisites
-                        </div>
-                        <div className="space-y-1 text-caption">
-                          {task.dependencies.map(({ prerequisite }) => (
-                            <Link
-                              key={prerequisite.id}
-                              href={`/projects/${prerequisite.project.slug}/tasks/${prerequisite.id}`}
-                              className="flex items-center justify-between gap-2 rounded-md px-1.5 py-1 hover:bg-bg"
-                            >
-                              <span className="min-w-0 truncate">
-                                {prerequisite.workItemKey ?? prerequisite.title}
-                                {prerequisite.project.slug !== slug ? ` · ${prerequisite.project.name}` : ""}
-                              </span>
-                              <span className={prerequisite.status === "Done" ? "text-ok" : "text-warn"}>
-                                {prerequisite.status}
-                              </span>
-                            </Link>
-                          ))}
-                        </div>
-                        <p className="text-nano text-text-muted">
-                          Assignment and start unlock only after every prerequisite is Done.
-                        </p>
-                      </div>
-                    ) : null}
-
-                    {/* Multi-prerequisite editor (ENV-159 step 8). */}
-                    {currentBlockerVisible ? <TaskPrerequisiteEditor
+                    {/* Multi-prerequisite editor (ENV-159 step 8).
+                        Replaces the legacy single-value blockedById panel.
+                        Renders union of TaskDependency + legacy blockedById edges.
+                        canEdit respects canEditBlockedBy from the server auth check.
+                        readOnlyDependencies marks cross-project/manager-created edges
+                        the current user cannot remove. */}
+                    <TaskPrerequisiteEditor
                       taskId={task.id}
                       projectSlug={slug}
-                      canEdit={true}
-                    /> : null}
+                      canEdit={canEditBlockedBy}
+                      readOnlyDependencies={task.dependencies
+                        .filter(({ prerequisite }) => prerequisite.project.slug !== slug)
+                        .map(({ prerequisite }) => ({
+                          id: prerequisite.id,
+                          title: prerequisite.title,
+                          workItemKey: prerequisite.workItemKey ?? null,
+                          status: prerequisite.status,
+                          projectId: prerequisite.projectId ?? null,
+                          private: prerequisite.private ?? false,
+                          source: "dependency" as const,
+                        }))}
+                    />
 
                     <div data-task-actions className="grid grid-cols-2 gap-3">
                       <form
