@@ -281,7 +281,7 @@ function createPmStreamPublisher({ account, target, logger }) {
     schedule();
   };
 
-  const flush = async () => {
+  const drainQueued = () => {
     if (timer) {
       clearTimeout(timer);
       timer = null;
@@ -293,6 +293,10 @@ function createPmStreamPublisher({ account, target, logger }) {
         .then(() => post(body))
         .catch((err) => logger.warn?.(`[pm-channel] stream event failed: ${String(err)}`));
     }
+  };
+
+  const flush = async () => {
+    drainQueued();
     await chain;
   };
 
@@ -310,8 +314,12 @@ function createPmStreamPublisher({ account, target, logger }) {
       // ENV-159: Emit canonical model:selected event exactly once.
       if (!modelSelectedEmitted) {
         modelSelectedEmitted = true;
+        // Move any coalesced text onto the existing chain before appending the
+        // model event. Calling flush() from inside chain.then() deadlocks: the
+        // flush awaits the same promise whose callback is currently running,
+        // preventing every later tool/stream event from reaching PM.
+        drainQueued();
         chain = chain
-          .then(() => flush())
           .then(() => post({
             event: "model:selected",
             provider,
@@ -730,6 +738,10 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
       recordInboundSession: runtime.channel.session.recordInboundSession,
       dispatchReplyWithBufferedBlockDispatcher:
         runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher,
+      // OpenClaw fires this only after the turn owns the reply lane and its
+      // restart-recovery context has been persisted. This is the canonical
+      // execution-admission boundary, not the earlier HTTP/bus handoff.
+      onTurnAdopted: () => stream.turnAdmitted(),
       delivery: {
         deliver: async (replyPayload) => {
           const text = payloadText(replyPayload);

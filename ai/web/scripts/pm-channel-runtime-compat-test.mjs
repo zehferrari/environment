@@ -78,6 +78,21 @@ assert.match(
 );
 assert.match(
   pluginSource,
+  /onTurnAdopted: \(\) => stream\.turnAdmitted\(\)/,
+  "the native PM plugin must report admission only after OpenClaw adopts the turn",
+);
+assert.doesNotMatch(
+  pluginSource,
+  /\.then\(\(\) => flush\(\)\)/,
+  "model selection must not deadlock the stream chain by awaiting itself",
+);
+assert.match(
+  pluginSource,
+  /drainQueued\(\);\s*chain = chain\s*\.then\(\(\) => post\(\{/,
+  "model selection must append its event after draining coalesced stream output",
+);
+assert.match(
+  pluginSource,
   /meta: \{ agentMeta: selectedAgentMeta \}/,
   "stream callbacks must carry model provenance to Mission Control",
 );
@@ -136,5 +151,51 @@ assert.match(
   /harness\.queueAgentHarnessMessage\(embeddedSessionId, text\)/,
   "checkpoint steering must target the active embedded harness session",
 );
+
+// Exercise the publisher directly with mocked transports. This catches a
+// subtle promise-cycle regression that source-shape assertions alone cannot:
+// modelSelected used to append flush() to `chain`, while flush() awaited that
+// same reassigned chain, permanently blocking every later tool/stream event.
+const publisherStart = pluginSource.indexOf("function createPmStreamPublisher");
+const publisherEnd = pluginSource.indexOf("\nasync function sendPmText", publisherStart);
+assert.ok(publisherStart >= 0 && publisherEnd > publisherStart, "publisher source must be extractable");
+const publisherSource = pluginSource.slice(publisherStart, publisherEnd).trim();
+const posted = [];
+const warnings = [];
+const createPmStreamPublisher = new Function(
+  "CHANNEL_ID",
+  "resolveStreamUrl",
+  "streamPayloadText",
+  "streamPayloadDelta",
+  "sendJsonLineToUnixSocket",
+  "postJson",
+  `return (${publisherSource});`,
+)(
+  "pm",
+  (target) => target.streamUrl ?? "",
+  (payload) => typeof payload?.text === "string" ? payload.text : "",
+  (payload) => typeof payload?.delta === "string" ? payload.delta : "",
+  async () => {},
+  async (_url, _token, body) => { posted.push(body); return {}; },
+);
+const publisher = createPmStreamPublisher({
+  account: { callbackToken: "test-token" },
+  target: { streamUrl: "http://pm.test/stream", streamTransport: "http" },
+  logger: { warn: (message) => warnings.push(message) },
+});
+publisher.partial({ delta: "before-model" });
+publisher.modelSelected({ provider: "test-provider", model: "test-model" });
+publisher.modelSelected({ provider: "ignored-provider", model: "ignored-model" });
+await Promise.race([
+  publisher.toolStart({ phase: "start", toolCallId: "tool-1", name: "exec" }),
+  new Promise((_, reject) => setTimeout(() => reject(new Error("publisher stream chain deadlocked")), 1_000)),
+]);
+await publisher.final("finished");
+assert.deepEqual(
+  posted.map((payload) => payload.event),
+  ["partial", "model:selected", "tool:start", "final"],
+  "model selection must preserve order and leave later tool/final callbacks drainable",
+);
+assert.equal(warnings.length, 0, "publisher must not hide callback failures during the lifecycle test");
 
 console.log("pm channel runtime compatibility tests passed");

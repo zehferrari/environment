@@ -11,6 +11,15 @@ decides the authoritative path. Once a task is pinned to `orchestrator_v2`, a
 rejection, replay, stale callback, operational error, or allowlist rollback
 never falls through to a legacy mutation.
 
+`PM_PRIVATE_TASK_AGENT_PROJECTS` is a separate, empty-default capability used
+only for the private E2 cohort. A project must be named explicitly in both it
+and `PM_ORCHESTRATOR_V2_MUTATION_PROJECTS`; wildcards do not count. Access is
+limited to top-level, non-Epic, private `orchestrator_v2` tasks and only the
+current assignee or resolved reviewer. It applies to exact owner-origin or
+audited task workflow turns, callbacks, workflow actions, and scoped task
+context. Attachments, project/Epic context, search, generic events, and work
+item proposals remain private.
+
 ## Operator commands
 
 All commands use the configured `DATABASE_URL`. `admit` and `unpin` require the
@@ -71,8 +80,10 @@ stable diagnostic for every Phase E stop condition.
 2. Create exactly one synthetic project visible only to the canary operators.
    Create private code and non-code tasks; keep all other tasks legacy-owned.
 3. Run the full gate and retain the evidence JSON plus raw outputs. Configure
-   `PM_ORCHESTRATOR_V2_MUTATION_PROJECTS` to the one explicit slug through the
-   normal deployment configuration path.
+   both `PM_ORCHESTRATOR_V2_MUTATION_PROJECTS` and
+   `PM_PRIVATE_TASK_AGENT_PROJECTS` to the same one explicit slug through the
+   normal deployment configuration path. Assign each canary task to its agent
+   and set a resolved reviewer before dispatching a turn.
 4. Run `report`, then `admit --dry-run`. Confirm only new/quiescent private
    tasks say `would_admit`; every active/public/unsafe task must have a stable
    skip reason. Run `admit` once, then repeat it to prove idempotency.

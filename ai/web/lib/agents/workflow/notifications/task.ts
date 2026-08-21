@@ -35,6 +35,7 @@ import { isActionableEpicStatus, resolveReviewOwnerId } from "@/lib/tasks/workfl
 import { resolveGitIdentity } from "@/lib/settings/system";
 import { effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
 import { effectiveEpicBranchName, effectiveTaskBranchName } from "@/lib/work-items/branches";
+import { resolveAgentTaskAccess } from "@/lib/agents/private-task-access";
 
 type Actor = {
   id: string;
@@ -326,19 +327,7 @@ export async function sendTaskWorkflowNotification(args: {
   }
   const [task, actorUser, targetUser] = await Promise.all([
     db.task.findFirst({
-      where: {
-        id: args.taskId,
-        private: false,
-        AND: [
-          { OR: [{ epicId: null }, { epic: { private: false } }] },
-          {
-            OR: [
-              { parentTaskId: null },
-              { parent: { private: false, OR: [{ epicId: null }, { epic: { private: false } }] } },
-            ],
-          },
-        ],
-      },
+      where: { id: args.taskId },
       select: {
         id: true,
         title: true,
@@ -390,6 +379,11 @@ export async function sendTaskWorkflowNotification(args: {
   ) {
     return null;
   }
+  const taskAccess = await resolveAgentTaskAccess({
+    taskId: task.id,
+    agentUserId: targetUser.id,
+  });
+  if (!taskAccess.allowed) return null;
 
   const mirroredBody = [
     `PM workflow notification for @${targetUser.agent.slug}:`,
@@ -712,21 +706,10 @@ export async function sendTaskCommentNotifications(args: {
 }) {
   if (!(await isOwnerUserId(args.actor.id))) return [];
   const task = await db.task.findFirst({
-      where: {
-        id: args.taskId,
-        private: false,
-        AND: [
-          { OR: [{ epicId: null }, { epic: { private: false } }] },
-          {
-            OR: [
-              { parentTaskId: null },
-              { parent: { private: false, OR: [{ epicId: null }, { epic: { private: false } }] } },
-            ],
-          },
-        ],
-    },
+    where: { id: args.taskId },
     select: {
       id: true,
+      private: true,
       projectId: true,
       title: true,
       status: true,
@@ -859,6 +842,17 @@ export async function sendTaskCommentNotifications(args: {
     }
   }
 
+  const targetAccess = await Promise.all(
+    [...targetAgents.values()].map(async (target) => ({
+      slug: target.slug,
+      access: await resolveAgentTaskAccess({ taskId: task.id, agentUserId: target.userId }),
+    })),
+  );
+  for (const result of targetAccess) {
+    if (!result.access.allowed) targetAgents.delete(result.slug);
+  }
+  if (targetAgents.size === 0) return [];
+
   // Directed-message descriptor for the silence rule. A comment with no
   // @-mentions of an agent is a broadcast to assignee/reviewer/etc.; any
   // mention narrows the directed set so the non-mentioned roles go silent.
@@ -875,7 +869,7 @@ export async function sendTaskCommentNotifications(args: {
     "",
     args.body,
   ].join("\n");
-  const allowWorkItemManagement = args.actor.kind === "human";
+  const allowWorkItemManagement = args.actor.kind === "human" && !task.private;
 
   const mirroredMessages = await db.$transaction(async (tx) => {
     const mirrored: Array<{

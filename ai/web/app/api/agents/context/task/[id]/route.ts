@@ -36,6 +36,7 @@ export async function GET(
   const data = await buildTaskContextJson(id, {
     attachmentGrant: identity.grantId ? req.nextUrl.searchParams.get("grant") : null,
     historyMode,
+    agentSlug: identity.agentSlug,
   });
   if (!data) return NextResponse.json({ error: "Task not found" }, { status: 404 });
 

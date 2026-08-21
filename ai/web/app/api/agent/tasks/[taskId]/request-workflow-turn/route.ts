@@ -16,6 +16,7 @@ import {
   sendTaskWorkflowNotification,
   type TaskWorkflowNotificationReason,
 } from "@/lib/agents/workflow/notifications/task";
+import { resolveAgentTaskAccess } from "@/lib/agents/private-task-access";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -72,17 +73,7 @@ export async function POST(
     db.task.findFirst({
       where: {
         id: taskId,
-        private: false,
         deletedAt: null,
-        AND: [
-          { OR: [{ epicId: null }, { epic: { private: false } }] },
-          {
-            OR: [
-              { parentTaskId: null },
-              { parent: { private: false, OR: [{ epicId: null }, { epic: { private: false } }] } },
-            ],
-          },
-        ],
       },
       select: {
         id: true,
@@ -98,7 +89,8 @@ export async function POST(
   if (!agent?.user || agent.deactivatedAt || agent.user.status !== "active") {
     return NextResponse.json({ error: "Agent not active" }, { status: 403 });
   }
-  if (!task) {
+  const taskAccess = await resolveAgentTaskAccess({ taskId, agentUserId: agent.user.id });
+  if (!task || !taskAccess.allowed) {
     return NextResponse.json({ error: "Task not found" }, { status: 404 });
   }
   if (task.assigneeId !== agent.user.id) {
@@ -122,7 +114,7 @@ export async function POST(
     where: {
       taskId: task.id,
       agentSlug,
-      status: { in: ["queued", "accepted", "streaming"] },
+      status: { in: ["queued", "delivered", "accepted", "streaming"] },
       OR: [
         { leaseExpiresAt: null },
         { leaseExpiresAt: { gt: now } },

@@ -19,6 +19,7 @@ import {
   renderExecutionState,
 } from "@/lib/agents/watchdog/state";
 import { isActionableEpicStatus } from "@/lib/tasks/workflow-actors";
+import { resolveAgentTaskAccess } from "@/lib/agents/private-task-access";
 
 // Context-packet caps live in ./caps.ts and are resolved per-recipient
 // from agent.role. Coding agents (can_modify_code=true) get the 1M-token
@@ -456,19 +457,10 @@ export async function buildTaskAgentContextPacket(args: {
   // build and threaded through both the Prisma query (row counts) and
   // the renderer (per-body clips).
   const caps = await resolveAgentCaps(args.agentSlug);
+  const access = await resolveAgentTaskAccess({ taskId: args.taskId, agentSlug: args.agentSlug });
   const task = await db.task.findFirst({
     where: {
-      id: args.taskId,
-      private: false,
-      AND: [
-        { OR: [{ epicId: null }, { epic: { private: false } }] },
-        {
-          OR: [
-            { parentTaskId: null },
-            { parent: { private: false, OR: [{ epicId: null }, { epic: { private: false } }] } },
-          ],
-        },
-      ],
+      id: access.allowed ? args.taskId : "__denied_private_task__",
     },
     select: {
       id: true,
@@ -516,7 +508,7 @@ export async function buildTaskAgentContextPacket(args: {
           deployReviewer: { select: { username: true, kind: true } },
           attachments: {
             orderBy: { createdAt: "asc" },
-            take: 30,
+            take: access.attachmentsAllowed ? 30 : 0,
             select: {
               id: true,
               filename: true,
@@ -567,7 +559,7 @@ export async function buildTaskAgentContextPacket(args: {
       },
       attachments: {
         orderBy: { createdAt: "asc" },
-        take: 30,
+        take: access.attachmentsAllowed ? 30 : 0,
         select: {
           id: true,
           filename: true,
@@ -814,7 +806,7 @@ export async function buildTaskAgentContextPacket(args: {
         kind: row.kind,
       })),
     ].sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
-    attachments: [...taskAttachments, ...epicAttachments],
+    attachments: access.attachmentsAllowed ? [...taskAttachments, ...epicAttachments] : [],
   };
 
   return {
@@ -1168,19 +1160,10 @@ export async function buildTaskEpisodeBrief(args: {
   episode?: { episodeNo: number; checkpointLines: string[] } | null;
 }): Promise<TaskEpisodeBrief> {
   const caps = episodeCaps();
+  const access = await resolveAgentTaskAccess({ taskId: args.taskId, agentSlug: args.agentSlug });
   const task = await db.task.findFirst({
     where: {
-      id: args.taskId,
-      private: false,
-      AND: [
-        { OR: [{ epicId: null }, { epic: { private: false } }] },
-        {
-          OR: [
-            { parentTaskId: null },
-            { parent: { private: false, OR: [{ epicId: null }, { epic: { private: false } }] } },
-          ],
-        },
-      ],
+      id: access.allowed ? args.taskId : "__denied_private_task__",
     },
     select: {
       id: true,
