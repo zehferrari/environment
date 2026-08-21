@@ -35,6 +35,13 @@ async function main() {
     unpinFromV2,
   } = await import("@/lib/tasks/orchestrator/ownership");
   const { evaluateRolloutGates } = await import("@/lib/tasks/orchestrator/rollout-gates");
+  const { updateTaskRepositoryState } = await import("@/lib/tasks/repository-state");
+
+  const repositoryColumns = await db.$queryRawUnsafe<Array<{ name: string }>>(
+    "SELECT name FROM pragma_table_info('task_repository_runs')",
+  );
+  assert(repositoryColumns.some((column) => column.name === "publication_state_v2"));
+  assert(repositoryColumns.some((column) => column.name === "replay_count_v2"));
 
   for (const seam of [
     "app/api/agent/tasks/[taskId]/workflow/route.ts",
@@ -333,7 +340,27 @@ async function main() {
   assert.equal(concurrent.filter((item) => item.ok && item.code === "already_pinned").length, 1);
   assert.equal((await db.task.findUniqueOrThrow({ where: { id: eligible.id } })).workflowEngine, ENGINE_ORCHESTRATOR_V2);
 
-  console.log("PHASEE-11 admission: compute-only isolation, gated pinning, rollback, unpin, and concurrency passed");
+  // A checkpoint is published before deployment applies its newly published
+  // migrations. Repository baseline bookkeeping must therefore avoid
+  // selecting the not-yet-deployed compatibility columns on its return path.
+  const compatibilityTask = await db.task.create({
+    data: { projectId: project.id, title: "Pre-deployment repository compatibility" },
+  });
+  await updateTaskRepositoryState(compatibilityTask.id, {
+    phase: "active",
+    baseSha: "phasee-11-before-checkpoint",
+  });
+  await db.$executeRawUnsafe('DROP INDEX "task_repository_runs_publication_state_v2_idx"');
+  await db.$executeRawUnsafe('ALTER TABLE "task_repository_runs" DROP COLUMN "publication_state_v2"');
+  await db.$executeRawUnsafe('ALTER TABLE "task_repository_runs" DROP COLUMN "replay_count_v2"');
+  const compatibilityRun = await updateTaskRepositoryState(compatibilityTask.id, {
+    phase: "active",
+    baseSha: "phasee-11-checkpoint-baseline",
+  });
+  assert.equal(compatibilityRun.baseSha, "phasee-11-checkpoint-baseline");
+  assert.equal(compatibilityRun.phase, "active");
+
+  console.log("PHASEE-11 admission: isolation, gated pinning, rollback, unpin, concurrency, and deployment-fence compatibility passed");
   await db.$disconnect();
 }
 
