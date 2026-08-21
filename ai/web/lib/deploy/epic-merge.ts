@@ -1256,6 +1256,7 @@ async function executeCheckpointJob(
       repositoryRun: {
         select: {
           phase: true,
+          baseSha: true,
           repositoryPath: true,
           branchName: true,
           worktreePath: true,
@@ -1443,6 +1444,7 @@ async function executeCheckpointJob(
     epicBranch,
     taskBranch,
     baseBranch: settings.deployment.productionBranch.value,
+    previousBaseSha: task.repositoryRun?.baseSha ?? null,
     gitUserName,
     gitUserEmail,
     commitSubject: `${prefix ? `${prefix} ` : ""}${task.title}`,

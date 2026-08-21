@@ -40,6 +40,38 @@ type RepositoryStatePatch = {
   incrementAttempt?: boolean;
 };
 
+const repositoryStateCompatibilitySelect = {
+  id: true,
+  taskId: true,
+  workflowCycleId: true,
+  repositoryPath: true,
+  branchName: true,
+  worktreePath: true,
+  epicBranch: true,
+  baseSha: true,
+  candidateSha: true,
+  reviewedSha: true,
+  phase: true,
+  validationOutcome: true,
+  repoTouched: true,
+  lastError: true,
+  attempt: true,
+  version: true,
+  createdAt: true,
+  updatedAt: true,
+} satisfies Prisma.TaskRepositoryRunSelect;
+
+async function repositoryCompatibilityMigrationApplied(
+  client: Prisma.TransactionClient | typeof db,
+) {
+  const rows = await client.$queryRaw<Array<{ count: number | bigint }>>`
+    SELECT COUNT(*) AS count
+    FROM pragma_table_info('task_repository_runs')
+    WHERE name IN ('publication_state_v2', 'replay_count_v2')
+  `;
+  return Number(rows[0]?.count ?? 0) === 2;
+}
+
 export async function updateTaskRepositoryState(
   taskId: string,
   patch: RepositoryStatePatch,
@@ -54,19 +86,33 @@ export async function updateTaskRepositoryState(
     incrementAttempt,
     ...data
   } = patch;
+  const create = {
+    taskId,
+    ...data,
+    attempt: incrementAttempt ? 1 : 0,
+    version: 1,
+  };
+  const update = {
+    ...data,
+    ...(incrementAttempt ? { attempt: { increment: 1 } } : {}),
+    version: { increment: 1 },
+  };
+  if (!(await repositoryCompatibilityMigrationApplied(client))) {
+    // Checkpoints publish the new code before deployment applies its new
+    // migration. The active repository row already exists at that fence, so
+    // update while selecting only pre-migration columns. This keeps a
+    // successful Git push from becoming an unrecoverable post-push P2022.
+    return client.taskRepositoryRun.update({
+      where: { taskId },
+      data: update,
+      select: repositoryStateCompatibilitySelect,
+    });
+  }
   return client.taskRepositoryRun.upsert({
     where: { taskId },
-    create: {
-      taskId,
-      ...data,
-      attempt: incrementAttempt ? 1 : 0,
-      version: 1,
-    },
-    update: {
-      ...data,
-      ...(incrementAttempt ? { attempt: { increment: 1 } } : {}),
-      version: { increment: 1 },
-    },
+    create,
+    update,
+    select: repositoryStateCompatibilitySelect,
   });
 }
 

@@ -690,8 +690,12 @@ model TaskRepositoryRun {
   // PHASEE-07: durable publication and replay state.
   // Tracks publication state per job so crash-replay can re-publish
   // deterministically without creating duplicate spool files.
-  publicationState  String?            @map("publication_state")
-  replayCount       Int                @default(0) @map("replay_count")
+  // The original physical names were lost when the later-added ENV-159
+  // lifecycle migration rebuilt this table on databases that had already
+  // applied PHASEE-07. Use fresh physical names so a forward-only repair
+  // migration works both for those drifted databases and clean installs.
+  publicationState  String?            @map("publication_state_v2")
+  replayCount       Int                @default(0) @map("replay_count_v2")
   createdAt         DateTime           @default(now()) @map("created_at")
   updatedAt         DateTime           @updatedAt @map("updated_at")
 

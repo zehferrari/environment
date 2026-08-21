@@ -480,6 +480,7 @@ export async function publishTaskCheckpointToEpic(args: {
   epicBranch: string;
   taskBranch: string;
   baseBranch: string;
+  previousBaseSha?: string | null;
   gitUserName: string;
   gitUserEmail: string;
   commitSubject: string;
@@ -543,6 +544,49 @@ export async function publishTaskCheckpointToEpic(args: {
       ok: false,
       reason: `Epic-child branch origin/${taskBranch} already exists at ${remoteTaskBranch.sha.slice(0, 10)}; checkpoint publication must use only the Epic branch.`,
     };
+  }
+
+  // A runner can crash after publishing and fast-forwarding the task worktree
+  // but before repository bookkeeping records the new base. A later retry may
+  // then find unrelated follow-up work dirty in that same worktree. Recover
+  // only when Git proves that HEAD is the exact owner-authorized checkpoint
+  // merge on origin and the recorded base is its ancestor; never commit the
+  // later dirty work under the consumed authorization.
+  const previousBaseSha = args.previousBaseSha?.trim() ?? "";
+  if (previousBaseSha) {
+    const publishedEpic = await inspectOriginBranch(repoPath, epicBranch);
+    if (!publishedEpic.ok) return publishedEpic;
+    const taskHead = await git(worktreePath, ["rev-parse", "HEAD"]).catch(() => null);
+    if (
+      taskHead &&
+      publishedEpic.sha === taskHead &&
+      taskHead !== previousBaseSha &&
+      await gitOk(repoPath, ["merge-base", "--is-ancestor", previousBaseSha, taskHead])
+    ) {
+      const [mergeSubject, parentLine] = await Promise.all([
+        git(repoPath, ["show", "-s", "--format=%s", taskHead]).catch(() => null),
+        git(repoPath, ["show", "-s", "--format=%P", taskHead]).catch(() => null),
+      ]);
+      const parents = parentLine?.split(/\s+/).filter(Boolean) ?? [];
+      const checkpointSha = parents.length === 2 ? parents[1] : null;
+      const checkpointSubject = checkpointSha
+        ? await git(repoPath, ["show", "-s", "--format=%s", checkpointSha]).catch(() => null)
+        : null;
+      if (
+        mergeSubject === args.mergeMessage &&
+        checkpointSubject === args.commitSubject.slice(0, 240) &&
+        checkpointSha &&
+        await gitOk(repoPath, ["merge-base", "--is-ancestor", previousBaseSha, checkpointSha])
+      ) {
+        return {
+          ok: true,
+          kind: "already",
+          checkpointSha,
+          epicSha: taskHead,
+          createdCommit: true,
+        };
+      }
+    }
   }
 
   let createdCommit = false;
