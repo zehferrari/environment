@@ -26,6 +26,7 @@ import {
   armPmChannelContinuations,
   CONTEXT_PRESSURE_RECOVERY_ACTION,
 } from "@/lib/agents/pm-channel/continuations";
+import { resolveAgentTaskAccess } from "@/lib/agents/private-task-access";
 
 // Idempotency discriminator for the turn-failure retry policy: only
 // PM-generated notification/nudge turns are safe to auto-replay. Stamped at
@@ -78,7 +79,10 @@ function parseJobPayload(value: string): DispatchJobPayload {
   return { ...payload, replyTarget: target };
 }
 
-async function dispatchTargetIsEffectivelyPublic(target: PmChannelReplyTarget) {
+async function dispatchTargetIsAuthorized(
+  target: PmChannelReplyTarget,
+  agentSlug: string,
+) {
   if (target.kind === "direct") return true;
   if (target.kind === "epic-chat") {
     return Boolean(await db.epic.findFirst({
@@ -86,28 +90,7 @@ async function dispatchTargetIsEffectivelyPublic(target: PmChannelReplyTarget) {
       select: { id: true },
     }));
   }
-  return Boolean(await db.task.findFirst({
-    where: {
-      id: target.taskId,
-      deletedAt: null,
-      private: false,
-      AND: [
-        { OR: [{ epicId: null }, { epic: { private: false } }] },
-        {
-          OR: [
-            { parentTaskId: null },
-            {
-              parent: {
-                private: false,
-                OR: [{ epicId: null }, { epic: { private: false } }],
-              },
-            },
-          ],
-        },
-      ],
-    },
-    select: { id: true },
-  }));
+  return (await resolveAgentTaskAccess({ taskId: target.taskId, agentSlug })).allowed;
 }
 
 async function cancelJobForPolicy(args: {
@@ -554,7 +537,7 @@ export async function runPmChannelJob(job: NonNullable<Awaited<ReturnType<typeof
       error: "PM channel dispatch canceled: the original human sender is not the active Mission Control owner",
     });
   }
-  if (!(await dispatchTargetIsEffectivelyPublic(payload.replyTarget))) {
+  if (!(await dispatchTargetIsAuthorized(payload.replyTarget, payload.agentSlug))) {
     return cancelJobForPolicy({
       job,
       payload,

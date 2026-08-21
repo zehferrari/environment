@@ -107,7 +107,7 @@ async function main() {
       where: { targetKey },
       select: { id: true, status: true, httpStatus: true },
     });
-    assert.equal(run.status, "accepted");
+    assert.equal(run.status, "delivered");
     assert.equal(run.httpStatus, 202);
 
     const job = await db.pmChannelJob.findUniqueOrThrow({
@@ -118,15 +118,6 @@ async function main() {
     assert.equal(job.attemptCount, 1);
     assert.equal(job.lastError, null);
 
-    // A bus consumer normally races the worker while its run still says
-    // queued and its durable job is claimed. Model that state explicitly: the
-    // dispatch authorization must accept the claimed handoff without using the
-    // callback-only rule that rejects queued runs.
-    await db.$transaction([
-      db.pmChannelRun.update({ where: { id: run.id }, data: { status: "queued" } }),
-      db.pmChannelJob.update({ where: { runId: run.id }, data: { status: "claimed" } }),
-    ]);
-
     const files = await readdir(dropDir);
     assert.equal(files.length, 1, "bus producer should write exactly one envelope");
     const envelope = JSON.parse(await readFile(join(dropDir, files[0]!), "utf8")) as BusEnvelope;
@@ -136,6 +127,28 @@ async function main() {
     assert.equal(envelope.payload.gatewayPort, 45678);
     assert.equal(envelope.payload.text, "hello over bus");
     assert.equal(envelope.payload.sessionKey, `test:${nonce}`);
+
+    const { isAuthorizedPmChannelDispatchTarget } = await import(
+      "@/lib/agents/pm-channel/target-authorization"
+    );
+    assert.equal(
+      await isAuthorizedPmChannelDispatchTarget(envelope.payload as never),
+      true,
+      "the natural delivered/accepted handoff must remain authorized",
+    );
+
+    // A file-drop consumer can race between the publisher recording
+    // `delivered` and the worker recording the accepted job outcome. Keep the
+    // run on its natural delivered state and model that claimed-job window.
+    await db.pmChannelJob.update({
+      where: { runId: run.id },
+      data: { status: "claimed" },
+    });
+    assert.equal(
+      await isAuthorizedPmChannelDispatchTarget(envelope.payload as never),
+      true,
+      "the delivered/claimed handoff must remain authorized",
+    );
 
     const { createHandler } = await import("@/lib/pm-consumer/handler");
     const delivered: unknown[] = [];

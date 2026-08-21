@@ -43,6 +43,7 @@ import { refillEpicQueue } from "@/lib/epics/queue";
 import { promoteEpicOnTaskInProgress } from "@/lib/epics/promote-on-start";
 import { unresolvedTaskPrerequisites } from "@/lib/tasks/blocking";
 import { hasAuthorizedTaskAgentOrigin } from "@/lib/agents/owner-origin";
+import { resolveAgentTaskAccess } from "@/lib/agents/private-task-access";
 import {
   ensureTaskCodeWorktree,
   TaskWorktreeError,
@@ -534,19 +535,7 @@ async function handleTaskWorkflowAction(
       },
     }),
     db.task.findFirst({
-      where: {
-        id: taskId,
-        private: false,
-        AND: [
-          { OR: [{ epicId: null }, { epic: { private: false } }] },
-          {
-            OR: [
-              { parentTaskId: null },
-              { parent: { private: false, OR: [{ epicId: null }, { epic: { private: false } }] } },
-            ],
-          },
-        ],
-      },
+      where: { id: taskId },
       select: {
         id: true,
         title: true,
@@ -619,7 +608,8 @@ async function handleTaskWorkflowAction(
   // ENV-121: the response decorator needs the slug to report episode/cycle
   // state back to the caller.
   captured.agentSlug = agent.slug;
-  if (!task || task.deletedAt) {
+  const taskAccess = await resolveAgentTaskAccess({ taskId, agentUserId: agent.user.id });
+  if (!task || task.deletedAt || !taskAccess.allowed) {
     return NextResponse.json({ error: "Task not found" }, { status: 404 });
   }
 

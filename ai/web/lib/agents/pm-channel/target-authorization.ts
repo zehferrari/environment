@@ -10,22 +10,7 @@ import {
   hasActiveOwnerOrigin,
   hasAuthorizedTaskAgentOrigin,
 } from "@/lib/agents/owner-origin";
-
-function taskIsEffectivelyPublic(task: {
-  deletedAt: Date | null;
-  private: boolean;
-  epic: { private: boolean } | null;
-  parent: { private: boolean; epic: { private: boolean } | null } | null;
-} | null | undefined) {
-  return Boolean(
-    task &&
-    !task.deletedAt &&
-    !task.private &&
-    !task.epic?.private &&
-    !task.parent?.private &&
-    !task.parent?.epic?.private,
-  );
-}
+import { resolveAgentTaskAccess } from "@/lib/agents/private-task-access";
 
 function sameTarget(left: PmChannelReplyTarget, right: PmChannelReplyTarget) {
   if (pmChannelRunTargetKey(left) !== pmChannelRunTargetKey(right)) return false;
@@ -115,10 +100,11 @@ function senderMatchesDispatch(
 
 /**
  * Bus ingress authorization differs from callback authorization. The consumer
- * receives an envelope during dispatch, while the durable run is normally
- * still `queued` and its job is `claimed`. Accept only that persisted handoff
- * (or the legacy synchronous no-job path), then validate the original sender
- * and current work visibility before forwarding the turn to OpenClaw.
+ * receives an envelope during dispatch, while the durable run is still on the
+ * publisher's handoff states (`queued`, or `delivered` once the bus publish
+ * returns) and its job is `claimed`. Accept only that persisted handoff (or
+ * the legacy synchronous no-job path), then validate the original sender and
+ * current work visibility before forwarding the turn to OpenClaw.
  */
 export async function isAuthorizedPmChannelDispatchTarget(
   args: SendPmChannelTurnArgs,
@@ -149,7 +135,10 @@ export async function isAuthorizedPmChannelDispatchTarget(
     // race window are valid here; resurrecting a failed/superseded/timed-out
     // run can collide with the current task/agent lane and starve every newer
     // turn behind SQLite's active-lane unique index.
-    || !["queued", "accepted"].includes(run.status)
+    // `delivered` is the ENV-159 successor to `accepted`: the publisher marks
+    // the run delivered immediately after publishing to the bus, so it is the
+    // state a consumer normally observes by the time it reads the envelope.
+    || !["queued", "accepted", "delivered"].includes(run.status)
     || !runMatchesDispatch(run, args)
   ) {
     return false;
@@ -241,12 +230,16 @@ export async function isAuthorizedPmChannelDispatchTarget(
       },
     },
   });
+  const taskAccess = await resolveAgentTaskAccess({
+    taskId: args.replyTarget.taskId,
+    agentSlug: args.replyTarget.agentSlug,
+  });
   if (
     !original
     || original.deletedAt
     || original.projectId !== (args.projectId ?? null)
     || original.taskId !== args.replyTarget.taskId
-    || !taskIsEffectivelyPublic(original.task)
+    || !taskAccess.allowed
     || (original.agentSlug !== "room" && original.agentSlug !== args.replyTarget.agentSlug)
     || original.senderUserId !== args.actor.id
     || !senderMatchesDispatch(original.sender, args)
@@ -347,11 +340,15 @@ export async function isAuthorizedPmChannelCallbackTarget(
       },
     },
   });
+  const taskAccess = await resolveAgentTaskAccess({
+    taskId: target.taskId,
+    agentSlug: target.agentSlug,
+  });
   if (
     !original ||
     original.deletedAt ||
     original.taskId !== target.taskId ||
-    !taskIsEffectivelyPublic(original.task) ||
+    !taskAccess.allowed ||
     (original.agentSlug !== "room" && original.agentSlug !== target.agentSlug)
   ) {
     return false;

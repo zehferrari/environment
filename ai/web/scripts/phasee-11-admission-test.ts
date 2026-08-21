@@ -3,7 +3,7 @@
 
 import { strict as assert } from "node:assert";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -36,6 +36,22 @@ async function main() {
   } = await import("@/lib/tasks/orchestrator/ownership");
   const { evaluateRolloutGates } = await import("@/lib/tasks/orchestrator/rollout-gates");
 
+  for (const seam of [
+    "app/api/agent/tasks/[taskId]/workflow/route.ts",
+    "app/api/agent/tasks/[taskId]/request-workflow-turn/route.ts",
+    "lib/agents/workflow/notifications/task.ts",
+    "lib/agents/pm-channel/jobs.ts",
+    "lib/agents/pm-channel/target-authorization.ts",
+    "lib/agents/context/task.ts",
+    "lib/agents/context/api/serialize.ts",
+  ]) {
+    assert.match(
+      readFileSync(path.join(process.cwd(), seam), "utf8"),
+      /resolveAgentTaskAccess/,
+      `${seam} must use the centralized private-task access fence`,
+    );
+  }
+
   process.env.PM_ORCHESTRATOR_V2_SHADOW = "1";
   process.env.PM_ORCHESTRATOR_V2_PROJECTS = "*";
   delete process.env.PM_ORCHESTRATOR_V2_MUTATION_PROJECTS;
@@ -56,8 +72,48 @@ async function main() {
   const project = await db.project.create({
     data: { slug: "internal-canary", name: "Synthetic private Phase E canary" },
   });
+  const assigneeAgent = await db.agent.create({
+    data: { slug: "phasee-11-assignee", name: "Phase E assignee", role: "coding" },
+  });
+  const assignee = await db.user.create({
+    data: {
+      username: "phasee-11-assignee",
+      email: "phasee-11-assignee@example.invalid",
+      kind: "agent",
+      status: "active",
+      agentId: assigneeAgent.id,
+    },
+  });
+  const reviewerAgent = await db.agent.create({
+    data: { slug: "phasee-11-reviewer", name: "Phase E reviewer", role: "coding" },
+  });
+  const reviewer = await db.user.create({
+    data: {
+      username: "phasee-11-reviewer",
+      email: "phasee-11-reviewer@example.invalid",
+      kind: "agent",
+      status: "active",
+      agentId: reviewerAgent.id,
+    },
+  });
+  const outsider = await db.user.create({
+    data: {
+      username: "phasee-11-outsider",
+      email: "phasee-11-outsider@example.invalid",
+      kind: "agent",
+      status: "active",
+    },
+  });
   const eligible = await db.task.create({
-    data: { projectId: project.id, title: "Private quiescent task", status: "To Do", private: true },
+    data: {
+      projectId: project.id,
+      title: "Private quiescent task",
+      status: "To Do",
+      private: true,
+      assigneeId: assignee.id,
+      actingManagerId: reviewer.id,
+      reporterId: owner.id,
+    },
   });
   const active = await db.task.create({
     data: { projectId: project.id, title: "Private active task", status: "In Progress", private: true },
@@ -65,6 +121,14 @@ async function main() {
   const publicTask = await db.task.create({
     data: { projectId: project.id, title: "Public task", status: "Backlog", private: false },
   });
+
+  const { resolveAgentTaskAccess } = await import("@/lib/agents/private-task-access");
+  process.env.PM_PRIVATE_TASK_AGENT_PROJECTS = project.slug;
+  assert.equal(
+    (await resolveAgentTaskAccess({ taskId: eligible.id, agentUserId: assignee.id })).allowed,
+    false,
+    "durable V2 ownership is required before private agent access",
+  );
 
   process.env.PM_ORCHESTRATOR_V2_MUTATION_PROJECTS = project.slug;
   const evidence = {
@@ -110,6 +174,63 @@ async function main() {
   assert.equal(admitted.counts.admitted, 1);
   assert.equal((await db.task.findUniqueOrThrow({ where: { id: eligible.id } })).workflowEngine, ENGINE_ORCHESTRATOR_V2);
 
+  const assigneeAccess = await resolveAgentTaskAccess({ taskId: eligible.id, agentSlug: assigneeAgent.slug });
+  const reviewerAccess = await resolveAgentTaskAccess({ taskId: eligible.id, agentSlug: reviewerAgent.slug });
+  assert.deepEqual(assigneeAccess, {
+    allowed: true,
+    visibility: "private-agent",
+    attachmentsAllowed: false,
+  });
+  assert.equal(reviewerAccess.allowed, true, "the resolved reviewer receives exact-task access");
+  assert.equal(
+    (await resolveAgentTaskAccess({ taskId: eligible.id, agentUserId: outsider.id })).allowed,
+    false,
+    "unrelated agents remain fenced",
+  );
+
+  await db.attachment.create({
+    data: {
+      projectId: project.id,
+      taskId: eligible.id,
+      uploaderId: owner.id,
+      filename: "private.txt",
+      storagePath: "private/private.txt",
+      mimeType: "text/plain",
+      sizeBytes: 7,
+      sha256: "phasee11-private-attachment",
+    },
+  });
+  const { buildTaskContextJson, buildProjectContextJson } = await import("@/lib/agents/context/api/serialize");
+  const privateContext = await buildTaskContextJson(eligible.id, { agentSlug: assigneeAgent.slug });
+  assert.equal(privateContext?.task.id, eligible.id, "the exact scoped task context is available to its assignee");
+  assert.deepEqual(privateContext?.attachments, [], "private task attachments are never exposed by the exception");
+  assert.equal(
+    await buildTaskContextJson(eligible.id, { agentSlug: "unknown-agent" }),
+    null,
+    "a context grant bound to another agent cannot reveal the task",
+  );
+  const projectContext = await buildProjectContextJson(project.id);
+  assert.equal(
+    projectContext?.openTasks.some((task) => task.id === eligible.id),
+    false,
+    "generic project context remains private",
+  );
+
+  process.env.PM_PRIVATE_TASK_AGENT_PROJECTS = "*";
+  assert.equal(
+    (await resolveAgentTaskAccess({ taskId: eligible.id, agentUserId: assignee.id })).allowed,
+    false,
+    "private access never accepts a wildcard",
+  );
+  process.env.PM_PRIVATE_TASK_AGENT_PROJECTS = project.slug;
+  process.env.PM_ORCHESTRATOR_V2_MUTATION_PROJECTS = "*";
+  assert.equal(
+    (await resolveAgentTaskAccess({ taskId: eligible.id, agentUserId: assignee.id })).allowed,
+    false,
+    "both allowlists must explicitly name the private project",
+  );
+  process.env.PM_ORCHESTRATOR_V2_MUTATION_PROJECTS = project.slug;
+
   const replayed = await runProjectAdmission({
     projectSlug: project.slug,
     operatorUserId: owner.id,
@@ -123,6 +244,23 @@ async function main() {
   assert.equal(await db.activityLog.count({
     where: { taskId: publicTask.id, kind: "task.workflow.engine_admission_skipped" },
   }), 1, "repeated skip evidence must be deduplicated");
+
+  const privateChild = await db.task.create({
+    data: {
+      projectId: project.id,
+      parentTaskId: eligible.id,
+      title: "Private child must stay fenced",
+      private: true,
+      workflowEngine: ENGINE_ORCHESTRATOR_V2,
+      workflowEnginePinnedAt: new Date(),
+      assigneeId: assignee.id,
+    },
+  });
+  assert.equal(
+    (await resolveAgentTaskAccess({ taskId: privateChild.id, agentUserId: assignee.id })).allowed,
+    false,
+    "the exception is top-level only",
+  );
 
   // Removing the allowlist stops only new admission. Durable V2 ownership is
   // unchanged and remains authoritative.

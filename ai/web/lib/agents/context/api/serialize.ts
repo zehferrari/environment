@@ -22,6 +22,7 @@ import { db } from "@/lib/db";
 import { effectiveCommitPrefix, effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
 import { effectiveEpicBranchName, effectiveTaskBranchName } from "@/lib/work-items/branches";
 import { isActionableEpicStatus } from "@/lib/tasks/workflow-actors";
+import { resolveAgentTaskAccess } from "@/lib/agents/private-task-access";
 
 export type TaskContextHistoryMode = "recent" | "full";
 
@@ -220,25 +221,18 @@ export async function buildTaskContextJson(
   opts: {
     attachmentGrant?: string | null;
     historyMode?: TaskContextHistoryMode;
+    agentSlug?: string | null;
   } = {},
 ): Promise<TaskContextResponse | null> {
   const historyMode = opts.historyMode ?? "recent";
   const limits = taskContextLimits(historyMode);
+  const access = await resolveAgentTaskAccess({ taskId, agentSlug: opts.agentSlug });
+  if (!access.allowed) return null;
   const task = await db.task.findFirst({
     where: {
       id: taskId,
       archivedAt: null,
       deletedAt: null,
-      private: false,
-      AND: [
-        { OR: [{ epicId: null }, { epic: { private: false } }] },
-        {
-          OR: [
-            { parentTaskId: null },
-            { parent: { private: false, OR: [{ epicId: null }, { epic: { private: false } }] } },
-          ],
-        },
-      ],
     },
     select: {
       id: true, title: true, status: true, description: true, branchName: true,
@@ -306,17 +300,19 @@ export async function buildTaskContextJson(
         user: { select: { username: true, kind: true, isOwner: true } },
       },
     }),
-    db.attachment.findMany({
-      where: { taskId },
-      orderBy: { createdAt: "desc" },
-      take: MAX_ATTACHMENTS,
-      select: {
-        id: true, filename: true, mimeType: true, sizeBytes: true,
-        createdAt: true,
-        uploader: { select: { username: true, kind: true, isOwner: true } },
-      },
-    }),
-    task.epic
+    access.attachmentsAllowed
+      ? db.attachment.findMany({
+          where: { taskId },
+          orderBy: { createdAt: "desc" },
+          take: MAX_ATTACHMENTS,
+          select: {
+            id: true, filename: true, mimeType: true, sizeBytes: true,
+            createdAt: true,
+            uploader: { select: { username: true, kind: true, isOwner: true } },
+          },
+        })
+      : Promise.resolve([]),
+    task.epic && access.attachmentsAllowed
       ? db.attachment.findMany({
           where: { epicId: task.epic.id },
           orderBy: { createdAt: "desc" },

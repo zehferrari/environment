@@ -523,7 +523,7 @@ assert(requestTurnRoute.includes("authorizePmChannelCallback"), "request-workflo
 assert(requestTurnRoute.includes("task.workflow.turn_requested"), "request-workflow-turn must log an ActivityLog row");
 assert(requestTurnRoute.includes("ready_for_review_available"), "request-workflow-turn must arm ready_for_review from In Progress");
 assert(
-  requestTurnRoute.includes('status: { in: ["queued", "accepted", "streaming"] }') &&
+  requestTurnRoute.includes('status: { in: ["queued", "delivered", "accepted", "streaming"] }') &&
     requestTurnRoute.includes("alreadyActive: true") &&
     requestTurnRoute.includes("dispatched: false"),
   "request-workflow-turn must not supersede a still-live PM execution lane",
