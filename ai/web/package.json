@@ -150,7 +150,7 @@
     "test:phasee-02a": "tsx scripts/phasee-02a-tests.ts",
     "test:phasee-ownership": "tsx scripts/phase-e-ownership-receipts-test.ts",
     "test:phasee-08-agent-route": "tsx scripts/phasee-08-agent-route-test.ts && tsx scripts/phasee-08-agent-route-integration-test.ts",
-    "test:phasee-11": "tsx scripts/phasee-11-admission-test.ts && tsx scripts/procedure-versioning-crash-test.ts && tsx scripts/orch-phasee-05-episode-atomicity-test.ts && tsx scripts/phasee-07-repo-correlation-runner.ts"
+    "test:phasee-11": "tsx scripts/phasee-11-admission-test.ts && tsx scripts/procedure-versioning-crash-test.ts && tsx scripts/orch-phasee-05-episode-atomicity-test.ts && tsx scripts/phasee-07-repo-correlation-runner.ts && node --import tsx scripts/pm-channel-lease-lifecycle-test.ts && tsx scripts/workflow-action-effect-test.ts && node --import tsx scripts/workflow-reconciler-test.ts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.7.4",

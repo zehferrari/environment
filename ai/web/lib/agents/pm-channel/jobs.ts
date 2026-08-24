@@ -12,7 +12,11 @@ import {
   pmChannelRunTargetKey,
   recordPmChannelRunQueued,
 } from "@/lib/agents/pm-channel/runs";
-import { reserveExecutionLane, releaseExecutionLane } from "@/lib/agents/pm-channel/execution-lane";
+import {
+  reconcileAbandonedLeases,
+  reserveExecutionLane,
+  releaseExecutionLane,
+} from "@/lib/agents/pm-channel/execution-lane";
 import { publishPmChannelStreamEvent } from "@/lib/agents/pm-channel/stream";
 import { enqueuePmChannelStreamDurability } from "@/lib/agents/pm-channel/stream-log";
 import {
@@ -911,6 +915,16 @@ export async function runPmChannelWorkerDrain(
   let retryableOrFailed = 0;
   const errors: string[] = [];
 
+  // Recover leaked lane rows before any watchdog or outbox path can dispatch a
+  // replacement. This is the no-manual-repair path for a service crash after a
+  // run became terminal but before its callback released the lane.
+  let executionLanesReconciled = 0;
+  try {
+    executionLanesReconciled = await reconcileAbandonedLeases();
+  } catch (err) {
+    console.warn("[pm-channel] abandoned execution lane reconciliation failed", err);
+  }
+
   // ENV-118: drain the continuation outbox alongside the job queue. A turn
   // that took a continuation-required action and then ended gets its next
   // execution turn from here, so "start" can never leave a task silently
@@ -1027,6 +1041,7 @@ export async function runPmChannelWorkerDrain(
     episodeBarriers,
     episodeSuccessors,
     watchdog,
+    executionLanesReconciled,
   };
 }
 

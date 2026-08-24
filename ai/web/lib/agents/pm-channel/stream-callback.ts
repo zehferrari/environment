@@ -3,7 +3,11 @@ import {
   parsePmChannelReplyTarget,
   type PmChannelReplyTarget,
 } from "@/lib/agents/pm-channel/openclaw";
-import { releaseExecutionLane } from "@/lib/agents/pm-channel/execution-lane";
+import {
+  admitExecutionLaneForRun,
+  heartbeatExecutionLane,
+  releaseExecutionLane,
+} from "@/lib/agents/pm-channel/execution-lane";
 import {
   publishPmChannelStreamEvent,
   type PmChannelLifecycleStatus,
@@ -404,6 +408,12 @@ export async function applyPmChannelStreamCallback(args: {
     return { status: 403, body: { error: "Stream target is not authorized" } };
   }
 
+  const text = stringField(args.payload.text, 40_000);
+  const delta = stringField(args.payload.delta, 8_000);
+  const transientProgress =
+    (event === "partial" || event === "token" || event === "final") &&
+    (isTransientPmProgressText(text) || isTransientPmProgressText(delta));
+
   // ENV-121 (second review). Sits ahead of every early return below — a
   // rate-limited, silent or transient terminal event still ends the turn, and a
   // fenced episode that is never sealed is a successor that is never
@@ -417,15 +427,22 @@ export async function applyPmChannelStreamCallback(args: {
     await sealTaskExecutionEpisodeOnTurnEnd(target);
   }
 
-  // ENV-159: turn:terminal is the canonical equivalent of done for run settling.
-  if (event === "done" || event === "turn:terminal") {
-    // ENV-159: Release the execution lane on terminal events.
-    await releaseExecutionLane({ runId: pmChannelRunTargetKey(target) });
+  // A terminal callback owns an exact authorized target. Release the durable
+  // lane by the run's primary key before any rate-limit/silence early return;
+  // targetKey is not a lease runId and previously made this a permanent no-op.
+  if (
+    !transientProgress &&
+    (event === "done" || event === "error" || event === "final" || event === "turn:terminal")
+  ) {
     const settled = await db.pmChannelRun.findUnique({
       where: { targetKey: pmChannelRunTargetKey(target) },
-      select: { status: true },
+      select: { id: true, status: true },
     });
-    if (settled?.status === "failed" || settled?.status === "timed_out") {
+    if (settled) await releaseExecutionLane({ runId: settled.id });
+    if (
+      (event === "done" || event === "turn:terminal") &&
+      (settled?.status === "failed" || settled?.status === "timed_out")
+    ) {
       return { status: 200, body: { ok: true, ignored: true, status: settled.status } };
     }
   }
@@ -534,7 +551,7 @@ export async function applyPmChannelStreamCallback(args: {
       const leaseMs = Number.parseInt(process.env.PM_OPENCLAW_LEASE_MS ?? "120000", 10);
       const leaseExpiresAt = new Date(now.getTime() + (Number.isFinite(leaseMs) && leaseMs >= 30_000 ? leaseMs : 120_000));
       try {
-        await db.pmChannelRun.update({
+        const run = await db.pmChannelRun.update({
           where: { targetKey: pmChannelRunTargetKey(target) },
           data: {
             status: "admitted",
@@ -543,10 +560,19 @@ export async function applyPmChannelStreamCallback(args: {
             heartbeatAt: now,
             lastEventAt: now,
           },
+          select: { id: true },
         });
+        await admitExecutionLaneForRun({ runId: run.id });
       } catch (err) {
         console.warn("[pm-channel] failed to transition run to admitted", err);
       }
+    }
+    if (event === "context:usage") {
+      const run = await db.pmChannelRun.findUnique({
+        where: { targetKey: pmChannelRunTargetKey(target) },
+        select: { id: true },
+      });
+      if (run) await heartbeatExecutionLane({ runId: run.id });
     }
     return { status: 200, body: { ok: true, key: state.key, status: state.status } };
   }
@@ -597,12 +623,12 @@ export async function applyPmChannelStreamCallback(args: {
     return { status: 200, body: { ok: true, key: state.key, status: state.status } };
   }
 
-  const text = stringField(args.payload.text, 40_000);
-  const delta = stringField(args.payload.delta, 8_000);
-  if (
-    (event === "partial" || event === "token" || event === "final") &&
-    (isTransientPmProgressText(text) || isTransientPmProgressText(delta))
-  ) {
+  if (transientProgress) {
+    // OpenClaw may label a compaction notice `final` even though the same turn
+    // continues. Treat it as live progress for run/lane heartbeats without
+    // persisting the internal text or settling the turn.
+    await recordPmChannelRunEvent({ target, event: event === "final" ? "partial" : event });
+    await recordStreamTransport(target, transportMode);
     return { status: 200, body: { ok: true, transient: true } };
   }
   if (event === "final" && isPmTerminalFailureText(text)) {
@@ -619,6 +645,8 @@ export async function applyPmChannelStreamCallback(args: {
     (event === "partial" || event === "token" || event === "final") &&
     (isSilentPmReplyText(text) || isSilentPmReplyText(delta))
   ) {
+    await recordPmChannelRunEvent({ target, event });
+    await recordStreamTransport(target, transportMode);
     return { status: 200, body: { ok: true, silent: true } };
   }
 

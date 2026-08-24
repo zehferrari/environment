@@ -64,6 +64,7 @@ async function main(): Promise<void> {
     } = await import("@/lib/agents/pm-channel/runs");
     const { pmChannelRunTargetKey } = await import("@/lib/agents/pm-channel/bus");
     const { fenceSupersededPmChannelRuns } = await import("@/lib/agents/pm-channel/supersession");
+    const { reserveExecutionLane } = await import("@/lib/agents/pm-channel/execution-lane");
 
     // Shared fixtures
     const project = await db.project.create({ data: { slug: "lease-proj", name: "Lease Project" } });
@@ -83,7 +84,10 @@ async function main(): Promise<void> {
       const targetKey = pmChannelRunTargetKey(target);
 
       // Queue a run
-      await recordPmChannelRunQueued({ target, kind: "task-comment" });
+      const queuedRun = await recordPmChannelRunQueued({ target, kind: "task-comment" });
+      assert(queuedRun, "the lifecycle run must be queued");
+      const reservation = await reserveExecutionLane({ agentSlug, runId: queuedRun.id, taskId: task.id });
+      assert(reservation.acquired, "dispatch must reserve the durable agent execution lane");
 
       // HTTP dispatch only records delivery. The execution lease starts with
       // the first admitted/streaming callback, not at gateway handoff.
@@ -99,6 +103,11 @@ async function main(): Promise<void> {
       assertEqual(acceptedRun.status, "delivered", "run should be delivered after dispatch");
       assertEqual(acceptedRun.heartbeatAt, null, "delivered run has no heartbeat before execution starts");
       assertEqual(acceptedRun.leaseExpiresAt, null, "delivered run has no execution lease");
+      assertEqual(
+        (await db.agentExecutionLease.findUniqueOrThrow({ where: { runId: queuedRun.id } })).status,
+        "reserved",
+        "gateway delivery must not claim that model execution started",
+      );
 
       // First streaming event starts the execution lease.
       await recordPmChannelRunEvent({ target, event: "token" });
@@ -110,6 +119,9 @@ async function main(): Promise<void> {
       assertEqual(streamingRun.status, "streaming", "run should be streaming after token event");
       assert(streamingRun.leaseExpiresAt !== null, "leaseExpiresAt must be renewed on streaming");
       assert(streamingRun.heartbeatAt !== null, "heartbeatAt must be updated on streaming");
+      const runningLane = await db.agentExecutionLease.findUniqueOrThrow({ where: { runId: queuedRun.id } });
+      assertEqual(runningLane.status, "running", "the first progress callback must advance the durable lane");
+      assert(runningLane.heartbeatAt !== null, "the first progress callback must heartbeat the durable lane");
 
       const leaseBefore = streamingRun.leaseExpiresAt.getTime();
       await new Promise((r) => setTimeout(r, 10));
@@ -147,6 +159,9 @@ async function main(): Promise<void> {
       assertEqual(completedRun.status, "completed", "run should be completed after final event");
       assert(completedRun.finishedAt !== null, "finishedAt must be set on completion");
       assertEqual(completedRun.finishedReason, "final", "finishedReason must be 'final'");
+      const releasedLane = await db.agentExecutionLease.findUniqueOrThrow({ where: { runId: queuedRun.id } });
+      assertEqual(releasedLane.status, "released", "a final callback must release the durable execution lane");
+      assert(releasedLane.releasedAt !== null, "a released lane must record when it was released");
 
       console.log("Section 1 passed: lease renewal via streaming events");
     }
@@ -566,6 +581,14 @@ async function main(): Promise<void> {
       const queuedOld = makeTarget(queuedTask.id);
       const queuedNew = makeTarget(queuedTask.id);
       await recordPmChannelRunQueued({ target: queuedOld, kind: "task-comment" });
+      const queuedOldRun = await db.pmChannelRun.findUniqueOrThrow({
+        where: { targetKey: pmChannelRunTargetKey(queuedOld) },
+        select: { id: true },
+      });
+      assert(
+        (await reserveExecutionLane({ agentSlug, runId: queuedOldRun.id, taskId: queuedTask.id })).acquired,
+        "the queued predecessor must hold a reserved lane before fencing",
+      );
       const queuedReplacement = await recordPmChannelRunQueued({ target: queuedNew, kind: "task-comment" });
       let fetchCalls = 0;
       const queuedFence = await fenceSupersededPmChannelRuns({
@@ -577,6 +600,11 @@ async function main(): Promise<void> {
       });
       assert(queuedFence.ok, "a queued predecessor must fence without contacting the gateway");
       assertEqual(fetchCalls, 0, "a queued predecessor must not call the gateway");
+      assertEqual(
+        (await db.agentExecutionLease.findUniqueOrThrow({ where: { runId: queuedOldRun.id } })).status,
+        "released",
+        "acknowledging queued supersession must release its reserved lane",
+      );
 
       // A delivered predecessor must receive an explicit abort acknowledgement
       // before the replacement can dispatch.
@@ -599,6 +627,14 @@ async function main(): Promise<void> {
         where: { targetKey: pmChannelRunTargetKey(liveOld) },
         data: { admittedAt: new Date() },
       });
+      const liveOldRun = await db.pmChannelRun.findUniqueOrThrow({
+        where: { targetKey: pmChannelRunTargetKey(liveOld) },
+        select: { id: true },
+      });
+      assert(
+        (await reserveExecutionLane({ agentSlug, runId: liveOldRun.id, taskId: liveTask.id })).acquired,
+        "the delivered predecessor must hold a lane before cancellation",
+      );
       const liveReplacement = await recordPmChannelRunQueued({ target: liveNew, kind: "task-comment" });
       const liveFence = await fenceSupersededPmChannelRuns({
         replacementRunId: liveReplacement!.id,
@@ -618,6 +654,11 @@ async function main(): Promise<void> {
       assert(liveOldRow.cancellationRequestedAt !== null, "the old run must record its cancellation request");
       assert(liveOldRow.cancellationAcknowledgedAt !== null, "the old run must record the gateway acknowledgement");
       assertEqual(liveOldRow.cancellationError, null, "an acknowledged abort must clear cancellation error");
+      assertEqual(
+        (await db.agentExecutionLease.findUniqueOrThrow({ where: { runId: liveOldRun.id } })).status,
+        "released",
+        "an acknowledged gateway abort must release the predecessor lane",
+      );
 
       // HTTP 200 is not enough: abort_unavailable means the old process may
       // still write, so the replacement lane stays closed and retryable.
@@ -640,6 +681,14 @@ async function main(): Promise<void> {
         where: { targetKey: pmChannelRunTargetKey(unfencedOld) },
         data: { admittedAt: new Date() },
       });
+      const unfencedOldRun = await db.pmChannelRun.findUniqueOrThrow({
+        where: { targetKey: pmChannelRunTargetKey(unfencedOld) },
+        select: { id: true },
+      });
+      assert(
+        (await reserveExecutionLane({ agentSlug, runId: unfencedOldRun.id, taskId: unfencedTask.id })).acquired,
+        "the unfenced predecessor must hold a lane before cancellation",
+      );
       const unfencedReplacement = await recordPmChannelRunQueued({ target: unfencedNew, kind: "task-comment" });
       const rejectedFence = await fenceSupersededPmChannelRuns({
         replacementRunId: unfencedReplacement!.id,
@@ -657,6 +706,11 @@ async function main(): Promise<void> {
       assert(
         unfencedOldRow.cancellationError?.includes("abort_unavailable"),
         "the process-fence failure must remain visible for recovery",
+      );
+      assertEqual(
+        (await db.agentExecutionLease.findUniqueOrThrow({ where: { runId: unfencedOldRun.id } })).status,
+        "reserved",
+        "a rejected cancellation must keep the predecessor lane fenced",
       );
 
       console.log("Section 8 passed: replacement dispatch requires process-level cancellation acknowledgement");

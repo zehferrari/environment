@@ -190,7 +190,9 @@ export async function runWorkflowReconciliation(options: {
         },
       },
       reviewRuns: {
-        where: { status: { in: ["validating", "awaiting_review", "accepted"] } },
+        // Done-state reconciliation needs the immutable completed lease too;
+        // filtering it out made every correctly finalized task look incomplete.
+        where: { status: { in: ["validating", "awaiting_review", "accepted", "completed"] } },
         orderBy: { createdAt: "desc" },
         select: {
           id: true,

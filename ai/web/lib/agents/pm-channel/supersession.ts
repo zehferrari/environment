@@ -1,5 +1,6 @@
 import { db } from "@/lib/db";
 import { resolvePmChannelToken } from "@/lib/agents/pm-channel/openclaw";
+import { releaseExecutionLane } from "@/lib/agents/pm-channel/execution-lane";
 
 export type SupersessionFenceResult =
   | { ok: true; cancelledRunIds: string[] }
@@ -136,6 +137,7 @@ export async function fenceSupersededPmChannelRuns(args: {
         where: { id: predecessor.id },
         data: { cancellationAcknowledgedAt: new Date(), cancellationError: null },
       });
+      await releaseExecutionLane({ runId: predecessor.id });
       cancelledRunIds.push(predecessor.id);
       continue;
     }
@@ -165,6 +167,7 @@ export async function fenceSupersededPmChannelRuns(args: {
       where: { id: predecessor.id },
       data: { cancellationAcknowledgedAt: new Date(), cancellationError: null },
     });
+    await releaseExecutionLane({ runId: predecessor.id });
     cancelledRunIds.push(predecessor.id);
   }
   return { ok: true, cancelledRunIds };

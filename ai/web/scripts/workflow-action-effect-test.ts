@@ -554,6 +554,15 @@ async function sectionB(): Promise<void> {
       1,
       "the episode armed a continuation",
     );
+    await db.agentExecutionLease.create({
+      data: {
+        agentSlug: AGENT_SLUG,
+        runId: b6.id,
+        taskId: task.id,
+        status: "running",
+        expiresAt: new Date(Date.now() + 120_000),
+      },
+    });
     const submitted = await recordPmChannelRunWorkflowAction({
       taskId: task.id,
       agentSlug: AGENT_SLUG,
@@ -566,6 +575,11 @@ async function sectionB(): Promise<void> {
     assertEqual(b6Row.disposition, "ready_for_review", "the settle records its disposition");
     assertEqual(b6Row.settledByAction, "ready_for_review", "the settle names its action");
     assertEqual(b6Row.jobs[0]?.status, "complete", "an episode-terminal action settles the job");
+    assertEqual(
+      (await db.agentExecutionLease.findUniqueOrThrow({ where: { runId: b6.id } })).status,
+      "released",
+      "an episode-terminal action releases the execution lane in the same transaction",
+    );
     assertEqual(
       await db.pmChannelContinuation.count({ where: { runId: b6.id, status: "superseded" } }),
       1,
