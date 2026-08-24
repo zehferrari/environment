@@ -453,7 +453,36 @@ export function runGuards(
     case "override_status":
       // Deliberately bypass ordinary edge/plan/cycle/blocker/repository guards.
       // The workflow-version guard above remains authoritative and is fenced
-      // again inside the transaction.
+      // again inside the transaction. Leaving an implementation lifecycle is
+      // allowed only when the open cycle is the sole stale residue; active
+      // mechanical work must finish or be explicitly cancelled first.
+      if (
+        command.payload?.targetStatus === "Backlog" ||
+        command.payload?.targetStatus === "To Do" ||
+        command.payload?.targetStatus === "Done"
+      ) {
+        const blockers: string[] = [];
+        if ((state.activeProcedureRuns?.length ?? 0) > 0) blockers.push("procedure");
+        if (state.pmChannelRun) blockers.push("PM execution run");
+        if (state.activeEpisode) blockers.push("execution episode");
+        if ((state.outstandingJobs?.length ?? 0) > 0) blockers.push("repository callback job");
+        if (
+          state.repositoryRun &&
+          ["reserved", "provisioning", "validating", "review_ready", "finalizing", "operational_error"]
+            .includes(state.repositoryRun.phase)
+        ) blockers.push(`repository lifecycle (${state.repositoryRun.phase})`);
+        if (
+          state.activeReviewRun &&
+          ["validating", "awaiting_review", "accepted"].includes(state.activeReviewRun.status)
+        ) blockers.push(`review lease (${state.activeReviewRun.status})`);
+        if (blockers.length > 0) {
+          return {
+            ok: false,
+            status: "invalid",
+            reason: `[cycle_mismatch] Human status override cannot leave the active lifecycle while ${blockers.join(", ")} remains active. Settle or cancel that work first.`,
+          };
+        }
+      }
       return { ok: true };
 
     case "submit_plan":

@@ -63,11 +63,14 @@ export function decideCommand(
       ) {
         return { status: "invalid", reason: "override_status requires a workflow targetStatus" };
       }
+      const abandonsCycle = Boolean(state.activeWorkflowCycleId) &&
+        (targetStatus === "Backlog" || targetStatus === "To Do" || targetStatus === "Done");
       return {
         fromStatus: state.status,
         toStatus: targetStatus,
         kernelIntent: "operator_override",
-        cycleOperation: "none",
+        cycleOperation: abandonsCycle ? "close" : "none",
+        cycleOutcome: abandonsCycle ? "abandoned" : undefined,
         effects: [{ type: "board_touch", key: "board-status-override", payload: {} }],
         evidence: {
           ...command.evidence ?? {},
@@ -102,13 +105,10 @@ export function decideCommand(
         toStatus: targetStatus,
         kernelIntent: "operator_override",
         cycleOperation: closesCycle ? "close" : "none",
-        cycleOutcome: closesCycle
-          ? targetStatus === "Done"
-            ? "completed"
-            : state.status === "Review"
-              ? "changes_requested"
-              : "cancelled"
-          : undefined,
+        // Epic child updates are operator overrides, not review decisions.
+        // Closing a cycle here records abandonment; only the accepted-review
+        // finalization command may record a completed cycle.
+        cycleOutcome: closesCycle ? "abandoned" : undefined,
         rank: command.payload?.rank === "front" ? "front" : "back",
         taskData: {
           ...(command.payload?.clearAssignee === true ? { assigneeId: null } : {}),

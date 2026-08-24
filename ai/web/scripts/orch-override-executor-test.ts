@@ -192,6 +192,54 @@ async function main() {
     assert.equal(doneState!.activeBlocker, null, "no active blocker after Done override");
     passed += 3;
 
+    // --- 5b. Same-status Done repairs a stale cycle without inventing review evidence ---
+    const staleDoneTask = await db.task.create({
+      data: {
+        projectId: project.id,
+        title: "Stale Done cycle",
+        status: "Done",
+        workflowEngine: "orchestrator_v2",
+        workflowEnginePinnedAt: new Date(),
+        actingManagerId: human.id,
+        reporterId: human.id,
+      },
+    });
+    const staleCycle = await db.taskWorkflowCycle.create({
+      data: {
+        taskId: staleDoneTask.id,
+        sequence: 1,
+        status: "open",
+        workflowEngine: "orchestrator_v2",
+        openedWorkflowVersion: staleDoneTask.workflowVersion,
+      },
+    });
+    await db.task.update({
+      where: { id: staleDoneTask.id },
+      data: { activeWorkflowCycleId: staleCycle.id },
+    });
+    const repairedDone = await submitWorkflowCommand({
+      taskId: staleDoneTask.id,
+      intent: "override_status",
+      actor: { id: human.id, kind: "human", username: "zeh" },
+      payload: { targetStatus: "Done", reason: "repair stale manual completion" },
+      expectedWorkflowVersion: staleDoneTask.workflowVersion,
+      workflowCycleId: staleCycle.id,
+      source: "operator",
+      idempotencyKey: "ov-stale-done-repair",
+    });
+    assert.equal(repairedDone.status, "accepted", "same-status Done repair is accepted");
+    const repairedTask = await db.task.findUniqueOrThrow({ where: { id: staleDoneTask.id } });
+    const repairedCycle = await db.taskWorkflowCycle.findUniqueOrThrow({ where: { id: staleCycle.id } });
+    assert.equal(repairedTask.activeWorkflowCycleId, null, "same-status repair clears the task cycle pointer");
+    assert.equal(repairedCycle.status, "closed", "same-status repair closes the cycle");
+    assert.equal(repairedCycle.outcome, "abandoned", "same-status repair records abandonment, not completion");
+    assert.equal(
+      await db.reviewRun.count({ where: { taskId: staleDoneTask.id } }),
+      0,
+      "repair does not fabricate review evidence",
+    );
+    passed += 5;
+
     // --- 6. Ordinary agent blocker retains raise/clear/proceed parity -------
     const ordinaryTask = await db.task.create({
       data: {

@@ -223,7 +223,9 @@ export async function overrideEpicTaskStatuses(
         if (!isTaskWorkflowStatus(task.status)) {
           throw new BrowserEpicStatusBatchError("invalid", `Task ${task.id} has an unsupported workflow status.`);
         }
-        if (task.status === targetStatus) continue;
+        // A same-status row may still carry a stale active cycle. Route that
+        // through the authoritative override so it can close atomically.
+        if (task.status === targetStatus && !task.activeWorkflowCycleId) continue;
         const result = await submitWorkflowCommandInTransaction(tx, {
           taskId: task.id,
           intent: "override_status",

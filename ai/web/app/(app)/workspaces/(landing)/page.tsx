@@ -151,6 +151,7 @@ async function moveTask(
       id: true,
       status: true,
       workflowVersion: true,
+      activeWorkflowCycleId: true,
       projectId: true,
       deletedAt: true,
       project: { select: { slug: true } },
@@ -177,6 +178,7 @@ async function moveTask(
     currentStatus: current.status,
     targetStatus: status,
     expectedWorkflowVersion: current.workflowVersion,
+    activeWorkflowCycleId: current.activeWorkflowCycleId,
     surface: "workspace-landing",
   });
   if (!result.ok) return result;

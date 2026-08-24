@@ -213,6 +213,7 @@ async function updateTask(formData: FormData) {
       private: true,
       status: true,
       workflowVersion: true,
+      activeWorkflowCycleId: true,
       epicId: true,
       branchName: true,
       commitPrefix: true,
@@ -501,6 +502,7 @@ async function updateTask(formData: FormData) {
       currentStatus: task.status,
       targetStatus: statusChangedTo,
       expectedWorkflowVersion: task.workflowVersion,
+      activeWorkflowCycleId: task.activeWorkflowCycleId,
       surface: "task-detail",
     });
     if (!moved.ok) throw new Error(moved.message);

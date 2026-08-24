@@ -316,11 +316,9 @@ async function main(): Promise<void> {
     });
     assert.equal(fresh.ok, true, "matching expected version should pass");
 
-    // Deliberate bypass: override_status passes guards even when edge/plan/
-    // blocker/repository preconditions would normally block ordinary intents.
-    // A task with an unresolved blocker, unmet prerequisites, a non-actionable
-    // Epic, an active cycle, and a validating repository must still allow an
-    // override — the human is authoritative.
+    // Deliberate bypass: override_status passes ordinary edge/plan/blocker/WIP
+    // preconditions. It may remain inside the active lifecycle while
+    // repository work runs, but it may not abandon that lifecycle to Done.
     const blockedState = makeState({
       status: "In Progress",
       approvedOn: null, // no approved plan
@@ -342,8 +340,17 @@ async function main(): Promise<void> {
     const blockedGuard = runGuards(blockedState as any, {
       intent: "override_status",
       expectedWorkflowVersion: 7,
+      payload: { targetStatus: "Review" },
     });
-    assert.equal(blockedGuard.ok, true, "override_status must bypass edge/plan/blocker/repository/WIP guards");
+    assert.equal(blockedGuard.ok, true, "override_status may remain inside the active lifecycle");
+
+    const unsafeDone = runGuards(blockedState as any, {
+      intent: "override_status",
+      expectedWorkflowVersion: 7,
+      payload: { targetStatus: "Done" },
+    });
+    assert.equal(unsafeDone.ok, false, "override_status cannot abandon active repository work");
+    assert.ok((unsafeDone as any).reason.includes("repository lifecycle"), "rejection names the active lifecycle");
 
     // The version guard is still authoritative even under the bypass.
     const blockedStale = runGuards(blockedState as any, {
@@ -524,7 +531,8 @@ async function main(): Promise<void> {
     assert.equal(decision.fromStatus, "Review", "fromStatus is current status");
     assert.equal(decision.toStatus, "Done", "toStatus is target");
     assert.equal(decision.kernelIntent, "operator_override", "kernelIntent is operator_override");
-    assert.equal(decision.cycleOperation, "none", "no cycle operation for an override");
+    assert.equal(decision.cycleOperation, "close", "Done closes the stale active cycle");
+    assert.equal(decision.cycleOutcome, "abandoned", "human override never fabricates review completion");
     assert.equal(decision.decisionActorId, "human-1", "decision actor is the human");
     assert.equal(decision.executorActorId, null, "no mechanical executor");
     assert.equal(decision.evidence.humanStatusOverride, true, "evidence flags humanStatusOverride");
@@ -542,7 +550,7 @@ async function main(): Promise<void> {
     ) as any;
     assert.equal(bad.status, "invalid", "invalid target status yields a DecisionError");
 
-    console.log("  Decide: operator_override kernel, none cycle, board_touch effect, actor evidence ✓");
+    console.log("  Decide: operator_override kernel, lifecycle-safe close, board_touch effect, actor evidence ✓");
     passed += 9;
   } catch (e) {
     failed++;

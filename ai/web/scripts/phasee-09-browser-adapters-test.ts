@@ -79,6 +79,7 @@ async function main() {
       currentStatus: "To Do",
       targetStatus: "In Progress",
       expectedWorkflowVersion: 0,
+      activeWorkflowCycleId: null,
       surface: "project-board",
     });
     assert.equal(firstOverride.ok, true);
@@ -94,6 +95,7 @@ async function main() {
       currentStatus: "To Do",
       targetStatus: "In Progress",
       expectedWorkflowVersion: 0,
+      activeWorkflowCycleId: null,
       surface: "project-board",
     });
     assert.equal(replay.ok, true, "same browser evidence replays exactly");
@@ -105,6 +107,7 @@ async function main() {
       currentStatus: "To Do",
       targetStatus: "Review",
       expectedWorkflowVersion: 0,
+      activeWorkflowCycleId: null,
       surface: "task-detail",
     });
     assert.deepEqual(stale, {
@@ -120,6 +123,7 @@ async function main() {
       currentStatus: "In Progress",
       targetStatus: "Done",
       expectedWorkflowVersion: 1,
+      activeWorkflowCycleId: null,
       surface: "workspace-landing",
     });
     assert.equal(done.ok, true);

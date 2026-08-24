@@ -33,6 +33,7 @@ export async function submitBrowserStatusOverride(args: {
   currentStatus: TaskWorkflowStatus;
   targetStatus: TaskWorkflowStatus;
   expectedWorkflowVersion: number;
+  activeWorkflowCycleId: string | null;
   surface: BrowserStatusOverrideSurface;
 }): Promise<MoveTaskResult> {
   if (args.actor.kind !== "human") {
@@ -42,7 +43,10 @@ export async function submitBrowserStatusOverride(args: {
       message: "Only an authenticated human can override a task status from the browser.",
     };
   }
-  if (args.currentStatus === args.targetStatus) return { ok: true };
+  // A same-status Done request is still meaningful when historical/manual
+  // state left an active cycle behind. Send it through the command boundary
+  // so the cycle is closed atomically and audited.
+  if (args.currentStatus === args.targetStatus && !args.activeWorkflowCycleId) return { ok: true };
 
   const result = await submitWorkflowCommand({
     taskId: args.taskId,
@@ -53,7 +57,7 @@ export async function submitBrowserStatusOverride(args: {
       username: args.actor.username,
     },
     expectedWorkflowVersion: args.expectedWorkflowVersion,
-    workflowCycleId: null,
+    workflowCycleId: args.activeWorkflowCycleId,
     source: "browser",
     idempotencyKey: [
       "browser-status-override",

@@ -749,6 +749,29 @@ export type TaskStateSnapshot = {
     repoTouched: boolean | null;
     reviewedSha: string | null;
   } | null;
+  // Lifecycle details are optional on hand-built pure-test snapshots and
+  // populated by loadTaskAggregate in production. Human overrides use them
+  // to refuse abandoning mechanical work that is still active.
+  activeProcedureRuns?: Array<{
+    id: string;
+    type: string;
+    status: string;
+    workflowCycleId: string | null;
+  }>;
+  pmChannelRun?: {
+    id: string;
+    status: string;
+  } | null;
+  activeEpisode?: {
+    id: string;
+    status: string;
+  } | null;
+  outstandingJobs?: Array<{
+    id: string;
+    kind: string;
+    status: string;
+    procedureRunId: string | null;
+  }>;
   project: {
     onlyReportersCanApproveActionPlans: boolean;
     onlyReportersCanSetTasksDone: boolean;
