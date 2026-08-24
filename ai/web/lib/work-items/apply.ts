@@ -34,7 +34,10 @@ import {
   enqueueWorkflowEffects,
   type TaskWorkflowStatus,
 } from "@/lib/tasks/transition-kernel";
-import { submitWorkflowCommandInTransaction } from "@/lib/tasks/orchestrator";
+import {
+  getWorkflowTransactionResolution,
+  submitWorkflowCommandInTransaction,
+} from "@/lib/tasks/orchestrator";
 import type { OrchestratorResult, TaskWorkflowCommand } from "@/lib/tasks/orchestrator/types";
 import { drainWorkflowOutbox } from "@/lib/tasks/workflow-outbox-drain";
 import { newTaskWorkflowOwnership } from "@/lib/tasks/orchestrator/ownership";
@@ -892,6 +895,41 @@ export async function commitProposal(
       { timeout: 20000, maxWait: 10000 },
     );
   } catch (error) {
+    const receiptResolution = getWorkflowTransactionResolution(error);
+    if (receiptResolution) {
+      if (
+        receiptResolution.result.status === "invalid"
+        && receiptResolution.result.domainCode === "idempotency_conflict"
+      ) {
+        return {
+          ok: false,
+          error: receiptResolution.result.reason,
+          projectSlug,
+          agentSlug,
+          taskId,
+          epicId,
+          counts: ZERO,
+        };
+      }
+      // This read runs after the losing transaction rolled back. The receipt
+      // winner owns the batch result, including the proposal state change.
+      const winner = await db.workItemProposal.findUnique({
+        where: { id: proposal.id },
+        select: { status: true },
+      });
+      if (winner?.status === "applied") {
+        return { ok: true, projectSlug, agentSlug, taskId, epicId, counts: ZERO };
+      }
+      return {
+        ok: false,
+        error: "workflow_receipt_race_unsettled: the winning command is not visible yet; retry the proposal.",
+        projectSlug,
+        agentSlug,
+        taskId,
+        epicId,
+        counts: ZERO,
+      };
+    }
     return {
       ok: false,
       error: error instanceof Error ? error.message : String(error),

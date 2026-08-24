@@ -20,6 +20,7 @@ import {
   computeRequestFingerprint,
   findOrCreateReceipt,
 } from "@/lib/tasks/orchestrator/receipts";
+import type { ReceiptOutcome } from "@/lib/tasks/orchestrator/receipts";
 import type {
   OrchestrationDecision,
   OrchestratorResult,
@@ -46,10 +47,27 @@ function toKernelEffect(effect: OrchestrationDecision["effects"][number]): Kerne
  * transaction began. Throwing rolls back every tentative intent write while
  * preserving the exact replay/conflict result for execute.ts.
  */
+export type IntentReceiptResolutionKind = Extract<
+  ReceiptOutcome["kind"],
+  "replay" | "race_replay" | "conflict" | "race_conflict"
+>;
+
 export class IntentReceiptResolution extends Error {
-  constructor(readonly result: OrchestratorResult) {
+  constructor(
+    readonly kind: IntentReceiptResolutionKind,
+    readonly result: OrchestratorResult,
+  ) {
     super("intent_receipt_resolution");
   }
+}
+
+export function getIntentReceiptResolution(error: unknown): {
+  kind: IntentReceiptResolutionKind;
+  result: OrchestratorResult;
+} | null {
+  return error instanceof IntentReceiptResolution
+    ? { kind: error.kind, result: error.result }
+    : null;
 }
 
 export async function executeDecisionWrites(args: {
@@ -280,10 +298,10 @@ export async function executeDecisionWrites(args: {
     },
   );
   if (receipt.kind === "replay" || receipt.kind === "race_replay") {
-    throw new IntentReceiptResolution(receipt.result);
+    throw new IntentReceiptResolution(receipt.kind, receipt.result);
   }
   if (receipt.kind === "conflict" || receipt.kind === "race_conflict") {
-    throw new IntentReceiptResolution({
+    throw new IntentReceiptResolution(receipt.kind, {
       status: "invalid",
       reason: "idempotency_conflict: idempotency key reused with different payload.",
       domainCode: "idempotency_conflict",

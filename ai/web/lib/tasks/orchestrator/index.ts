@@ -203,6 +203,10 @@ export { runGuards } from "@/lib/tasks/orchestrator/guards";
 export { decideCommand } from "@/lib/tasks/orchestrator/decide";
 export { executeWorkflowCommand } from "@/lib/tasks/orchestrator/execute";
 export { executeWorkflowCommandInTransaction } from "@/lib/tasks/orchestrator/execute";
+export {
+  getIntentReceiptResolution as getWorkflowTransactionResolution,
+  type IntentReceiptResolutionKind as WorkflowTransactionResolutionKind,
+} from "@/lib/tasks/orchestrator/intents/shared";
 export { buildTaskWorkflowProjection } from "@/lib/tasks/orchestrator/projection";
 export {
   loadTaskAggregate,

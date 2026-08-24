@@ -30,7 +30,10 @@ import { publishBoardTouch } from "@/lib/pm/board-events";
 import { assignOpenEpicTasks } from "@/lib/epics/assignment";
 import { submitEpicChildUpdateInTransaction } from "@/lib/epics/task-workflow-adapter";
 import { syncEpicOnHumanTaskStatus } from "@/lib/epics/sync-on-human-task-move";
-import { submitWorkflowCommandInTransaction } from "@/lib/tasks/orchestrator";
+import {
+  getWorkflowTransactionResolution,
+  submitWorkflowCommandInTransaction,
+} from "@/lib/tasks/orchestrator";
 import type { MoveTaskResult } from "@/lib/tasks/move-status";
 import { newTaskWorkflowOwnership } from "@/lib/tasks/orchestrator/ownership";
 import { resetEpicActionPlanForDeployReview, triggerDeployReview } from "@/lib/epics/deploy-review";
@@ -254,7 +257,36 @@ export async function overrideEpicTaskStatuses(
       }
     });
   } catch (error) {
-    if (error instanceof BrowserEpicStatusBatchError) {
+    const receiptResolution = getWorkflowTransactionResolution(error);
+    if (receiptResolution) {
+      if (
+        receiptResolution.result.status === "invalid"
+        && receiptResolution.result.domainCode === "idempotency_conflict"
+      ) {
+        return {
+          ok: false,
+          code: "EXPLICIT_USER_ACTION_REQUIRED",
+          message: receiptResolution.result.reason,
+        };
+      }
+      // Confirm the receipt winner produced the entire requested aggregate;
+      // this invocation's tentative batch has already rolled back.
+      const winnerTasks = await db.task.findMany({
+        where: { id: { in: uniqueIds }, epicId, deletedAt: null },
+        select: { status: true, activeWorkflowCycleId: true },
+      });
+      const shouldCloseCycle = targetStatus === "Backlog" || targetStatus === "To Do" || targetStatus === "Done";
+      const winnerApplied = winnerTasks.length === uniqueIds.length
+        && winnerTasks.every((task) => task.status === targetStatus
+          && (!shouldCloseCycle || task.activeWorkflowCycleId === null));
+      if (!winnerApplied) {
+        return {
+          ok: false,
+          code: "STALE_VERSION",
+          message: "A concurrent Epic task update won, but the requested aggregate is not visible. Refresh and retry.",
+        };
+      }
+    } else if (error instanceof BrowserEpicStatusBatchError) {
       return {
         ok: false,
         code: error.status === "stale" ? "STALE_VERSION" : "EXPLICIT_USER_ACTION_REQUIRED",
@@ -262,8 +294,9 @@ export async function overrideEpicTaskStatuses(
           ? "An Epic task changed while this update was pending. Refresh and try again."
           : error.message,
       };
+    } else {
+      throw error;
     }
-    throw error;
   }
 
   revalidatePath(`/projects/${slug}/epics/${epicId}`);
