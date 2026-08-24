@@ -239,7 +239,8 @@ pointed at `/srv/Code/environment.worktrees/.../ai/web`.
 - Database resolution, root containment, migration-history presence, and
   SQLite `quick_check` run before either live service stops. A successful
   switch writes an immutable deployment receipt plus
-  `/var/lib/pm/switch/last-deployment.receipt` with the exact code/DB pairing.
+  `/srv/Data/pm/deployment-receipts/last-deployment.receipt` with the exact
+  code/DB pairing.
 - If the target worktree or DB is already live, `pm-switch.sh` first asks
   `pm-apply-worktree --stop-live` to stop `pm-consumer.service` and
   `pm.service`. This prevents `prisma migrate deploy` from failing with

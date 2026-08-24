@@ -41,6 +41,7 @@ APPLY="${PM_APPLY_HELPER:-/usr/local/sbin/pm-apply-worktree}"
 PM_DB_DIR="${PM_DB_DIR:-${PM_DEPLOY_DB_ROOT:-/srv/Data/pm}}"
 PM_CANONICAL_DB="${PM_CANONICAL_DB:-${PM_DEPLOY_CANONICAL_DB:-$PM_DB_DIR/pm.db}}"
 SWITCH_DIR="${PM_SWITCH_DIR:-${PM_DEPLOY_SWITCH_DIR:-/var/lib/pm/switch}}"
+RECEIPT_DIR="${PM_DEPLOY_RECEIPT_DIR:-$PM_DB_DIR/deployment-receipts}"
 MAINTENANCE_FILE="$SWITCH_DIR/.maintenance"
 
 log()  { printf '\n\033[1;36m==>\033[0m %s\n' "$*"; }
@@ -197,6 +198,8 @@ BRANCH_DB_URL="file:$BRANCH_DB"
 [[ -d "$APP_DIR/node_modules" ]] || die "no node_modules in $APP_DIR — run 'pnpm install' there (worktrees don't share it; created via: claim-branch environment <branch>)."
 [[ -x "$APPLY" ]]                || die "privileged helper missing: $APPLY (run ai/web/deploy/install-pm-switch.sh)."
 command -v sqlite3 >/dev/null 2>&1 || die "sqlite3 is required for per-worktree DB forks."
+[[ -d "$RECEIPT_DIR" && -w "$RECEIPT_DIR" ]] \
+  || die "deployment receipt directory is missing or not writable: $RECEIPT_DIR (run ai/web/deploy/install-pm-switch.sh)"
 
 # 0. Resolve and validate database intent before stopping either live service.
 log "Preflight: worktree=$WORKTREE_NAME branch=$BRANCH database=$DATABASE_SELECTION path=$BRANCH_DB …"
@@ -282,8 +285,6 @@ fi
 # 5. Persist the exact code/database pairing only after end-to-end health
 # verification. This receipt makes post-incident diagnosis independent of
 # shell history or the branch currently attached to the worktree.
-RECEIPT_DIR="$SWITCH_DIR/deployment-receipts"
-mkdir -p "$RECEIPT_DIR"
 DEPLOYED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 LAST_MIGRATION="$(sqlite3 "$BRANCH_DB" "SELECT migration_name FROM _prisma_migrations WHERE finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 1;" 2>/dev/null || true)"
 RECEIPT_FILE="$RECEIPT_DIR/${DEPLOYED_AT//:/}-${WORKTREE_SLUG}-${DEPLOY_COMMIT:0:12}.receipt"
@@ -303,7 +304,7 @@ RECEIPT_TMP="$(mktemp "$RECEIPT_DIR/.deployment.XXXXXX")"
 } > "$RECEIPT_TMP"
 chmod 0640 "$RECEIPT_TMP"
 mv -f "$RECEIPT_TMP" "$RECEIPT_FILE"
-LAST_RECEIPT_TMP="$(mktemp "$SWITCH_DIR/.last-deployment.XXXXXX")"
+LAST_RECEIPT_TMP="$(mktemp "$RECEIPT_DIR/.last-deployment.XXXXXX")"
 cp "$RECEIPT_FILE" "$LAST_RECEIPT_TMP"
-mv -f "$LAST_RECEIPT_TMP" "$SWITCH_DIR/last-deployment.receipt"
+mv -f "$LAST_RECEIPT_TMP" "$RECEIPT_DIR/last-deployment.receipt"
 log "Deployment receipt: $RECEIPT_FILE"

@@ -132,8 +132,11 @@ Before stopping live services, the switcher resolves the database to a real
 path, rejects paths outside the configured DB root, verifies the migration
 history exists, and runs SQLite `quick_check`. After both services and the
 hashed assets pass verification, it writes a durable receipt under
-`/var/lib/pm/switch/deployment-receipts/` and refreshes
-`last-deployment.receipt`. The receipt records worktree, branch, commit, dirty
+`/srv/Data/pm/deployment-receipts/` and refreshes
+`deployment-receipts/last-deployment.receipt`. The installer provisions this
+directory for both the monitor and code-agent CLI deployers; a missing or
+unwritable receipt directory fails preflight before services stop. The receipt
+records worktree, branch, commit, dirty
 path count, exact database selection/path, and last applied migration.
 
 ### Live rebuild troubleshooting

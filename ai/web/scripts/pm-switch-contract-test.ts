@@ -8,6 +8,7 @@ const runner = read("deploy/pm-switch-runner");
 const actions = read("lib/deploy/actions.ts");
 const rebuild = read("deploy/rebuild-and-restart.sh");
 const managedUpdate = read("deploy/update-managed-host.sh");
+const installer = read("deploy/install-pm-switch.sh");
 
 assert.match(switcher, /WORKTREE_NAME="\$\(basename "\$WT_ROOT"\)"/,
   "database identity must be based on stable worktree name");
@@ -24,12 +25,21 @@ assert.match(switcher, /resolved database escapes the configured PM DB root/,
 
 const quickCheck = switcher.indexOf("PRAGMA quick_check;");
 const stopLive = switcher.indexOf("--stop-live", quickCheck);
-const receipt = switcher.indexOf("deployment-receipts");
+const receipt = switcher.indexOf('RECEIPT_FILE="$RECEIPT_DIR/');
+const receiptPreflight = switcher.indexOf("deployment receipt directory is missing or not writable");
 const consumerVerified = switcher.indexOf('[[ "$consumer_active" == "active" ]]');
 assert(quickCheck >= 0 && stopLive > quickCheck,
   "database integrity preflight must finish before live services stop");
 assert(consumerVerified >= 0 && receipt > consumerVerified,
   "deployment receipt must be published only after both services verify");
+assert.match(switcher, /deployment receipt directory is missing or not writable/,
+  "receipt permissions must fail during preflight, before services stop");
+assert(receiptPreflight >= 0 && receiptPreflight < stopLive,
+  "receipt permission validation must precede the first service stop");
+assert.match(installer, /install -d -o "\$MON" -g "\$CODE_GROUP" -m 2770 "\$RECEIPT_DIR"/,
+  "installer must provision receipts for both monitor and code-agent deployers");
+assert.match(installer, /PM_DEPLOY_RECEIPT_DIR=%s/,
+  "the root-owned deployment contract must publish the receipt path");
 
 assert.match(actions, /databaseSelection: "worktree"/,
   "browser requests must state their database intent");
