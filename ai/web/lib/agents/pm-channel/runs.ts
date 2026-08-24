@@ -36,6 +36,11 @@ import {
   sealEpisodeRolloverBarrierInTransaction,
 } from "@/lib/agents/episodes/rollover";
 import type { AgentExecutionContext } from "@/lib/tasks/orchestrator/types";
+import {
+  activateExecutionLaneForRun,
+  releaseExecutionLane,
+  releaseExecutionLanesInTransaction,
+} from "@/lib/agents/pm-channel/execution-lane";
 
 // Re-exported for existing importers; the definition moved to bus.ts so the
 // bus envelope id and the run identity can never drift apart.
@@ -961,6 +966,7 @@ async function applyWorkflowActionToRuns(
       disposition,
     },
   });
+  await releaseExecutionLanesInTransaction(tx, { runIds: liveRuns.map((run) => run.id), releasedAt: now });
   await tx.pmChannelJob.updateMany({
     where: {
       runId: { in: runIds },
@@ -1376,6 +1382,8 @@ export async function recordPmChannelRunEvent(args: {
       },
       "done run state",
     );
+    const run = await db.pmChannelRun.findUnique({ where: { targetKey }, select: { id: true } });
+    if (run) await releaseExecutionLane({ runId: run.id });
     return;
   }
 
@@ -1485,6 +1493,8 @@ export async function recordPmChannelRunEvent(args: {
       },
       "error run state",
     );
+    const run = await db.pmChannelRun.findUnique({ where: { targetKey }, select: { id: true } });
+    if (run) await releaseExecutionLane({ runId: run.id });
     return;
   }
 
@@ -1585,6 +1595,11 @@ export async function recordPmChannelRunEvent(args: {
     },
     "stream run state",
   );
+  const run = await db.pmChannelRun.findUnique({ where: { targetKey }, select: { id: true } });
+  if (run) {
+    if (status === "completed") await releaseExecutionLane({ runId: run.id });
+    else await activateExecutionLaneForRun({ runId: run.id });
+  }
 }
 
 export async function getPmChannelRunSnapshot(target: PmChannelReplyTarget) {

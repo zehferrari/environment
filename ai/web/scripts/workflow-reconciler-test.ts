@@ -97,6 +97,32 @@ async function main() {
       data: { taskId: incompleteDone.id, phase: "finalizing" },
     });
 
+    const validDone = await db.task.create({
+      data: { projectId: project.id, title: "Correctly finalized", status: "Done" },
+    });
+    const validDoneCandidate = "d".repeat(40);
+    await db.taskRepositoryRun.create({
+      data: {
+        taskId: validDone.id,
+        phase: "completed",
+        repoTouched: true,
+        candidateSha: validDoneCandidate,
+        reviewedSha: validDoneCandidate,
+        validationOutcome: "valid",
+      },
+    });
+    await db.reviewRun.create({
+      data: {
+        taskId: validDone.id,
+        candidateSha: validDoneCandidate,
+        repoTouched: true,
+        validationOutcome: "valid",
+        status: "completed",
+        reviewerId: monitor.id,
+        reviewedAt: stale,
+      },
+    });
+
     const epic = await db.epic.create({
       data: {
         projectId: project.id,
@@ -207,6 +233,11 @@ async function main() {
     ));
     assert(dry.findings.some((row) => row.kind === "review_lease_missing" && row.taskId === missingLease.id));
     assert(dry.findings.some((row) => row.kind === "done_repository_incomplete" && row.taskId === incompleteDone.id));
+    assert.equal(
+      dry.findings.some((row) => row.taskId === validDone.id),
+      false,
+      "a Done task with a completed immutable review lease must pass reconciliation",
+    );
     assert(dry.findings.some((row) =>
       row.kind === "review_completion_missing"
       && row.taskId === missingCompletion.id

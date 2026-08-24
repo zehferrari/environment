@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 
 /**
@@ -49,6 +50,13 @@ const LANE_LEASE_MS = Number.parseInt(
   10,
 );
 
+function laneLeaseExpiresAt(now: Date) {
+  const leaseMs = Number.isFinite(LANE_LEASE_MS) && LANE_LEASE_MS >= 30_000
+    ? LANE_LEASE_MS
+    : 300_000;
+  return new Date(now.getTime() + leaseMs);
+}
+
 /**
  * Reserve the execution lane for an agent. If the lane is already occupied
  * (an active lease exists), returns { acquired: false, blockedByRunId }.
@@ -60,7 +68,7 @@ export async function reserveExecutionLane(args: {
   taskId?: string | null;
 }): Promise<{ acquired: true; lane: ExecutionLane } | { acquired: false; blockedByRunId: string; blockedByTaskId: string | null }> {
   const now = new Date();
-  const expiresAt = new Date(now.getTime() + LANE_LEASE_MS);
+  const expiresAt = laneLeaseExpiresAt(now);
 
   // Check for an existing active lease
   const existing = await db.agentExecutionLease.findFirst({
@@ -138,9 +146,10 @@ export async function admitExecutionLane(args: {
   leaseToken: string;
 }): Promise<boolean> {
   try {
+    const now = new Date();
     const updated = await db.agentExecutionLease.updateMany({
       where: { runId: args.runId, leaseToken: args.leaseToken, status: "reserved" },
-      data: { status: "admitted" },
+      data: { status: "admitted", heartbeatAt: now, expiresAt: laneLeaseExpiresAt(now) },
     });
     return updated.count > 0;
   } catch {
@@ -156,14 +165,64 @@ export async function activateExecutionLane(args: {
   leaseToken: string;
 }): Promise<boolean> {
   try {
+    const now = new Date();
     const updated = await db.agentExecutionLease.updateMany({
       where: { runId: args.runId, leaseToken: args.leaseToken, status: { in: ["reserved", "admitted"] } },
-      data: { status: "running", heartbeatAt: new Date() },
+      data: { status: "running", heartbeatAt: now, expiresAt: laneLeaseExpiresAt(now) },
     });
     return updated.count > 0;
   } catch {
     return false;
   }
+}
+
+/**
+ * The authenticated stream target resolves to one durable run, so callback
+ * lifecycle updates can safely advance the lane by run ID without exposing
+ * its opaque lease token to the gateway.
+ */
+export async function admitExecutionLaneForRun(args: { runId: string }): Promise<boolean> {
+  const now = new Date();
+  try {
+    const updated = await db.agentExecutionLease.updateMany({
+      where: { runId: args.runId, status: "reserved" },
+      data: { status: "admitted", heartbeatAt: now, expiresAt: laneLeaseExpiresAt(now) },
+    });
+    return updated.count > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Mark the lane running and renew it on every authenticated progress event. */
+export async function activateExecutionLaneForRun(args: { runId: string }): Promise<boolean> {
+  const now = new Date();
+  try {
+    const updated = await db.agentExecutionLease.updateMany({
+      where: { runId: args.runId, status: { in: ["reserved", "admitted", "running"] } },
+      data: { status: "running", heartbeatAt: now, expiresAt: laneLeaseExpiresAt(now) },
+    });
+    return updated.count > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Release one or more lanes inside the same transaction as a terminal run write. */
+export async function releaseExecutionLanesInTransaction(
+  tx: Prisma.TransactionClient,
+  args: { runIds: string[]; releasedAt?: Date },
+): Promise<number> {
+  if (args.runIds.length === 0) return 0;
+  const releasedAt = args.releasedAt ?? new Date();
+  const updated = await tx.agentExecutionLease.updateMany({
+    where: {
+      runId: { in: args.runIds },
+      status: { in: ["reserved", "admitted", "running"] },
+    },
+    data: { status: "released", releasedAt },
+  });
+  return updated.count;
 }
 
 /**
@@ -255,7 +314,7 @@ export async function heartbeatExecutionLane(args: {
   runId: string;
 }): Promise<void> {
   const now = new Date();
-  const expiresAt = new Date(now.getTime() + LANE_LEASE_MS);
+  const expiresAt = laneLeaseExpiresAt(now);
   try {
     await db.agentExecutionLease.updateMany({
       where: { runId: args.runId, status: { in: ["reserved", "admitted", "running"] } },
