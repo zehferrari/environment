@@ -590,6 +590,10 @@ model TaskWorkflowCommandReceipt {
   resultingWorkflowVersion Int     @map("resulting_workflow_version")
   transitionId            String?  @map("transition_id")
   procedureRunId          String?  @map("procedure_run_id")
+  // Milliseconds from transaction-client entry through durable receipt
+  // creation. This excludes the driver's final COMMIT round trip but captures
+  // fencing, aggregate refresh, domain writes, and receipt settlement.
+  executionDurationMs     Int?     @map("execution_duration_ms")
   status                  String   // accepted | completed | rejected_operational
   result                  String   // bounded canonical JSON response projection
   createdAt               DateTime @default(now()) @map("created_at")

@@ -43,6 +43,7 @@ export async function executeWorkflowCommand(
 ): Promise<OrchestratorResult> {
   try {
     if (command.executionContext) {
+      // Test-only crash seam; unset in production.
       await invokeWorkflowCommandCrashHook(
         "before_command_transaction",
         command.executionContext.publicAction,
@@ -53,6 +54,7 @@ export async function executeWorkflowCommand(
       { timeout: EXECUTE_TRANSACTION_TIMEOUT_MS },
     );
     if (command.executionContext) {
+      // Test-only crash seam; unset in production.
       await invokeWorkflowCommandCrashHook(
         "after_commit_before_response",
         command.executionContext.publicAction,
@@ -91,6 +93,7 @@ export async function executeWorkflowCommandInTransaction(
   decision: OrchestrationDecision,
   preTransactionState: TaskStateSnapshot,
 ): Promise<OrchestratorResult> {
+  const transactionStartedAtMs = Date.now();
   assertWorkflowCommandExecutionContext(command);
   const fence = await fenceState(tx, command.taskId, command, preTransactionState);
   if (!fence.ok) return mapFenceResultToOrchestratorResult(fence);
@@ -114,8 +117,10 @@ export async function executeWorkflowCommandInTransaction(
         state,
         command,
         decision,
+        transactionStartedAtMs,
         projectResult: command.executionContext
           ? async (result) => {
+              // Test-only crash seams; unset in production.
               await invokeWorkflowCommandCrashHook(
                 "after_domain_writes_before_execution_bookkeeping",
                 command.executionContext!.publicAction,

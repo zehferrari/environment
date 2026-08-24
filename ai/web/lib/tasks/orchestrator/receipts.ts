@@ -190,6 +190,7 @@ export async function findOrCreateReceipt(
     procedureRunId?: string | null;
     decisionActorId?: string | null;
     executorActorId?: string | null;
+    executionDurationMs?: number | null;
   },
 ): Promise<ReceiptOutcome> {
   // Step 1: look up existing receipt by (taskId, idempotencyKey).
@@ -251,6 +252,7 @@ export async function findOrCreateReceipt(
         resultingWorkflowVersion,
         transitionId: opts.transitionId ?? null,
         procedureRunId: opts.procedureRunId ?? null,
+        executionDurationMs: opts.executionDurationMs ?? null,
         status: receiptStatus,
         result: serializeResult(result),
       },

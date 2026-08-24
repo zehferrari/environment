@@ -138,6 +138,7 @@ async function main() {
         source: "agent_workflow",
         expectedWorkflowVersion: 0,
         resultingWorkflowVersion: 1,
+        executionDurationMs: 1250,
         status: "accepted",
         result: "{}",
         createdAt: new Date("2026-08-18T00:00:00.000Z"),
@@ -266,9 +267,17 @@ async function main() {
       unsettled_receipt: 1,
     });
     assert.equal(alphaCohort[0]?.legacyDrainCount, 3);
+    assert.deepEqual(alphaCohort[0]?.commandExecutionLatencyMs, {
+      sampleCount: 1,
+      p50: 1250,
+      p95: 1250,
+      p99: 1250,
+      max: 1250,
+    });
     const alphaWindowCohort = await dashboard.getCohortSummary(alpha.id, { since: windowStart });
     assert.deepEqual(alphaWindowCohort[0]?.callbackHealth, { applied: 1, rejected: 1 });
     assert.equal(alphaWindowCohort[0]?.windowStartedAt, windowStart.toISOString());
+    assert.equal(alphaWindowCohort[0]?.commandExecutionLatencyMs.sampleCount, 0);
     assert.equal(
       alphaWindowCohort[0]?.skippedReasons.unsettled_receipt,
       1,

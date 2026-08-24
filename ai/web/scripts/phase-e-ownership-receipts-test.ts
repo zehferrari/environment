@@ -69,6 +69,10 @@ async function createTask(projectId: string, status = "Backlog") {
       projectId,
       title: "Test task",
       status,
+      // Ownership tests exercise migration from an explicit historical row;
+      // the production database default is intentionally V2.
+      workflowEngine: ENGINE_LEGACY,
+      workflowEnginePinnedAt: null,
     },
   });
 }
@@ -296,9 +300,17 @@ async function testReceiptCreateAndReplay() {
   const createResult = await db.$transaction(async (tx) => {
     return findOrCreateReceipt(tx, command, fingerprint, acceptedResult, {
       transitionId: "test-transition-1",
+      executionDurationMs: 37,
     });
   });
   assert.equal(createResult.kind, "create");
+  assert.equal(
+    (await db.taskWorkflowCommandReceipt.findFirstOrThrow({
+      where: { taskId: task.id, idempotencyKey: command.idempotencyKey },
+      select: { executionDurationMs: true },
+    })).executionDurationMs,
+    37,
+  );
 
   // Second submission — replay
   const replayResult = await db.$transaction(async (tx) => {

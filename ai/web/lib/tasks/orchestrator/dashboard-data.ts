@@ -23,10 +23,34 @@ export type CohortSummary = {
   skippedTaskCount: number;
   skippedReasons: Record<string, number>;
   commandHealth: Record<string, number>;
+  commandExecutionLatencyMs: CommandExecutionLatency;
   callbackHealth: { applied: number; rejected: number };
   windowStartedAt: string | null;
   legacyDrainCount: number;
 };
+
+export type CommandExecutionLatency = {
+  sampleCount: number;
+  p50: number | null;
+  p95: number | null;
+  p99: number | null;
+  max: number | null;
+};
+
+function summarizeDurations(values: number[]): CommandExecutionLatency {
+  if (values.length === 0) {
+    return { sampleCount: 0, p50: null, p95: null, p99: null, max: null };
+  }
+  const sorted = [...values].sort((a, b) => a - b);
+  const percentile = (fraction: number) => sorted[Math.max(0, Math.ceil(sorted.length * fraction) - 1)]!;
+  return {
+    sampleCount: sorted.length,
+    p50: percentile(0.5),
+    p95: percentile(0.95),
+    p99: percentile(0.99),
+    max: sorted[sorted.length - 1]!,
+  };
+}
 
 export type LegacyInvocationEntry = {
   legacyBoundary: string;
@@ -173,7 +197,7 @@ export async function getCohortSummary(
     projectId: { in: projectIds },
   };
 
-  const [engineGroups, statusGroups, activeCycleCounts, procedureGroups, candidateTasks, receiptGroups, callbackGroups] = await Promise.all([
+  const [engineGroups, statusGroups, activeCycleCounts, procedureGroups, candidateTasks, receiptGroups, receiptDurations, callbackGroups] = await Promise.all([
     // Engine distribution: groupBy projectId + workflowEngine.
     db.task.groupBy({
       by: ["projectId", "workflowEngine"],
@@ -225,6 +249,14 @@ export async function getCohortSummary(
         ...(opts.since ? { createdAt: { gte: opts.since } } : {}),
       },
       _count: true,
+    }),
+    db.taskWorkflowCommandReceipt.findMany({
+      where: {
+        task: { projectId: { in: projectIds }, archivedAt: null, deletedAt: null },
+        executionDurationMs: { not: null },
+        ...(opts.since ? { createdAt: { gte: opts.since } } : {}),
+      },
+      select: { taskId: true, executionDurationMs: true },
     }),
     db.activityLog.groupBy({
       by: ["projectId", "kind"],
@@ -317,6 +349,14 @@ export async function getCohortSummary(
     health[group.status] = (health[group.status] ?? 0) + (typeof group._count === "number" ? group._count : 0);
     commandHealthMap.set(pid, health);
   }
+  const durationMap = new Map<string, number[]>();
+  for (const receipt of receiptDurations) {
+    const pid = receiptTaskProjectMap.get(receipt.taskId);
+    if (!pid || receipt.executionDurationMs === null) continue;
+    const durations = durationMap.get(pid) ?? [];
+    durations.push(receipt.executionDurationMs);
+    durationMap.set(pid, durations);
+  }
   const callbackMap = new Map<string, { applied: number; rejected: number }>();
   for (const group of callbackGroups) {
     if (!group.projectId) continue;
@@ -373,6 +413,7 @@ export async function getCohortSummary(
     skippedTaskCount: Object.values(skippedReasonMap.get(project.id) ?? {}).reduce((sum, count) => sum + count, 0),
     skippedReasons: skippedReasonMap.get(project.id) ?? {},
     commandHealth: commandHealthMap.get(project.id) ?? {},
+    commandExecutionLatencyMs: summarizeDurations(durationMap.get(project.id) ?? []),
     callbackHealth: callbackMap.get(project.id) ?? { applied: 0, rejected: 0 },
     windowStartedAt: opts.since?.toISOString() ?? null,
     legacyDrainCount: legacyDrainCountMap.get(project.id) ?? 0,

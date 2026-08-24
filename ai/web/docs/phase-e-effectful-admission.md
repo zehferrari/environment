@@ -104,7 +104,37 @@ Required evidence:
 `pnpm workflow-doctor --json --strict` exposes configured effectful cohorts,
 eligible/admitted/skipped tasks, engine distribution, active procedures,
 receipt and callback health, legacy invocations, invariant findings, and a
-stable diagnostic for every Phase E stop condition.
+stable diagnostic for every Phase E stop condition. Cohort rows also expose
+`commandExecutionLatencyMs` (sample count plus p50/p95/p99/max) from the
+transaction-client entry through durable receipt creation.
+
+## Incident posture
+
+V2 ownership is a one-way consistency boundary. There is no fallback to a
+legacy writer after a task is pinned. Stop new admission when a stop condition
+fires, but keep the procedure, callback, outbox, repository, and PM-channel
+workers required to settle already-owned V2 work running. Fix forward and
+redeploy; use owner-only `unpin` only after the task is genuinely quiescent.
+
+SQLite remains appropriate at the current fleet size, but it is an explicit
+capacity boundary. Schedule the Postgres migration when the rollout-window
+command-execution p99 exceeds 2,000 ms, or when any `SQLITE_BUSY` reaches the
+workflow reconciler/doctor evidence. A single isolated build-time lock warning
+is diagnostic residue; a command/reconciler lock failure is the trigger.
+
+During a controlled PM deployment, keep monitoring visible without allowing
+it to alter the experiment:
+
+```sh
+sudo ai-monitor-mode observe-only --reason 'PM phase-e deployment'
+sudo ai-monitor-mode status
+# deploy, then verify receipt + strict doctor window
+sudo ai-monitor-mode active --reason 'PM phase-e verification passed'
+```
+
+Observe-only continues probes, verdict generation, and JSONL evidence while
+skipping Telegram, monitor-agent handoff, PM nudges, wake/restart actions, and
+ladder-state advancement. Restoring `active` is a required release step.
 
 ## E2 internal canary runbook
 

@@ -75,6 +75,7 @@ export async function executeDecisionWrites(args: {
   state: TaskAggregate;
   command: TaskWorkflowCommand;
   decision: OrchestrationDecision;
+  transactionStartedAtMs?: number;
   /**
    * Optional command-boundary projection applied after every domain,
    * transition, procedure and outbox write, but before the durable receipt.
@@ -295,6 +296,9 @@ export async function executeDecisionWrites(args: {
       procedureRunId: procedureId,
       decisionActorId: decision.decisionActorId,
       executorActorId: decision.executorActorId,
+      executionDurationMs: args.transactionStartedAtMs === undefined
+        ? null
+        : Math.max(0, Date.now() - args.transactionStartedAtMs),
     },
   );
   if (receipt.kind === "replay" || receipt.kind === "race_replay") {
