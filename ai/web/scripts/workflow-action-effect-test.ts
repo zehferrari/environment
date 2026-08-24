@@ -300,6 +300,8 @@ async function sectionB(): Promise<void> {
         assigneeId: agentUser.id,
         reporterId: owner.id,
         approvedOn: new Date(),
+        workflowEngine: "legacy",
+        workflowEnginePinnedAt: null,
       },
     });
 
@@ -502,6 +504,8 @@ async function sectionB(): Promise<void> {
         status: "Review",
         actingManagerId: agentUser.id,
         reporterId: owner.id,
+        workflowEngine: "legacy",
+        workflowEnginePinnedAt: null,
       },
     });
     const reviewSource = await recordPmChannelRunQueued({

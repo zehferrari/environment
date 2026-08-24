@@ -117,13 +117,15 @@ async function main() {
       assigneeId: assignee.id,
       actingManagerId: reviewer.id,
       reporterId: owner.id,
+      workflowEngine: ENGINE_LEGACY,
+      workflowEnginePinnedAt: null,
     },
   });
   const active = await db.task.create({
-    data: { projectId: project.id, title: "Private active task", status: "In Progress", private: true },
+    data: { projectId: project.id, title: "Private active task", status: "In Progress", private: true, workflowEngine: ENGINE_LEGACY, workflowEnginePinnedAt: null },
   });
   const publicTask = await db.task.create({
-    data: { projectId: project.id, title: "Public task", status: "Backlog", private: false },
+    data: { projectId: project.id, title: "Public task", status: "Backlog", private: false, workflowEngine: ENGINE_LEGACY, workflowEnginePinnedAt: null },
   });
 
   const { resolveAgentTaskAccess } = await import("@/lib/agents/private-task-access");
@@ -262,6 +264,8 @@ async function main() {
       title: "Approved exact canary",
       status: "To Do",
       reporterId: owner.id,
+      workflowEngine: ENGINE_LEGACY,
+      workflowEnginePinnedAt: null,
     },
   });
   const productionOutsideCohort = await db.task.create({
@@ -271,6 +275,8 @@ async function main() {
       title: "Eligible but outside approved cohort",
       status: "Backlog",
       reporterId: owner.id,
+      workflowEngine: ENGINE_LEGACY,
+      workflowEnginePinnedAt: null,
     },
   });
   const rolloutTask = await db.task.create({
@@ -519,15 +525,16 @@ async function main() {
     "the exception is top-level only",
   );
 
-  // Removing the allowlist stops only new admission. Durable V2 ownership is
-  // unchanged and remains authoritative.
+  // Removing the rollout allowlist stops explicit legacy-row admission.
+  // Phase E is complete, so the database default still creates new work as
+  // V2 and durable existing V2 ownership remains authoritative.
   delete process.env.PM_ORCHESTRATOR_V2_MUTATION_PROJECTS;
   const laterTask = await db.task.create({
     data: { projectId: project.id, title: "Created after rollback", status: "Backlog", private: true },
   });
   assert.equal(isV2MutationAdmissionEnabledForProject(project.slug), false);
   assert.equal((await db.task.findUniqueOrThrow({ where: { id: eligible.id } })).workflowEngine, ENGINE_ORCHESTRATOR_V2);
-  assert.equal((await db.task.findUniqueOrThrow({ where: { id: laterTask.id } })).workflowEngine, ENGINE_LEGACY);
+  assert.equal((await db.task.findUniqueOrThrow({ where: { id: laterTask.id } })).workflowEngine, ENGINE_ORCHESTRATOR_V2);
 
   // Quiescent unpin rejects every active workflow phase. The task engine is
   // never changed by a rejection.
