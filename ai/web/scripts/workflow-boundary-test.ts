@@ -158,6 +158,16 @@ function protectedWorkflowModelWrite(call: ts.CallExpression): string | null {
   return `${member.model}.${member.method}`;
 }
 
+function taskCreationOwnershipViolation(call: ts.CallExpression): string | null {
+  const member = calledMember(call);
+  if (!member || member.model !== "task" || !["create", "createMany", "upsert"].includes(member.method)) {
+    return null;
+  }
+  return /\bnewTaskWorkflowOwnership\s*\(/.test(call.getText())
+    ? null
+    : `Task.${member.method} without newTaskWorkflowOwnership()`;
+}
+
 function transitionKernelBindings(parsed: ts.SourceFile) {
   const direct = new Map<string, string>();
   const namespaces = new Set<string>();
@@ -207,6 +217,10 @@ function violationsForSource(filename: string, source: string): string[] {
       for (const field of directReviewRunFieldWrite(node)) found.push(`${filename}:${line} ReviewRun.${field}`);
       const modelWrite = protectedWorkflowModelWrite(node);
       if (modelWrite) found.push(`${filename}:${line} ${modelWrite}`);
+      if (filename.startsWith("app/") || filename.startsWith("lib/")) {
+        const creationViolation = taskCreationOwnershipViolation(node);
+        if (creationViolation) found.push(`${filename}:${line} ${creationViolation}`);
+      }
     }
     ts.forEachChild(node, visit);
   };
@@ -238,6 +252,17 @@ assert.ok(
     && fixtureViolations.some((line) => line.includes("Task.status"))
     && fixtureViolations.some((line) => line.includes("taskWorkflowCycle.create")),
   "boundary test fixture must prove direct, aliased, and namespaced unregistered writers fail",
+);
+
+const ownershipFixture = violationsForSource(
+  "lib/__task_creation_ownership_fixture__.ts",
+  `export async function bad(tx: any) {
+    await tx.task.create({ data: { title: "legacy by omission" } });
+  }`,
+);
+assert.ok(
+  ownershipFixture.some((line) => line.includes("Task.create without newTaskWorkflowOwnership()")),
+  "the permanent product-code scan must reject new task creation without durable V2 ownership",
 );
 
 for (const filename of [

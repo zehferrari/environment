@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -28,25 +28,9 @@ async function main() {
     runLegacyDefaultCutover,
   } = await import("@/lib/tasks/orchestrator/default-cutover");
 
-  const creationFiles = [
-    "lib/create/actions.ts",
-    "lib/work-items/apply.ts",
-    "lib/epics/actions.ts",
-    "lib/tasks/action-plan-store.ts",
-    "app/api/agent/epics/[epicId]/workflow/route.ts",
-    "app/(app)/projects/[slug]/page.tsx",
-  ];
-  let taskCreateCount = 0;
-  for (const file of creationFiles) {
-    const source = readFileSync(path.join(process.cwd(), file), "utf8");
-    const matches = [...source.matchAll(/\.task\.create\(\{\s*data:\s*\{/g)];
-    taskCreateCount += matches.length;
-    for (const match of matches) {
-      assert.match(source.slice(match.index, match.index + 250), /newTaskWorkflowOwnership\(/,
-        `${file} must stamp durable V2 ownership at task creation`);
-    }
-  }
-  assert.equal(taskCreateCount, 7, "all product task-creation boundaries are frozen by this test");
+  // The permanent AST gate in workflow-boundary-test.ts discovers every
+  // product Task.create/createMany/upsert site. This integration test keeps
+  // only the runtime contract instead of freezing a hand-maintained file list.
   assert.equal(newTaskWorkflowOwnership().workflowEngine, ENGINE_ORCHESTRATOR_V2);
   assert.ok(newTaskWorkflowOwnership().workflowEnginePinnedAt instanceof Date);
 
@@ -60,6 +44,13 @@ async function main() {
     },
   });
   const project = await db.project.create({ data: { slug: "phasee-12", name: "Phase E E5" } });
+  const databaseDefault = await db.task.create({
+    data: { projectId: project.id, title: "Database-default V2 ownership" },
+  });
+  assert.equal(databaseDefault.workflowEngine, ENGINE_ORCHESTRATOR_V2,
+    "the database default must prevent legacy ownership by omission");
+  assert.ok(databaseDefault.workflowEnginePinnedAt instanceof Date,
+    "the database default must pin newly-created V2 ownership");
   const candidate = await db.task.create({
     data: { projectId: project.id, title: "Quiescent legacy", status: "To Do", workflowEngine: "legacy" },
   });

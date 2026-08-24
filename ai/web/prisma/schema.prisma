@@ -466,8 +466,8 @@ model Task {
   // Phase E §5.1 — Durable engine ownership. Determines which workflow engine
   // (legacy or orchestrator_v2) owns this task's mutation path. Ownership is
   // durable state, not a per-request environment-variable decision.
-  workflowEngine        String           @default("legacy") @map("workflow_engine")
-  workflowEnginePinnedAt DateTime?       @map("workflow_engine_pinned_at")
+  workflowEngine        String           @default("orchestrator_v2") @map("workflow_engine")
+  workflowEnginePinnedAt DateTime?       @default(now()) @map("workflow_engine_pinned_at")
   deletedAt             DateTime?
   deletedById           String?
   deletedBy             User?            @relation("TaskDeletedBy", fields: [deletedById], references: [id])
@@ -551,7 +551,7 @@ model TaskWorkflowCycle {
   closedAt              DateTime?            @map("closed_at")
   // Phase E §5.1 — An open cycle is permanently pinned to its engine.
   // Copied from Task.workflowEngine when the cycle is opened.
-  workflowEngine        String               @default("legacy") @map("workflow_engine")
+  workflowEngine        String               @default("orchestrator_v2") @map("workflow_engine")
   createdAt             DateTime             @default(now()) @map("created_at")
   updatedAt             DateTime             @updatedAt @map("updated_at")
   transitions           WorkflowTransition[]
