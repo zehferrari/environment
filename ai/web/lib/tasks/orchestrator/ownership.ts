@@ -315,6 +315,9 @@ export async function pinToV2(
   opts: {
     projectInCohort: boolean;
     operatorUserId?: string | null;
+    evidenceId?: string | null;
+    cohortStage?: string | null;
+    authorizationCommentId?: string | null;
   },
 ): Promise<PinResult> {
   const task = await tx.task.findUnique({
@@ -386,6 +389,9 @@ export async function pinToV2(
     from: ENGINE_LEGACY,
     to: ENGINE_ORCHESTRATOR_V2,
     pinnedAt: pinnedAt.toISOString(),
+    ...(opts.evidenceId ? { evidenceId: opts.evidenceId } : {}),
+    ...(opts.cohortStage ? { cohortStage: opts.cohortStage } : {}),
+    ...(opts.authorizationCommentId ? { authorizationCommentId: opts.authorizationCommentId } : {}),
   };
   await writeDeduplicatedActivity({
     client: tx,

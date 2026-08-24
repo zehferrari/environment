@@ -50,6 +50,7 @@ export type TaskWorkflowCycleRow = {
   closedByTransitionId: string | null;
   baseSha: string | null;
   candidateSha: string | null;
+  workflowEngine: string;
 };
 
 class CycleInvariantError extends Error {
@@ -97,6 +98,17 @@ export async function openTaskWorkflowCycle(
     );
   }
 
+  const task = await tx.task.findUnique({
+    where: { id: args.taskId },
+    select: { workflowEngine: true },
+  });
+  if (!task) {
+    throw new CycleInvariantError(
+      `Task ${args.taskId} does not exist; cannot open a workflow cycle.`,
+      "task_not_found",
+    );
+  }
+
   const lastSequence = await tx.taskWorkflowCycle.aggregate({
     where: { taskId: args.taskId },
     _max: { sequence: true },
@@ -111,6 +123,9 @@ export async function openTaskWorkflowCycle(
       openedWorkflowVersion: args.openedWorkflowVersion,
       openedByTransitionId: args.openedByTransitionId ?? null,
       baseSha: args.baseSha ?? null,
+      // A cycle retains the authoritative owner that accepted its opening
+      // transition even if project admission is rolled back later.
+      workflowEngine: task.workflowEngine,
     },
   });
   await tx.task.update({
@@ -129,6 +144,7 @@ export async function openTaskWorkflowCycle(
     closedByTransitionId: cycle.closedByTransitionId,
     baseSha: cycle.baseSha,
     candidateSha: cycle.candidateSha,
+    workflowEngine: cycle.workflowEngine,
   };
 }
 
@@ -183,6 +199,7 @@ export async function closeTaskWorkflowCycle(
     closedByTransitionId: updated.closedByTransitionId,
     baseSha: updated.baseSha,
     candidateSha: updated.candidateSha,
+    workflowEngine: updated.workflowEngine,
   };
 }
 
@@ -223,6 +240,7 @@ export async function updateTaskWorkflowCycleCandidate(
     closedByTransitionId: updated.closedByTransitionId,
     baseSha: updated.baseSha,
     candidateSha: updated.candidateSha,
+    workflowEngine: updated.workflowEngine,
   };
 }
 
@@ -256,6 +274,7 @@ export async function getActiveTaskWorkflowCycle(
     closedByTransitionId: cycle.closedByTransitionId,
     baseSha: cycle.baseSha,
     candidateSha: cycle.candidateSha,
+    workflowEngine: cycle.workflowEngine,
   };
 }
 
@@ -283,6 +302,7 @@ export async function getTaskWorkflowCycle(
     closedByTransitionId: cycle.closedByTransitionId,
     baseSha: cycle.baseSha,
     candidateSha: cycle.candidateSha,
+    workflowEngine: cycle.workflowEngine,
   };
 }
 

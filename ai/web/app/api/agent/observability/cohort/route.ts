@@ -30,8 +30,16 @@ export async function GET(req: NextRequest) {
 
   const url = new URL(req.url);
   const projectId = url.searchParams.get("projectId") ?? undefined;
+  const sinceRaw = url.searchParams.get("since");
+  const since = sinceRaw ? new Date(sinceRaw) : undefined;
+  if (since && !Number.isFinite(since.getTime())) {
+    return NextResponse.json(
+      { error: "since must be an ISO-8601 timestamp" },
+      { status: 400, headers: { "cache-control": "no-store" } },
+    );
+  }
 
-  const summary = await getCohortSummary(projectId);
+  const summary = await getCohortSummary(projectId, { since });
   return NextResponse.json(
     { ok: true, cohort: summary },
     { headers: { "cache-control": "no-store" } },

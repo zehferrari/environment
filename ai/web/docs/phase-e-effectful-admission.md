@@ -29,8 +29,11 @@ audit rows; they never write user comments.
 ```bash
 pnpm phasee:admission preflight --evidence=/absolute/path/e2-evidence.json
 pnpm phasee:admission report --project=synthetic-private-canary
+pnpm phasee:admission report --project=production-project --tasks=PROJECT-1,PROJECT-2 --planned
+pnpm phasee:admission report --project=production-project --evidence=/absolute/path/e3-evidence.json
 pnpm phasee:admission admit --project=synthetic-private-canary --operator=<owner> --evidence=/absolute/path/e2-evidence.json --dry-run
 pnpm phasee:admission admit --project=synthetic-private-canary --operator=<owner> --evidence=/absolute/path/e2-evidence.json
+pnpm phasee:admission observe --project=production-project --evidence=/absolute/path/e3-evidence.json
 pnpm phasee:admission unpin --project=synthetic-private-canary --task=<task-id-or-key> --operator=<owner>
 ```
 
@@ -41,6 +44,19 @@ procedures, repository validation/finalization or recovery work, workflow
 outbox effects, and unsettled command receipts all produce stable skip reasons.
 Repeated or concurrent runs converge on one durable pin and deduplicated audit
 evidence.
+
+Production `project_cohort` evidence uses schema version 2 and names the exact
+task IDs/keys to inspect and admit. `admit` refuses blank, duplicate, missing,
+out-of-project, or same-task-by-id-and-key selectors before any pin. It also
+binds every successful pin to the evidence ID, cohort stage, and exact formal
+owner authorization comment. Eligible tasks outside that approved set remain
+legacy-owned and are listed in the raw admission result.
+
+Before the effectful allowlist changes, `report --planned --tasks=...` performs
+the same quiescence checks as admission while explicitly reporting
+`configuredEffectful: false` and `inspectionAssumedEffectful: true`. This is a
+read-only candidate projection, never an admission bypass. `admit` always
+requires the real effectful configuration.
 
 Removing a project from the effectful allowlist stops new pins only. Existing
 V2 tasks, cycles, commands, workers, callbacks, and procedures continue under
@@ -118,3 +134,69 @@ safely surface accepted V2 work.
 
 E2 passes only when the retained evidence shows no invariant violation,
 duplicate effect, lost continuation, dual mutation, or manual database repair.
+
+## E3 production canary runbook
+
+1. Start from a clean task branch at the current `origin/phase-e` tip. Verify
+   the configured deployment serves that exact Epic SHA; a code-equivalent but
+   different SHA is not sufficient evidence. Never SSH-deploy, run Git on the
+   target, or mutate the production database.
+2. Copy `docs/phase-e-production-cohort-evidence.example.json` outside the
+   repository. Retain disposable migrations, typecheck, aggregate workflow,
+   focused Phase E, build, lint, comparison, callback-correlation, strict
+   doctor, cohort, engine-distribution, and legacy-invocation outputs before
+   setting their checks or artifact references.
+3. Select one low-risk production project and at most five exact tasks. Run
+   `report --planned --tasks=...`; every candidate must be Backlog/To Do (or an
+   explicitly requested Done projection) with no active cycle, repository work,
+   procedure, PM run, continuation, outbox recovery, or unsettled receipt.
+   Preserve the full report so all non-selected tasks are visibly still legacy.
+4. Raise one formal `reporter_approval` round on the rollout task. Its scope
+   must name the project, exact task IDs/keys, deployed Epic SHA, the independent
+   `PM_ORCHESTRATOR_V2_MUTATION_PROJECTS` change, observation minutes, rollback
+   action, and Phase E stop conditions. Record the generated authorization
+   comment ID, owner username, task ID, and timestamp verbatim. Production
+   admission rejects an ordinary or deleted comment, a different operator, or
+   a grant whose scope is incomplete.
+5. Use configured deployment to add exactly that project to the mutation
+   allowlist while keeping the compute-only shadow/project probe independent.
+   Wildcard admission and batched project additions fail the gate. Confirm the
+   configured deployment serves the recorded Epic SHA.
+6. Run `preflight`, exact `report`, and `admit --dry-run`. Compare the raw task
+   set to the owner grant, then run `admit` once and replay it to prove
+   idempotency. Stop if any selector or safe-state result changed.
+7. Exercise review feedback, the same candidate SHA in a later cycle,
+   finalization failure/retry, and process restart/recovery. During an active V2
+   cycle, remove only the project from the effectful allowlist through configured
+   deployment. Confirm new tasks remain legacy while the already-owned cycle
+   finishes through its V2 workers, receipts, procedures, and exact callbacks.
+   Never use `unpin` for admission rollback.
+8. Restore only the owner-approved setting after the rollback proof and keep
+   workers required by accepted V2 work running. Retain start/end cohort,
+   engine, legacy-counter, callback, receipt/procedure, and strict-doctor JSON.
+   `observe` exits successfully only after the declared minimum window has
+   elapsed; the retained doctor/counter delta must also show zero unexplained
+   mismatch or new legacy bypass.
+
+## E4 controlled project expansion
+
+1. Open one project only after the immediately previous cohort has completed
+   its full observation window. Change the evidence stage to
+   `e4_project_expansion` and record the previous evidence ID, project,
+   completion timestamp, and retained observation artifact.
+2. Repeat the E3 baseline, exact safe-task selection, owner approval, configured
+   deployment, preflight, dry-run, admission, replay, and observation sequence.
+   The before/after mutation setting must preserve every prior explicit project
+   and add exactly the one target project; `*`, removals, replacements, and
+   multi-project batches fail closed.
+3. After every cohort, retain exact engine/cohort visibility and enumerate
+   historical legacy-owned cycles, jobs, callbacks, recoveries, continuations,
+   and finalization work. These drain under legacy adapters; no new legacy-owned
+   mutation may begin in an expanded project.
+4. Halt new admission immediately on any strict-doctor, callback-fencing,
+   continuation, duplicate-effect, evidence-conflict, legacy-bypass, or
+   engine/cycle/receipt regression. Roll back admission only; keep the workers
+   needed to finish or safely surface already accepted V2 work.
+5. E4 exits only when every active project is explicitly in the effectful
+   cohort, all safe-state tasks approved for that round are V2-owned, and every
+   remaining legacy owner is named in the retained historical-drain inventory.

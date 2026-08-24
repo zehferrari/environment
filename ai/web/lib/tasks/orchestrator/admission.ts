@@ -29,6 +29,13 @@ export type ProjectAdmissionResult = {
   projectId: string;
   projectSlug: string;
   dryRun: boolean;
+  targetTaskSelectors: string[] | null;
+  outsideApprovedTasks: Array<{
+    taskId: string;
+    workItemKey: string | null;
+    status: string;
+    workflowEngine: string;
+  }>;
   gate: RolloutGateReport;
   counts: {
     total: number;
@@ -49,6 +56,80 @@ async function requireOwnerOperator(operatorUserId: string) {
     throw new Error("Effectful admission requires the active Mission Control owner.");
   }
   return operator;
+}
+
+async function requireProductionApproval(
+  evidence: RolloutEvidence,
+  operator: Awaited<ReturnType<typeof requireOwnerOperator>>,
+) {
+  if (evidence.mode !== "project_cohort" || !evidence.productionCohort) return;
+  const production = evidence.productionCohort;
+  if (production.approval.ownerUsername !== operator.username) {
+    throw new Error("Production cohort approval owner does not match the active owner operator.");
+  }
+  const authorization = await db.comment.findUnique({
+    where: { id: production.approval.authorizationCommentId },
+    select: {
+      taskId: true,
+      body: true,
+      createdAt: true,
+      deletedAt: true,
+      commentKind: true,
+      isGenerated: true,
+      userId: true,
+      user: { select: { username: true, kind: true, status: true, isOwner: true } },
+    },
+  });
+  if (
+    !authorization ||
+    authorization.taskId !== production.approval.taskId ||
+    authorization.deletedAt ||
+    authorization.userId !== operator.id ||
+    authorization.user.username !== production.approval.ownerUsername ||
+    authorization.user.kind !== "human" ||
+    authorization.user.status !== "active" ||
+    !authorization.user.isOwner ||
+    authorization.commentKind !== "blocker_notice" ||
+    !authorization.isGenerated ||
+    authorization.createdAt.toISOString() !== new Date(production.approval.approvedAt).toISOString()
+  ) {
+    throw new Error("Production admission requires the exact live reporter-approval grant recorded in the evidence.");
+  }
+  const grantRows = await db.activityLog.findMany({
+    where: {
+      taskId: production.approval.taskId,
+      userId: operator.id,
+      kind: "task.blocker.permission.granted",
+    },
+    select: { payload: true },
+  });
+  const grant = grantRows.map((row) => {
+    try {
+      return JSON.parse(row.payload ?? "{}") as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }).find((payload) =>
+    payload?.authorizationCommentId === production.approval.authorizationCommentId &&
+    payload.permissionKind === "reporter_approval");
+  if (!grant || typeof grant.permissionScope !== "string") {
+    throw new Error("Production admission approval is not linked to a reporter_approval permission round.");
+  }
+  const scope = `${grant.permissionScope}\n${authorization.body}`.toLowerCase();
+  const requiredScopeTokens = [
+    evidence.targetProjectSlug,
+    production.deployedEpicSha,
+    "PM_ORCHESTRATOR_V2_MUTATION_PROJECTS",
+    ...production.taskIdsOrKeys,
+    "observation",
+    String(production.observationWindow.minimumMinutes),
+    "rollback",
+    "stop condition",
+  ];
+  const missingScopeTokens = requiredScopeTokens.filter((token) => !scope.includes(token.toLowerCase()));
+  if (missingScopeTokens.length > 0) {
+    throw new Error(`Production approval scope is incomplete; missing: ${missingScopeTokens.join(", ")}`);
+  }
 }
 
 async function auditSkip(args: {
@@ -86,7 +167,7 @@ export async function runProjectAdmission(args: {
   includeDone?: boolean;
   dryRun?: boolean;
 }): Promise<ProjectAdmissionResult> {
-  await requireOwnerOperator(args.operatorUserId);
+  const operator = await requireOwnerOperator(args.operatorUserId);
   const project = await db.project.findUnique({
     where: { slug: args.projectSlug },
     select: { id: true, slug: true },
@@ -102,7 +183,11 @@ export async function runProjectAdmission(args: {
     throw new Error(`Effectful admission preflight failed: ${failures}`);
   }
 
-  const tasks = await db.task.findMany({
+  const targetTaskSelectors = args.evidence.mode === "project_cohort"
+    ? [...new Set((args.evidence.productionCohort?.taskIdsOrKeys ?? []).map((value) => value.trim()))]
+    : null;
+
+  const projectTasks = await db.task.findMany({
     where: { projectId: project.id, deletedAt: null },
     orderBy: [{ rank: "asc" }, { createdAt: "asc" }],
     select: {
@@ -111,8 +196,35 @@ export async function runProjectAdmission(args: {
       title: true,
       status: true,
       private: true,
+      workflowEngine: true,
     },
   });
+  const tasks = targetTaskSelectors
+    ? projectTasks.filter((task) => targetTaskSelectors.includes(task.id) || (
+        task.workItemKey !== null && targetTaskSelectors.includes(task.workItemKey)
+      ))
+    : projectTasks;
+  const selectedTaskIds = new Set(tasks.map((task) => task.id));
+  const outsideApprovedTasks = targetTaskSelectors
+    ? projectTasks.filter((task) => !selectedTaskIds.has(task.id)).map((task) => ({
+        taskId: task.id,
+        workItemKey: task.workItemKey,
+        status: task.status,
+        workflowEngine: task.workflowEngine,
+      }))
+    : [];
+  if (targetTaskSelectors) {
+    const resolvedTaskIds = new Set(tasks.map((task) => task.id));
+    const missingSelectors = targetTaskSelectors.filter((selector) => !projectTasks.some((task) =>
+      task.id === selector || task.workItemKey === selector));
+    if (missingSelectors.length > 0) {
+      throw new Error(`Production cohort task selector(s) not found in ${project.slug}: ${missingSelectors.join(", ")}`);
+    }
+    if (resolvedTaskIds.size !== targetTaskSelectors.length) {
+      throw new Error("Production cohort task selectors must resolve to distinct tasks; do not name the same task by both id and key.");
+    }
+  }
+  await requireProductionApproval(args.evidence, operator);
 
   const results: ProjectAdmissionTaskResult[] = [];
   const projectInCohort = isProjectInMutationCohort(project.slug);
@@ -149,6 +261,9 @@ export async function runProjectAdmission(args: {
       const pin = await pinToV2(tx, task.id, {
         projectInCohort,
         operatorUserId: args.operatorUserId,
+        evidenceId: args.evidence.evidenceId,
+        cohortStage: args.evidence.productionCohort?.stage ?? null,
+        authorizationCommentId: args.evidence.productionCohort?.approval.authorizationCommentId ?? null,
       });
       if (!pin.ok) {
         await auditSkip({ tx, projectId: project.id, taskId: task.id, operatorUserId: args.operatorUserId, evidenceId: args.evidence.evidenceId, reasonCode: pin.code });
@@ -176,7 +291,16 @@ export async function runProjectAdmission(args: {
     wouldAdmit: results.filter((item) => item.outcome === "would_admit").length,
     skipped: results.filter((item) => item.outcome === "skipped").length,
   };
-  return { projectId: project.id, projectSlug: project.slug, dryRun: Boolean(args.dryRun), gate, counts, tasks: results };
+  return {
+    projectId: project.id,
+    projectSlug: project.slug,
+    dryRun: Boolean(args.dryRun),
+    targetTaskSelectors,
+    outsideApprovedTasks,
+    gate,
+    counts,
+    tasks: results,
+  };
 }
 
 export async function unpinQuiescentTask(args: {
@@ -200,18 +324,38 @@ export async function unpinQuiescentTask(args: {
   return db.$transaction((tx) => unpinFromV2(tx, task.id, { operatorUserId: args.operatorUserId }));
 }
 
-export async function getProjectAdmissionReport(projectSlug: string) {
+export async function getProjectAdmissionReport(
+  projectSlug: string,
+  opts: { taskIdsOrKeys?: string[]; planned?: boolean } = {},
+) {
   const project = await db.project.findUnique({
     where: { slug: projectSlug },
     select: { id: true, slug: true, name: true },
   });
   if (!project) throw new Error(`Project not found: ${projectSlug}`);
-  const tasks = await db.task.findMany({
+  const projectTasks = await db.task.findMany({
     where: { projectId: project.id, deletedAt: null },
     orderBy: [{ rank: "asc" }, { createdAt: "asc" }],
     select: { id: true, workItemKey: true, title: true, status: true, private: true, workflowEngine: true },
   });
-  const projectInCohort = isProjectInMutationCohort(project.slug);
+  const taskIdsOrKeys = [...new Set((opts.taskIdsOrKeys ?? []).map((value) => value.trim()).filter(Boolean))];
+  const tasks = taskIdsOrKeys.length > 0
+    ? projectTasks.filter((task) => taskIdsOrKeys.includes(task.id) || (
+        task.workItemKey !== null && taskIdsOrKeys.includes(task.workItemKey)
+      ))
+    : projectTasks;
+  if (taskIdsOrKeys.length > 0) {
+    const missingSelectors = taskIdsOrKeys.filter((selector) => !projectTasks.some((task) =>
+      task.id === selector || task.workItemKey === selector));
+    if (missingSelectors.length > 0) {
+      throw new Error(`Admission report task selector(s) not found in ${project.slug}: ${missingSelectors.join(", ")}`);
+    }
+    if (new Set(tasks.map((task) => task.id)).size !== taskIdsOrKeys.length) {
+      throw new Error("Admission report task selectors must resolve to distinct tasks.");
+    }
+  }
+  const configuredEffectful = isProjectInMutationCohort(project.slug);
+  const projectInCohort = configuredEffectful || Boolean(opts.planned);
   const inspected = [];
   for (const task of tasks) {
     const inspection = await db.$transaction((tx) => inspectTaskAdmission(tx, task.id, { projectInCohort }));
@@ -224,7 +368,9 @@ export async function getProjectAdmissionReport(projectSlug: string) {
   }
   return {
     project,
-    configuredEffectful: projectInCohort,
+    configuredEffectful,
+    inspectionAssumedEffectful: Boolean(opts.planned) && !configuredEffectful,
+    targetTaskSelectors: taskIdsOrKeys.length > 0 ? taskIdsOrKeys : null,
     counts: {
       total: inspected.length,
       admitted: inspected.filter((row) => row.workflowEngine === ENGINE_ORCHESTRATOR_V2).length,

@@ -40,6 +40,7 @@ async function main() {
     const [
       { db },
       dashboard,
+      projection,
       { LEGACY_WORKFLOW_BOUNDARY_ACTIVITY_KIND },
       { NextRequest },
       middlewareModule,
@@ -48,6 +49,7 @@ async function main() {
     ] = await Promise.all([
       import("@/lib/db"),
       import("@/lib/tasks/orchestrator/dashboard-data"),
+      import("@/lib/tasks/orchestrator/projection"),
       import("@/lib/tasks/legacy-workflow-boundary"),
       import("next/server"),
       import("@/middleware"),
@@ -73,7 +75,7 @@ async function main() {
       db.project.create({ data: { slug: "phasee10-beta", name: "PHASEE-10 Beta" } }),
     ]);
 
-    const [alphaLegacy, alphaV2, alphaDeleted, betaLegacy] = await Promise.all([
+    const [alphaLegacy, alphaV2, alphaDeleted, betaLegacy, alphaUnsafe, alphaReceiptUnsafe] = await Promise.all([
       db.task.create({
         data: {
           projectId: alpha.id,
@@ -109,7 +111,51 @@ async function main() {
           activeWorkflowCycleId: "beta-cycle",
         },
       }),
+      db.task.create({
+        data: {
+          projectId: alpha.id,
+          title: "Alpha currently unsafe candidate",
+          status: "Backlog",
+          workflowEngine: "legacy",
+        },
+      }),
+      db.task.create({
+        data: {
+          projectId: alpha.id,
+          title: "Alpha candidate with pre-window accepted receipt",
+          status: "Backlog",
+          workflowEngine: "legacy",
+        },
+      }),
     ]);
+
+    await db.taskWorkflowCommandReceipt.create({
+      data: {
+        taskId: alphaReceiptUnsafe.id,
+        idempotencyKey: "alpha-pre-window-receipt",
+        requestFingerprint: "alpha-pre-window-fingerprint",
+        intent: "submit_plan",
+        source: "agent_workflow",
+        expectedWorkflowVersion: 0,
+        resultingWorkflowVersion: 1,
+        status: "accepted",
+        result: "{}",
+        createdAt: new Date("2026-08-18T00:00:00.000Z"),
+      },
+    });
+    await db.taskWorkflowCommandReceipt.create({
+      data: {
+        taskId: betaLegacy.id,
+        idempotencyKey: "beta-completed-receipt",
+        requestFingerprint: "beta-completed-fingerprint",
+        intent: "submit_plan",
+        source: "agent_workflow",
+        expectedWorkflowVersion: 0,
+        resultingWorkflowVersion: 1,
+        status: "completed",
+        result: "{}",
+      },
+    });
 
     await db.taskProcedureRun.createMany({
       data: [
@@ -118,6 +164,7 @@ async function main() {
         { taskId: alphaV2.id, triggerTransitionId: "alpha-t3", type: "submit_candidate_for_review", status: "completed" },
         { taskId: alphaDeleted.id, triggerTransitionId: "alpha-t4", type: "finalize_accepted_review", status: "running" },
         { taskId: betaLegacy.id, triggerTransitionId: "beta-t1", type: "finalize_accepted_review", status: "running" },
+        { taskId: alphaUnsafe.id, triggerTransitionId: "alpha-t5", type: "prepare_todo_task", status: "queued" },
       ],
     });
 
@@ -176,12 +223,62 @@ async function main() {
     assert.equal(globalLegacySummary.totalInvocations, 503);
     assert.equal(globalLegacySummary.byBoundary.length, 3);
 
+    const windowStart = new Date(baseTime + 180_000);
+    await db.activityLog.createMany({
+      data: [
+        {
+          projectId: alpha.id,
+          kind: LEGACY_WORKFLOW_BOUNDARY_ACTIVITY_KIND,
+          payload: hotPayload,
+          createdAt: new Date(windowStart.getTime() + 1),
+        },
+        {
+          projectId: alpha.id,
+          taskId: alphaV2.id,
+          kind: "task.workflow.callback.applied",
+          payload: "{}",
+          createdAt: new Date(windowStart.getTime() + 2),
+        },
+        {
+          projectId: alpha.id,
+          taskId: alphaV2.id,
+          kind: "task.workflow.callback.mismatch",
+          payload: "{}",
+          createdAt: new Date(windowStart.getTime() + 3),
+        },
+      ],
+    });
+    const windowLegacySummary = await dashboard.getLegacyInvocationSummary(alpha.id, { since: windowStart });
+    assert.equal(windowLegacySummary.totalInvocations, 1);
+    assert.equal(windowLegacySummary.windowStartedAt, windowStart.toISOString());
+
     const alphaCohort = await dashboard.getCohortSummary(alpha.id);
     assert.equal(alphaCohort.length, 1);
-    assert.deepEqual(alphaCohort[0]?.engineDistribution, { legacy: 1, orchestrator_v2: 1 });
-    assert.deepEqual(alphaCohort[0]?.taskCountByStatus, { Backlog: 1, "In Progress": 1 });
+    assert.deepEqual(alphaCohort[0]?.engineDistribution, { legacy: 3, orchestrator_v2: 1 });
+    assert.deepEqual(alphaCohort[0]?.taskCountByStatus, { Backlog: 3, "In Progress": 1 });
     assert.equal(alphaCohort[0]?.activeCycleCount, 1);
-    assert.equal(alphaCohort[0]?.activeProcedureCount, 2);
+    assert.equal(alphaCohort[0]?.activeProcedureCount, 3);
+    assert.equal(alphaCohort[0]?.eligibleTaskCount, 0);
+    assert.equal(alphaCohort[0]?.skippedTaskCount, 3);
+    assert.deepEqual(alphaCohort[0]?.skippedReasons, {
+      active_cycle: 1,
+      active_procedure: 1,
+      unsettled_receipt: 1,
+    });
+    assert.equal(alphaCohort[0]?.legacyDrainCount, 3);
+    const alphaWindowCohort = await dashboard.getCohortSummary(alpha.id, { since: windowStart });
+    assert.deepEqual(alphaWindowCohort[0]?.callbackHealth, { applied: 1, rejected: 1 });
+    assert.equal(alphaWindowCohort[0]?.windowStartedAt, windowStart.toISOString());
+    assert.equal(
+      alphaWindowCohort[0]?.skippedReasons.unsettled_receipt,
+      1,
+      "windowed counters never hide a pre-window accepted receipt from current admission safety",
+    );
+    const alphaLegacyDrain = await dashboard.getLegacyDrainInventory(alpha.id);
+    assert.equal(alphaLegacyDrain.length, 3);
+    assert.equal(alphaLegacyDrain.some((entry) => entry.taskId === alphaLegacy.id && entry.activeWorkflowCycleId === "alpha-cycle"), true);
+    assert.equal(alphaLegacyDrain.some((entry) => entry.taskId === alphaUnsafe.id && entry.procedureStatuses.includes("queued")), true);
+    assert.equal(alphaLegacyDrain.some((entry) => entry.taskId === alphaReceiptUnsafe.id && entry.acceptedReceiptCount === 1), true);
 
     const globalCohort = await dashboard.getCohortSummary();
     assert.equal(globalCohort.length, 2);
@@ -189,6 +286,53 @@ async function main() {
     assert.deepEqual(betaCohort?.engineDistribution, { legacy: 1 });
     assert.equal(betaCohort?.activeCycleCount, 1);
     assert.equal(betaCohort?.activeProcedureCount, 1);
+
+    const doctorResult = await execFileP(
+      path.join(process.cwd(), "node_modules/.bin/tsx"),
+      ["scripts/pm-workflow-doctor.ts", "--json", `--project=${alpha.id}`],
+      { cwd: process.cwd(), env: { ...process.env, DATABASE_URL: dbUrl } },
+    );
+    const doctorJson = JSON.parse(doctorResult.stdout) as {
+      phaseE: {
+        receiptStats: Record<string, number>;
+        procedureStatusSummary: Record<string, number>;
+      };
+    };
+    assert.deepEqual(doctorJson.phaseE.receiptStats, { accepted: 1 });
+    assert.equal(
+      doctorJson.phaseE.procedureStatusSummary.running,
+      undefined,
+      "project-scoped doctor excludes another project's procedure totals",
+    );
+
+    const projectionMismatchTask = await db.task.create({
+      data: {
+        projectId: alpha.id,
+        title: "Projection exposes cycle mismatch",
+        status: "In Progress",
+        workflowEngine: "legacy",
+      },
+    });
+    const projectionMismatchCycle = await db.taskWorkflowCycle.create({
+      data: {
+        taskId: projectionMismatchTask.id,
+        sequence: 1,
+        status: "open",
+        openedWorkflowVersion: 0,
+        workflowEngine: "orchestrator_v2",
+      },
+    });
+    await db.task.update({
+      where: { id: projectionMismatchTask.id },
+      data: { activeWorkflowCycleId: projectionMismatchCycle.id },
+    });
+    const mismatchProjection = await projection.buildTaskWorkflowProjection(projectionMismatchTask.id);
+    assert.equal(mismatchProjection?.workflowEngine, "legacy");
+    assert.equal(
+      mismatchProjection?.activeCycle?.workflowEngine,
+      "orchestrator_v2",
+      "the projection exposes the durable cycle engine instead of copying the task engine",
+    );
 
     const cohortUrl = `http://127.0.0.1:3000/api/agent/observability/cohort?projectId=${alpha.id}`;
     const legacyUrl = `http://127.0.0.1:3000/api/agent/observability/legacy-invocations?projectId=${alpha.id}`;
@@ -216,6 +360,10 @@ async function main() {
     assert.equal(invalidLegacyAuth.status, 401);
 
     const bearerHeaders = { authorization: `Bearer ${AGENT_TOKEN}` };
+    const invalidSinceResponse = await cohortRoute.GET(new NextRequest(`${cohortUrl}&since=not-a-timestamp`, {
+      headers: bearerHeaders,
+    }));
+    assert.equal(invalidSinceResponse.status, 400);
     const cohortResponse = await cohortRoute.GET(new NextRequest(cohortUrl, { headers: bearerHeaders }));
     assert.equal(cohortResponse.status, 200);
     assert.equal(cohortResponse.headers.get("cache-control"), "no-store");
@@ -231,7 +379,7 @@ async function main() {
       legacyInvocations: { totalInvocations: number };
     };
     assert.equal(legacyJson.ok, true);
-    assert.equal(legacyJson.legacyInvocations.totalInvocations, 502);
+    assert.equal(legacyJson.legacyInvocations.totalInvocations, 503);
 
     const externalResponse = await cohortRoute.GET(new NextRequest(cohortUrl, {
       headers: { ...bearerHeaders, "x-forwarded-for": "203.0.113.10" },

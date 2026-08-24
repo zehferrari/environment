@@ -34,8 +34,13 @@ async function main() {
     pinToV2,
     unpinFromV2,
   } = await import("@/lib/tasks/orchestrator/ownership");
-  const { evaluateRolloutGates } = await import("@/lib/tasks/orchestrator/rollout-gates");
+  const {
+    evaluateObservationWindow,
+    evaluateRolloutGates,
+    PHASE_E_STOP_CONDITIONS,
+  } = await import("@/lib/tasks/orchestrator/rollout-gates");
   const { updateTaskRepositoryState } = await import("@/lib/tasks/repository-state");
+  const { applyProcedureCallback } = await import("@/lib/tasks/orchestrator/procedure-runner");
 
   const repositoryColumns = await db.$queryRawUnsafe<Array<{ name: string }>>(
     "SELECT name FROM pragma_table_info('task_repository_runs')",
@@ -251,6 +256,259 @@ async function main() {
   assert.equal(await db.activityLog.count({
     where: { taskId: publicTask.id, kind: "task.workflow.engine_admission_skipped" },
   }), 1, "repeated skip evidence must be deduplicated");
+
+  // Production E3/E4 cohorts require a schema-v2 exact task set and a formal,
+  // owner-authored reporter-approval grant. Admission must never widen that
+  // set to every otherwise eligible task in the project.
+  const productionProject = await db.project.create({
+    data: { slug: "low-risk-production", name: "Low-risk production" },
+  });
+  const productionCanary = await db.task.create({
+    data: {
+      projectId: productionProject.id,
+      workItemKey: "LRP-1",
+      title: "Approved exact canary",
+      status: "To Do",
+      reporterId: owner.id,
+    },
+  });
+  const productionOutsideCohort = await db.task.create({
+    data: {
+      projectId: productionProject.id,
+      workItemKey: "LRP-2",
+      title: "Eligible but outside approved cohort",
+      status: "Backlog",
+      reporterId: owner.id,
+    },
+  });
+  const rolloutTask = await db.task.create({
+    data: {
+      projectId: productionProject.id,
+      workItemKey: "ROLLOUT-1",
+      title: "Production rollout approval",
+      status: "In Progress",
+      reporterId: owner.id,
+    },
+  });
+  const approvedAt = new Date("2026-08-24T00:00:00.000Z");
+  const deployedEpicSha = "a".repeat(40);
+  const permissionScope = [
+    `Enable low-risk-production at ${deployedEpicSha} through PM_ORCHESTRATOR_V2_MUTATION_PROJECTS`,
+    `for exact task LRP-1 with a 60 minute observation window`,
+    "then exercise admission rollback and halt on every Phase E stop condition.",
+  ].join(" ");
+  const approval = await db.comment.create({
+    data: {
+      taskId: rolloutTask.id,
+      userId: owner.id,
+      body: `Reporter approval: ${permissionScope}`,
+      createdAt: approvedAt,
+      commentKind: "blocker_notice",
+      isGenerated: true,
+    },
+  });
+  await db.activityLog.create({
+    data: {
+      projectId: productionProject.id,
+      taskId: rolloutTask.id,
+      userId: owner.id,
+      kind: "task.blocker.permission.granted",
+      payload: JSON.stringify({
+        blockerCommentId: "production-rollout-blocker",
+        permissionKind: "reporter_approval",
+        permissionScope,
+        authorizationCommentId: approval.id,
+      }),
+    },
+  });
+  const productionEvidence = {
+    schemaVersion: 2 as const,
+    evidenceId: "phasee-e3-production-evidence",
+    generatedAt: "2026-08-24T00:00:01.000Z",
+    targetProjectSlug: productionProject.slug,
+    mode: "project_cohort" as const,
+    syntheticPrivateProject: false,
+    checks: { ...evidence.checks },
+    ownership: { ...evidence.ownership },
+    artifacts: ["retained:production-preflight"],
+    productionCohort: {
+      stage: "e3_production_canary" as const,
+      deployedEpicSha,
+      taskIdsOrKeys: [productionCanary.workItemKey!],
+      mutationSetting: {
+        name: "PM_ORCHESTRATOR_V2_MUTATION_PROJECTS" as const,
+        before: [project.slug],
+        after: [project.slug, productionProject.slug],
+      },
+      comparisonSetting: { shadowEnabled: false, projects: [productionProject.slug] },
+      approval: {
+        taskId: rolloutTask.id,
+        ownerUsername: owner.username,
+        approvedAt: approvedAt.toISOString(),
+        authorizationCommentId: approval.id,
+      },
+      observationWindow: { startsAt: "2026-08-24T00:00:02.000Z", minimumMinutes: 60 },
+      rollbackAction: "Remove low-risk-production from PM_ORCHESTRATOR_V2_MUTATION_PROJECTS; keep V2 workers running and never unpin active work.",
+      stopConditions: [...PHASE_E_STOP_CONDITIONS],
+      baselineArtifacts: {
+        cohortReport: "retained:cohort-report",
+        engineDistribution: "retained:engine-distribution",
+        legacyInvocationCounter: "retained:legacy-counter",
+        callbackCorrelation: "retained:callback-correlation",
+      },
+    },
+  };
+  process.env.PM_ORCHESTRATOR_V2_MUTATION_PROJECTS = `${project.slug},${productionProject.slug}`;
+  assert.equal(evaluateRolloutGates(productionEvidence).ready, true);
+  assert.deepEqual(
+    evaluateObservationWindow(productionEvidence, new Date("2026-08-24T00:30:02.000Z")),
+    {
+      applicable: true,
+      complete: false,
+      startsAt: "2026-08-24T00:00:02.000Z",
+      endsAt: "2026-08-24T01:00:02.000Z",
+      remainingMinutes: 30,
+    },
+  );
+  assert.equal(
+    evaluateObservationWindow(productionEvidence, new Date("2026-08-24T01:00:02.000Z")).complete,
+    true,
+  );
+
+  const productionDryRun = await runProjectAdmission({
+    projectSlug: productionProject.slug,
+    operatorUserId: owner.id,
+    evidence: productionEvidence,
+    dryRun: true,
+  });
+  assert.equal(productionDryRun.counts.total, 1);
+  assert.equal(productionDryRun.counts.wouldAdmit, 1);
+  assert.deepEqual(productionDryRun.targetTaskSelectors, ["LRP-1"]);
+  assert.equal(productionDryRun.outsideApprovedTasks.some((task) => task.taskId === productionOutsideCohort.id), true);
+
+  const productionAdmission = await runProjectAdmission({
+    projectSlug: productionProject.slug,
+    operatorUserId: owner.id,
+    evidence: productionEvidence,
+  });
+  assert.equal(productionAdmission.counts.admitted, 1);
+  assert.equal((await db.task.findUniqueOrThrow({ where: { id: productionCanary.id } })).workflowEngine, ENGINE_ORCHESTRATOR_V2);
+  assert.equal((await db.task.findUniqueOrThrow({ where: { id: productionOutsideCohort.id } })).workflowEngine, ENGINE_LEGACY);
+  const productionPin = await db.activityLog.findFirstOrThrow({
+    where: { taskId: productionCanary.id, kind: "task.workflow.engine_pinned" },
+  });
+  assert.deepEqual(
+    JSON.parse(productionPin.payload ?? "{}"),
+    {
+      from: ENGINE_LEGACY,
+      to: ENGINE_ORCHESTRATOR_V2,
+      pinnedAt: (await db.task.findUniqueOrThrow({ where: { id: productionCanary.id } })).workflowEnginePinnedAt?.toISOString(),
+      evidenceId: productionEvidence.evidenceId,
+      cohortStage: "e3_production_canary",
+      authorizationCommentId: approval.id,
+    },
+  );
+
+  const rollbackCycle = await db.taskWorkflowCycle.create({
+    data: {
+      taskId: productionCanary.id,
+      sequence: 1,
+      status: "open",
+      openedWorkflowVersion: productionCanary.workflowVersion,
+      workflowEngine: ENGINE_ORCHESTRATOR_V2,
+    },
+  });
+  await db.task.update({
+    where: { id: productionCanary.id },
+    data: { status: "In Progress", activeWorkflowCycleId: rollbackCycle.id },
+  });
+  const rollbackProcedure = await db.taskProcedureRun.create({
+    data: {
+      taskId: productionCanary.id,
+      workflowCycleId: rollbackCycle.id,
+      triggerTransitionId: "phasee-e3-active-rollback",
+      type: "submit_candidate_for_review",
+      definitionVersion: 1,
+      status: "running",
+    },
+  });
+  const rollbackStep = await db.taskProcedureStep.create({
+    data: {
+      procedureRunId: rollbackProcedure.id,
+      name: "run_validation",
+      ordinal: 3,
+      status: "waiting_callback",
+      output: JSON.stringify({ jobId: "phasee-e3-rollback-job", candidateSha: "candidate", baseSha: "base" }),
+    },
+  });
+  process.env.PM_ORCHESTRATOR_V2_MUTATION_PROJECTS = project.slug;
+  const rollbackCallback = await applyProcedureCallback({
+    procedureRunId: rollbackProcedure.id,
+    stepId: rollbackStep.id,
+    taskId: productionCanary.id,
+    workflowCycleId: rollbackCycle.id,
+    jobId: "phasee-e3-rollback-job",
+    candidateSha: "candidate",
+    baseSha: "base",
+    schemaVersion: 2,
+  });
+  assert.equal(rollbackCallback.applied, true, "an active V2 callback finishes after admission rollback");
+  assert.equal((await db.taskProcedureStep.findUniqueOrThrow({ where: { id: rollbackStep.id } })).status, "completed");
+  assert.equal((await db.task.findUniqueOrThrow({ where: { id: productionCanary.id } })).workflowEngine, ENGINE_ORCHESTRATOR_V2);
+  assert.equal((await db.taskWorkflowCycle.findUniqueOrThrow({ where: { id: rollbackCycle.id } })).workflowEngine, ENGINE_ORCHESTRATOR_V2);
+  assert.equal(await db.activityLog.count({
+    where: {
+      projectId: productionProject.id,
+      kind: "task.workflow.legacy_boundary.invoked",
+      taskId: productionCanary.id,
+    },
+  }), 0);
+  process.env.PM_ORCHESTRATOR_V2_MUTATION_PROJECTS = `${project.slug},${productionProject.slug}`;
+
+  const missingSelectorEvidence = {
+    ...productionEvidence,
+    evidenceId: "phasee-e3-missing-selector",
+    productionCohort: {
+      ...productionEvidence.productionCohort,
+      taskIdsOrKeys: ["LRP-404"],
+    },
+  };
+  await assert.rejects(
+    runProjectAdmission({
+      projectSlug: productionProject.slug,
+      operatorUserId: owner.id,
+      evidence: missingSelectorEvidence,
+      dryRun: true,
+    }),
+    /task selector\(s\) not found/,
+  );
+  const duplicateResolvedTaskEvidence = {
+    ...productionEvidence,
+    evidenceId: "phasee-e3-duplicate-resolved-task",
+    productionCohort: {
+      ...productionEvidence.productionCohort,
+      taskIdsOrKeys: [productionCanary.id, productionCanary.workItemKey!],
+    },
+  };
+  await assert.rejects(
+    runProjectAdmission({
+      projectSlug: productionProject.slug,
+      operatorUserId: owner.id,
+      evidence: duplicateResolvedTaskEvidence,
+      dryRun: true,
+    }),
+    /must resolve to distinct tasks/,
+  );
+  assert.equal(
+    evaluateRolloutGates({
+      ...productionEvidence,
+      productionCohort: {
+        ...productionEvidence.productionCohort,
+        stage: "e4_project_expansion",
+      },
+    }).gates.find((gate) => gate.id === "previous_cohort_observed")?.passed,
+    false,
+  );
 
   const privateChild = await db.task.create({
     data: {

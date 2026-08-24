@@ -12,7 +12,11 @@
 //   - --strict exits non-zero if any Phase E invariant violation is detected
 
 import { runWorkflowReconciliation } from "@/lib/tasks/workflow-reconciler";
-import { getCohortSummary, getLegacyInvocationSummary } from "@/lib/tasks/orchestrator/dashboard-data";
+import {
+  getCohortSummary,
+  getLegacyDrainInventory,
+  getLegacyInvocationSummary,
+} from "@/lib/tasks/orchestrator/dashboard-data";
 import { orchestratorV2MutationProjects } from "@/lib/tasks/orchestrator/flags";
 import { PHASE_E_STOP_CONDITIONS } from "@/lib/tasks/orchestrator/rollout-gates";
 import { LEGACY_WORKFLOW_BOUNDARY_ACTIVITY_KIND } from "@/lib/tasks/legacy-workflow-boundary";
@@ -36,9 +40,10 @@ async function main() {
   });
 
   // PHASEE-10 — Gather Phase E specific metrics.
-  const [cohortSummary, legacyInvocationSummary, engineDistribution, receiptStats, procedureStats, diagnosticActivities, v2LegacyInvocations, mechanicalDecisionActors] = await Promise.all([
+  const [cohortSummary, legacyInvocationSummary, legacyDrainInventory, engineDistribution, receiptStats, procedureStats, diagnosticActivities, v2LegacyInvocations, mechanicalDecisionActors] = await Promise.all([
     getCohortSummary(projectId),
     getLegacyInvocationSummary(projectId),
+    getLegacyDrainInventory(projectId),
     db.task.groupBy({
       by: ["workflowEngine"],
       where: { deletedAt: null, ...(projectId ? { projectId } : {}) },
@@ -46,10 +51,12 @@ async function main() {
     }),
     db.taskWorkflowCommandReceipt.groupBy({
       by: ["status"],
+      where: projectId ? { task: { projectId, deletedAt: null } } : undefined,
       _count: { _all: true },
     }),
     db.taskProcedureRun.groupBy({
       by: ["status"],
+      where: projectId ? { task: { projectId, deletedAt: null } } : undefined,
       _count: { _all: true },
     }),
     db.activityLog.groupBy({
@@ -62,6 +69,7 @@ async function main() {
           "task.workflow.legacy_bypass_attempt",
           "task.workflow.callback.mismatch",
           "task.workflow.callback.replayed",
+          "task.workflow.callback.stale_mutation",
           "task.workflow.procedure_operational_error",
         ] },
       },
@@ -138,12 +146,12 @@ async function main() {
         evidenceCount = phaseEFindings.length;
         triggered = evidenceCount > 0;
         break;
-      // A rejected/replayed stale callback is healthy fencing evidence, not a
-      // stop. This diagnostic remains false unless reconciliation proves it
-      // mutated durable state.
       case "stale_callback_mutated_active_cycle":
-        triggered = false;
-        evidenceCount = 0;
+        // Mismatch/replay activities prove healthy fencing and are not stops.
+        // Only this dedicated invariant activity represents an observed
+        // stale callback mutation.
+        evidenceCount = diagnosticCounts["task.workflow.callback.stale_mutation"] ?? 0;
+        triggered = evidenceCount > 0;
         break;
     }
     return { id, triggered, evidenceCount };
@@ -161,6 +169,8 @@ async function main() {
     ),
     legacyInvocationCount: legacyInvocationSummary.totalInvocations,
     legacyInvocationByBoundary: legacyInvocationSummary.byBoundary,
+    legacyDrainInventory,
+    legacyDrainCount: legacyDrainInventory.length,
     cohortCoverage: cohortSummary,
     configuredMutationProjects: [...orchestratorV2MutationProjects()].sort(),
     commandCallbackHealth: {
@@ -205,6 +215,7 @@ async function main() {
       `receipts=${JSON.stringify(phaseE.receiptStats)} ` +
       `procedures=${JSON.stringify(phaseE.procedureStatusSummary)} ` +
       `legacyInvocations=${phaseE.legacyInvocationCount} ` +
+      `legacyDrain=${phaseE.legacyDrainCount} ` +
       `invariantViolations=${phaseE.invariantViolations} ` +
       `stopConditionGate=${phaseE.stopConditionGatePassed ? "pass" : "FAIL"}`,
     );

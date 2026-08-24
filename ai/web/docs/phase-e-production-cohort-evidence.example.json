@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 2,
+  "evidenceId": "ENV-156-e3-YYYYMMDDTHHMMSSZ",
+  "generatedAt": "2026-08-24T00:00:01.000Z",
+  "targetProjectSlug": "low-risk-production-project",
+  "mode": "project_cohort",
+  "syntheticPrivateProject": false,
+  "checks": {
+    "migrations": false,
+    "typecheck": false,
+    "workflowSuite": false,
+    "phaseESuites": false,
+    "build": false,
+    "lint": false,
+    "procedureHandlerIdempotency": false,
+    "callbackV2Correlation": false,
+    "comparisonParity": false,
+    "doctorInvariants": false
+  },
+  "ownership": {
+    "backupOwner": "",
+    "rollbackOwner": "",
+    "onCallOwner": ""
+  },
+  "artifacts": [],
+  "productionCohort": {
+    "stage": "e3_production_canary",
+    "deployedEpicSha": "0000000000000000000000000000000000000000",
+    "taskIdsOrKeys": [
+      "PROJECT-1"
+    ],
+    "mutationSetting": {
+      "name": "PM_ORCHESTRATOR_V2_MUTATION_PROJECTS",
+      "before": [
+        "synthetic-private-canary"
+      ],
+      "after": [
+        "synthetic-private-canary",
+        "low-risk-production-project"
+      ]
+    },
+    "comparisonSetting": {
+      "shadowEnabled": false,
+      "projects": [
+        "low-risk-production-project"
+      ]
+    },
+    "approval": {
+      "taskId": "ENV-156-system-task-id",
+      "ownerUsername": "",
+      "approvedAt": "2026-08-24T00:00:00.000Z",
+      "authorizationCommentId": ""
+    },
+    "observationWindow": {
+      "startsAt": "2026-08-24T00:00:02.000Z",
+      "minimumMinutes": 60
+    },
+    "rollbackAction": "Remove only low-risk-production-project from PM_ORCHESTRATOR_V2_MUTATION_PROJECTS through configured deployment; keep V2 workers running and do not unpin active V2 work.",
+    "stopConditions": [
+      "decision_actor_is_mechanical_executor",
+      "dual_authoritative_mutation",
+      "command_missing_procedure_or_continuation",
+      "idempotency_evidence_conflict",
+      "stale_callback_mutated_active_cycle",
+      "accepted_review_evidence_reused_or_reset",
+      "duplicate_mechanical_effect",
+      "lost_execution_continuation",
+      "rollback_routed_active_v2_to_legacy",
+      "doctor_engine_cycle_receipt_contradiction"
+    ],
+    "baselineArtifacts": {
+      "cohortReport": "",
+      "engineDistribution": "",
+      "legacyInvocationCounter": "",
+      "callbackCorrelation": ""
+    }
+  }
+}

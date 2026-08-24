@@ -284,6 +284,9 @@ export async function buildTaskWorkflowProjection(taskId: string): Promise<TaskW
     : null;
 
   const engineOwnership = (task.workflowEngine === "orchestrator_v2" ? "orchestrator_v2" : "legacy") as EngineOwnership;
+  const cycleEngineOwnership = activeCycle
+    ? (activeCycle.workflowEngine === "orchestrator_v2" ? "orchestrator_v2" : "legacy") as EngineOwnership
+    : null;
 
   return {
     taskId: task.id,
@@ -299,8 +302,9 @@ export async function buildTaskWorkflowProjection(taskId: string): Promise<TaskW
           outcome: activeCycle.outcome,
           candidateSha: activeCycle.candidateSha,
           baseSha: activeCycle.baseSha,
-          // PHASEE-10 — Cycle-level engine ownership (fetched from the cycle row)
-          workflowEngine: engineOwnership, // The cycle inherits from the task at open time
+          // Expose the durable cycle row, even when it contradicts the task.
+          // Doctor/reconciliation surfaces the mismatch as a stop condition.
+          workflowEngine: cycleEngineOwnership!,
         }
       : null,
     lastCommandReceipt,

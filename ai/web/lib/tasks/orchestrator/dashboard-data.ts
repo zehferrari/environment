@@ -24,6 +24,8 @@ export type CohortSummary = {
   skippedReasons: Record<string, number>;
   commandHealth: Record<string, number>;
   callbackHealth: { applied: number; rejected: number };
+  windowStartedAt: string | null;
+  legacyDrainCount: number;
 };
 
 export type LegacyInvocationEntry = {
@@ -36,14 +38,117 @@ export type LegacyInvocationEntry = {
 export type LegacyInvocationSummary = {
   totalInvocations: number;
   byBoundary: LegacyInvocationEntry[];
+  windowStartedAt: string | null;
 };
+
+export type LegacyDrainEntry = {
+  taskId: string;
+  workItemKey: string | null;
+  projectId: string;
+  status: string;
+  activeWorkflowCycleId: string | null;
+  repositoryPhase: string | null;
+  procedureStatuses: string[];
+  pmRunStatuses: string[];
+  continuationStatuses: string[];
+  outboxStatuses: string[];
+  acceptedReceiptCount: number;
+};
+
+export async function getLegacyDrainInventory(projectId?: string): Promise<LegacyDrainEntry[]> {
+  const tasks = await db.task.findMany({
+    where: {
+      deletedAt: null,
+      workflowEngine: "legacy",
+      ...(projectId ? { projectId } : {}),
+    },
+    select: { id: true, workItemKey: true, projectId: true, status: true, activeWorkflowCycleId: true },
+  });
+  if (tasks.length === 0) return [];
+  const taskIds = tasks.map((task) => task.id);
+  const [repositoryRuns, procedures, pmRuns, continuations, outbox, receipts] = await Promise.all([
+    db.taskRepositoryRun.findMany({
+      where: {
+        taskId: { in: taskIds },
+        phase: { in: ["reserved", "provisioning", "validating", "review_ready", "finalizing", "operational_error"] },
+      },
+      select: { taskId: true, phase: true },
+    }),
+    db.taskProcedureRun.findMany({
+      where: { taskId: { in: taskIds }, status: { not: "completed" } },
+      select: { taskId: true, status: true },
+    }),
+    db.pmChannelRun.findMany({
+      where: {
+        taskId: { in: taskIds },
+        status: { notIn: ["completed", "failed", "timed_out", "cancelled", "superseded"] },
+      },
+      select: { taskId: true, status: true },
+    }),
+    db.pmChannelContinuation.findMany({
+      where: { taskId: { in: taskIds }, status: { in: ["armed", "queued"] } },
+      select: { taskId: true, status: true },
+    }),
+    db.workflowOutbox.findMany({
+      where: { taskId: { in: taskIds }, status: { not: "completed" } },
+      select: { taskId: true, status: true },
+    }),
+    db.taskWorkflowCommandReceipt.groupBy({
+      by: ["taskId"],
+      where: { taskId: { in: taskIds }, status: "accepted" },
+      _count: true,
+    }),
+  ]);
+  const groupedStatuses = (rows: Array<{ taskId: string | null; status: string }>) => {
+    const grouped = new Map<string, string[]>();
+    for (const row of rows) {
+      if (!row.taskId) continue;
+      const values = grouped.get(row.taskId) ?? [];
+      if (!values.includes(row.status)) values.push(row.status);
+      grouped.set(row.taskId, values.sort());
+    }
+    return grouped;
+  };
+  const repositoryMap = new Map(repositoryRuns.map((row) => [row.taskId, row.phase]));
+  const procedureMap = groupedStatuses(procedures);
+  const pmRunMap = groupedStatuses(pmRuns);
+  const continuationMap = groupedStatuses(continuations);
+  const outboxMap = groupedStatuses(outbox);
+  const receiptMap = new Map(receipts.map((row) => [
+    row.taskId,
+    typeof row._count === "number" ? row._count : 0,
+  ]));
+  return tasks.map((task) => ({
+    taskId: task.id,
+    workItemKey: task.workItemKey,
+    projectId: task.projectId,
+    status: task.status,
+    activeWorkflowCycleId: task.activeWorkflowCycleId,
+    repositoryPhase: repositoryMap.get(task.id) ?? null,
+    procedureStatuses: procedureMap.get(task.id) ?? [],
+    pmRunStatuses: pmRunMap.get(task.id) ?? [],
+    continuationStatuses: continuationMap.get(task.id) ?? [],
+    outboxStatuses: outboxMap.get(task.id) ?? [],
+    acceptedReceiptCount: receiptMap.get(task.id) ?? 0,
+  })).filter((task) =>
+    Boolean(task.activeWorkflowCycleId) ||
+    Boolean(task.repositoryPhase) ||
+    task.procedureStatuses.length > 0 ||
+    task.pmRunStatuses.length > 0 ||
+    task.continuationStatuses.length > 0 ||
+    task.outboxStatuses.length > 0 ||
+    task.acceptedReceiptCount > 0);
+}
 
 /**
  * Return a cohort summary across all projects (or a single project if specified).
  * Read-only — uses groupBy/count for bounded cost, never loads the full task
  * table into JS.
  */
-export async function getCohortSummary(projectId?: string): Promise<CohortSummary[]> {
+export async function getCohortSummary(
+  projectId?: string,
+  opts: { since?: Date } = {},
+): Promise<CohortSummary[]> {
   const projectFilter = projectId ? { id: projectId } : undefined;
 
   const projects = await db.project.findMany({
@@ -54,12 +159,17 @@ export async function getCohortSummary(projectId?: string): Promise<CohortSummar
   if (projects.length === 0) return [];
 
   const projectIds = projects.map((p) => p.id);
+  const legacyDrainInventory = await getLegacyDrainInventory(projectId);
+  const legacyDrainCountMap = new Map<string, number>();
+  for (const entry of legacyDrainInventory) {
+    legacyDrainCountMap.set(entry.projectId, (legacyDrainCountMap.get(entry.projectId) ?? 0) + 1);
+  }
   const taskWhere = {
     deletedAt: null,
     projectId: { in: projectIds },
   };
 
-  const [engineGroups, statusGroups, activeCycleCounts, procedureGroups, eligibleGroups, receiptGroups, callbackGroups, skipActivities] = await Promise.all([
+  const [engineGroups, statusGroups, activeCycleCounts, procedureGroups, candidateTasks, receiptGroups, callbackGroups] = await Promise.all([
     // Engine distribution: groupBy projectId + workflowEngine.
     db.task.groupBy({
       by: ["projectId", "workflowEngine"],
@@ -91,42 +201,35 @@ export async function getCohortSummary(projectId?: string): Promise<CohortSummar
     db.taskProcedureRun.groupBy({
       by: ["taskId"],
       where: {
-        status: { in: ["queued", "running", "operational_error"] },
+        status: { not: "completed" },
         task: { projectId: { in: projectIds }, deletedAt: null },
       },
       _count: true,
     }),
-    db.task.groupBy({
-      by: ["projectId"],
+    db.task.findMany({
       where: {
         ...taskWhere,
         workflowEngine: "legacy",
         status: { in: ["Backlog", "To Do"] },
-        activeWorkflowCycleId: null,
       },
-      _count: true,
+      select: { id: true, projectId: true, activeWorkflowCycleId: true },
     }),
     db.taskWorkflowCommandReceipt.groupBy({
       by: ["taskId", "status"],
-      where: { task: { projectId: { in: projectIds }, deletedAt: null } },
+      where: {
+        task: { projectId: { in: projectIds }, deletedAt: null },
+        ...(opts.since ? { createdAt: { gte: opts.since } } : {}),
+      },
       _count: true,
     }),
     db.activityLog.groupBy({
       by: ["projectId", "kind"],
       where: {
         projectId: { in: projectIds },
-        kind: { in: ["task.workflow.callback.applied", "task.workflow.callback.rejected"] },
+        kind: { in: ["task.workflow.callback.applied", "task.workflow.callback.mismatch"] },
+        ...(opts.since ? { createdAt: { gte: opts.since } } : {}),
       },
       _count: true,
-    }),
-    db.activityLog.findMany({
-      where: {
-        projectId: { in: projectIds },
-        kind: "task.workflow.engine_admission_skipped",
-        taskId: { not: null },
-      },
-      orderBy: { createdAt: "desc" },
-      select: { projectId: true, taskId: true, payload: true },
     }),
   ]);
 
@@ -134,10 +237,67 @@ export async function getCohortSummary(projectId?: string): Promise<CohortSummar
   const engineMap = new Map<string, Record<string, number>>();
   const statusMap = new Map<string, Record<string, number>>();
   const procedureMap = new Map<string, number>();
-  const eligibleMap = new Map(eligibleGroups.map((group) => [
-    group.projectId,
-    typeof group._count === "number" ? group._count : 0,
-  ]));
+  const candidateTaskIds = candidateTasks.map((task) => task.id);
+  const [repositoryBlockers, pmRunBlockers, continuationBlockers, outboxBlockers] = candidateTaskIds.length > 0
+    ? await Promise.all([
+        db.taskRepositoryRun.findMany({
+          where: {
+            taskId: { in: candidateTaskIds },
+            phase: { in: ["reserved", "provisioning", "validating", "review_ready", "finalizing", "operational_error"] },
+          },
+          select: { taskId: true },
+        }),
+        db.pmChannelRun.findMany({
+          where: {
+            taskId: { in: candidateTaskIds },
+            status: { notIn: ["completed", "failed", "timed_out", "cancelled", "superseded"] },
+          },
+          select: { taskId: true },
+        }),
+        db.pmChannelContinuation.findMany({
+          where: { taskId: { in: candidateTaskIds }, status: { in: ["armed", "queued"] } },
+          select: { taskId: true },
+        }),
+        db.workflowOutbox.findMany({
+          where: { taskId: { in: candidateTaskIds }, status: { not: "completed" } },
+          select: { taskId: true },
+        }),
+      ])
+    : [[], [], [], []];
+  const repositoryBlockerIds = new Set(repositoryBlockers.map((row) => row.taskId));
+  const procedureBlockerIds = new Set(procedureGroups.map((row) => row.taskId));
+  const pmRunBlockerIds = new Set(pmRunBlockers.map((row) => row.taskId).filter((id): id is string => Boolean(id)));
+  const continuationBlockerIds = new Set(continuationBlockers.map((row) => row.taskId).filter((id): id is string => Boolean(id)));
+  const outboxBlockerIds = new Set(outboxBlockers.map((row) => row.taskId));
+  // Observation-window filtering applies to command-health counters, not to
+  // current admission safety. An accepted receipt from before the window is
+  // still unsettled work and must continue to block a new ownership pin.
+  const acceptedReceiptBlockers = candidateTaskIds.length > 0
+    ? await db.taskWorkflowCommandReceipt.findMany({
+        where: { taskId: { in: candidateTaskIds }, status: "accepted" },
+        select: { taskId: true },
+      })
+    : [];
+  const receiptBlockerIds = new Set(acceptedReceiptBlockers.map((row) => row.taskId));
+  const eligibleMap = new Map<string, number>();
+  const skippedReasonMap = new Map<string, Record<string, number>>();
+  for (const task of candidateTasks) {
+    let reasonCode: string | null = null;
+    if (task.activeWorkflowCycleId) reasonCode = "active_cycle";
+    else if (repositoryBlockerIds.has(task.id)) reasonCode = "active_repository_work";
+    else if (procedureBlockerIds.has(task.id)) reasonCode = "active_procedure";
+    else if (pmRunBlockerIds.has(task.id)) reasonCode = "active_execution_run";
+    else if (continuationBlockerIds.has(task.id)) reasonCode = "active_continuation";
+    else if (outboxBlockerIds.has(task.id)) reasonCode = "active_recovery_work";
+    else if (receiptBlockerIds.has(task.id)) reasonCode = "unsettled_receipt";
+    if (!reasonCode) {
+      eligibleMap.set(task.projectId, (eligibleMap.get(task.projectId) ?? 0) + 1);
+      continue;
+    }
+    const reasons = skippedReasonMap.get(task.projectId) ?? {};
+    reasons[reasonCode] = (reasons[reasonCode] ?? 0) + 1;
+    skippedReasonMap.set(task.projectId, reasons);
+  }
   const receiptTaskProjects = receiptGroups.length > 0
     ? await db.task.findMany({
         where: { id: { in: receiptGroups.map((group) => group.taskId) } },
@@ -162,23 +322,6 @@ export async function getCohortSummary(projectId?: string): Promise<CohortSummar
     else health.rejected += count;
     callbackMap.set(group.projectId, health);
   }
-  const seenSkippedTasks = new Set<string>();
-  const skippedReasonMap = new Map<string, Record<string, number>>();
-  for (const activity of skipActivities) {
-    if (!activity.projectId || !activity.taskId || seenSkippedTasks.has(activity.taskId)) continue;
-    seenSkippedTasks.add(activity.taskId);
-    let reasonCode = "unknown";
-    try {
-      const payload = JSON.parse(activity.payload ?? "{}") as Record<string, unknown>;
-      reasonCode = String(payload.reasonCode ?? "unknown");
-    } catch {
-      // Preserve a stable unknown bucket for malformed historical evidence.
-    }
-    const reasons = skippedReasonMap.get(activity.projectId) ?? {};
-    reasons[reasonCode] = (reasons[reasonCode] ?? 0) + 1;
-    skippedReasonMap.set(activity.projectId, reasons);
-  }
-
   for (const g of engineGroups) {
     const m = engineMap.get(g.projectId) ?? {};
     m[g.workflowEngine] = (m[g.workflowEngine] ?? 0) + (typeof g._count === "number" ? g._count : 0);
@@ -227,6 +370,8 @@ export async function getCohortSummary(projectId?: string): Promise<CohortSummar
     skippedReasons: skippedReasonMap.get(project.id) ?? {},
     commandHealth: commandHealthMap.get(project.id) ?? {},
     callbackHealth: callbackMap.get(project.id) ?? { applied: 0, rejected: 0 },
+    windowStartedAt: opts.since?.toISOString() ?? null,
+    legacyDrainCount: legacyDrainCountMap.get(project.id) ?? 0,
   }));
 }
 
@@ -240,7 +385,10 @@ export async function getCohortSummary(projectId?: string): Promise<CohortSummar
  * for efficient legacy boundary queries instead of fetching all rows and
  * aggregating in JS.
  */
-export async function getLegacyInvocationSummary(projectId?: string): Promise<LegacyInvocationSummary> {
+export async function getLegacyInvocationSummary(
+  projectId?: string,
+  opts: { since?: Date } = {},
+): Promise<LegacyInvocationSummary> {
   // Single groupBy on payload with _count and _max(createdAt) — one query,
   // complete, no truncation. The payload is a deterministic JSON string
   // ({legacyBoundary, entryPoint}) so groupBy(["payload"]) returns exactly
@@ -250,6 +398,7 @@ export async function getLegacyInvocationSummary(projectId?: string): Promise<Le
     where: {
       kind: LEGACY_WORKFLOW_BOUNDARY_ACTIVITY_KIND,
       ...(projectId ? { projectId } : {}),
+      ...(opts.since ? { createdAt: { gte: opts.since } } : {}),
     },
     _count: true,
     _max: { createdAt: true },
@@ -286,5 +435,6 @@ export async function getLegacyInvocationSummary(projectId?: string): Promise<Le
   return {
     totalInvocations,
     byBoundary,
+    windowStartedAt: opts.since?.toISOString() ?? null,
   };
 }

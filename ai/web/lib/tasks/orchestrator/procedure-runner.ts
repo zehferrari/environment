@@ -187,7 +187,10 @@ export async function applyProcedureCallback(callback: ProcedureCallback): Promi
   // to look up the task so we can still record the mismatch activity.
   const taskIdForLookup = trustedTaskId ?? callback.taskId;
   const taskRow = taskIdForLookup
-    ? await db.task.findUnique({ where: { id: taskIdForLookup }, select: { projectId: true } })
+    ? await db.task.findUnique({
+        where: { id: taskIdForLookup },
+        select: { projectId: true, activeWorkflowCycleId: true },
+      })
     : null;
   const projectId = taskRow?.projectId ?? null;
 
@@ -240,6 +243,23 @@ export async function applyProcedureCallback(callback: ProcedureCallback): Promi
       });
     }
     return { applied: false, reason: "Cycle id mismatch — callback is from an older or different cycle." };
+  }
+  if (taskRow?.activeWorkflowCycleId !== callback.workflowCycleId) {
+    if (projectId) {
+      await recordCallbackActivity({
+        projectId,
+        taskId: trustedTaskId!,
+        kind: "task.workflow.callback.mismatch",
+        fingerprint: callbackMismatchFingerprint(callback, `active_cycle_mismatch:${taskRow?.activeWorkflowCycleId ?? "null"}`),
+        payload: {
+          reason: "Task active cycle does not match callback cycle.",
+          activeWorkflowCycleId: taskRow?.activeWorkflowCycleId ?? null,
+          callbackTaskId: callback.taskId,
+          callback,
+        },
+      });
+    }
+    return { applied: false, reason: "Task active cycle does not match callback cycle." };
   }
   // Verify the job id matches the one stored in step output when the step
   // entered waiting_callback.
@@ -409,6 +429,19 @@ export async function applyProcedureCallback(callback: ProcedureCallback): Promi
     where: { id: step.procedureRun.id },
     data: { status: "queued", currentStep: null },
   });
+  if (projectId) {
+    await recordCallbackActivity({
+      projectId,
+      taskId: trustedTaskId!,
+      kind: "task.workflow.callback.applied",
+      fingerprint: callbackMismatchFingerprint(callback, "applied"),
+      payload: {
+        reason: "Exact schema-v2 callback applied.",
+        activeWorkflowCycleId: taskRow?.activeWorkflowCycleId ?? null,
+        callback,
+      },
+    });
+  }
   return { applied: true, reason: "Callback applied; step completed." };
 }
 
