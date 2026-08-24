@@ -108,8 +108,8 @@ if [[ "${PM_DIRECT_REBUILD_ALLOW:-0}" != "1" && -n "$WORKTREES_ROOT_REAL" ]]; th
       WT_ROOT="${APP_DIR%/ai/web}"
       [[ -x "$PM_SWITCH" ]] \
         || die "managed worktree detected at $WT_ROOT; use pm-switch, but $PM_SWITCH is missing"
-      log "Managed worktree detected; delegating live rebuild to $PM_SWITCH $WT_ROOT…"
-      exec "$PM_SWITCH" "$WT_ROOT"
+      log "Managed worktree detected; delegating live rebuild to $PM_SWITCH --database=worktree $WT_ROOT…"
+      exec "$PM_SWITCH" --database=worktree "$WT_ROOT"
       ;;
   esac
 fi

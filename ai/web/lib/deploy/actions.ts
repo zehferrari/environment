@@ -103,6 +103,10 @@ export async function requestWorktreeSwitch(
     id,
     action: "serve",
     target: wt.name,
+    // The UI's branch-database model means the stable worktree database.
+    // Make that intent explicit so a temporary branch/worktree name mismatch
+    // can never make the host switcher guess which production state to serve.
+    ...(project.branchDatabases ? { databaseSelection: "worktree" } : {}),
     rebuild,
     requestedBy: owner.username,
     requestedAt: new Date().toISOString(),
