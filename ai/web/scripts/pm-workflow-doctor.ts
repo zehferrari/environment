@@ -34,19 +34,33 @@ function option(name: string) {
 async function main() {
   const apply = flag("apply");
   const projectId = option("project") ?? undefined;
+  const sinceValue = option("since");
+  const since = sinceValue ? new Date(sinceValue) : undefined;
+  if (since && Number.isNaN(since.getTime())) {
+    throw new Error("--since must be a valid ISO timestamp.");
+  }
   const report = await runWorkflowReconciliation({
     projectId: projectId,
     dryRun: !apply,
   });
 
   // PHASEE-10 — Gather Phase E specific metrics.
-  const [cohortSummary, legacyInvocationSummary, legacyDrainInventory, engineDistribution, receiptStats, procedureStats, diagnosticActivities, v2LegacyInvocations, mechanicalDecisionActors] = await Promise.all([
-    getCohortSummary(projectId),
+  const [cohortSummary, legacyInvocationSummary, allTimeLegacyInvocationSummary, legacyDrainInventory, engineDistribution, receiptStats, allTimeReceiptStats, procedureStats, diagnosticActivities, allTimeDiagnosticActivities, v2LegacyInvocations, mechanicalDecisionActors] = await Promise.all([
+    getCohortSummary(projectId, { since }),
+    getLegacyInvocationSummary(projectId, { since }),
     getLegacyInvocationSummary(projectId),
     getLegacyDrainInventory(projectId),
     db.task.groupBy({
       by: ["workflowEngine"],
       where: { deletedAt: null, ...(projectId ? { projectId } : {}) },
+      _count: { _all: true },
+    }),
+    db.taskWorkflowCommandReceipt.groupBy({
+      by: ["status"],
+      where: {
+        ...(projectId ? { task: { projectId, deletedAt: null } } : {}),
+        ...(since ? { createdAt: { gte: since } } : {}),
+      },
       _count: { _all: true },
     }),
     db.taskWorkflowCommandReceipt.groupBy({
@@ -72,6 +86,23 @@ async function main() {
           "task.workflow.callback.stale_mutation",
           "task.workflow.procedure_operational_error",
         ] },
+        ...(since ? { createdAt: { gte: since } } : {}),
+      },
+      _count: { _all: true },
+    }),
+    db.activityLog.groupBy({
+      by: ["kind"],
+      where: {
+        ...(projectId ? { projectId } : {}),
+        kind: { in: [
+          "task.workflow.idempotency_conflict",
+          "task.workflow.engine_invariant",
+          "task.workflow.legacy_bypass_attempt",
+          "task.workflow.callback.mismatch",
+          "task.workflow.callback.replayed",
+          "task.workflow.callback.stale_mutation",
+          "task.workflow.procedure_operational_error",
+        ] },
       },
       _count: { _all: true },
     }),
@@ -80,6 +111,7 @@ async function main() {
         ...(projectId ? { projectId } : {}),
         kind: LEGACY_WORKFLOW_BOUNDARY_ACTIVITY_KIND,
         task: { workflowEngine: "orchestrator_v2", workflowEnginePinnedAt: { not: null } },
+        ...(since ? { createdAt: { gte: since } } : {}),
       },
       select: {
         createdAt: true,
@@ -92,6 +124,7 @@ async function main() {
         ...(projectId ? { task: { projectId } } : {}),
         intent: { in: ["submit_plan", "approve_plan", "accept_review", "repository_finalization_succeeded"] },
         actor: { agent: { role: "monitor" } },
+        ...(since ? { createdAt: { gte: since } } : {}),
       },
     }),
   ]);
@@ -105,6 +138,19 @@ async function main() {
   const diagnosticCounts = Object.fromEntries(
     diagnosticActivities.map((row) => [row.kind, row._count._all]),
   );
+  const allTimeDiagnosticCounts = Object.fromEntries(
+    allTimeDiagnosticActivities.map((row) => [row.kind, row._count._all]),
+  );
+  const receiptStatsMap = Object.fromEntries(
+    receiptStats.map((row) => [row.status, row._count._all]),
+  );
+  const allTimeReceiptStatsMap = Object.fromEntries(
+    allTimeReceiptStats.map((row) => [row.status, row._count._all]),
+  );
+  const subtractCounts = (allTime: Record<string, number>, window: Record<string, number>) =>
+    Object.fromEntries(Object.entries(allTime)
+      .map(([key, count]) => [key, count - (window[key] ?? 0)] as const)
+      .filter(([, count]) => count > 0));
   const legacyAfterV2Pin = v2LegacyInvocations.filter((row) =>
     row.task?.workflowEnginePinnedAt && row.createdAt >= row.task.workflowEnginePinnedAt,
   ).length;
@@ -158,12 +204,16 @@ async function main() {
   });
 
   const phaseE = {
+    observationWindow: {
+      startedAt: since?.toISOString() ?? null,
+      semantics: since
+        ? "event counters and stop evidence are windowed; current aggregate invariants remain unwindowed"
+        : "all-time event counters; current aggregate invariants are live",
+    },
     engineOwnershipDistribution: Object.fromEntries(
       engineDistribution.map((row) => [row.workflowEngine, row._count._all]),
     ),
-    receiptStats: Object.fromEntries(
-      receiptStats.map((row) => [row.status, row._count._all]),
-    ),
+    receiptStats: receiptStatsMap,
     procedureStatusSummary: Object.fromEntries(
       procedureStats.map((row) => [row.status, row._count._all]),
     ),
@@ -180,6 +230,14 @@ async function main() {
     },
     stopConditionGatePassed: stopConditionDiagnostics.every((diagnostic) => !diagnostic.triggered),
     stopConditionDiagnostics,
+    historicalResidueBeforeWindow: since ? {
+      receiptStats: subtractCounts(allTimeReceiptStatsMap, receiptStatsMap),
+      diagnosticCounts: subtractCounts(allTimeDiagnosticCounts, diagnosticCounts),
+      legacyInvocationCount: Math.max(
+        0,
+        allTimeLegacyInvocationSummary.totalInvocations - legacyInvocationSummary.totalInvocations,
+      ),
+    } : null,
     invariantViolations: phaseEFindings.length,
     invariantFindings: phaseEFindings.map((f) => ({
       kind: f.kind,
@@ -212,6 +270,7 @@ async function main() {
     // PHASEE-10 — Phase E section
     console.log(
       `  phaseE: engineOwnership=${JSON.stringify(phaseE.engineOwnershipDistribution)} ` +
+      `window=${phaseE.observationWindow.startedAt ?? "all-time"} ` +
       `receipts=${JSON.stringify(phaseE.receiptStats)} ` +
       `procedures=${JSON.stringify(phaseE.procedureStatusSummary)} ` +
       `legacyInvocations=${phaseE.legacyInvocationCount} ` +

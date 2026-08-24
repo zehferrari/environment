@@ -304,6 +304,32 @@ async function main() {
       undefined,
       "project-scoped doctor excludes another project's procedure totals",
     );
+    const windowDoctorResult = await execFileP(
+      path.join(process.cwd(), "node_modules/.bin/tsx"),
+      [
+        "scripts/pm-workflow-doctor.ts",
+        "--json",
+        `--project=${alpha.id}`,
+        `--since=${windowStart.toISOString()}`,
+      ],
+      { cwd: process.cwd(), env: { ...process.env, DATABASE_URL: dbUrl } },
+    );
+    const windowDoctor = JSON.parse(windowDoctorResult.stdout) as {
+      phaseE: {
+        observationWindow: { startedAt: string | null };
+        receiptStats: Record<string, number>;
+        commandCallbackHealth: { diagnosticCounts: Record<string, number> };
+        historicalResidueBeforeWindow: {
+          receiptStats: Record<string, number>;
+          legacyInvocationCount: number;
+        } | null;
+      };
+    };
+    assert.equal(windowDoctor.phaseE.observationWindow.startedAt, windowStart.toISOString());
+    assert.deepEqual(windowDoctor.phaseE.receiptStats, {}, "pre-window receipts do not fail the rollout window");
+    assert.equal(windowDoctor.phaseE.commandCallbackHealth.diagnosticCounts["task.workflow.callback.mismatch"], 1);
+    assert.deepEqual(windowDoctor.phaseE.historicalResidueBeforeWindow?.receiptStats, { accepted: 1 });
+    assert.ok((windowDoctor.phaseE.historicalResidueBeforeWindow?.legacyInvocationCount ?? 0) > 0);
 
     const projectionMismatchTask = await db.task.create({
       data: {
