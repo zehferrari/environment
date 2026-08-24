@@ -34,6 +34,14 @@ export const ALLOWED_ENGINES: ReadonlySet<string> = new Set([
   ENGINE_ORCHESTRATOR_V2,
 ]);
 
+/** Durable ownership stamped by every product task-creation boundary. */
+export function newTaskWorkflowOwnership(now = new Date()) {
+  return {
+    workflowEngine: ENGINE_ORCHESTRATOR_V2,
+    workflowEnginePinnedAt: now,
+  } as const;
+}
+
 // Statuses approved for the initial V2 migration (quiescent tasks only).
 export const MUTATION_ADMISSION_STATUSES: ReadonlySet<string> = new Set([
   "Backlog",
@@ -75,6 +83,10 @@ export type UnpinResult =
 export type AdmissionInspection =
   | { eligible: true; code: "eligible" | "already_pinned"; engine: WorkflowEngine; status: string }
   | { eligible: false; code: string; reason: string; engine: WorkflowEngine; status: string };
+
+export type LegacyDrainInspection =
+  | { allowed: true; code: "active_legacy_cycle" | "active_legacy_work" }
+  | { allowed: false; code: "fresh_legacy_mutation"; reason: string };
 
 type AdmissionTaskSnapshot = {
   id: string;
@@ -170,6 +182,38 @@ async function findQuiescenceBlocker(
     };
   }
   return null;
+}
+
+/**
+ * Legacy may finish work it already owns, but it may not start a fresh
+ * planning/implementation attempt after the V2-default cutover.
+ */
+export async function inspectLegacyDrain(
+  tx: OwnershipDbClient,
+  taskId: string,
+): Promise<LegacyDrainInspection> {
+  const task = await tx.task.findUnique({
+    where: { id: taskId, deletedAt: null },
+    select: { activeWorkflowCycleId: true },
+  });
+  if (task?.activeWorkflowCycleId) return { allowed: true, code: "active_legacy_cycle" };
+
+  const [repositoryRun, procedureRun] = await Promise.all([
+    tx.taskRepositoryRun.findFirst({
+      where: { taskId, phase: { in: [...ACTIVE_REPOSITORY_PHASES] } },
+      select: { id: true },
+    }),
+    tx.taskProcedureRun.findFirst({
+      where: { taskId, status: { not: "completed" } },
+      select: { id: true },
+    }),
+  ]);
+  if (repositoryRun || procedureRun) return { allowed: true, code: "active_legacy_work" };
+  return {
+    allowed: false,
+    code: "fresh_legacy_mutation",
+    reason: "Fresh legacy workflow mutations are retired. Admit this quiescent task to orchestrator_v2 before continuing.",
+  };
 }
 
 /** Read-only admission inspection used by dry-run/reporting surfaces. */

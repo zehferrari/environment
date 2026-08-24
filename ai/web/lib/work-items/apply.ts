@@ -38,6 +38,7 @@ import {
 import { submitWorkflowCommandInTransaction } from "@/lib/tasks/orchestrator";
 import type { OrchestratorResult, TaskWorkflowCommand } from "@/lib/tasks/orchestrator/types";
 import { drainWorkflowOutbox } from "@/lib/tasks/workflow-outbox-drain";
+import { newTaskWorkflowOwnership } from "@/lib/tasks/orchestrator/ownership";
 
 type RawOp = Record<string, unknown>;
 
@@ -379,6 +380,7 @@ export async function commitProposal(
               : String(op.title);
             const task = await tx.task.create({
               data: {
+                ...newTaskWorkflowOwnership(),
                 projectId,
                 workItemKey: await allocateWorkItemKey(projectId, tx),
                 epicId,

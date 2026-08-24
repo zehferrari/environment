@@ -37,6 +37,27 @@ pnpm phasee:admission observe --project=production-project --evidence=/absolute/
 pnpm phasee:admission unpin --project=synthetic-private-canary --task=<task-id-or-key> --operator=<owner>
 ```
 
+## E5 V2 default and legacy drain
+
+Every product task-creation boundary stamps `orchestrator_v2` ownership and a
+pin timestamp. The Prisma default remains `legacy` only for historical imports
+and explicit test fixtures; it is not the application default.
+
+Fresh legacy mutations are rejected. An existing legacy cycle, procedure, or
+repository run may continue only long enough to drain. Archived tasks are
+history and do not count as active legacy work.
+
+```bash
+pnpm phasee:drain report
+pnpm phasee:drain apply --operator=<owner> --dry-run
+pnpm phasee:drain apply --operator=<owner>
+pnpm phasee:drain gate --since=<ISO-cutover-timestamp>
+```
+
+The final gate requires no actionable active legacy tasks, an empty legacy
+drain inventory, zero legacy-boundary invocation delta, and zero new legacy
+repository jobs during the observation window.
+
 Admission evaluates and compare-and-sets each task in its own transaction. It
 admits only quiescent Backlog/To Do tasks by default. `--include-done` opts into
 Done projection checks. Active cycles, PM execution runs, continuations,

@@ -25,6 +25,7 @@ import {
   enqueueWorkflowEffects,
   isTaskWorkflowStatus,
 } from "@/lib/tasks/transition-kernel";
+import { newTaskWorkflowOwnership } from "@/lib/tasks/orchestrator/ownership";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -513,6 +514,7 @@ export async function POST(
       } else {
         const created = await tx.task.create({
           data: {
+            ...newTaskWorkflowOwnership(now),
             projectId: epic.projectId,
             epicId: epic.id,
             parentTaskId: null,
@@ -862,6 +864,7 @@ export async function POST(
           const title = await nextEpicTaskTitle(epic.id, task.title, tx);
           const row = await tx.task.create({
             data: {
+              ...newTaskWorkflowOwnership(now),
               projectId: epic.projectId,
               epicId: epic.id,
               parentTaskId: null,

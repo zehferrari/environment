@@ -59,6 +59,7 @@ export async function getLegacyDrainInventory(projectId?: string): Promise<Legac
   const tasks = await db.task.findMany({
     where: {
       deletedAt: null,
+      archivedAt: null,
       workflowEngine: "legacy",
       ...(projectId ? { projectId } : {}),
     },
@@ -131,6 +132,8 @@ export async function getLegacyDrainInventory(projectId?: string): Promise<Legac
     outboxStatuses: outboxMap.get(task.id) ?? [],
     acceptedReceiptCount: receiptMap.get(task.id) ?? 0,
   })).filter((task) =>
+    task.status === "In Progress" ||
+    task.status === "Review" ||
     Boolean(task.activeWorkflowCycleId) ||
     Boolean(task.repositoryPhase) ||
     task.procedureStatuses.length > 0 ||
@@ -166,6 +169,7 @@ export async function getCohortSummary(
   }
   const taskWhere = {
     deletedAt: null,
+    archivedAt: null,
     projectId: { in: projectIds },
   };
 
@@ -202,7 +206,7 @@ export async function getCohortSummary(
       by: ["taskId"],
       where: {
         status: { not: "completed" },
-        task: { projectId: { in: projectIds }, deletedAt: null },
+        task: { projectId: { in: projectIds }, archivedAt: null, deletedAt: null },
       },
       _count: true,
     }),
@@ -217,7 +221,7 @@ export async function getCohortSummary(
     db.taskWorkflowCommandReceipt.groupBy({
       by: ["taskId", "status"],
       where: {
-        task: { projectId: { in: projectIds }, deletedAt: null },
+        task: { projectId: { in: projectIds }, archivedAt: null, deletedAt: null },
         ...(opts.since ? { createdAt: { gte: opts.since } } : {}),
       },
       _count: true,

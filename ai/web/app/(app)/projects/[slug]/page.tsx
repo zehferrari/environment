@@ -33,6 +33,7 @@ import {
   serializeVisibleActorAs,
   type ActorVisibility,
 } from "@/lib/users/actor-visibility";
+import { newTaskWorkflowOwnership } from "@/lib/tasks/orchestrator/ownership";
 
 type ActorRow = {
   id: string;
@@ -154,6 +155,7 @@ async function createTask(formData: FormData) {
 
   const task = await db.task.create({
     data: {
+      ...newTaskWorkflowOwnership(),
       projectId,
       workItemKey: await allocateWorkItemKey(projectId),
       title: taskTitle,

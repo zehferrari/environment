@@ -91,7 +91,7 @@ import {
   submitAuthoritativeAgentWorkflowAction,
   type AgentWorkflowPublicAction,
 } from "@/lib/tasks/orchestrator/agent-route-adapter";
-import { resolveEngineOwnership } from "@/lib/tasks/orchestrator/ownership";
+import { inspectLegacyDrain, resolveEngineOwnership } from "@/lib/tasks/orchestrator/ownership";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -674,11 +674,29 @@ async function handleTaskWorkflowAction(
     return NextResponse.json(authoritative.body, { status: authoritative.status });
   }
 
+  const legacyDrain = await inspectLegacyDrain(db, task.id);
+  if (!legacyDrain.allowed) {
+    await recordLegacyWorkflowBoundaryInvocation({
+      legacyBoundary: "agent-task-workflow-route",
+      entryPoint: "fresh_legacy_mutation_rejected",
+      projectId: task.projectId,
+      taskId: task.id,
+      userId: agentUser.id,
+    });
+    return NextResponse.json(
+      { error: legacyDrain.reason, code: legacyDrain.code },
+      { status: 409 },
+    );
+  }
+
   // Legacy drain only. Once ownership resolves to V2 this counter and every
   // retained comparison/direct-write branch below are mechanically unreachable.
   await recordLegacyWorkflowBoundaryInvocation({
     legacyBoundary: "agent-task-workflow-route",
     entryPoint: "handleTaskWorkflowAction",
+    projectId: task.projectId,
+    taskId: task.id,
+    userId: agentUser.id,
   });
 
   // ORCH-09/10: V2 comparison probe is handled INSIDE each action block, AFTER

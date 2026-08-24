@@ -6,6 +6,7 @@
 // body remains in AgentChatMessage as presentation only.
 //
 import type { Prisma } from "@prisma/client";
+import { newTaskWorkflowOwnership } from "@/lib/tasks/orchestrator/ownership";
 import { createHash } from "node:crypto";
 
 import { db } from "@/lib/db";
@@ -470,6 +471,7 @@ export async function createChecklistAndDelegatableTasksFromPlan(args: {
         if (parent) {
           await client.task.create({
             data: {
+              ...newTaskWorkflowOwnership(),
               projectId: parent.projectId,
               epicId: parent.epicId,
               parentTaskId: args.taskId,

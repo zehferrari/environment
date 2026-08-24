@@ -33,6 +33,7 @@ import { submitEpicChildUpdateInTransaction } from "@/lib/epics/task-workflow-ad
 import { syncEpicOnHumanTaskStatus } from "@/lib/epics/sync-on-human-task-move";
 import { submitWorkflowCommandInTransaction } from "@/lib/tasks/orchestrator";
 import type { MoveTaskResult } from "@/lib/tasks/move-status";
+import { newTaskWorkflowOwnership } from "@/lib/tasks/orchestrator/ownership";
 import { resetEpicActionPlanForDeployReview, triggerDeployReview } from "@/lib/epics/deploy-review";
 import { canApplySubmittedEpicStatus } from "@/lib/epics/status-concurrency";
 import {
@@ -1144,6 +1145,7 @@ export async function createTaskInEpic(
     const numberedTitle = await nextEpicTaskTitle(epic.id, title, tx);
     const createdTask = await tx.task.create({
       data: {
+        ...newTaskWorkflowOwnership(),
         projectId: epic.projectId,
         workItemKey: await allocateWorkItemKey(epic.projectId, tx),
         epicId: epic.id,

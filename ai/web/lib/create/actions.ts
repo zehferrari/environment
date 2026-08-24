@@ -22,6 +22,7 @@ import { revalidateTaskReplyScope } from "@/lib/tasks/cache";
 import { createWorkspace } from "@/lib/workspaces/service";
 import { uploadAttachment } from "@/lib/attachments/actions";
 import type { CreateResult } from "@/lib/create/result";
+import { newTaskWorkflowOwnership } from "@/lib/tasks/orchestrator/ownership";
 
 // Unified create-FAB server actions. Each reads a FormData, does the same auth +
 // validation + persistence the old per-page flows did, then RETURNS a
@@ -75,6 +76,7 @@ export async function createTaskFromFab(formData: FormData): Promise<CreateResul
 
   const task = await db.task.create({
     data: {
+      ...newTaskWorkflowOwnership(),
       projectId,
       workItemKey: await allocateWorkItemKey(projectId),
       title: taskTitle,
