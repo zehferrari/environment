@@ -199,7 +199,7 @@ browser ─▶ POST action ─▶ /var/lib/pm/switch/request.json   (web app, as
 ### From the CLI
 
 ```bash
-pm-switch [--database=worktree|main|canonical|path:<absolute>] <worktree-name | path>
+pm-switch [--database=worktree|main] <worktree-name | path>
                                     # preflight + migrate + build + flip + verify + receipt
 pm-switch status                    # which worktree/branch/DB is live for both services
 ```
@@ -234,8 +234,8 @@ pointed at `/srv/Code/environment.worktrees/.../ai/web`.
   database.
 - A CLI switch refuses to infer database intent when a worktree/branch name
   mismatch makes it ambiguous. `--database=main` explicitly selects
-  `wt-main.db`; `--database=canonical` means the neutral seed `pm.db` and is a
-  separate deliberate choice. Browser requests explicitly select `worktree`.
+  `wt-main.db`; the canonical seed `pm.db` is not a live switch target.
+  Browser requests explicitly select `worktree`.
 - Database resolution, root containment, migration-history presence, and
   SQLite `quick_check` run before either live service stops. A successful
   switch writes an immutable deployment receipt plus

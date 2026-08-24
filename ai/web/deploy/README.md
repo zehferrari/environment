@@ -124,10 +124,9 @@ For PM CLI switches, database intent is explicit whenever the stable worktree
 name and checked-out branch disagree. In that state a bare command refuses to
 guess. Use `pm-switch --database=main main` to serve `wt-main.db`, or
 `--database=worktree` for the selected worktree's ordinary fork. Here “main”
-means the operational `wt-main.db`; `--database=canonical` deliberately names
-the neutral seed at `pm.db`. An advanced `path:/absolute/path.db` selection is
-accepted only below the configured PM database root. Browser requests always
-send `databaseSelection: worktree`, matching the UI's per-worktree data model.
+means the operational `wt-main.db`; the neutral seed at `pm.db` is never a live
+switch target. Browser requests always send `databaseSelection: worktree`,
+matching the UI's per-worktree data model.
 
 Before stopping live services, the switcher resolves the database to a real
 path, rejects paths outside the configured DB root, verifies the migration

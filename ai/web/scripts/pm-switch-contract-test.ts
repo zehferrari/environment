@@ -13,8 +13,10 @@ assert.match(switcher, /WORKTREE_NAME="\$\(basename "\$WT_ROOT"\)"/,
   "database identity must be based on stable worktree name");
 assert.doesNotMatch(switcher, /wt-\$BRANCH_SLUG\.db/,
   "checked-out branch must never select the database implicitly");
-assert.match(switcher, /--database=worktree\|main\|canonical\|path:<absolute>/,
+assert.match(switcher, /--database=worktree\|main/,
   "CLI must expose explicit database intent");
+assert.doesNotMatch(switcher, /--database=.*canonical|path:<absolute>/,
+  "the canonical seed and arbitrary paths must not be live switch targets");
 assert.match(switcher, /database intent is ambiguous:[^\n]+worktree 'main'/,
   "a temporary main-worktree branch mismatch must fail closed");
 assert.match(switcher, /resolved database escapes the configured PM DB root/,

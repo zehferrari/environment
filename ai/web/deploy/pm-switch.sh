@@ -10,7 +10,7 @@
 # + daemon-reload + restarts — is delegated to /usr/local/sbin/pm-apply-worktree.
 #
 # Usage:
-#   pm-switch.sh [--database=worktree|main|canonical|path:<absolute>] <worktree-name | path>
+#   pm-switch.sh [--database=worktree|main] <worktree-name | path>
 #   pm-switch.sh status
 #
 # See deploy/MULTI_AGENT_WORKTREES.md.
@@ -104,7 +104,7 @@ file_url_path() {
 
 usage() {
   printf '%s\n' \
-    "usage: pm-switch.sh [--database=worktree|main|canonical|path:<absolute>] <worktree-name | path>" \
+    "usage: pm-switch.sh [--database=worktree|main] <worktree-name | path>" \
     "       pm-switch.sh status"
 }
 
@@ -183,14 +183,7 @@ case "$DATABASE_SELECTION" in
     [[ "$WORKTREE_NAME" == "main" ]] || die "--database=main is valid only for the main worktree"
     BRANCH_DB="$PM_DB_DIR/wt-main.db"
     ;;
-  canonical)
-    BRANCH_DB="$PM_CANONICAL_DB"
-    ;;
-  path:*)
-    BRANCH_DB="${DATABASE_SELECTION#path:}"
-    DATABASE_SELECTION="path"
-    ;;
-  *) die "invalid --database selection '$DATABASE_SELECTION' (use worktree, main, canonical, or path:<absolute>)" ;;
+  *) die "invalid --database selection '$DATABASE_SELECTION' (use worktree or main)" ;;
 esac
 [[ "$BRANCH_DB" == /* ]] || die "database path must be absolute: $BRANCH_DB"
 db_root_real="$(readlink -m "$PM_DB_DIR")"
@@ -210,7 +203,7 @@ log "Preflight: worktree=$WORKTREE_NAME branch=$BRANCH database=$DATABASE_SELECT
 mkdir -p "$PM_DB_DIR"
 if [[ ! -f "$BRANCH_DB" ]]; then
   [[ "$DATABASE_SELECTION" == "worktree" || "$DATABASE_SELECTION" == "main" || "$DATABASE_SELECTION" == "environment" ]] \
-    || die "explicit database does not exist: $BRANCH_DB"
+    || die "managed worktree database does not exist: $BRANCH_DB"
   [[ -f "$PM_CANONICAL_DB" ]] || die "canonical DB not found at $PM_CANONICAL_DB"
   sqlite3 "$PM_CANONICAL_DB" ".backup '$BRANCH_DB'"
 fi
