@@ -682,6 +682,7 @@ export type OrchestratorResult =
       nextAction?: string;
       disposition?: string;
       turnComplete?: boolean;
+      successorScheduled?: boolean;
     }
   | {
       status: "accepted";
@@ -696,6 +697,7 @@ export type OrchestratorResult =
       nextAction?: string;
       disposition?: string;
       turnComplete?: boolean;
+      successorScheduled?: boolean;
     }
   | { status: "stale"; reason: string; domainCode?: DomainErrorCode }
   | { status: "forbidden"; reason: string; domainCode?: DomainErrorCode }

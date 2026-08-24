@@ -7,7 +7,6 @@ import { TASK_WORKFLOW_INTENTS } from "@/lib/tasks/orchestrator/types";
 
 type BoundaryRegistry = {
   schemaVersion: number;
-  counterContract: { activityKind: string; payloadFields: string[] };
   kernelInternals: Array<{ file: string; reason: string }>;
   boundaries: Array<{
     id: string;
@@ -30,18 +29,8 @@ const registry = JSON.parse(
   readFileSync("lib/tasks/legacy-workflow-boundary-registry.json", "utf8"),
 ) as BoundaryRegistry;
 
-assert.equal(registry.schemaVersion, 2, "boundary registry schemaVersion must be 2");
-assert.ok(registry.boundaries.length > 0, "boundary registry must list legacy boundaries");
-assert.equal(
-  registry.counterContract.activityKind,
-  "task.workflow.legacy_boundary.invoked",
-  "legacy invocation activity kind is a stable Phase E contract",
-);
-assert.deepEqual(
-  registry.counterContract.payloadFields,
-  ["legacyBoundary", "entryPoint"],
-  "legacy invocation payload fields are a stable Phase E contract",
-);
+assert.equal(registry.schemaVersion, 3, "completed Phase E registry schemaVersion must be 3");
+assert.equal(registry.boundaries.length, 0, "no legacy mutation boundary may remain registered");
 
 const roots = ["app", "lib", "scripts"];
 const intentRoot = `${path.normalize("lib/tasks/orchestrator/intents")}${path.sep}`;
@@ -367,4 +356,12 @@ assert.ok(openPosition >= 0 && openPosition < transitionPosition, "cycle open mu
 assert.ok(updatePosition >= 0 && updatePosition < transitionPosition, "cycle update must precede the kernel transition");
 assert.ok(closePosition > transitionPosition, "cycle close must follow the kernel transition");
 
-console.log(`[workflow-boundary] PASS — ${registry.boundaries.length} registered legacy boundaries frozen`);
+const agentRoute = readFileSync("app/api/agent/tasks/[taskId]/workflow/route.ts", "utf8");
+assert.equal(
+  (agentRoute.match(/submitAuthoritativeAgentWorkflowAction\(/g) ?? []).length,
+  1,
+  "the agent task transport has exactly one authoritative workflow submission caller",
+);
+assert.doesNotMatch(agentRoute, /legacy-workflow-boundary|applyTaskTransition|dispatchByDurableEngine/);
+
+console.log("[workflow-boundary] PASS — zero legacy boundaries; one authoritative agent caller");

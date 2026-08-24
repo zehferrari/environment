@@ -323,7 +323,7 @@ export function evaluateRolloutGates(
         "comparison_probe_separate",
         comparisonRecorded,
         "Compute-only comparison remains independently enabled for the target.",
-        "Record PM_ORCHESTRATOR_V2_SHADOW or PM_ORCHESTRATOR_V2_PROJECTS coverage separately from mutation admission.",
+        "Retain the approved cohort evidence separately from durable mutation ownership.",
       ),
       boolGate(
         "deployed_epic_sha",

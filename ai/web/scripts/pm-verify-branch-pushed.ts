@@ -22,7 +22,6 @@
 //
 // Invoked as: pnpm exec tsx scripts/pm-verify-branch-pushed.ts <job-file>
 
-import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import { execFile } from "node:child_process";
 import {
   existsSync,
@@ -99,8 +98,17 @@ type RebuildResult =
   | { attempted: true; ok: true; target: string; log: string }
   | { attempted: true; ok: false; target: string; error: string; log: string };
 
-function procedureCallbackForJob(job: BranchVerifyJob): RepositoryProcedureCallback | undefined {
-  if (!job.procedureRunId || !job.procedureStepId || job.workflowCycleId === undefined) return undefined;
+function procedureCallbackForJob(job: BranchVerifyJob): RepositoryProcedureCallback {
+  if (
+    job.schemaVersion !== 2 ||
+    !job.procedureRunId ||
+    !job.procedureStepId ||
+    job.workflowCycleId === undefined ||
+    !job.repositoryRunId ||
+    typeof job.repositoryRunVersion !== "number"
+  ) {
+    throw new Error("Exact schema-v2 validation job identity is required.");
+  }
   return {
     procedureRunId: job.procedureRunId,
     procedureStepId: job.procedureStepId,
@@ -115,45 +123,6 @@ function procedureCallbackForJob(job: BranchVerifyJob): RepositoryProcedureCallb
     repositoryRunVersion: job.repositoryRunVersion ?? null,
     candidateSha: job.previousCandidateSha ?? null,
   };
-}
-
-async function supersedeCorrelatedProcedure(job: BranchVerifyJob, reason: string): Promise<void> {
-  if (!job.procedureRunId || !job.procedureStepId || job.workflowCycleId === undefined) return;
-  const run = await db.taskProcedureRun.findFirst({
-    where: {
-      id: job.procedureRunId,
-      taskId: job.taskId,
-      workflowCycleId: job.workflowCycleId,
-      status: { in: ["queued", "running"] },
-    },
-    select: { id: true },
-  });
-  if (!run) return;
-  const completedAt = new Date();
-  await db.$transaction([
-    db.taskProcedureStep.updateMany({
-      where: {
-        procedureRunId: run.id,
-        status: { in: ["pending", "running", "failed", "waiting_callback"] },
-      },
-      data: {
-        status: "completed",
-        completedAt,
-        leaseOwner: null,
-        leaseExpiresAt: null,
-        output: JSON.stringify({ superseded: true, reason, jobId: job.jobId }),
-      },
-    }),
-    db.taskProcedureRun.update({
-      where: { id: run.id },
-      data: {
-        status: "completed",
-        completedAt,
-        currentStep: null,
-        output: JSON.stringify({ superseded: true, reason, jobId: job.jobId }),
-      },
-    }),
-  ]);
 }
 
 type CommitResult =
@@ -871,10 +840,6 @@ async function recordOperationalFailure(
 }
 
 async function main() {
-  await recordLegacyWorkflowBoundaryInvocation({
-    legacyBoundary: "review-submission-and-validation",
-    entryPoint: "main",
-  });
   const jobFile = process.argv[2];
   if (!jobFile) throw new Error("Usage: pm-verify-branch-pushed <job.json>");
   if (!existsSync(jobFile)) throw new Error(`Job file not found: ${jobFile}`);
@@ -883,21 +848,19 @@ async function main() {
   }
 
   const job = JSON.parse(readFileSync(jobFile, "utf8")) as BranchVerifyJob;
-  // PHASEE-07 Fix #4: Runner version skew handling.
-  // pm-verify is installed out-of-band, so a deployed older runner can pick
-  // up a new schema-v2 job. That older binary has none of this code, so this
-  // guard can never fire for it. What actually saves that case is the
-  // dispatcher falling back to the v1 drain on a callback with no
-  // schemaVersion — the v1-drain adapter handles legacy callbacks.
-  // This guard handles the *forward* case: a newer job schema (v3+) that
-  // this runner does not understand. To avoid a re-read loop where the
-  // runner keeps picking up the same unrecognised job every cycle, we
-  // rename the job file to a `.skipped` suffix so the runner ignores it
-  // on subsequent scans, while preserving the file for inspection.
-  if (job.schemaVersion !== undefined && job.schemaVersion > 2) {
+  // Legacy and unknown jobs are preserved for operator inspection but never
+  // guessed back onto a task or procedure.
+  if (
+    job.schemaVersion !== 2 ||
+    !job.procedureRunId ||
+    !job.procedureStepId ||
+    job.workflowCycleId === undefined ||
+    !job.repositoryRunId ||
+    typeof job.repositoryRunVersion !== "number"
+  ) {
     const skipPath = `${jobFile}.skipped`;
     console.error(
-      `[pm-verify] unrecognised schemaVersion ${job.schemaVersion} in job ${job.jobId}; renaming to ${skipPath} to avoid re-read loop.`,
+      `[pm-verify] retired or incomplete job ${job.jobId}; renaming to ${skipPath}.`,
     );
     try {
       renameSync(jobFile, skipPath);
@@ -944,7 +907,6 @@ async function main() {
         }),
       },
     });
-    await supersedeCorrelatedProcedure(job, reason);
     console.error(`[pm-verify] rejecting stale verifier job ${job.jobId}: job cycle ${job.workflowCycleId ?? "null"}, active cycle ${taskCycle?.activeWorkflowCycleId ?? "null"}`);
     unlinkSync(jobFile);
     return;
@@ -1156,7 +1118,6 @@ async function main() {
             }),
           },
         });
-        await supersedeCorrelatedProcedure(job, "verifier job arrived for a cycle whose lease is already decided");
         console.error(`[pm-verify] rejecting verifier job ${job.jobId}: cycle ${workflowCycleId} has a decided lease (${runStatus.status})`);
         unlinkSync(jobFile);
         return;

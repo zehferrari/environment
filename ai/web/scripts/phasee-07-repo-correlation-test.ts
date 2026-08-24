@@ -4,8 +4,7 @@
 //   1. Exact V2 callback correlation applies successfully.
 //   2. V2 callback with wrong taskId/cycleId/procedureRunId/stepId/jobId/candidateSha/baseSha is rejected and recorded as activity.
 //   3. Duplicate V2 callback for already-completed step is replayed (no-op) and recorded as activity.
-//   4. v1 legacy callback still routes through drain adapter successfully.
-//   5. v1 callback after drain deadline (when disabled) is rejected. [structural — drain is always available in this phase]
+//   4. Legacy task-search callback adapters are absent.
 //   6. Same-SHA resubmission across two cycles creates two immutable ReviewRun records and both are preserved.
 //   7. Publication replay after crash does not create duplicate spool files. [structural — deterministic filenames]
 //   8. Mismatched callback does not create user comments.
@@ -13,6 +12,7 @@
 // Run: pnpm exec tsx scripts/phasee-07-repo-correlation-test.ts
 
 import { createHash, randomUUID } from "crypto";
+import { readFileSync } from "node:fs";
 import { db } from "@/lib/db";
 import {
   REPOSITORY_JOB_SCHEMA_V2,
@@ -22,8 +22,6 @@ import {
 } from "@/lib/deploy/branch-verify";
 import { enqueueBranchVerifyJob, BRANCH_VERIFY_DIR } from "@/lib/deploy/branch-verify";
 import { applyProcedureCallback, type ProcedureCallback } from "@/lib/tasks/orchestrator/procedure-runner";
-import { v1DrainValidationCallback } from "@/lib/tasks/review-handoff";
-import { v1DrainFinalizationCallback } from "@/lib/tasks/review-automation";
 
 let passed = 0;
 let failed = 0;
@@ -258,42 +256,15 @@ async function test3_DuplicateCallbackReplayed(): Promise<void> {
   }
 }
 
-async function test4_V1LegacyCallbackRoutesThroughDrain(): Promise<void> {
-  console.log("\n--- Test 4: v1 legacy callback routes through drain adapter ---");
-  const { taskId, projectId, procedureRunId, stepId, workflowCycleId } = await setupTestTask();
-  try {
-    // v1 callback: no schemaVersion (undefined).
-    await v1DrainValidationCallback(
-      taskId,
-      "abc123",
-      "valid",
-      undefined,
-      {
-        procedureRunId,
-        procedureStepId: stepId,
-        workflowCycleId,
-        jobId: "test-job-1",
-        baseSha: "def456",
-      },
-    );
-    // Verify step is now completed.
-    const step = await db.taskProcedureStep.findUnique({ where: { id: stepId } });
-    assert(step?.status === "completed", "Step should be completed after v1 drain callback");
-  } finally {
-    await cleanupTestTask(taskId, projectId);
-  }
-}
-
-async function test5_V1DrainFunctionExistsAndIsSeparate(): Promise<void> {
-  console.log("\n--- Test 5: v1 drain functions are exported and separate ---");
-  // Structural test: verify the drain functions exist and are callable.
-  assert(typeof v1DrainValidationCallback === "function", "v1DrainValidationCallback should be a function");
-  assert(typeof v1DrainFinalizationCallback === "function", "v1DrainFinalizationCallback should be a function");
-  // Verify they are different from the dispatcher functions.
-  const reviewHandoffModule = await import("@/lib/tasks/review-handoff");
-  const reviewAutomationModule = await import("@/lib/tasks/review-automation");
-  assert(reviewHandoffModule.v1DrainValidationCallback === v1DrainValidationCallback, "v1DrainValidationCallback should be exported from review-handoff");
-  assert(reviewAutomationModule.v1DrainFinalizationCallback === v1DrainFinalizationCallback, "v1DrainFinalizationCallback should be exported from review-automation");
+async function test4_LegacyCallbackSearchIsRetired(): Promise<void> {
+  console.log("\n--- Test 4: legacy task-search callbacks are retired ---");
+  const sources = [
+    readFileSync("lib/tasks/review-handoff.ts", "utf8"),
+    readFileSync("lib/tasks/review-automation.ts", "utf8"),
+  ].join("\n");
+  assert(!sources.includes("v1Drain"), "v1 callback drain exports are absent");
+  assert(!sources.includes('status: "waiting_callback"'), "callbacks never discover a waiting step by task");
+  assert(sources.includes("Exact schema-v2"), "callback boundaries require exact schema-v2 identity");
 }
 
 async function test6_SameShaAcrossCyclesPreservesBothReviews(): Promise<void> {
@@ -660,8 +631,7 @@ async function main() {
   await test1_ExactV2CallbackApplies();
   await test2_V2CallbackMismatchRejected();
   await test3_DuplicateCallbackReplayed();
-  await test4_V1LegacyCallbackRoutesThroughDrain();
-  await test5_V1DrainFunctionExistsAndIsSeparate();
+  await test4_LegacyCallbackSearchIsRetired();
   await test6_SameShaAcrossCyclesPreservesBothReviews();
   await test7_DeterministicJobFilenames();
   await test8_MismatchedCallbackNoUserComments();

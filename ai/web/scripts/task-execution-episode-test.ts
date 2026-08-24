@@ -161,6 +161,8 @@ async function sectionB(): Promise<void> {
         projectId: project.id,
         title: "Episode task",
         status: "In Progress",
+        workflowEngine: "orchestrator_v2",
+        workflowEnginePinnedAt: new Date(),
         assigneeId: agentUser.id,
         actingManagerId: owner.id,
         reporterId: owner.id,
@@ -460,6 +462,8 @@ async function sectionB(): Promise<void> {
         projectId: project.id,
         title: "Fresh task",
         status: "In Progress",
+        workflowEngine: "orchestrator_v2",
+        workflowEnginePinnedAt: new Date(),
         assigneeId: agentUser.id,
         actingManagerId: owner.id,
         reporterId: owner.id,
@@ -514,6 +518,8 @@ async function sectionB(): Promise<void> {
         projectId: barrierProject.id,
         title: "Barrier task",
         status: "In Progress",
+        workflowEngine: "orchestrator_v2",
+        workflowEnginePinnedAt: new Date(),
         assigneeId: agentUser.id,
         actingManagerId: owner.id,
         reporterId: owner.id,
@@ -521,6 +527,16 @@ async function sectionB(): Promise<void> {
         description: "Fence the exhausted turn.",
       },
     });
+    const barrierCycle = await db.taskWorkflowCycle.create({
+      data: {
+        taskId: barrierTask.id,
+        sequence: 1,
+        status: "open",
+        openedWorkflowVersion: barrierTask.workflowVersion,
+        workflowEngine: "orchestrator_v2",
+      },
+    });
+    await db.task.update({ where: { id: barrierTask.id }, data: { activeWorkflowCycleId: barrierCycle.id } });
 
     // The first dispatch opens episode 1 and records the session that carries
     // it. That message id is the turn we are going to exhaust.
@@ -564,10 +580,10 @@ async function sectionB(): Promise<void> {
     // Spend the budget (PM_EPISODE_MAX_CYCLES = 3) from ONE message.
     for (let i = 1; i <= 2; i += 1) {
       const step = await callWorkflow("add_subtask", { subtaskText: `barrier step ${i}` });
-      assertEqual(step.status, 200, `B8: cycle ${i} is accepted`);
+      assertEqual(step.status, 202, `B8: cycle ${i} is accepted`);
     }
     const exhaustingCall = await callWorkflow("add_subtask", { subtaskText: "barrier step 3" });
-    assertEqual(exhaustingCall.status, 200, "B8: the exhausting action itself still succeeds");
+    assertEqual(exhaustingCall.status, 202, "B8: the exhausting action itself still succeeds");
     assertEqual(
       exhaustingCall.body.episodeBudgetExhausted,
       true,
@@ -631,7 +647,7 @@ async function sectionB(): Promise<void> {
       nextAction: "resume the migration in the next episode",
       openChecklist: ["finish the migration"],
     });
-    assertEqual(finalCheckpoint.status, 200, "B8: the final checkpoint is accepted");
+    assertEqual(finalCheckpoint.status, 202, "B8: the final checkpoint is accepted");
     assertEqual(finalCheckpoint.body.episodeNo, 1, "B8: it lands on the episode that was exhausted");
     assertEqual(
       finalCheckpoint.body.episodeClosed,
@@ -724,6 +740,8 @@ async function sectionB(): Promise<void> {
         projectId: barrierProject.id,
         title: "Tool budget gate",
         status: "In Progress",
+        workflowEngine: "orchestrator_v2",
+        workflowEnginePinnedAt: new Date(),
         assigneeId: agentUser.id,
         actingManagerId: owner.id,
         reporterId: owner.id,
@@ -902,6 +920,8 @@ async function sectionB(): Promise<void> {
         projectId: barrierProject.id,
         title: "Turn ends unfenced",
         status: "In Progress",
+        workflowEngine: "orchestrator_v2",
+        workflowEnginePinnedAt: new Date(),
         assigneeId: agentUser.id,
         actingManagerId: owner.id,
         reporterId: owner.id,
@@ -994,6 +1014,8 @@ async function sectionB(): Promise<void> {
         projectId: barrierProject.id,
         title: "Checkpoint race",
         status: "In Progress",
+        workflowEngine: "orchestrator_v2",
+        workflowEnginePinnedAt: new Date(),
         assigneeId: agentUser.id,
         actingManagerId: owner.id,
         reporterId: owner.id,
@@ -1001,6 +1023,16 @@ async function sectionB(): Promise<void> {
         description: "Two checkpoints, one barrier.",
       },
     });
+    const raceCycle = await db.taskWorkflowCycle.create({
+      data: {
+        taskId: raceTask.id,
+        sequence: 1,
+        status: "open",
+        openedWorkflowVersion: raceTask.workflowVersion,
+        workflowEngine: "orchestrator_v2",
+      },
+    });
+    await db.task.update({ where: { id: raceTask.id }, data: { activeWorkflowCycleId: raceCycle.id } });
     const raceTurn = await sendTaskWorkflowNotification({
       taskId: raceTask.id,
       targetUserId: agentUser.id,
@@ -1051,11 +1083,11 @@ async function sectionB(): Promise<void> {
     const raceStatuses = [raceA.status, raceB.status].sort();
     assertEqual(
       JSON.stringify(raceStatuses),
-      JSON.stringify([200, 409]),
+      JSON.stringify([202, 409]),
       `B11: exactly one concurrent checkpoint succeeds (got ${JSON.stringify(raceStatuses)})`,
     );
 
-    const winnerNextAction = raceA.status === 200 ? "checkpoint A" : "checkpoint B";
+    const winnerNextAction = raceA.status === 202 ? "checkpoint A" : "checkpoint B";
     const storedNextAction = (
       await db.taskExecutionEpisode.findFirstOrThrow({
         where: { taskId: raceTask.id, episodeNo: 1 },
@@ -1106,6 +1138,8 @@ async function sectionB(): Promise<void> {
         projectId: barrierProject.id,
         title: "Stranded successor",
         status: "In Progress",
+        workflowEngine: "orchestrator_v2",
+        workflowEnginePinnedAt: new Date(),
         assigneeId: agentUser.id,
         actingManagerId: owner.id,
         reporterId: owner.id,
@@ -1294,6 +1328,8 @@ async function sectionB(): Promise<void> {
         projectId: barrierProject.id,
         title: "Crashed seal",
         status: "In Progress",
+        workflowEngine: "orchestrator_v2",
+        workflowEnginePinnedAt: new Date(),
         assigneeId: agentUser.id,
         actingManagerId: owner.id,
         reporterId: owner.id,

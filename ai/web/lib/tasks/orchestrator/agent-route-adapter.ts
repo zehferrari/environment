@@ -1,4 +1,5 @@
 import { revalidatePath } from "next/cache";
+import { createHash } from "node:crypto";
 import { db } from "@/lib/db";
 import { revalidateTaskReplyScope, revalidateTaskShell } from "@/lib/tasks/cache";
 import { normalizePublicAction } from "@/lib/tasks/orchestrator/normalize";
@@ -14,10 +15,16 @@ import {
   type WorkflowSubtaskKind,
 } from "@/lib/tasks/orchestrator/types";
 import {
-  ENGINE_LEGACY,
   ENGINE_ORCHESTRATOR_V2,
-  type WorkflowEngine,
 } from "@/lib/tasks/orchestrator/ownership";
+import {
+  blockerDiagnosticsFingerprint,
+  blockerFailureSignature,
+  classifyBlockerFailure,
+  formalBlockerReportFromValue,
+} from "@/lib/tasks/formal-blocker";
+import { recordWorkflowActionExecutionState } from "@/lib/agents/watchdog/transitions";
+import { canonicalize } from "@/lib/tasks/orchestrator/receipts";
 
 /** Public actions accepted by the agent transport. Human-only override_status
  * remains in the shared public vocabulary for browser/operator transports. */
@@ -29,20 +36,6 @@ export type AgentWorkflowPublicAction = (typeof AGENT_WORKFLOW_PUBLIC_ACTIONS)[n
 
 export function isAgentWorkflowPublicAction(value: unknown): value is AgentWorkflowPublicAction {
   return typeof value === "string" && AGENT_WORKFLOW_PUBLIC_ACTIONS.includes(value as AgentWorkflowPublicAction);
-}
-
-/**
- * One durable-owner branch and no catch/retry path. In particular, a V2
- * rejection or operational exception can never enter runLegacy.
- */
-export function dispatchByDurableEngine<T>(args: {
-  engine: WorkflowEngine;
-  runAuthoritative: () => Promise<T>;
-  runLegacy: () => Promise<T>;
-}): Promise<T> {
-  return args.engine === ENGINE_ORCHESTRATOR_V2
-    ? args.runAuthoritative()
-    : args.runLegacy();
 }
 
 export type AgentWorkflowHttpResult = {
@@ -80,6 +73,7 @@ export function mapOrchestratorResultToAgentHttp(args: {
       ok: true,
       taskId: args.taskId,
       status: result.taskState ?? args.taskStatus,
+      taskState: result.taskState ?? args.taskStatus,
       orchestratorStatus: result.status,
       workflowVersion: result.workflowVersion,
       transitionId: result.transitionId,
@@ -87,10 +81,18 @@ export function mapOrchestratorResultToAgentHttp(args: {
       cycleId: result.cycleId ?? null,
       ...(result.actionEffect ? { actionEffect: result.actionEffect } : {}),
       ...(result.episode !== undefined ? { episode: result.episode } : {}),
+      ...(result.episode
+        ? {
+            episodeNo: result.episode.episodeNo,
+            episodeBudgetExhausted: result.episode.cyclesRemaining === 0 || result.episode.rolledOver,
+            episodeClosed: result.episode.rolledOver,
+          }
+        : {}),
       ...(result.checkpoint !== undefined ? { checkpoint: result.checkpoint } : {}),
       ...(result.nextAction !== undefined ? { nextAction: result.nextAction } : {}),
       ...(result.disposition !== undefined ? { disposition: result.disposition } : {}),
       ...(result.turnComplete !== undefined ? { turnComplete: result.turnComplete } : {}),
+      ...(result.successorScheduled !== undefined ? { successorScheduled: result.successorScheduled } : {}),
       publicAction: args.action,
     },
   };
@@ -189,6 +191,86 @@ export async function submitAuthoritativeAgentWorkflowAction(args: {
     };
   }
 
+  let rawBody = args.rawBody;
+  if (args.action === "flag_blocker" && !args.rawBody.permissionKind) {
+    const candidate = formalBlockerReportFromValue(args.rawBody.blockerReport);
+    let priorDistinctDiagnostics = 0;
+    if (candidate) {
+      const signature = blockerFailureSignature(candidate);
+      const fingerprint = blockerDiagnosticsFingerprint(candidate);
+      const incidents = await db.activityLog.findMany({
+        where: { taskId: args.taskId, kind: "task.blocker.incident", targetAgent: args.agent.slug },
+        orderBy: { createdAt: "desc" },
+        take: 50,
+        select: { payload: true },
+      });
+      const distinct = new Set<string>();
+      for (const row of incidents) {
+        if (!row.payload) continue;
+        try {
+          const parsed = JSON.parse(row.payload) as Record<string, unknown>;
+          const prior = formalBlockerReportFromValue(parsed.report);
+          const priorSignature = prior ? blockerFailureSignature(prior) : parsed.signature;
+          if (priorSignature !== signature || parsed.diagnosticsFingerprint === fingerprint) continue;
+          if (typeof parsed.diagnosticsFingerprint === "string") distinct.add(parsed.diagnosticsFingerprint);
+        } catch { /* malformed history earns no escalation */ }
+      }
+      priorDistinctDiagnostics = distinct.size;
+    }
+    const classification = classifyBlockerFailure(args.rawBody.blockerReport, {
+      assigneeIdentifiers: [args.agent.slug, args.agent.username, args.agent.id],
+      priorDistinctDiagnostics,
+    });
+    if (classification.outcome === "reject") {
+      return {
+        status: 422,
+        body: {
+          error: classification.message,
+          rejectedRule: classification.rule,
+          requiredFields: {
+            blockedOn: "person | permission | external_service | decision | dependency",
+            requestedActor: "who must act (never you)",
+            requestedAction: "the exact action they must perform",
+            evidence: "the observed failure: exact error text, endpoint or identifier",
+            diagnosticsAttempted: ["what you already tried"],
+            resumeCondition: "the observable condition that lets work resume",
+            reporterCanResolve: "true | false",
+          },
+        },
+      };
+    }
+    if (classification.outcome === "incident") {
+      await db.activityLog.create({
+        data: {
+          projectId: aggregate.projectId,
+          taskId: args.taskId,
+          userId: args.agent.id,
+          kind: "task.blocker.incident",
+          targetAgent: args.agent.slug,
+          payload: JSON.stringify({
+            action: args.action,
+            rule: classification.rule,
+            signature: candidate ? blockerFailureSignature(candidate) : null,
+            diagnosticsFingerprint: candidate ? blockerDiagnosticsFingerprint(candidate) : null,
+            priorDistinctDiagnostics,
+            report: candidate,
+          }),
+        },
+      });
+      return {
+        status: 422,
+        body: {
+          error: classification.message,
+          incident: true,
+          rejectedRule: classification.rule,
+          guidance: classification.guidance,
+          priorDistinctDiagnostics,
+        },
+      };
+    }
+    rawBody = { ...args.rawBody, blockerReport: classification.report };
+  }
+
   let subtaskKind: WorkflowSubtaskKind | null = null;
   if (args.action === "complete_subtask" || args.action === "remove_subtask") {
     const subtaskId = typeof args.rawBody.subtaskId === "string" ? args.rawBody.subtaskId : "";
@@ -210,7 +292,7 @@ export async function submitAuthoritativeAgentWorkflowAction(args: {
     agentSlug: args.agent.slug,
     messageId: args.messageId,
   });
-  const normalized = normalizePublicAction(args.action, args.rawBody, {
+  const normalized = normalizePublicAction(args.action, rawBody, {
     taskId: args.taskId,
     actorId: args.agent.id,
     actorKind: "agent",
@@ -225,7 +307,7 @@ export async function submitAuthoritativeAgentWorkflowAction(args: {
     actorCodingCapability: args.agent.registryRole === "coding",
     expectedWorkflowVersion: aggregate.workflowVersion,
     workflowCycleId: aggregate.activeWorkflowCycleId,
-    idempotencyKey: `${args.action}:${args.messageId}`,
+    idempotencyKey: `${args.action}:${args.messageId}:${createHash("sha256").update(canonicalize(rawBody)).digest("hex").slice(0, 16)}`,
     messageId: args.messageId,
     source: "agent",
     actionPlanId: aggregate.actionPlan?.id ?? null,
@@ -258,14 +340,63 @@ export async function submitAuthoritativeAgentWorkflowAction(args: {
   const result = await submitWorkflowCommand(normalized.command);
   const current = await db.task.findUnique({
     where: { id: args.taskId },
-    select: { status: true },
+    select: { status: true, projectId: true },
   });
-  return mapOrchestratorResultToAgentHttp({
+  const response = mapOrchestratorResultToAgentHttp({
     taskId: args.taskId,
     action: args.action,
     taskStatus: current?.status ?? aggregate.status,
     result,
   });
+  // Preserve the small action-specific response projection agents need for a
+  // follow-up command. The mutation itself remains wholly owned by the one
+  // authoritative command above.
+  if ((result.status === "accepted" || result.status === "replayed") && args.action === "add_subtask") {
+    const text = typeof args.rawBody.subtaskText === "string" ? args.rawBody.subtaskText.trim() : "";
+    const subtask = text
+      ? await db.subTask.findFirst({
+          where: { taskId: args.taskId, text },
+          orderBy: { createdAt: "desc" },
+          select: { id: true, kind: true },
+        })
+      : null;
+    if (subtask) {
+      response.body.subtaskId = subtask.id;
+      response.body.subtaskKind = subtask.kind;
+    }
+  }
+  if ((result.status === "accepted" || result.status === "replayed") && args.action === "approve_plan") {
+    response.body.approved = true;
+    response.body.alreadyApproved = result.status === "replayed";
+  }
+  if ((result.status === "accepted" || result.status === "replayed") && args.action === "flag_blocker") {
+    const requestedKind = typeof args.rawBody.permissionKind === "string" ? args.rawBody.permissionKind : null;
+    const requestedScope = typeof args.rawBody.permissionScope === "string" ? args.rawBody.permissionScope.trim() : null;
+    const alreadyFlagged = Boolean(
+      aggregate.activeBlocker &&
+      requestedKind &&
+      aggregate.activeBlocker.permissionRequest?.kind === requestedKind &&
+      aggregate.activeBlocker.permissionRequest.scope === requestedScope &&
+      !aggregate.activeBlocker.permissionGrant?.authorizationCommentId,
+    );
+    const blocker = alreadyFlagged
+      ? aggregate.activeBlocker
+      : (await loadTaskAggregate(args.taskId))?.activeBlocker;
+    response.body.alreadyFlagged = alreadyFlagged;
+    response.body.blockerId = blocker?.commentId ?? null;
+    response.body.commentId = blocker?.commentId ?? null;
+    response.body.flagged = "blocker";
+  }
+  if (result.status === "accepted" || result.status === "replayed") {
+    await recordWorkflowActionExecutionState({
+      taskId: args.taskId,
+      projectId: current?.projectId ?? aggregate.projectId,
+      action: args.action,
+      status: current?.status ?? aggregate.status,
+      blockedExternally: args.action === "flag_blocker",
+    }).catch((error) => console.error("[pm] execution-state projection failed:", error));
+  }
+  return response;
 }
 
-export { ENGINE_LEGACY, ENGINE_ORCHESTRATOR_V2 };
+export { ENGINE_ORCHESTRATOR_V2 };

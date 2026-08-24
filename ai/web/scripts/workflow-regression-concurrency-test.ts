@@ -111,7 +111,7 @@ async function duplicateCallbacks(
   const turn = await dispatchWorkflowTurn({ boot, world, taskId: actionTask.id });
 
   const genuine = await turn.post("add_subtask", { subtaskText: "step one" });
-  c.assertEqual(genuine.status, 200, "the genuine callback is accepted");
+  c.assertEqual(genuine.status, 202, "the genuine callback is accepted");
   c.assertEqual(genuine.body.actionEffect, "continue", "add_subtask continues the episode");
 
   const replays = await Promise.all([

@@ -23,7 +23,6 @@
 // returns 410. Re-using the same planId returns the existing proposal
 // (idempotent).
 
-import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import { revalidatePath } from "next/cache";
 import { NextResponse, type NextRequest } from "next/server";
 import { Prisma } from "@prisma/client";
@@ -224,10 +223,6 @@ export async function POST(
   req: NextRequest,
   ctx: { params: Promise<{ projectId: string }> },
 ) {
-  await recordLegacyWorkflowBoundaryInvocation({
-    legacyBoundary: "proposal-application",
-    entryPoint: "POST",
-  });
   const { projectId } = await ctx.params;
 
   let payload: {

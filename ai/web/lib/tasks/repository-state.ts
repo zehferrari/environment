@@ -1,4 +1,3 @@
-import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import {
@@ -77,11 +76,6 @@ export async function updateTaskRepositoryState(
   patch: RepositoryStatePatch,
   client: Prisma.TransactionClient | typeof db = db,
 ) {
-  await recordLegacyWorkflowBoundaryInvocation({
-    legacyBoundary: "review-submission-and-validation",
-    entryPoint: "updateTaskRepositoryState",
-    client,
-  });
   const {
     incrementAttempt,
     ...data
@@ -117,10 +111,6 @@ export async function updateTaskRepositoryState(
 }
 
 export async function reserveTaskRepositoryState(taskId: string) {
-  await recordLegacyWorkflowBoundaryInvocation({
-    legacyBoundary: "review-submission-and-validation",
-    entryPoint: "reserveTaskRepositoryState",
-  });
   const task = await db.task.findUnique({
     where: { id: taskId },
     select: {

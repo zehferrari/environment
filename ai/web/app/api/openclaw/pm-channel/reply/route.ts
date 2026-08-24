@@ -36,7 +36,6 @@ import { recordModelFallbackActivityForTarget } from "@/lib/agents/ops/model-fal
 import { notifyHumanOfAgentReply } from "@/lib/push/notify-reply";
 import { revalidateTaskReplyScope, revalidateTaskShell } from "@/lib/tasks/cache";
 import { revalidateEpicReplyScope } from "@/lib/epics/cache";
-import { tryCompleteTaskFromReviewerComment } from "@/lib/tasks/review-automation";
 import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { isAuthorizedPmChannelCallbackTarget } from "@/lib/agents/pm-channel/target-authorization";
 import {

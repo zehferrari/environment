@@ -23,24 +23,6 @@ async function main() {
       status: "In Progress",
       approved: true,
     });
-    const cycle = await boot.db.taskWorkflowCycle.create({
-      data: {
-        taskId: task.id,
-        sequence: 1,
-        status: "open",
-        openedWorkflowVersion: task.workflowVersion,
-        workflowEngine: "orchestrator_v2",
-      },
-    });
-    await boot.db.task.update({
-      where: { id: task.id },
-      data: {
-        workflowEngine: "orchestrator_v2",
-        workflowEnginePinnedAt: new Date(),
-        activeWorkflowCycleId: cycle.id,
-      },
-    });
-
     const turn = await dispatchWorkflowTurn({ boot, world, taskId: task.id });
     const before = await Promise.all([
       boot.db.activityLog.count({

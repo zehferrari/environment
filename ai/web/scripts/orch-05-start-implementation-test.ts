@@ -55,6 +55,8 @@ async function main() {
         title: "Non-code task",
         status: "To Do",
         workflowVersion: 1,
+        workflowEngine: "orchestrator_v2",
+        workflowEnginePinnedAt: new Date(),
         assigneeId: assigneeUser.id,
         actingManagerId: reviewerUser.id,
         reporterId: owner.id,
@@ -106,7 +108,7 @@ async function main() {
     // by the guard (status != To Do). Use a fresh task.
     const project2 = await db.project.create({ data: { slug: "orch05-2", name: "Concurrent start" } });
     const task2 = await db.task.create({
-      data: { projectId: project2.id, title: "Task 2", status: "To Do", workflowVersion: 1, assigneeId: assigneeUser.id, actingManagerId: reviewerUser.id, reporterId: owner.id, approvedOn: new Date(), approvedById: owner.id },
+      data: { projectId: project2.id, title: "Task 2", status: "To Do", workflowVersion: 1, workflowEngine: "orchestrator_v2", workflowEnginePinnedAt: new Date(), assigneeId: assigneeUser.id, actingManagerId: reviewerUser.id, reporterId: owner.id, approvedOn: new Date(), approvedById: owner.id },
     });
     const plan2 = await db.actionPlan.create({ data: { taskId: task2.id, summary: "Plan 2", version: 1, status: "approved", authorId: assigneeUser.id, contentHash: "h2", approvedOn: new Date(), approvedById: owner.id } });
     await db.actionPlanStep.create({ data: { actionPlanId: plan2.id, stepId: "s1", title: "Step", acceptanceCriteria: "[]", kind: "sequential", rank: 0 } });

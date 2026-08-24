@@ -38,7 +38,6 @@ const SUITES: readonly string[] = [
   "test:orch-07-review-decisions",
   "test:orch-08-reconciler",
   "test:orch-09-entry-point",
-  "test:orch-09-v2-dispatch",
   "test:orch-10-rollout-flags",
   "test:orch-state-fencing",
   "test:phasee-02a",
@@ -55,9 +54,6 @@ const SUITES: readonly string[] = [
   "test:workflow-reconciler",
   "test:workflow-agent-rules",
   "test:repository-workflow",
-  "test:review-handoff-cycle",
-  "test:review-finalization-retry",
-  "test:epic-completion-review",
   // Watchdog family.
   "test:workflow-watchdog",
   "test:workflow-watchdog-db",

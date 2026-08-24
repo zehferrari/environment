@@ -19,11 +19,7 @@ execFileSync("pnpm", ["prisma", "migrate", "deploy", "--schema=prisma/schema.pri
 
 async function main() {
   const { db } = await import("@/lib/db");
-  const {
-    orchestratorShadowEnabled,
-    shouldComputeV2Decision,
-    isV2MutationAdmissionEnabledForProject,
-  } = await import("@/lib/tasks/orchestrator/flags");
+  const { isV2MutationAdmissionEnabledForProject } = await import("@/lib/tasks/orchestrator/flags");
   const {
     runProjectAdmission,
     unpinQuiescentTask,
@@ -64,13 +60,9 @@ async function main() {
     );
   }
 
-  process.env.PM_ORCHESTRATOR_V2_SHADOW = "1";
-  process.env.PM_ORCHESTRATOR_V2_PROJECTS = "*";
   delete process.env.PM_ORCHESTRATOR_V2_MUTATION_PROJECTS;
-  assert.equal(orchestratorShadowEnabled(), true);
-  assert.equal(shouldComputeV2Decision("internal-canary"), true);
   assert.equal(isV2MutationAdmissionEnabledForProject("internal-canary"), false,
-    "compute-only flags must never enable effectful admission");
+    "effectful admission remains disabled without its explicit operator allowlist");
 
   const owner = await db.user.create({
     data: {

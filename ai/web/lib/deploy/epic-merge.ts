@@ -1,4 +1,3 @@
-import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync } from "node:fs";
@@ -18,7 +17,6 @@ import {
   removeMergedOriginChildBranch,
 } from "@/lib/deploy/epic-merge-git";
 import {
-  failTaskReviewValidation,
   recordTaskReviewOperationalError,
 } from "@/lib/tasks/review-handoff";
 import {
@@ -36,7 +34,6 @@ import {
 import { settleConsumedCheckpointBlocker } from "@/lib/tasks/checkpoint-blocker";
 import { submitEpicChildUpdateInTransaction } from "@/lib/epics/task-workflow-adapter";
 import {
-  ENGINE_LEGACY,
   ENGINE_ORCHESTRATOR_V2,
   resolveEngineOwnership,
 } from "@/lib/tasks/orchestrator/ownership";
@@ -1532,7 +1529,6 @@ async function executeCheckpointJob(
 }
 
 type FinalizationCorrelation =
-  | { ok: true; mode: "legacy-v1" }
   | { ok: true; mode: "v2-exact"; replay: boolean }
   | { ok: false; reason: string };
 
@@ -1603,14 +1599,9 @@ async function validateFinalizationCorrelation(
   const ownership = await resolveEngineOwnership(db, task.id);
   if (!ownership.ok) return { ok: false, reason: ownership.reason };
 
-  const v2Packet = job.schemaVersion === 2;
-  if (ownership.engine === ENGINE_ORCHESTRATOR_V2 && !v2Packet) {
-    return { ok: false, reason: "A V2-owned task rejected a legacy-v1 finalization job." };
+  if (ownership.engine !== ENGINE_ORCHESTRATOR_V2 || job.schemaVersion !== 2) {
+    return { ok: false, reason: "Legacy finalization jobs are retired; exact V2 ownership is required." };
   }
-  if (ownership.engine === ENGINE_LEGACY && v2Packet) {
-    return { ok: false, reason: "A legacy-owned task rejected an orchestrator-v2 finalization job." };
-  }
-  if (!v2Packet) return { ok: true, mode: "legacy-v1" };
 
   if (
     !job.procedureRunId ||
@@ -1779,82 +1770,11 @@ async function executeFinalizeJob(
       note: correlation.reason,
     };
   }
-  const procedureCallback = job.procedureRunId && job.procedureStepId && job.workflowCycleId !== undefined
-    ? {
-        procedureRunId: job.procedureRunId,
-        procedureStepId: job.procedureStepId,
-        workflowCycleId: job.workflowCycleId,
-        jobId: job.jobId,
-        schemaVersion: job.schemaVersion,
-        commandReceiptId: job.commandReceiptId ?? null,
-        repositoryRunId: job.repositoryRunId ?? null,
-        repositoryRunVersion: job.repositoryRunVersion ?? null,
-        candidateSha: job.candidateSha,
-        baseSha: job.baseSha ?? null,
-      }
-    : undefined;
-  if (correlation.mode === "v2-exact" && correlation.replay) {
+  if (correlation.replay) {
     const replay = await applyExactFinalizationJobCallback({ job, taskId: task.id, ok: true });
     return replay.applied
       ? { taskId: task.id, outcome: "replayed" as const }
       : { taskId: task.id, outcome: "rejected-correlation" as const, note: replay.reason };
-  }
-  if (job.workflowCycleId !== undefined && task.activeWorkflowCycleId !== job.workflowCycleId) {
-    const reason = "finalization job no longer belongs to the task's active workflow cycle";
-    await db.activityLog.create({
-      data: {
-        projectId: task.projectId,
-        taskId: task.id,
-        kind: "pm.repo.finalize.rejected_stale_cycle",
-        payload: JSON.stringify({
-          jobId: job.jobId,
-          procedureRunId: job.procedureRunId ?? null,
-          procedureStepId: job.procedureStepId ?? null,
-          jobWorkflowCycleId: job.workflowCycleId,
-          activeWorkflowCycleId: task.activeWorkflowCycleId,
-          reason,
-        }),
-      },
-    });
-    if (job.procedureRunId && job.procedureStepId) {
-      const run = await db.taskProcedureRun.findFirst({
-        where: {
-          id: job.procedureRunId,
-          taskId: job.taskId,
-          workflowCycleId: job.workflowCycleId,
-          status: { in: ["queued", "running"] },
-        },
-        select: { id: true },
-      });
-      if (run) {
-        const completedAt = new Date();
-        await db.$transaction([
-          db.taskProcedureStep.updateMany({
-            where: {
-              procedureRunId: run.id,
-              status: { in: ["pending", "running", "failed", "waiting_callback"] },
-            },
-            data: {
-              status: "completed",
-              completedAt,
-              leaseOwner: null,
-              leaseExpiresAt: null,
-              output: JSON.stringify({ superseded: true, reason, jobId: job.jobId }),
-            },
-          }),
-          db.taskProcedureRun.update({
-            where: { id: run.id },
-            data: {
-              status: "completed",
-              completedAt,
-              currentStep: null,
-              output: JSON.stringify({ superseded: true, reason, jobId: job.jobId }),
-            },
-          }),
-        ]);
-      }
-    }
-    return { taskId: job.taskId, outcome: "skipped" as const, note: "stale workflow cycle" };
   }
   if (task.status !== "Review") {
     return { taskId: job.taskId, outcome: "skipped" as const, note: "task is no longer in Review" };
@@ -1872,30 +1792,17 @@ async function executeFinalizeJob(
       error: "No active Monitor Agent is available to finalize the reviewed repository branch.",
       preserveValidationOutcome: true,
     });
-    if (correlation.mode === "v2-exact") {
-      const callback = await applyExactFinalizationJobCallback({
-        job,
-        taskId: task.id,
-        ok: false,
-        error: "No active Monitor Agent is available to finalize the reviewed repository branch.",
-      });
-      return callback.applied
-        ? { taskId: task.id, outcome: "operational-error" as const }
-        : { taskId: task.id, outcome: "rejected-correlation" as const, note: callback.reason };
-    }
-    const { applyFinalizationCallbackToProcedure } = await import("@/lib/tasks/review-automation");
-    await applyFinalizationCallbackToProcedure(
-      task.id,
-      job.candidateSha,
-      false,
-      null,
-      "No active Monitor Agent is available to finalize the reviewed repository branch.",
-      procedureCallback,
-    ).catch((error) => console.error("[pm] procedure finalization callback failed:", task.id, error));
-    return { taskId: task.id, outcome: "operational-error" as const };
+    const callback = await applyExactFinalizationJobCallback({
+      job,
+      taskId: task.id,
+      ok: false,
+      error: "No active Monitor Agent is available to finalize the reviewed repository branch.",
+    });
+    return callback.applied
+      ? { taskId: task.id, outcome: "operational-error" as const }
+      : { taskId: task.id, outcome: "rejected-correlation" as const, note: callback.reason };
   }
   const actor = { id: monitor.id, username: monitor.username, kind: "agent" as const };
-  const v2Exact = correlation.mode === "v2-exact";
 
   const fail = async (reason: string, operational = false) => {
     if (operational) {
@@ -1928,16 +1835,9 @@ async function executeFinalizeJob(
           isGenerated: true,
         },
       });
-      if (v2Exact) {
-        const callback = await applyExactFinalizationJobCallback({ job, taskId: task.id, ok: false, error: reason });
-        if (!callback.applied) {
-          return { taskId: task.id, outcome: "rejected-correlation" as const, note: callback.reason };
-        }
-      } else {
-        const { applyFinalizationCallbackToProcedure } = await import("@/lib/tasks/review-automation");
-        await applyFinalizationCallbackToProcedure(task.id, candidateSha ?? null, false, null, reason, procedureCallback).catch((error) =>
-          console.error("[pm] procedure finalization callback failed:", task.id, error),
-        );
+      const callback = await applyExactFinalizationJobCallback({ job, taskId: task.id, ok: false, error: reason });
+      if (!callback.applied) {
+        return { taskId: task.id, outcome: "rejected-correlation" as const, note: callback.reason };
       }
       return { taskId: task.id, outcome: "operational-error" as const, reason, attempt };
     }
@@ -1950,25 +1850,11 @@ async function executeFinalizeJob(
         isGenerated: true,
       },
     });
-    if (v2Exact) {
-      const callback = await applyExactFinalizationJobCallback({ job, taskId: task.id, ok: false, error: reason });
-      if (!callback.applied) {
-        return { taskId: task.id, outcome: "rejected-correlation" as const, note: callback.reason };
-      }
-      return { taskId: task.id, outcome: "callback-applied" as const, reason };
+    const callback = await applyExactFinalizationJobCallback({ job, taskId: task.id, ok: false, error: reason });
+    if (!callback.applied) {
+      return { taskId: task.id, outcome: "rejected-correlation" as const, note: callback.reason };
     }
-    const { applyFinalizationCallbackToProcedure } = await import("@/lib/tasks/review-automation");
-    await applyFinalizationCallbackToProcedure(task.id, candidateSha ?? null, false, null, reason, procedureCallback).catch((error) =>
-      console.error("[pm] procedure finalization callback failed:", task.id, error),
-    );
-    await failTaskReviewValidation({
-      taskId: task.id,
-      actor,
-      error: reason,
-      candidateSha,
-      applyProcedureCallback: false,
-    });
-    return { taskId: task.id, outcome: "action-required" as const, reason };
+    return { taskId: task.id, outcome: "callback-applied" as const, reason };
   };
 
   if (!candidateSha || job.candidateSha !== candidateSha || task.repositoryRun?.reviewedSha !== job.candidateSha) {
@@ -2082,66 +1968,16 @@ async function executeFinalizeJob(
     if (!cleanup.ok) return fail(cleanup.error, true);
   }
 
-  if (v2Exact) {
-    const callback = await applyExactFinalizationJobCallback({
-      job,
-      taskId: task.id,
-      ok: true,
-    });
-    if (!callback.applied) {
-      return { taskId: task.id, outcome: "rejected-correlation" as const, note: callback.reason };
-    }
-    publishBoardTouch(task.projectId);
-    return { taskId: task.id, outcome: "callback-applied" as const };
-  }
-
-  await updateTaskRepositoryState(task.id, {
-    phase: "completed",
-    candidateSha: validatedCandidateSha,
-    reviewedSha: validatedCandidateSha,
-    validationOutcome:
-      task.repositoryRun?.validationOutcome === "valid_with_warning"
-        ? "valid_with_warning"
-        : "valid",
-    lastError: null,
-  });
-  const { completeReviewedTaskAndAssignNext } = await import("@/lib/tasks/review-automation");
-  const completion = await completeReviewedTaskAndAssignNext({
+  const callback = await applyExactFinalizationJobCallback({
+    job,
     taskId: task.id,
-    actor,
-    via: "repository-finalization",
-    repositoryFinalized: true,
+    ok: true,
   });
-  if (completion.completed) {
-    await db.reviewRun.updateMany({
-      where: task.activeWorkflowCycleId
-        ? { workflowCycleId: task.activeWorkflowCycleId, candidateSha: validatedCandidateSha, status: "accepted" }
-        : { taskId: task.id, workflowCycleId: null, candidateSha: validatedCandidateSha, status: "accepted" },
-      data: { status: "completed" },
-    });
-    // ORCH-07/P0-4: apply the finalization callback to the procedure engine
-    // so the finalize_accepted_review procedure can continue to
-    // verify_finalization → complete_review → Done.
-    const { applyFinalizationCallbackToProcedure } = await import("@/lib/tasks/review-automation");
-    await applyFinalizationCallbackToProcedure(task.id, validatedCandidateSha, true, null, undefined, procedureCallback).catch((error) =>
-      console.error("[pm] procedure finalization callback failed:", task.id, error),
-    );
-  } else {
-    const { applyFinalizationCallbackToProcedure } = await import("@/lib/tasks/review-automation");
-    await applyFinalizationCallbackToProcedure(
-      task.id,
-      validatedCandidateSha,
-      false,
-      null,
-      completion.reason,
-      procedureCallback,
-    ).catch((error) => console.error("[pm] procedure finalization callback failed:", task.id, error));
+  if (!callback.applied) {
+    return { taskId: task.id, outcome: "rejected-correlation" as const, note: callback.reason };
   }
   publishBoardTouch(task.projectId);
-  return {
-    taskId: task.id,
-    outcome: completion.completed ? "done" as const : "completion-failed" as const,
-  };
+  return { taskId: task.id, outcome: "callback-applied" as const };
 }
 
 function renderCleanupBody(job: Extract<EpicMergeJob, { kind: "cleanup" }>, items: CleanupItem[]) {
@@ -2332,12 +2168,6 @@ async function executeCleanupJob(job: Extract<EpicMergeJob, { kind: "cleanup" }>
 }
 
 export async function runEpicMergeSpoolJob(job: EpicMergeJob) {
-  if (job.kind !== "finalize" || job.schemaVersion !== 2) {
-    await recordLegacyWorkflowBoundaryInvocation({
-      legacyBoundary: "review-decision-and-finalization",
-      entryPoint: "runEpicMergeSpoolJob",
-    });
-  }
   if (job.kind === "merge") return executeMergeJob(job);
   if (job.kind === "finalize") return executeFinalizeJob(job);
   if (job.kind === "checkpoint") return executeCheckpointJob(job);

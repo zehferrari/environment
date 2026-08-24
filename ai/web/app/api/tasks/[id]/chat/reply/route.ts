@@ -5,7 +5,6 @@ import { pmChannelRunTargetKey } from "@/lib/agents/pm-channel/bus";
 import { verifyTaskChatReplyToken } from "@/lib/agents/workflow/chat/task/token";
 import { sendTaskCommentNotifications } from "@/lib/agents/workflow/notifications/task";
 import { revalidateTaskReplyScope, revalidateTaskShell } from "@/lib/tasks/cache";
-import { tryCompleteTaskFromReviewerComment } from "@/lib/tasks/review-automation";
 import { hasAuthorizedTaskAgentOrigin } from "@/lib/agents/owner-origin";
 import {
   isPmTerminalFailureText,
@@ -306,17 +305,7 @@ export async function POST(
     return { id: created.id, channel: "chat" as const };
   });
 
-  const reviewAutomation = reply.channel === "comment"
-    ? await tryCompleteTaskFromReviewerComment({
-        taskId,
-        commentId: reply.id,
-        body,
-        agentUserId: agent.user.id,
-        agentSlug,
-      })
-    : null;
-
-  if (reply.channel === "comment" && !reviewAutomation?.completed) {
+  if (reply.channel === "comment") {
     await sendTaskCommentNotifications({
       taskId,
       commentId: reply.id,
@@ -331,18 +320,10 @@ export async function POST(
   }
 
   revalidateTaskReplyScope(taskId, reply.channel);
-  if (reviewAutomation?.completed) {
-    revalidateTaskShell(taskId);
-    for (const next of reviewAutomation.nextTasks ?? []) {
-      revalidateTaskShell(next.id);
-      revalidatePath(`/projects/${next.projectSlug}/tasks/${next.id}`);
-    }
-    revalidatePath(`/projects/${reviewAutomation.projectSlug}`);
-  }
   return NextResponse.json({
     ok: true,
     id: reply.id,
     channel: reply.channel,
-    reviewAutomation,
+    reviewAutomation: null,
   });
 }

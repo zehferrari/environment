@@ -88,6 +88,8 @@ async function main() {
         title: "Atomic episode command",
         status: "To Do",
         workflowVersion: 1,
+        workflowEngine: "orchestrator_v2",
+        workflowEnginePinnedAt: new Date(),
         assigneeId: assignee.id,
         actingManagerId: owner.id,
         reporterId: owner.id,

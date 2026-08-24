@@ -15,7 +15,6 @@ import {
 } from "@/lib/agents/workflow/notifications/task";
 import { notifyHumanOfAgentReply } from "@/lib/push/notify-reply";
 import { revalidateTaskReplyScope, revalidateTaskShell } from "@/lib/tasks/cache";
-import { tryCompleteTaskFromReviewerComment } from "@/lib/tasks/review-automation";
 import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import {
   taskWorkflowReasonForMessage,
@@ -265,16 +264,6 @@ export async function persistTaskReply(
     return { id: created.id, channel: "chat" as const };
   });
 
-  const reviewAutomation = reply.channel === "comment"
-    ? await tryCompleteTaskFromReviewerComment({
-        taskId: target.taskId,
-        commentId: reply.id,
-        body: persistedBody,
-        agentUserId: agentUser.id,
-        agentSlug: target.agentSlug,
-      })
-    : null;
-
   if (reply.channel === "chat") {
     const task = await db.task.findUnique({
       where: { id: target.taskId },
@@ -330,7 +319,7 @@ export async function persistTaskReply(
     }
   }
 
-  if (reply.channel === "comment" && !reviewAutomation?.completed) {
+  if (reply.channel === "comment") {
     await sendTaskCommentNotifications({
       taskId: target.taskId,
       commentId: reply.id,
@@ -373,14 +362,6 @@ export async function persistTaskReply(
   // a cache miss is a stale-UI concern, not a data-integrity issue.
   try {
     revalidateTaskReplyScope(target.taskId, reply.channel);
-    if (reviewAutomation?.completed) {
-      revalidateTaskShell(target.taskId);
-      for (const next of reviewAutomation.nextTasks ?? []) {
-        revalidateTaskShell(next.id);
-        revalidatePath(`/projects/${next.projectSlug}/tasks/${next.id}`);
-      }
-      revalidatePath(`/projects/${reviewAutomation.projectSlug}`);
-    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (!/static generation store missing/i.test(message)) throw error;
@@ -391,7 +372,7 @@ export async function persistTaskReply(
       ok: true,
       id: reply.id,
       channel: reply.channel,
-      reviewAutomation,
+      reviewAutomation: null,
     },
     streamText: persistedBody,
   };

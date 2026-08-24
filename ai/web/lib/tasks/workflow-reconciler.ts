@@ -1,4 +1,3 @@
-import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import { db } from "@/lib/db";
 import { fenceSupersededPmChannelRuns } from "@/lib/agents/pm-channel/supersession";
 import { writeTaskExecutionState } from "@/lib/agents/watchdog/state";
@@ -141,10 +140,6 @@ export async function runWorkflowReconciliation(options: {
   dryRun?: boolean;
   limit?: number;
 } = {}): Promise<WorkflowReconciliationReport> {
-  await recordLegacyWorkflowBoundaryInvocation({
-    legacyBoundary: "workflow-reconciler-and-repair-tools",
-    entryPoint: "runWorkflowReconciliation",
-  });
   const now = options.now ?? new Date();
   const staleBefore = new Date(now.getTime() - staleMs());
   const limit = Math.max(1, Math.min(500, options.limit ?? DEFAULT_LIMIT));

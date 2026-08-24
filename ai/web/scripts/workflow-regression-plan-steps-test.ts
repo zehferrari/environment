@@ -321,7 +321,7 @@ async function main(): Promise<void> {
         body: "Review the posted Action Plan.",
       });
       const approved = await approval.post("approve_plan");
-      c.assertEqual(approved.status, 200, "the acting manager may approve the plan");
+      c.assertEqual(approved.status, 202, "the acting manager may approve the plan");
       c.assertEqual(approved.body.approved, true, "the route reports the plan approved");
 
       const approvedTask = await db.task.findUniqueOrThrow({
@@ -483,7 +483,7 @@ async function main(): Promise<void> {
         body: "Review the posted Action Plan.",
       });
       const approved = await approval.post("approve_plan");
-      c.assertEqual(approved.status, 200, "the acting manager may approve the parallel plan");
+      c.assertEqual(approved.status, 202, "the acting manager may approve the parallel plan");
       c.assertEqual(approved.body.approved, true, "the route reports the plan approved");
 
       // ---- the delegatable subtask ----
@@ -559,7 +559,7 @@ async function main(): Promise<void> {
         subtaskText: "C7 extra implementation step",
         subtaskKind: "implementation",
       });
-      c.assertEqual(asImplementation.status, 200, "the assignee may add an implementation checklist item");
+      c.assertEqual(asImplementation.status, 202, "the assignee may add an implementation checklist item");
       c.assertEqual(
         asImplementation.body.subtaskKind,
         "implementation",
@@ -577,7 +577,7 @@ async function main(): Promise<void> {
         subtaskText: "C7 reviewer topic to address",
         subtaskKind: "review",
       });
-      c.assertEqual(asReview.status, 200, "the resolved reviewer may add a review checklist item");
+      c.assertEqual(asReview.status, 202, "the resolved reviewer may add a review checklist item");
       c.assertEqual(
         asReview.body.subtaskKind,
         "review",
@@ -605,7 +605,7 @@ async function main(): Promise<void> {
         subtaskText: "C7 step requested as delegatable",
         subtaskKind: "delegatable",
       });
-      c.assertEqual(coerced.status, 200, "the route accepts the unknown kind");
+      c.assertEqual(coerced.status, 202, "the route accepts the unknown kind");
       c.assertEqual(
         coerced.body.subtaskKind,
         "implementation",

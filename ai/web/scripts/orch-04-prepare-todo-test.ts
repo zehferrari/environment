@@ -53,6 +53,8 @@ async function main() {
         projectId: project1.id,
         title: "Non-code task",
         status: "Backlog",
+        workflowEngine: "orchestrator_v2",
+        workflowEnginePinnedAt: new Date(),
         assigneeId: assigneeUser.id,
         actingManagerId: reviewerUser.id,
         reporterId: owner.id,
@@ -153,6 +155,8 @@ async function main() {
         projectId: project2.id,
         title: "Task 2",
         status: "Backlog",
+        workflowEngine: "orchestrator_v2",
+        workflowEnginePinnedAt: new Date(),
         assigneeId: assigneeUser.id,
         actingManagerId: reviewerUser.id,
         reporterId: owner.id,
@@ -193,7 +197,7 @@ async function main() {
     // Use a third task with a non-code project to verify the projection.
     const project3 = await db.project.create({ data: { slug: "orch04-3", name: "Project 3" } });
     const task3 = await db.task.create({
-      data: { projectId: project3.id, title: "Task 3", status: "Backlog", assigneeId: assigneeUser.id, actingManagerId: reviewerUser.id, reporterId: owner.id },
+      data: { projectId: project3.id, title: "Task 3", status: "Backlog", workflowEngine: "orchestrator_v2", workflowEnginePinnedAt: new Date(), assigneeId: assigneeUser.id, actingManagerId: reviewerUser.id, reporterId: owner.id },
     });
     const plan3 = await db.actionPlan.create({ data: { taskId: task3.id, summary: "Plan 3", version: 1, status: "draft", authorId: assigneeUser.id, contentHash: "hash-3" } });
     await db.actionPlanStep.create({ data: { actionPlanId: plan3.id, stepId: "s1", title: "Step 1", acceptanceCriteria: "[]", kind: "sequential", rank: 0 } });

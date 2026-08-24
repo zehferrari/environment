@@ -61,6 +61,8 @@ async function main() {
         projectId: project.id,
         title: "ORCH-02 task",
         status: "Backlog",
+        workflowEngine: "orchestrator_v2",
+        workflowEnginePinnedAt: new Date(),
         assigneeId: assigneeUser.id,
         actingManagerId: reviewerUser.id,
         reporterId: owner.id,

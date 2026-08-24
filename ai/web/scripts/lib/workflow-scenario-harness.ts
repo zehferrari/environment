@@ -378,12 +378,14 @@ export async function seedTask(
     branchName?: string;
   },
 ) {
-  return db.task.create({
+  const task = await db.task.create({
     data: {
       projectId: world.projectId,
       epicId: args.underEpic ? world.epicId : null,
       title: args.title,
       status: args.status ?? "In Progress",
+      workflowEngine: "orchestrator_v2",
+      workflowEnginePinnedAt: new Date(),
       assigneeId: args.assigned === false ? null : world.agentUserId,
       reporterId: world.ownerId,
       actingManagerId: world.ownerId,
@@ -392,6 +394,15 @@ export async function seedTask(
       branchName: args.branchName ?? null,
     },
   });
+  if ((args.status ?? "In Progress") === "In Progress" || args.status === "Review") {
+    const { openTaskWorkflowCycle } = await import("@/lib/tasks/workflow-cycle");
+    await db.$transaction((tx) => openTaskWorkflowCycle(tx, {
+      taskId: task.id,
+      openedWorkflowVersion: task.workflowVersion,
+    }));
+    return db.task.findUniqueOrThrow({ where: { id: task.id } });
+  }
+  return task;
 }
 
 // ---------------------------------------------------------------------------

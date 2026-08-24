@@ -247,7 +247,8 @@ assert.equal(
 
 // ---------------- the route actually enforces this ----------------
 
-const route = read("app/api/agent/tasks/[taskId]/workflow/route.ts");
+const route = read("lib/tasks/orchestrator/agent-route-adapter.ts");
+const intents = read("lib/tasks/orchestrator/intents/index.ts");
 assert(
   route.includes("classifyBlockerFailure("),
   "flag_blocker must classify the report rather than trusting the prose comment",
@@ -257,7 +258,7 @@ assert(
   "a recoverable failure must land as an internal incident row",
 );
 assert(
-  route.includes("blockerReport }),") || route.includes("blockerReport })"),
+  intents.includes("blockerReport: report"),
   "the accepted report must be persisted on the task.blocker activity row",
 );
 assert(

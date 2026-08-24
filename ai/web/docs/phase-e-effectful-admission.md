@@ -1,10 +1,8 @@
 # Phase E effectful admission and E2 canary
 
 `PM_ORCHESTRATOR_V2_MUTATION_PROJECTS` is the only effectful admission
-allowlist. It defaults to empty. `PM_ORCHESTRATOR_V2_SHADOW` and
-`PM_ORCHESTRATOR_V2_PROJECTS` remain compute-only comparison flags: changing
-either one cannot pin ownership, submit an authoritative command, or start a
-procedure.
+allowlist. It defaults to empty. The former `PM_ORCHESTRATOR_V2_SHADOW` and
+`PM_ORCHESTRATOR_V2_PROJECTS` comparison flags are retired and ignored.
 
 Durable `Task.workflowEngine` (and the engine copied to an open workflow cycle)
 decides the authoritative path. Once a task is pinned to `orchestrator_v2`, a

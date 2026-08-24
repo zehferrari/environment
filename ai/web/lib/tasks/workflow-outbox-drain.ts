@@ -1,4 +1,3 @@
-import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import { db } from "@/lib/db";
 import { writeDeduplicatedActivity, computeActivityDedupeKey } from "@/lib/tasks/orchestrator/activity-dedup";
 import { enqueueBranchVerifyJob, type BranchVerifyJob } from "@/lib/deploy/branch-verify";
@@ -243,10 +242,6 @@ export async function drainWorkflowOutbox(args: {
   now?: Date;
   workerId?: string;
 } = {}) {
-  await recordLegacyWorkflowBoundaryInvocation({
-    legacyBoundary: "workflow-reconciler-and-repair-tools",
-    entryPoint: "drainWorkflowOutbox",
-  });
   const now = args.now ?? new Date();
   const limit = Math.max(1, Math.min(100, args.limit ?? DEFAULT_BATCH));
   const workerId = args.workerId ?? `workflow-outbox:${process.pid}`;

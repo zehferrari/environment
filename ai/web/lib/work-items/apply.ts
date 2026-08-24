@@ -17,7 +17,6 @@
 // so it is unit-testable from a script; the "use server" wrappers in
 // lib/work-items/actions.ts add auth + cache revalidation.
 
-import { recordLegacyWorkflowBoundaryInvocation } from "@/lib/tasks/legacy-workflow-boundary";
 import { db } from "@/lib/db";
 import type { Prisma } from "@prisma/client";
 import {
@@ -131,10 +130,6 @@ export async function commitProposal(
   proposalId: string,
   approverUserId: string,
 ): Promise<CommitResult> {
-  await recordLegacyWorkflowBoundaryInvocation({
-    legacyBoundary: "proposal-application",
-    entryPoint: "commitProposal",
-  });
   const proposal = await db.workItemProposal.findUnique({
     where: { id: proposalId },
     select: {

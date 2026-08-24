@@ -383,7 +383,7 @@ export async function getCohortSummary(
  * Return legacy-invocation counts by boundary id + entry point, sourced from
  * the boundary-registry counter contract (task.workflow.legacy_boundary.invoked
  * ActivityLog rows). The counter is already live and wired via
- * recordLegacyWorkflowBoundaryInvocation in lib/tasks/legacy-workflow-boundary.ts.
+ * historical Phase E activity rows. No production writer remains.
  *
  * Read-only — uses groupBy/count on the ActivityLog @@index([kind, createdAt])
  * for efficient legacy boundary queries instead of fetching all rows and

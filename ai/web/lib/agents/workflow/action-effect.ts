@@ -194,6 +194,8 @@ export interface WorkflowActionResult {
   actionEffect: WorkflowActionEffect;
   /** Episode/cycle accounting for this action, when the action ran on a task. */
   episode?: WorkflowActionEpisodeProgress | null;
+  /** Whether sealing a rollover checkpoint armed its successor turn. */
+  successorScheduled?: boolean;
   /** The task's status after the action, when the caller knows it. */
   taskState: string | null;
   /** Stable name of the durable state this action reached. */

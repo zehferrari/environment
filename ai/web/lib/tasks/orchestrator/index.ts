@@ -100,15 +100,9 @@ async function submitWorkflowCommandWithClient(
   // --- Engine ownership resolution (Phase E §3.2) ----------------------
   // Resolve durable engine ownership BEFORE any writes. This gate runs
   // before guards, decision, and execution so a rejection never mutates.
-  // For Phase E step 1, no tasks are pinned to V2 (the admission flag is
-  // off), so legacy-owned tasks pass through. A V2-owned task that
-  // disagrees with its active cycle is rejected here as an invariant
-  // violation — never heuristically resolved.
-  //
-  // The gate is permissive for legacy: the orchestrator is the current
-  // mutation path for all tasks, and legacy ownership simply means "not
-  // yet migrated." Hard rejection of legacy tasks belongs to Phase E
-  // step 8 (authoritative adapter), not step 1.
+  // Legacy ownership is retired. Exact receipt replay remains available
+  // below for already-accepted V2 commands, but no new mutation may enter
+  // the kernel until the task has durable V2 ownership.
   const ownership = await resolveEngineOwnership(client, command.taskId);
   if (!ownership.ok) {
     return {
@@ -126,10 +120,6 @@ async function submitWorkflowCommandWithClient(
   // response. The receipt stores the serialized OrchestratorResult projection
   // so an exact replay returns an identical response.
   //
-  // Pre-receipt fallback: the WorkflowTransition lookup is retained for
-  // transitions committed before the receipt migration. Every existing
-  // transition has an idempotencyKey and no receipt, so without this
-  // fallback replays across the legacy drain window would re-execute.
   const existingReceipt = await client.taskWorkflowCommandReceipt.findUnique({
     where: {
       taskId_idempotencyKey: {
@@ -166,32 +156,11 @@ async function submitWorkflowCommandWithClient(
     };
   }
   if (ownership.engine === ENGINE_LEGACY) {
-    // Legacy drain compatibility only. V2 receipts are the sole replay
-    // authority for a V2-owned attempt; a V2 miss must never be reconstructed
-    // from a legacy transition or substring activity scan.
-    const existingTransition = await client.workflowTransition.findUnique({
-      where: {
-        taskId_idempotencyKey: {
-          taskId: command.taskId,
-          idempotencyKey: command.idempotencyKey,
-        },
-      },
-      select: { id: true, workflowVersion: true },
-    });
-    if (existingTransition) {
-      return { status: "replayed", transitionId: existingTransition.id, workflowVersion: existingTransition.workflowVersion, procedureId: null };
-    }
-    const existingActivity = await client.activityLog.findFirst({
-      where: {
-        taskId: command.taskId,
-        kind: { startsWith: "task.workflow." },
-        payload: { contains: command.idempotencyKey },
-      },
-      select: { id: true },
-    });
-    if (existingActivity) {
-      return { status: "replayed", transitionId: existingActivity.id, workflowVersion: state.workflowVersion, procedureId: null };
-    }
+    return {
+      status: "stale",
+      reason: "Legacy workflow mutation ownership is retired.",
+      domainCode: "cycle_mismatch",
+    };
   }
 
   // --- Authorize ---------------------------------------------------------

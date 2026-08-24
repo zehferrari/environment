@@ -179,31 +179,32 @@ export async function applyProcedureCallback(callback: ProcedureCallback): Promi
       },
     },
   });
-  // PHASEE-07 Fix #1: Use step.procedureRun.taskId (the trusted owner) for
-  // ActivityLog FK, not callback.taskId (untrusted/stale in a mismatch).
-  // The offending callback.taskId is preserved inside the payload.
-  const trustedTaskId = step?.procedureRun?.taskId ?? null;
-  // PHASEE-07 Fix #3: When the step is not found, fall back to callback.taskId
-  // to look up the task so we can still record the mismatch activity.
-  const taskIdForLookup = trustedTaskId ?? callback.taskId;
-  const taskRow = taskIdForLookup
+  // Use only a durable procedure owner for activity attribution. A callback
+  // that misses its exact step may still be attributed through its exact run
+  // id; it is never recovered by searching for a task's latest waiting step.
+  const exactRun = !step
+    ? await db.taskProcedureRun.findUnique({
+        where: { id: callback.procedureRunId },
+        select: { taskId: true },
+      })
+    : null;
+  const trustedTaskId = step?.procedureRun?.taskId ?? exactRun?.taskId ?? null;
+  const taskRow = trustedTaskId
     ? await db.task.findUnique({
-        where: { id: taskIdForLookup },
+        where: { id: trustedTaskId },
         select: { projectId: true, activeWorkflowCycleId: true },
       })
     : null;
   const projectId = taskRow?.projectId ?? null;
 
   if (!step || !step.procedureRun) {
-    // PHASEE-07 Fix #3: Record the step_not_found mismatch using callback.taskId
-    // so the mismatch is visible in activity logs, not silently dropped.
-    if (projectId && callback.taskId) {
+    if (projectId) {
       await recordCallbackActivity({
         projectId,
-        taskId: callback.taskId,
+        taskId: trustedTaskId!,
         kind: "task.workflow.callback.mismatch",
         fingerprint: callbackMismatchFingerprint(callback, "step_not_found"),
-        payload: { reason: "Step not found for callback.", callbackTaskId: callback.taskId, callback },
+        payload: { reason: "Step not found.", callbackTaskId: callback.taskId, callback },
       });
     }
     return { applied: false, reason: "Step not found." };

@@ -21,6 +21,7 @@ import {
 import { isProtectedBranch } from "@/lib/projects/protected-branches";
 import { effectiveEpicBranchName, effectiveTaskBranchName } from "@/lib/work-items/branches";
 import { enqueueWorkflowEffects } from "@/lib/tasks/transition-kernel";
+import { assignOpenEpicTasks } from "@/lib/epics/assignment";
 
 async function executeRegisteredIntent<I extends TaskWorkflowIntent>(
   context: IntentExecutorContext<I>,
@@ -116,6 +117,10 @@ const approvePlanExecutor: IntentExecutor<"approve_plan"> = async (context) => {
     approvedAt,
     approvedById: context.decision.decisionActorId,
     client: context.tx,
+  });
+  await createDomainActivity(context, "task.action_plan.approve", {
+    actionPlanId: context.command.payload.actionPlanId,
+    actionPlanVersion: context.command.payload.actionPlanVersion,
   });
   return context.helpers.executeDecisionWrites();
 };
@@ -288,6 +293,119 @@ const repositoryFinalizationSucceededExecutor: IntentExecutor<"repository_finali
       version: { increment: 1 },
     },
   });
+
+  // Keep Epic queue refill and the whole-Epic acceptance handoff inside the
+  // authoritative completion command. The current task is still Review at
+  // this point, so the last-child query explicitly excludes it.
+  const task = await context.tx.task.findUniqueOrThrow({
+    where: { id: context.command.taskId },
+    select: {
+      title: true,
+      epicId: true,
+      assigneeId: true,
+      reporterId: true,
+      epic: { select: { status: true, actingManagerId: true } },
+    },
+  });
+  const assignment = task.epicId
+    ? await assignOpenEpicTasks(context.tx, {
+        epicId: task.epicId,
+        projectId: context.state.projectId,
+        actorUserId: context.decision.decisionActorId,
+        excludeUserIds: [
+          context.state.resolvedReviewOwnerId,
+          task.reporterId,
+          task.epic?.actingManagerId,
+        ],
+        via: "orchestrator_v2:repository_finalization_succeeded",
+        notificationContextLine: `Previous Epic task "${task.title}" was accepted.`,
+        trigger: { kind: "policy_event", id: context.command.idempotencyKey },
+      })
+    : { assignments: [], skipped: "no_epic" as const };
+
+  let epicRolledToReview = false;
+  if (assignment.assignments.length === 0) {
+    await createDomainActivity(context, "task.workflow.next_assignment_skipped", {
+      reason: assignment.skipped,
+      epicId: task.epicId,
+    });
+    if (task.epicId && (task.epic?.status === "In Progress" || task.epic?.status === "To Do")) {
+      const remainingOpenTasks = await context.tx.task.count({
+        where: {
+          epicId: task.epicId,
+          id: { not: context.command.taskId },
+          parentTaskId: null,
+          archivedAt: null,
+          deletedAt: null,
+          status: { not: "Done" },
+        },
+      });
+      if (remainingOpenTasks === 0) {
+        const promoted = await context.tx.epic.updateMany({
+          where: { id: task.epicId, status: task.epic.status },
+          data: {
+            status: "Review",
+            statusChangedAt: new Date(),
+            completionReviewStatus: "Preparing",
+            completionReviewCandidateSha: null,
+            completionReviewRequestedAt: null,
+            completionReviewCompletedAt: null,
+            completionReviewLastError: null,
+          },
+        });
+        if (promoted.count !== 1) throw new Error("epic_completion_review_conflict");
+        await context.tx.activityLog.create({
+          data: {
+            projectId: context.state.projectId,
+            userId: context.decision.decisionActorId,
+            kind: "epic.status",
+            payload: JSON.stringify({
+              epicId: task.epicId,
+              from: task.epic.status,
+              to: "Review",
+              via: "orchestrator_v2:repository_finalization_succeeded",
+              action: "completion_review_required",
+            }),
+          },
+        });
+        epicRolledToReview = true;
+      }
+    }
+  }
+
+  const completionEffects = [];
+  if (epicRolledToReview && task.epicId) {
+    completionEffects.push({
+      type: "epic_completion_review" as const,
+      key: `epic-completion-review:${task.epicId}`,
+      payload: { epicId: task.epicId },
+    });
+  }
+  const previousAssigneeGotNext = assignment.assignments.some(
+    (assigned) => assigned.worker.id === task.assigneeId,
+  );
+  if (!previousAssigneeGotNext && task.assigneeId) {
+    completionEffects.push({
+      type: "task_notification" as const,
+      key: `review-done:${task.assigneeId}`,
+      payload: {
+        taskId: context.command.taskId,
+        targetUserId: task.assigneeId,
+        actor: context.command.actor,
+        reason: "review_done",
+        body: `Task "${task.title}" was reviewed and moved to Done. No further action is required unless it is reopened.`,
+      },
+    });
+  }
+  if (completionEffects.length > 0) {
+    await enqueueWorkflowEffects(context.tx, {
+      taskId: context.command.taskId,
+      projectId: context.state.projectId,
+      aggregateVersion: context.state.workflowVersion + 1,
+      workflowCycleId: context.state.activeWorkflowCycleId,
+      effects: completionEffects,
+    });
+  }
   return context.helpers.executeDecisionWrites();
 };
 
@@ -305,6 +423,25 @@ const repositoryFinalizationFailedExecutor: IntentExecutor<"repository_finalizat
 
 const raiseBlockerExecutor: IntentExecutor<"raise_blocker"> = async (context) => {
   const report = context.command.payload.blockerReport;
+  const activeBlocker = context.state.activeBlocker;
+  if (activeBlocker) {
+    const samePermissionRound = Boolean(
+      context.command.payload.permissionKind &&
+      activeBlocker.permissionRequest?.kind === context.command.payload.permissionKind &&
+      activeBlocker.permissionRequest.scope === (context.command.payload.permissionScope ?? report.requestedAction) &&
+      !activeBlocker.permissionGrant?.authorizationCommentId,
+    );
+    if (samePermissionRound) {
+      // Record the exact command receipt/episode disposition without creating
+      // a second blocker comment or replacing the active permission round.
+      return context.helpers.executeDecisionWrites();
+    }
+    return {
+      status: "stale",
+      reason: "An active blocker round must be cleared before another blocker can be raised.",
+      domainCode: "cycle_mismatch",
+    };
+  }
   const comment = await createWorkflowComment(
     context,
     context.command.payload.comment ?? [
@@ -334,7 +471,18 @@ const raiseBlockerExecutor: IntentExecutor<"raise_blocker"> = async (context) =>
 
 const clearBlockerExecutor: IntentExecutor<"clear_blocker"> = async (context) => {
   const comment = await createWorkflowComment(context, context.command.payload.resolution);
-  const preserveIndependentAlert = context.state.repositoryRun?.phase === "operational_error";
+  const newerIndependentAlert = context.state.activeBlocker?.raisedAt
+    ? await context.tx.activityLog.findFirst({
+        where: {
+          taskId: context.command.taskId,
+          kind: "task.alert_reporter",
+          createdAt: { gt: context.state.activeBlocker.raisedAt },
+          payload: { contains: '"to":true' },
+        },
+        select: { id: true },
+      })
+    : null;
+  const preserveIndependentAlert = context.state.repositoryRun?.phase === "operational_error" || Boolean(newerIndependentAlert);
   await createDomainActivity(context, "task.blocker.cleared", {
     commentId: comment.id,
     blockerId: context.command.payload.blockerId,
@@ -674,7 +822,6 @@ const addSubtaskExecutor: IntentExecutor<"add_subtask"> = async (context) => {
       actorUserId: context.decision.decisionActorId,
       kind: context.command.payload.subtaskKind,
       client: context.tx,
-      recordLegacyBoundary: false,
     });
   }
   return context.helpers.executeDecisionWrites();
@@ -688,7 +835,6 @@ const completeSubtaskExecutor: IntentExecutor<"complete_subtask"> = async (conte
     actorUserId: context.decision.decisionActorId,
     expectTaskId: context.command.taskId,
     client: context.tx,
-    recordLegacyBoundary: false,
   });
   if (!updated) throw new Error("subtask_not_found");
   return context.helpers.executeDecisionWrites();
@@ -700,7 +846,6 @@ const removeSubtaskExecutor: IntentExecutor<"remove_subtask"> = async (context) 
     actorUserId: context.decision.decisionActorId,
     expectTaskId: context.command.taskId,
     client: context.tx,
-    recordLegacyBoundary: false,
   });
   if (!removed) throw new Error("subtask_not_found");
   return context.helpers.executeDecisionWrites();

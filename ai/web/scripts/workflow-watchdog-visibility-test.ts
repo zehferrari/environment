@@ -146,7 +146,7 @@ assert(
 // ------------------------------------------------------------------
 // Ordinary transitions keep it current
 // ------------------------------------------------------------------
-const route = read("app/api/agent/tasks/[taskId]/workflow/route.ts");
+const route = read("lib/tasks/orchestrator/agent-route-adapter.ts");
 assert(
   route.includes("recordWorkflowActionExecutionState"),
   "every successful workflow action updates the execution strip, not just watchdog passes",

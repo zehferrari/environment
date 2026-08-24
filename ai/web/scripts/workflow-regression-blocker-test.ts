@@ -269,7 +269,7 @@ async function main(): Promise<void> {
         "Re-ran the navigation once in the same session.",
         "Retried in a fresh browser profile with a cleared cache; the element never attaches.",
       ]);
-      c.assertEqual(third.status, 200, "distinct evidence across rounds earns the escalation");
+      c.assertEqual(third.status, 202, `distinct evidence across rounds earns the escalation: ${JSON.stringify(third.body)}`);
       c.assertEqual(third.body.flagged, "blocker", "the formal blocker was raised");
       c.assertEqual(
         third.body.actionEffect,
@@ -341,7 +341,7 @@ async function main(): Promise<void> {
 
       // One durable step opens the episode the browsing will be counted against.
       const opened = await turn.post("add_subtask", { subtaskText: "C8 retry the portal login" });
-      c.assertEqual(opened.status, 200, "the turn banked a step and opened its episode");
+      c.assertEqual(opened.status, 202, "the turn banked a step and opened its episode");
       const episodeOne = await db.taskExecutionEpisode.findFirstOrThrow({
         where: { taskId: task.id, agentSlug: AGENT_SLUG },
         orderBy: { episodeNo: "asc" },
@@ -517,7 +517,7 @@ async function main(): Promise<void> {
         permissionKind: "reporter_approval",
         permissionScope: scopeText,
       });
-      c.assertEqual(flagged.status, 200, "a permission-only blocker is accepted without a retry ladder");
+      c.assertEqual(flagged.status, 202, "a permission-only blocker is accepted without a retry ladder");
       c.assertEqual(flagged.body.flagged, "blocker", "the blocker was raised");
       c.assertEqual(
         flagged.body.actionEffect,
@@ -552,7 +552,7 @@ async function main(): Promise<void> {
       const nudged = await nudge.post("add_subtask", {
         subtaskText: "C9 work banked while blocked",
       });
-      c.assertEqual(nudged.status, 200, "the nudge produced a live run");
+      c.assertEqual(nudged.status, 202, "the nudge produced a live run");
       const beforeGrant = await readRunState(db, { taskId: task.id });
       const staleRun = beforeGrant.runs.find((row) => row.messageId === nudge.messageId);
       c.assert(staleRun, "the nudge's run is readable");
@@ -691,7 +691,7 @@ async function main(): Promise<void> {
       const resumedAction = await resumed.post("add_subtask", {
         subtaskText: "C9 work resumed after the grant",
       });
-      c.assertEqual(resumedAction.status, 200, "the resumed turn advances the same task");
+      c.assertEqual(resumedAction.status, 202, "the resumed turn advances the same task");
       c.assertEqual(
         resumedAction.body.actionEffect,
         "continue",
@@ -738,7 +738,7 @@ async function main(): Promise<void> {
         permissionKind: "reporter_approval",
         permissionScope: "Rotate the staging deploy key.",
       });
-      c.assertEqual(nextRound.status, 200, "a fresh permission round can be raised");
+      c.assertEqual(nextRound.status, 202, "a fresh permission round can be raised");
       const fresh = activeFormalBlockerStatesByTask(await lifecycleRows(task.id)).get(task.id);
       c.assert(fresh, "the new round is the active blocker");
       c.assert(

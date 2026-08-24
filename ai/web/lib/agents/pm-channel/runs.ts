@@ -1145,6 +1145,7 @@ export async function applyAuthenticatedPmChannelWorkflowAction(
       rolledOver: true,
       nextEpisodeNo: sealed.nextEpisodeNo,
     });
+    result.successorScheduled = sealed.successorScheduled;
     return applyWorkflowActionToRuns(tx, actionArgs, [resolved.run], result, {
       continuationMode: "already_scheduled",
     });
