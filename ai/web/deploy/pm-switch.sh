@@ -286,7 +286,10 @@ fi
 # verification. This receipt makes post-incident diagnosis independent of
 # shell history or the branch currently attached to the worktree.
 DEPLOYED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-LAST_MIGRATION="$(sqlite3 "$BRANCH_DB" "SELECT migration_name FROM _prisma_migrations WHERE finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 1;" 2>/dev/null || true)"
+# Historical databases can contain ISO timestamps and epoch milliseconds in
+# finished_at. SQLite sorts those storage classes separately, so use Prisma's
+# timestamp-prefixed migration name as the stable schema-order authority.
+LAST_MIGRATION="$(sqlite3 "$BRANCH_DB" "SELECT migration_name FROM _prisma_migrations WHERE finished_at IS NOT NULL ORDER BY migration_name DESC LIMIT 1;" 2>/dev/null || true)"
 RECEIPT_FILE="$RECEIPT_DIR/${DEPLOYED_AT//:/}-${WORKTREE_SLUG}-${DEPLOY_COMMIT:0:12}.receipt"
 RECEIPT_TMP="$(mktemp "$RECEIPT_DIR/.deployment.XXXXXX")"
 {

@@ -40,6 +40,8 @@ assert.match(installer, /install -d -o "\$MON" -g "\$CODE_GROUP" -m 2770 "\$RECE
   "installer must provision receipts for both monitor and code-agent deployers");
 assert.match(installer, /PM_DEPLOY_RECEIPT_DIR=%s/,
   "the root-owned deployment contract must publish the receipt path");
+assert.match(switcher, /ORDER BY migration_name DESC LIMIT 1/,
+  "receipt schema level must not depend on mixed SQLite timestamp storage classes");
 
 assert.match(actions, /databaseSelection: "worktree"/,
   "browser requests must state their database intent");
