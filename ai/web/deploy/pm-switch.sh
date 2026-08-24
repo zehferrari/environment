@@ -232,6 +232,14 @@ if [[ "$served_wt" == "$WT_ROOT" || "$active_db_real" == "$branch_db_real" ]]; t
   log "Target worktree or DB is already live; stopping PM services before migrate/build to avoid SQLite and build-tree locks…"
   sudo -n "$APPLY" --stop-live "$STANDALONE" "$BRANCH_DB_URL"
 fi
+# systemd can report both writers stopped while a final SQLite connection is
+# still unwinding. Wait for that reader and checkpoint its WAL before Prisma
+# requests the schema lock; otherwise a healthy deployment can fail once with
+# a transient `database is locked` and leave the site in maintenance.
+checkpoint="$(sqlite3 -cmd '.timeout 10000' "$BRANCH_DB" 'PRAGMA wal_checkpoint(TRUNCATE);')" \
+  || die "database WAL checkpoint failed before migration: $BRANCH_DB"
+[[ "${checkpoint%%|*}" == 0 ]] \
+  || die "database remained busy after stopping live writers: $BRANCH_DB ($checkpoint)"
 sqlite3 "$BRANCH_DB" 'PRAGMA journal_mode=WAL;' >/dev/null
 chmod g+rw "$BRANCH_DB" "$BRANCH_DB"-wal "$BRANCH_DB"-shm 2>/dev/null || true
 DATABASE_URL="$BRANCH_DB_URL" "$PNPM" --dir "$APP_DIR" exec prisma migrate deploy

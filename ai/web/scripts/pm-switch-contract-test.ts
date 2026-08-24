@@ -25,11 +25,15 @@ assert.match(switcher, /resolved database escapes the configured PM DB root/,
 
 const quickCheck = switcher.indexOf("PRAGMA quick_check;");
 const stopLive = switcher.indexOf("--stop-live", quickCheck);
+const checkpoint = switcher.indexOf("PRAGMA wal_checkpoint(TRUNCATE);", stopLive);
+const migrate = switcher.indexOf("prisma migrate deploy", checkpoint);
 const receipt = switcher.indexOf('RECEIPT_FILE="$RECEIPT_DIR/');
 const receiptPreflight = switcher.indexOf("deployment receipt directory is missing or not writable");
 const consumerVerified = switcher.indexOf('[[ "$consumer_active" == "active" ]]');
 assert(quickCheck >= 0 && stopLive > quickCheck,
   "database integrity preflight must finish before live services stop");
+assert(stopLive >= 0 && checkpoint > stopLive && migrate > checkpoint,
+  "the stopped database WAL must checkpoint before Prisma requests its schema lock");
 assert(consumerVerified >= 0 && receipt > consumerVerified,
   "deployment receipt must be published only after both services verify");
 assert.match(switcher, /deployment receipt directory is missing or not writable/,
