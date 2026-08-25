@@ -59,6 +59,7 @@ import {
   submitBrowserStatusOverride,
 } from "@/lib/tasks/orchestrator/browser-status-adapter";
 import { submitBrowserPlanApproval } from "@/lib/tasks/orchestrator/browser-plan-adapter";
+import { submitBrowserReviewChanges } from "@/lib/tasks/orchestrator/browser-review-adapter";
 import { effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
 import {
   getCachedLatestRepoVerifyActivity,
@@ -86,6 +87,7 @@ import ActivityTimeline, { type ActivityTimelineRow } from "@/components/activit
 import TaskChangesPanel from "@/components/task-changes-panel";
 import CloseTaskButton from "@/components/close-task-button";
 import TaskDirtyGuard from "@/components/task-dirty-guard";
+import ReviewReturnControl from "@/components/review-return-control";
 import ConfirmedDeleteButton from "@/components/confirmed-delete-button";
 import DeletedMessageDivider from "@/components/deleted-message-divider";
 import {
@@ -153,6 +155,56 @@ async function requireActorId(): Promise<string> {
 }
 
 // ---- Server actions -------------------------------------------------
+
+async function requestReviewChangesFromBrowser(formData: FormData) {
+  "use server";
+  const actor = await requireActor();
+  const taskId = String(formData.get("taskId") ?? "");
+  const reviewRunId = String(formData.get("reviewRunId") ?? "");
+  const reviewerComment = String(formData.get("reviewerComment") ?? "").trim();
+  if (!taskId || !reviewRunId || !reviewerComment) {
+    throw new Error("Reviewer feedback is required.");
+  }
+
+  const task = await db.task.findFirst({
+    where: accessibleTaskWhere(actor, { id: taskId }),
+    select: {
+      id: true,
+      status: true,
+      projectId: true,
+      workflowVersion: true,
+      activeWorkflowCycleId: true,
+    },
+  });
+  if (!task) throw new Error("Task not found.");
+  await requireProjectAccess(actor, { id: task.projectId });
+  if (task.status !== "Review" || !task.activeWorkflowCycleId) {
+    throw new Error("The task is no longer in an active Review cycle.");
+  }
+  const reviewRun = await db.reviewRun.findFirst({
+    where: {
+      id: reviewRunId,
+      taskId,
+      workflowCycleId: task.activeWorkflowCycleId,
+      status: { in: ["awaiting_review", "accepted"] },
+    },
+    select: { id: true, candidateSha: true },
+  });
+  if (!reviewRun) throw new Error("The active review changed. Refresh and try again.");
+
+  const result = await submitBrowserReviewChanges({
+    actor,
+    taskId,
+    expectedWorkflowVersion: task.workflowVersion,
+    workflowCycleId: task.activeWorkflowCycleId,
+    reviewRunId: reviewRun.id,
+    candidateSha: reviewRun.candidateSha,
+    reviewerComment,
+  });
+  if (!result.ok) throw new Error(result.message);
+  revalidateTaskShell(taskId);
+  revalidateTaskReplyScope(taskId, "comment");
+}
 
 // Single task-form save. Persists title, description, status, epic,
 // branch, commit prefix, assignee and reviewer in one transaction, with
@@ -1364,7 +1416,7 @@ export default async function TaskDetailPage({
   // the value in updateTask() lives in a different function.
   const canEditBlockedBy = !task.blockedById || await canAccessTask(viewer, task.blockedById);
 
-  const [principals, cachedProjectEpics, mentionableUsers, recentTaskChatMessages, recentReplyActivity, latestRepoVerify, allActivity, targetedCommentRows] = await Promise.all([
+  const [principals, cachedProjectEpics, mentionableUsers, recentTaskChatMessages, recentReplyActivity, latestRepoVerify, allActivity, targetedCommentRows, activeReviewLease] = await Promise.all([
     viewer.isOwner ? listAssignablePrincipals(viewer) : Promise.resolve([]),
     getCachedProjectEpics(task.project.id),
     db.user.findMany({ select: { username: true, kind: true } }),
@@ -1396,6 +1448,12 @@ export default async function TaskDetailPage({
           distinct: ["originCommentId"],
           select: { originCommentId: true },
         }),
+    task.activeWorkflowCycleId
+      ? db.reviewRun.findUnique({
+          where: { workflowCycleId: task.activeWorkflowCycleId },
+          select: { id: true, status: true, candidateSha: true },
+        })
+      : Promise.resolve(null),
   ]);
   const projectEpics = cachedProjectEpics.filter((epic) => viewer.isOwner || !epic.private);
   const visibleActivity = visibleActivityRows(allActivity, actorVisibility);
@@ -1415,6 +1473,17 @@ export default async function TaskDetailPage({
   // Resolved reviewer for role-aware comment identity: the task's acting
   // manager, or the epic's acting manager when the task has none.
   const resolvedReviewerId = task.actingManager?.id ?? task.epic?.actingManagerId ?? null;
+  const effectiveReviewer = task.actingManager
+    ?? (isActionableEpicStatus(task.epic?.status) ? task.epic?.actingManager ?? null : null)
+    ?? task.reporter;
+  const canReturnReviewToDo = Boolean(
+    task.status === "Review"
+    && viewer.kind === "human"
+    && effectiveReviewer?.kind === "human"
+    && effectiveReviewer.id === viewer.id
+    && activeReviewLease
+    && (activeReviewLease.status === "awaiting_review" || activeReviewLease.status === "accepted"),
+  );
   // Body redactor: strips real agent slugs/usernames/names out of member-
   // visible comment bodies (agent comments name each other verbatim, which the
   // author-avatar mask alone does not cover). No-op for the owner.
@@ -1948,6 +2017,23 @@ export default async function TaskDetailPage({
               </div>
             );
           })() : null}
+
+          {canReturnReviewToDo && activeReviewLease ? (
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-amber-500/30 bg-amber-500/[0.07] px-4 py-3">
+              <div className="min-w-0">
+                <p className="text-body font-semibold text-text">Need another implementation pass?</p>
+                <p className="text-caption text-text-muted">
+                  Return this task through the protected review workflow instead of forcing its status.
+                </p>
+              </div>
+              <ReviewReturnControl
+                action={requestReviewChangesFromBrowser}
+                taskId={task.id}
+                reviewRunId={activeReviewLease.id}
+                accepted={activeReviewLease.status === "accepted"}
+              />
+            </div>
+          ) : null}
 
           {/* One edit form for the whole card: every control below carries
               form="taskMain" so the single "Save changes" button persists

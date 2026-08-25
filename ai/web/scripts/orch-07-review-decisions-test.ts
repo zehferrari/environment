@@ -210,6 +210,86 @@ async function main() {
     assert.equal(accept3Replay.status, "replayed", "duplicate accept is replayed (idempotent)");
     console.log("[orch07] accepted lease not reused PASS");
 
+    // --- Test 5b: the human reviewer may revoke stuck finalization --------
+    const cycle3 = await db.taskWorkflowCycle.findFirstOrThrow({
+      where: { taskId: task3.id, status: "open" },
+    });
+    await db.project.update({
+      where: { id: project.id },
+      data: { repositoryPath: "/srv/Code/test-repo" },
+    });
+    await db.taskRepositoryRun.create({
+      data: {
+        taskId: task3.id,
+        workflowCycleId: cycle3.id,
+        repositoryPath: "/srv/Code/test-repo",
+        branchName: "ph-181",
+        worktreePath: "/srv/Code/test-repo.worktrees/ph-181",
+        baseSha: "base-3",
+        candidateSha: "cand-3",
+        reviewedSha: "cand-3",
+        phase: "finalizing",
+        validationOutcome: "valid",
+        repoTouched: true,
+      },
+    });
+    const acceptedTask = await db.task.findUniqueOrThrow({ where: { id: task3.id } });
+    const acceptedLease = await db.reviewRun.findFirstOrThrow({
+      where: { taskId: task3.id, status: "accepted" },
+    });
+
+    const nonReviewerReopen = await submitWorkflowCommand({
+      taskId: task3.id,
+      intent: "request_review_changes",
+      actor: { id: owner.id, kind: "human", username: "owner" },
+      expectedWorkflowVersion: acceptedTask.workflowVersion,
+      workflowCycleId: cycle3.id,
+      idempotencyKey: "orch07:accepted-feedback-not-reviewer",
+      source: "browser",
+      payload: {
+        reviewRunId: acceptedLease.id,
+        candidateSha: acceptedLease.candidateSha,
+        reviewerComment: "Please return this to implementation.",
+      },
+    });
+    assert.equal(nonReviewerReopen.status, "forbidden", "a different human cannot revoke accepted review");
+
+    const acceptedFeedback = await submitWorkflowCommand({
+      taskId: task3.id,
+      intent: "request_review_changes",
+      actor: { id: reviewerUser.id, kind: "human", username: "reviewer", role: "reviewer" },
+      expectedWorkflowVersion: acceptedTask.workflowVersion,
+      workflowCycleId: cycle3.id,
+      idempotencyKey: "orch07:accepted-feedback",
+      source: "browser",
+      payload: {
+        reviewRunId: acceptedLease.id,
+        candidateSha: acceptedLease.candidateSha,
+        reviewerComment: "Finalization is stuck; return this task to To Do so the assignee can continue.",
+      },
+    });
+    assert.equal(acceptedFeedback.status, "accepted", "the human reviewer can revoke stuck accepted finalization");
+
+    const reopenedTask = await db.task.findUniqueOrThrow({ where: { id: task3.id } });
+    assert.equal(reopenedTask.status, "To Do", "accepted review returns to To Do");
+    assert.equal(reopenedTask.assigneeId, assigneeUser.id, "the assignee is preserved");
+    const reopenedLease = await db.reviewRun.findUniqueOrThrow({ where: { id: acceptedLease.id } });
+    assert.equal(reopenedLease.status, "changes_requested", "the accepted lease records the later reviewer decision");
+    const finalization = await db.taskProcedureRun.findFirstOrThrow({
+      where: { taskId: task3.id, type: "finalize_accepted_review" },
+    });
+    assert.equal(finalization.status, "superseded", "the old finalization procedure is retired atomically");
+
+    for (let i = 0; i < 15; i += 1) {
+      const result = await runProcedureRunner({ limit: 5 });
+      if (result.claimed === 0) break;
+    }
+    const reopenedRepository = await db.taskRepositoryRun.findUniqueOrThrow({ where: { taskId: task3.id } });
+    assert.equal(reopenedRepository.phase, "action_required", "the preserved worktree must revalidate on restart");
+    assert.equal(reopenedRepository.worktreePath, "/srv/Code/test-repo.worktrees/ph-181", "the worktree is preserved");
+    assert.equal(reopenedRepository.branchName, "ph-181", "the branch is preserved");
+    console.log("[orch07] human reviewer can safely return accepted finalization to To Do PASS");
+
     // --- Test 6: finalization spool preserves procedure correlation ----
     const { readFileSync } = await import("node:fs");
     const decisionSource = readFileSync(path.join(process.cwd(), "lib/tasks/orchestrator/handlers/review-decisions.ts"), "utf8");

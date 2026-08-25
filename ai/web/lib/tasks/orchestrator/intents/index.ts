@@ -172,6 +172,62 @@ const submitForReviewExecutor: IntentExecutor<"submit_for_review"> = async (cont
 };
 
 const requestReviewChangesExecutor: IntentExecutor<"request_review_changes"> = async (context) => {
+  if (
+    context.state.activeReviewRun?.status === "accepted" &&
+    context.state.activeWorkflowCycleId
+  ) {
+    const now = new Date();
+    const reason = "Superseded by a later human reviewer request for changes.";
+    const finalizationRuns = await context.tx.taskProcedureRun.findMany({
+      where: {
+        taskId: context.command.taskId,
+        workflowCycleId: context.state.activeWorkflowCycleId,
+        type: "finalize_accepted_review",
+        status: { in: ["queued", "running", "operational_error"] },
+      },
+      select: { id: true },
+    });
+    const finalizationRunIds = finalizationRuns.map((run) => run.id);
+    if (finalizationRunIds.length > 0) {
+      const output = JSON.stringify({
+        superseded: true,
+        reason: "review_changes_requested",
+      });
+      await context.tx.taskProcedureStep.updateMany({
+        where: {
+          procedureRunId: { in: finalizationRunIds },
+          status: { in: ["pending", "running", "failed", "waiting_callback"] },
+        },
+        data: {
+          status: "superseded",
+          leaseOwner: null,
+          leaseExpiresAt: null,
+          output,
+          lastError: reason,
+          completedAt: now,
+        },
+      });
+      await context.tx.taskProcedureRun.updateMany({
+        where: { id: { in: finalizationRunIds } },
+        data: {
+          status: "superseded",
+          currentStep: null,
+          output,
+          lastError: reason,
+          completedAt: now,
+        },
+      });
+    }
+    await context.tx.workflowOutbox.updateMany({
+      where: {
+        taskId: context.command.taskId,
+        workflowCycleId: context.state.activeWorkflowCycleId,
+        effectType: "review_finalize",
+        status: { in: ["queued", "dispatching"] },
+      },
+      data: { status: "completed", completedAt: now, lastError: reason },
+    });
+  }
   await createWorkflowComment(context, context.command.payload.reviewerComment);
   return context.helpers.executeDecisionWrites();
 };
