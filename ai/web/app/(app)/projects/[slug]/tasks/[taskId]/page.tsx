@@ -51,26 +51,15 @@ import { publishBoardTouch } from "@/lib/pm/board-events";
 import {
   canApproveActionPlanForActor,
   isActionableEpicStatus,
-  resolveReviewOwnerId,
 } from "@/lib/tasks/workflow-actors";
 import { syncEpicOnHumanTaskStatus } from "@/lib/epics/sync-on-human-task-move";
-import { startApprovedTodoTaskIfIdle } from "@/lib/tasks/auto-start";
 import { getTaskGitChanges, getTaskGitFileDiff } from "@/lib/tasks/git-changes";
-import { createChecklistAndDelegatableTasksFromPlan } from "@/lib/tasks/action-plan-store";
-import { moveTaskStatus as transitionTaskStatus } from "@/lib/tasks/move-status";
-import { reserveTaskRepositoryState } from "@/lib/tasks/repository-state";
 import {
-  REPOSITORY_FINALIZATION_FENCE_MESSAGE,
-  repositoryFinalizationFenceSelect,
-  repositoryFinalizationOwnsTask,
-} from "@/lib/tasks/repository-finalization";
+  isTaskWorkflowStatus,
+  submitBrowserStatusOverride,
+} from "@/lib/tasks/orchestrator/browser-status-adapter";
+import { submitBrowserPlanApproval } from "@/lib/tasks/orchestrator/browser-plan-adapter";
 import { effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
-import {
-  applyTaskTransition,
-  enqueueWorkflowEffects,
-  type WorkflowEffect,
-} from "@/lib/tasks/transition-kernel";
-import { drainWorkflowOutbox } from "@/lib/tasks/workflow-outbox-drain";
 import {
   getCachedLatestRepoVerifyActivity,
   getCachedPendingTaskProposals,
@@ -113,6 +102,7 @@ import PmOptions from "@/components/pm-options";
 import { findPmOptionResolution, parsePmOptions, isPmOptionsTargetedAtCurrentUser } from "@/lib/pm-options";
 import AvatarCombobox, { type AvatarComboboxOption } from "@/components/avatar-combobox";
 import TaskEpicPicker from "./task-epic-picker";
+import { TaskPrerequisiteEditor } from "./task-prerequisite-editor";
 import DeploymentTab, { DeploymentStatusSelect, canShowDeploymentAction, canShowDeploymentTab, type DeploymentPrRow } from "@/components/deployment-tab";
 import { checkDeploymentStatusWrite, isDeploymentStatus } from "@/lib/deploy/deployment-status";
 import {
@@ -223,6 +213,7 @@ async function updateTask(formData: FormData) {
       private: true,
       status: true,
       workflowVersion: true,
+      activeWorkflowCycleId: true,
       epicId: true,
       branchName: true,
       commitPrefix: true,
@@ -235,7 +226,6 @@ async function updateTask(formData: FormData) {
       blockedBy: { select: { workItemKey: true } },
       approvedOn: true,
       workItemKey: true,
-      repositoryRun: { select: repositoryFinalizationFenceSelect },
       project: {
         select: {
           slug: true,
@@ -289,16 +279,8 @@ async function updateTask(formData: FormData) {
 
   // Status (workflow-validated, recomputes rank like the board move)
   if (newStatus !== "" && newStatus !== task.status) {
-    if (repositoryFinalizationOwnsTask(task.repositoryRun)) {
-      throw new Error(REPOSITORY_FINALIZATION_FENCE_MESSAGE);
-    }
-    if (newStatus === "In Progress") {
-      if (newBranch !== task.branchName || newEpicId !== task.epicId) {
-        throw new Error("Save the task branch/Epic change before moving it to In Progress so PM can provision the correct worktree.");
-      }
-    }
-    // The editor is only an adapter. The shared move service owns every gate,
-    // transition ledger row, repository handoff, and durable side effect.
+    // The editor is only a transport. The authoritative human override command
+    // owns the workflow transition and the wait-for-human blocker atomically.
     statusChangedTo = newStatus;
   }
 
@@ -511,8 +493,20 @@ async function updateTask(formData: FormData) {
   }
 
   if (statusChangedTo) {
-    const moved = await transitionTaskStatus(taskId, statusChangedTo, slug);
+    if (!isTaskWorkflowStatus(task.status) || !isTaskWorkflowStatus(statusChangedTo)) {
+      throw new Error("Task has an invalid workflow status.");
+    }
+    const moved = await submitBrowserStatusOverride({
+      actor,
+      taskId,
+      currentStatus: task.status,
+      targetStatus: statusChangedTo,
+      expectedWorkflowVersion: task.workflowVersion,
+      activeWorkflowCycleId: task.activeWorkflowCycleId,
+      surface: "task-detail",
+    });
     if (!moved.ok) throw new Error(moved.message);
+    revalidateTaskReplyScope(taskId, "comment");
   } else {
     await syncEpicOnHumanTaskStatus(db, {
       epicId: newEpicId,
@@ -646,29 +640,26 @@ async function approveTaskActionPlan(formData: FormData) {
     where: { id: taskId },
     select: {
       id: true,
-      title: true,
       status: true,
       workflowVersion: true,
       projectId: true,
       approvedOn: true,
-      assigneeId: true,
-      actingManagerId: true,
-      reporterId: true,
       deletedAt: true,
-      actionPlan: { select: { id: true, version: true, status: true, steps: { select: { id: true }, take: 1 } } },
-      project: { select: { slug: true, onlyReportersCanApproveActionPlans: true } },
-      epic: { select: { status: true, actingManagerId: true } },
+      actionPlan: {
+        select: {
+          id: true,
+          version: true,
+          status: true,
+          steps: { select: { id: true }, take: 1 },
+        },
+      },
+      project: { select: { slug: true } },
     },
   });
   if (!task || task.deletedAt || task.project.slug !== slug) return;
   await requireProjectAccess(actor, { id: task.projectId });
-  if (!actor.isOwner) throw new Error("Not authorized");
+  if (!actor.isOwner || actor.kind !== "human") throw new Error("Not authorized");
 
-  if (actor.kind !== "human" && !canApproveActionPlanForActor(task, actor.id)) {
-    throw new Error(task.project.onlyReportersCanApproveActionPlans
-      ? "Only the task reporter can approve the Action Plan for this project."
-      : "Only the task reviewer or reporter can approve the Action Plan.");
-  }
   if (task.approvedOn) return;
   if (task.status !== "Backlog" && task.status !== "To Do") {
     throw new Error("Action Plans can only be approved before implementation starts.");
@@ -682,119 +673,20 @@ async function approveTaskActionPlan(formData: FormData) {
       : "Only the latest submitted Action Plan revision can be approved.");
   }
 
-  // Approval reserves the repository contract. Worktree provisioning belongs
-  // to the In Progress transition so queued work has no writable tree.
-  await reserveTaskRepositoryState(task.id);
-
-  const approvedAt = new Date();
-  const reviewerId = resolveReviewOwnerId(task);
-  const effects: WorkflowEffect[] = [
-    { type: "board_touch", key: "board-plan-approved", payload: {} },
-  ];
-  if (task.assigneeId) {
-    effects.push({
-      type: "task_notification",
-      key: `plan-approved:${task.assigneeId}`,
-      payload: {
-        taskId: task.id,
-        targetUserId: task.assigneeId,
-        actor,
-        reason: "todo_start_required",
-        body: [
-          `The Action Plan for "${task.title}" was approved.`,
-          "PM will auto-start it if the execution lane and repository gates are free. Check the current status: implement immediately if In Progress, otherwise call action=start when it remains To Do.",
-          "Keep visible replies concise; use a comment only if a blocker or material plan change appears.",
-        ].join("\n"),
-      },
-    });
-  } else if (reviewerId) {
-    effects.push({
-      type: "task_notification",
-      key: `assignment-required:${reviewerId}`,
-      payload: {
-        taskId: task.id,
-        targetUserId: reviewerId,
-        actor,
-        reason: "reviewer_assignment_requested",
-        body: [
-          `The Action Plan for "${task.title}" was approved, but the task has no assignee.`,
-          "Call action=assign_task so PM can select an eligible coding agent. Do not start implementation yourself.",
-        ].join("\n"),
-      },
-    });
-  }
-
-  await db.$transaction(async (tx) => {
-    if (task.status === "Backlog") {
-      await applyTaskTransition(tx, {
-        taskId: task.id,
-        projectId: task.projectId,
-        actorUserId: actor.id,
-        intent: "approve_plan",
-        from: "Backlog",
-        to: "To Do",
-        source: "action-plan-approval",
-        idempotencyKey: `human-plan-approval:v${task.workflowVersion + 1}`,
-        expectedVersion: task.workflowVersion,
-        taskData: { approvedOn: approvedAt, approvedById: actor.id },
-        evidence: { actionPlanId: task.actionPlan!.id },
-        effects,
-      });
-    } else {
-      await tx.task.update({
-        where: { id: task.id },
-        data: { approvedOn: approvedAt, approvedById: actor.id },
-      });
-      await enqueueWorkflowEffects(tx, {
-        taskId: task.id,
-        projectId: task.projectId,
-        aggregateVersion: task.workflowVersion,
-        effects,
-      });
-    }
-    await tx.actionPlan.update({
-      where: { id: task.actionPlan!.id },
-      data: { status: "approved", approvedOn: approvedAt, approvedById: actor.id },
-    });
-    await tx.actionPlanRevision.updateMany({
-      where: { actionPlanId: task.actionPlan!.id, version: task.actionPlan!.version, status: "draft" },
-      data: { status: "approved", approvedOn: approvedAt, approvedById: actor.id },
-    });
-    await createChecklistAndDelegatableTasksFromPlan({
-      taskId: task.id,
-      approvedAt,
-      approvedById: actor.id,
-      client: tx,
-    });
-    await tx.activityLog.create({
-      data: {
-        projectId: task.projectId,
-        taskId: task.id,
-        userId: actor.id,
-        kind: "task.action_plan.approve",
-        payload: JSON.stringify({
-          taskId: task.id,
-          previousStatus: task.status,
-          status: task.status === "Backlog" ? "To Do" : task.status,
-        }),
-      },
-    });
+  const approved = await submitBrowserPlanApproval({
+    actor,
+    taskId: task.id,
+    actionPlanId: task.actionPlan.id,
+    actionPlanVersion: task.actionPlan.version,
+    expectedWorkflowVersion: task.workflowVersion,
   });
-
-  if (task.assigneeId) {
-    await startApprovedTodoTaskIfIdle({
-      taskId: task.id,
-      actor,
-      via: "action-plan-approval",
-    });
-  }
-  await drainWorkflowOutbox({ limit: effects.length }).catch(() => {});
+  if (!approved.ok) throw new Error(approved.message);
 
   revalidateTaskShell(task.id);
   revalidatePath(`/projects/${slug}/tasks/${task.id}`);
   revalidatePath(`/projects/${slug}`);
+  publishBoardTouch(task.projectId);
 }
-
 // Human-only comment removal (HOMELAB-41). Agents post comments but
 // cannot delete them — moderation stays a human action. Scoped by the
 // URL slug + task so a comment id from another project can't be removed.
@@ -1467,6 +1359,9 @@ export default async function TaskDetailPage({
 
   // Comment moderation is exclusive to the Mission Control owner.
   const canDeleteComments = viewer.isOwner;
+  // Recompute blocked-by edit permission in the page component scope;
+  // the value in updateTask() lives in a different function.
+  const canEditBlockedBy = !task.blockedById || await canAccessTask(viewer, task.blockedById);
 
   const [principals, cachedProjectEpics, mentionableUsers, recentTaskChatMessages, recentReplyActivity, latestRepoVerify, allActivity, targetedCommentRows] = await Promise.all([
     viewer.isOwner ? listAssignablePrincipals(viewer) : Promise.resolve([]),
@@ -1511,21 +1406,6 @@ export default async function TaskDetailPage({
     ? blockerPermissionGrantForComment(allActivity, activeFormalBlocker.commentId)
     : null;
 
-  // Candidate blockers for the "Blocked by" picker: other live tasks in this
-  // project. Cycles are rejected server-side on save (lib/tasks/blocking.ts).
-  const blockerCandidates = await db.task.findMany({
-    where: accessibleTaskWhere(viewer, {
-      projectId: task.project.id,
-      id: { not: task.id },
-      OR: [
-        { deletedAt: null, archivedAt: null },
-        ...(task.blockedById ? [{ id: task.blockedById }] : []),
-      ],
-    }),
-    orderBy: [{ status: "asc" }, { workItemKey: "asc" }],
-    select: { id: true, workItemKey: true, title: true, status: true },
-  });
-  const currentBlockerVisible = !task.blockedById || blockerCandidates.some((candidate) => candidate.id === task.blockedById);
   const agentUsernames = mentionableUsers.filter((user) => user.kind === "agent").map((user) => user.username);
   const targetedCommentIds = new Set(targetedCommentRows.map((row) => row.originCommentId).filter(Boolean));
   const mentionables = mentionableUsers
@@ -2254,61 +2134,28 @@ export default async function TaskDetailPage({
                         task is a subset of "not executing". */}
                     <TaskExecutionStrip executionState={task.executionState} />
 
-                    {task.dependencies.length > 0 ? (
-                      <div className="space-y-1.5 rounded-card border border-line bg-panel-soft p-card">
-                        <div className="flex items-center gap-1.5 text-micro font-semibold uppercase tracking-wider text-text-muted">
-                          <LockIcon />
-                          Workflow prerequisites
-                        </div>
-                        <div className="space-y-1 text-caption">
-                          {task.dependencies.map(({ prerequisite }) => (
-                            <Link
-                              key={prerequisite.id}
-                              href={`/projects/${prerequisite.project.slug}/tasks/${prerequisite.id}`}
-                              className="flex items-center justify-between gap-2 rounded-md px-1.5 py-1 hover:bg-bg"
-                            >
-                              <span className="min-w-0 truncate">
-                                {prerequisite.workItemKey ?? prerequisite.title}
-                                {prerequisite.project.slug !== slug ? ` · ${prerequisite.project.name}` : ""}
-                              </span>
-                              <span className={prerequisite.status === "Done" ? "text-ok" : "text-warn"}>
-                                {prerequisite.status}
-                              </span>
-                            </Link>
-                          ))}
-                        </div>
-                        <p className="text-nano text-text-muted">
-                          Assignment and start unlock only after every prerequisite is Done.
-                        </p>
-                      </div>
-                    ) : null}
-
-                    {/* Legacy primary prerequisite editor (ENV-62). */}
-                    {currentBlockerVisible ? <div className="space-y-1 rounded-card border border-line bg-panel-soft p-card">
-                      <label className="block">
-                        <span className="mb-1 flex items-center gap-1.5 text-micro font-semibold uppercase tracking-wider text-text-muted">
-                          <LockIcon />
-                          Primary prerequisite
-                        </span>
-                        <select
-                          form="taskMain"
-                          name="blockedById"
-                          defaultValue={task.blockedById ?? ""}
-                          aria-label="Primary prerequisite"
-                          className="w-full rounded-lg border border-line bg-bg px-2 py-1.5 text-caption outline-none focus:border-accent"
-                        >
-                          <option value="">None</option>
-                          {blockerCandidates.map((candidate) => (
-                            <option key={candidate.id} value={candidate.id}>
-                              {(candidate.workItemKey ? `${candidate.workItemKey} — ` : "") + candidate.title} ({candidate.status})
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <p className="text-nano text-text-muted">
-                        Human-edited same-project prerequisite. Manager-created multi-project dependencies are listed above.
-                      </p>
-                    </div> : null}
+                    {/* Multi-prerequisite editor (ENV-159 step 8).
+                        Replaces the legacy single-value blockedById panel.
+                        Renders union of TaskDependency + legacy blockedById edges.
+                        canEdit respects canEditBlockedBy from the server auth check.
+                        readOnlyDependencies marks cross-project/manager-created edges
+                        the current user cannot remove. */}
+                    <TaskPrerequisiteEditor
+                      taskId={task.id}
+                      projectSlug={slug}
+                      canEdit={canEditBlockedBy}
+                      readOnlyDependencies={task.dependencies
+                        .filter(({ prerequisite }) => prerequisite.project.slug !== slug)
+                        .map(({ prerequisite }) => ({
+                          id: prerequisite.id,
+                          title: prerequisite.title,
+                          workItemKey: prerequisite.workItemKey ?? null,
+                          status: prerequisite.status,
+                          projectId: prerequisite.projectId ?? null,
+                          private: prerequisite.private ?? false,
+                          source: "dependency" as const,
+                        }))}
+                    />
 
                     <div data-task-actions className="grid grid-cols-2 gap-3">
                       <form

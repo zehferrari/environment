@@ -57,7 +57,7 @@ assert.equal(percentile([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 0.95), 10, "p95 nearest
 function run(createdMs: number, completedMs: number | null): PmChannelLatencySource {
   return {
     createdAt: new Date(createdMs),
-    acceptedAt: null,
+    acceptedAt: null, admittedAt: null,
     streamingAt: null,
     completedAt: completedMs == null ? null : new Date(completedMs),
     failedAt: null,

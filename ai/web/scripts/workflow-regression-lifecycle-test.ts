@@ -153,7 +153,7 @@ async function main(): Promise<void> {
         where: { id: runId },
         select: {
           createdAt: true,
-          acceptedAt: true,
+          acceptedAt: true, admittedAt: true,
           streamingAt: true,
           lastEventAt: true,
           leaseExpiresAt: true,
@@ -166,7 +166,7 @@ async function main(): Promise<void> {
         where: { id: runId },
         data: {
           createdAt: new Date(run.createdAt.getTime() - ms),
-          acceptedAt: back(run.acceptedAt),
+          acceptedAt: back(run.acceptedAt), admittedAt: back(run.admittedAt ?? run.acceptedAt),
           streamingAt: back(run.streamingAt),
           lastEventAt: back(run.lastEventAt),
           leaseExpiresAt: back(run.leaseExpiresAt),
@@ -216,7 +216,7 @@ async function main(): Promise<void> {
       const turn = await dispatchWorkflowTurn({ boot, world: scope, taskId: task.id });
 
       const started = await turn.post("start");
-      c.assertEqual(started.status, 200, "start is accepted");
+      c.assertEqual(started.status, 202, "start is accepted");
       c.assertEqual(started.body.actionEffect, "continue", "start continues the episode");
       c.assertEqual(started.body.turnComplete, false, "start does not complete the turn");
       c.assertEqual(started.body.taskState, "In Progress", "the task actually moved");
@@ -329,9 +329,18 @@ async function main(): Promise<void> {
       await acceptDispatch(turn.target);
 
       const accepted = await runFor(task.id, turn.messageId);
-      c.assertEqual(accepted.status, "accepted", "the run is holding a lease");
-      c.assert(accepted.leaseExpiresAt !== null, "and the lease has an expiry it can miss");
+      c.assertEqual(accepted.status, "delivered", "the run was delivered to the gateway");
       c.assertEqual((await jobFor(accepted.id)).status, "queued", "its queue job is still open");
+
+      // ENV-159: simulate admission — the gateway picks up the delivered run
+      // and sets a lease. The process dies after admission but before any
+      // streaming event, so the lease is the only evidence it was ever alive.
+      const now = new Date();
+      const leaseExpiresAt = new Date(now.getTime() + WORKFLOW_RUN_LEASE_TTL_MS);
+      await db.pmChannelRun.update({
+        where: { id: accepted.id },
+        data: { admittedAt: now, leaseExpiresAt, lastEventAt: now },
+      });
 
       // ... and then nothing at all, for longer than the lease allows.
       await ageRun(accepted.id, LONG_DEAD_MS);
@@ -447,8 +456,11 @@ async function main(): Promise<void> {
 
       // Crash exactly where the review said the window was: after the domain
       // mutation, before the run/outbox bookkeeping.
-      transactionalAction.__setWorkflowActionCrashHook((action) => {
-        if (action === "start") throw new Error("simulated process death");
+      const { __setWorkflowCommandCrashHook } = await import("@/lib/agents/workflow/transactional-action");
+      __setWorkflowCommandCrashHook((boundary, action) => {
+        if (boundary === "after_domain_writes_before_execution_bookkeeping" && action === "start") {
+          throw new Error("simulated process death");
+        }
       });
       let crashed = false;
       try {
@@ -459,7 +471,7 @@ async function main(): Promise<void> {
       } catch {
         crashed = true;
       } finally {
-        transactionalAction.__setWorkflowActionCrashHook(null);
+        __setWorkflowCommandCrashHook(null);
       }
       c.assert(crashed, "the crashing action did not report success");
 
@@ -476,7 +488,7 @@ async function main(): Promise<void> {
 
       // And the agent can safely retry with the same reusable token.
       const retried = await turnA.post("start");
-      c.assertEqual(retried.status, 200, "the same grant retries cleanly after the crash");
+      c.assertEqual(retried.status, 202, "the same grant retries cleanly after the crash");
       c.assertEqual(retried.body.taskState, "In Progress", "the retry moved the task");
       c.assertEqual(
         (await readRunState(db, { taskId: taskA.id })).open.filter((row) => row.action === "start").length,
@@ -493,7 +505,7 @@ async function main(): Promise<void> {
       });
       const turnB = await dispatchWorkflowTurn({ boot, world: scopeB, taskId: taskB.id });
       const startedB = await turnB.post("start");
-      c.assertEqual(startedB.status, 200, "start committed this time");
+      c.assertEqual(startedB.status, 202, "start committed this time");
 
       const runB = await runFor(taskB.id, turnB.messageId);
       c.assert(runB.status !== "completed", "WFI-004: start did not settle the run complete");
@@ -598,7 +610,7 @@ async function main(): Promise<void> {
 
       // Real progress banked before the overflow: it must survive recovery.
       const seeded = await turn.post("add_subtask", { subtaskText: "C4 step banked before overflow" });
-      c.assertEqual(seeded.status, 200, "the pre-overflow action was accepted");
+      c.assertEqual(seeded.status, 202, "the pre-overflow action was accepted");
 
       // --- failure 1: the session cannot compact --------------------------
       await runs.recordPmChannelRunEvent({
@@ -703,9 +715,9 @@ async function main(): Promise<void> {
       const older = await dispatchWorkflowTurn({ boot, world: scope, taskId: task.id });
       await acceptDispatch(older.target);
       const olderStarted = await older.post("add_subtask", { subtaskText: "C5 work in the older turn" });
-      c.assertEqual(olderStarted.status, 200, "the older turn armed a continuation of its own");
+      c.assertEqual(olderStarted.status, 202, "the older turn armed a continuation of its own");
       const olderRun = await runFor(task.id, older.messageId);
-      c.assertEqual(olderRun.status, "accepted", "the older run is holding the lane");
+      c.assertEqual(olderRun.status, "delivered", "the older run is holding the lane");
 
       const newer = await dispatchWorkflowTurn({ boot, world: scope, taskId: task.id });
       const newerRun = await runFor(task.id, newer.messageId);
@@ -787,7 +799,7 @@ async function main(): Promise<void> {
           taskId: legacyTask.id,
           status: "accepted",
           createdAt: stale,
-          acceptedAt: stale,
+          acceptedAt: stale, admittedAt: stale,
           lastEventAt: stale,
         },
       });
@@ -858,9 +870,9 @@ async function main(): Promise<void> {
 
         // Two cycles is the configured budget, so the second one rolls over.
         const first = await post("add_subtask", { subtaskText: `${step()} in episode ${episodeNo}` });
-        c.assertEqual(first.status, 200, `episode ${episodeNo}: the first cycle landed`);
+        c.assertEqual(first.status, 202, `episode ${episodeNo}: the first cycle landed`);
         const last = await post("add_subtask", { subtaskText: `${step()} in episode ${episodeNo}` });
-        c.assertEqual(last.status, 200, `episode ${episodeNo}: the budget-spending cycle landed`);
+        c.assertEqual(last.status, 202, `episode ${episodeNo}: the budget-spending cycle landed`);
         c.assertEqual(
           last.body.episodeBudgetExhausted,
           true,
@@ -881,7 +893,7 @@ async function main(): Promise<void> {
           openChecklist: ["verify the port end to end"],
           nextAction: `continue from episode ${episodeNo + 1}`,
         });
-        c.assertEqual(checkpoint.status, 200, `episode ${episodeNo}: the final checkpoint was accepted`);
+        c.assertEqual(checkpoint.status, 202, `episode ${episodeNo}: the final checkpoint was accepted`);
         c.assertEqual(
           checkpoint.body.successorScheduled,
           true,

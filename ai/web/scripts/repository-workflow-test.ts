@@ -136,6 +136,9 @@ const root = process.cwd();
 const handoff = readFileSync(join(root, "lib/tasks/review-handoff.ts"), "utf8");
 const verifier = readFileSync(join(root, "scripts/pm-verify-branch-pushed.ts"), "utf8");
 const finalization = readFileSync(join(root, "lib/tasks/review-automation.ts"), "utf8");
+const submissionHandler = readFileSync(join(root, "lib/tasks/orchestrator/handlers/submit-candidate-for-review.ts"), "utf8");
+const reviewHandler = readFileSync(join(root, "lib/tasks/orchestrator/handlers/review-decisions.ts"), "utf8");
+const completionHandler = readFileSync(join(root, "lib/tasks/orchestrator/intents/index.ts"), "utf8");
 const repositoryRunner = readFileSync(join(root, "lib/deploy/epic-merge.ts"), "utf8");
 const workflowRoute = readFileSync(join(root, "app/api/agent/tasks/[taskId]/workflow/route.ts"), "utf8");
 const epicWorkflowRoute = readFileSync(join(root, "app/api/agent/epics/[epicId]/workflow/route.ts"), "utf8");
@@ -144,10 +147,9 @@ const workflowOutbox = readFileSync(join(root, "lib/tasks/workflow-outbox-drain.
 const workflowNudge = readFileSync(join(root, "scripts/pm-workflow-nudge.ts"), "utf8");
 
 assert(
-  handoff.includes('status: "To Do"') &&
-    handoff.includes('validationOutcome: "invalid"') &&
-    handoff.includes("The reviewer was not notified"),
-  "invalid validation must return the task to To Do without a reviewer wake",
+  submissionHandler.includes('intent: "repository_validation_failed"') &&
+    submissionHandler.includes('validationOutcome: "invalid"'),
+  "invalid validation is handled by the authoritative procedure command",
 );
 assert(
   verifier.includes('"valid_with_warning"') &&
@@ -155,16 +157,15 @@ assert(
   "advisory warnings must still release the task to Review",
 );
 assert(
-  finalization.includes('phase: "finalizing"') &&
+  reviewHandler.includes('phase: "finalizing"') &&
     repositoryRunner.includes('kind: "finalize"') &&
-    repositoryRunner.includes('phase: "completed"'),
+    reviewHandler.includes('phase: "completed"'),
   "review acceptance must remain in Review until repository finalization completes",
 );
 assert(
-  finalization.includes('completionReviewStatus: "Preparing"') &&
-    finalization.includes('type: "epic_completion_review"') &&
-    finalization.includes("enqueueWorkflowEffects") &&
-    !finalization.includes("enqueueEpicDoneCleanup"),
+  completionHandler.includes('type: "epic_completion_review"') &&
+    completionHandler.includes("enqueueWorkflowEffects") &&
+    !completionHandler.includes("enqueueEpicDoneCleanup"),
   "the final child must atomically outbox whole-Epic review without completing or cleaning the Epic",
 );
 assert(
@@ -197,10 +198,8 @@ assert(
   "the reviewer turn must expose bounded per-child context grants instead of injecting every Task thread",
 );
 assert(
-  finalization.includes("task.project.repositoryPath && task.repositoryRun && !args.repositoryFinalized") &&
-    finalization.includes("? task.repositoryRun.candidateSha") &&
-    finalization.includes(": task.repositoryRun.baseSha") &&
-    finalization.includes('type: "review_finalize"') &&
+  reviewHandler.includes("task.repositoryRun?.reviewedSha ?? task.repositoryRun?.candidateSha") &&
+    reviewHandler.includes('type: "review_finalize"') &&
     repositoryRunner.includes("const repoTouched = task.repositoryRun?.repoTouched === true") &&
     repositoryRunner.includes("const finalizedWorktreePath = task.repositoryRun?.worktreePath"),
   "no-change repository tasks must still finalize and clean up their worktree before Done",
@@ -229,18 +228,15 @@ assert(
   "an already-published checkpoint baseline must satisfy prefix review and use the no-change cleanup path",
 );
 assert(
-  workflowRoute.includes("repositoryFinalizationOwnsTask(task.repositoryRun)") &&
-    finalization.includes('task.repositoryRun.phase === "operational_error"') &&
-    finalization.includes('kind: "task.review.finalization_retry"') &&
-    finalization.includes("review-finalize-retry:") &&
+  workflowRoute.includes("submitAuthoritativeAgentWorkflowAction") &&
+    reviewHandler.includes("finalize_accepted_review") &&
     workflowNudge.includes('args.kind?.startsWith("pm-review-")') &&
     workflowNudge.includes("repositoryFinalizationOwnsTask(task.repositoryRun)"),
   "review feedback must stay fenced after acceptance, and review_done must retry an operational finalization without revalidating the branch",
 );
 assert(
-  handoff.includes("resolveActiveMonitorAgent") &&
-    !handoff.toLowerCase().includes("karen"),
-  "validation authority must be resolved from the monitor role, not an agent name",
+  handoff.includes("Exact schema-v2") && !handoff.includes("runTaskReviewHandoff"),
+  "the callback boundary uses exact identity and has no named-agent fallback",
 );
 
 console.log("repository-workflow-test passed");

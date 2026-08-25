@@ -190,7 +190,13 @@ async function lifecycleTests() {
       data: { slug: "orch01", name: "ORCH-01" },
     });
     const task = await db.task.create({
-      data: { projectId: project.id, title: "Lifecycle task", status: "To Do" },
+      data: {
+        projectId: project.id,
+        title: "Lifecycle task",
+        status: "To Do",
+        workflowEngine: "orchestrator_v2",
+        workflowEnginePinnedAt: new Date(),
+      },
     });
 
     // --- Open first cycle --------------------------------------------------
@@ -204,6 +210,7 @@ async function lifecycleTests() {
     assert.equal(cycle1.sequence, 1, "first cycle should be sequence 1");
     assert.equal(cycle1.status, "open");
     assert.equal(cycle1.openedWorkflowVersion, 1);
+    assert.equal(cycle1.workflowEngine, "orchestrator_v2", "cycle copies the task engine at open time");
     const active1 = await getActiveTaskWorkflowCycle(task.id);
     assert.equal(active1?.id, cycle1.id, "active cycle pointer set");
 

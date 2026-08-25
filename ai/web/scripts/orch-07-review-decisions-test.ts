@@ -41,8 +41,7 @@ async function main() {
     const { registerSubmitCandidateForReviewHandlers } = await import("@/lib/tasks/orchestrator/handlers/submit-candidate-for-review");
     const { registerStartImplementationCycleHandlers } = await import("@/lib/tasks/orchestrator/handlers/start-implementation-cycle");
     const { registerPrepareTodoTaskHandlers } = await import("@/lib/tasks/orchestrator/handlers/prepare-todo-task");
-    const { openTaskWorkflowCycle, closeTaskWorkflowCycle } = await import("@/lib/tasks/workflow-cycle");
-    const { completeReviewedTaskAndAssignNext } = await import("@/lib/tasks/review-automation");
+    const { openTaskWorkflowCycle } = await import("@/lib/tasks/workflow-cycle");
 
     registerPrepareTodoTaskHandlers();
     registerStartImplementationCycleHandlers();
@@ -60,7 +59,7 @@ async function main() {
     // --- Test 1: monitor cannot call accept_review ----------------------
     const project = await db.project.create({ data: { slug: "orch07-1", name: "Test" } });
     const task = await db.task.create({
-      data: { projectId: project.id, title: "Review task", status: "Review", workflowVersion: 1, assigneeId: assigneeUser.id, actingManagerId: reviewerUser.id, reporterId: owner.id, approvedOn: new Date(), approvedById: owner.id },
+      data: { projectId: project.id, title: "Review task", status: "Review", workflowVersion: 1, workflowEngine: "orchestrator_v2", workflowEnginePinnedAt: new Date(), assigneeId: assigneeUser.id, actingManagerId: reviewerUser.id, reporterId: owner.id, approvedOn: new Date(), approvedById: owner.id },
     });
     // Open a cycle and create an awaiting_review lease.
     await db.$transaction(async (tx) => {
@@ -76,7 +75,8 @@ async function main() {
       actor: { id: monitorUser.id, kind: "agent", username: "monitor", role: "monitor" },
       expectedWorkflowVersion: 1,
       idempotencyKey: "orch07:monitor-accept",
-      source: "orch07-test",
+      source: "agent",
+      payload: { reviewRunId: "rr-monitor", candidateSha: "cand-1" },
     });
     assert.equal(monitorAccept.status, "forbidden", "monitor cannot accept_review");
     console.log("[orch07] monitor cannot accept_review PASS");
@@ -88,7 +88,8 @@ async function main() {
       actor: { id: reviewerUser.id, kind: "human", username: "reviewer", role: "reviewer" },
       expectedWorkflowVersion: 1,
       idempotencyKey: "orch07:reviewer-accept",
-      source: "orch07-test",
+      source: "agent",
+      payload: { reviewRunId: "rr-1", candidateSha: "cand-1" },
     });
     assert.equal(reviewerAccept.status, "accepted", `reviewer accept accepted; got ${JSON.stringify(reviewerAccept)}`);
     assert.ok(reviewerAccept.procedureId, "finalization procedure created");
@@ -131,7 +132,7 @@ async function main() {
 
     // --- Test 4: request_review_changes returns to To Do ---------------
     const task2 = await db.task.create({
-      data: { projectId: project.id, title: "Feedback task", status: "Review", workflowVersion: 1, assigneeId: assigneeUser.id, actingManagerId: reviewerUser.id, reporterId: owner.id, approvedOn: new Date(), approvedById: owner.id },
+      data: { projectId: project.id, title: "Feedback task", status: "Review", workflowVersion: 1, workflowEngine: "orchestrator_v2", workflowEnginePinnedAt: new Date(), assigneeId: assigneeUser.id, actingManagerId: reviewerUser.id, reporterId: owner.id, approvedOn: new Date(), approvedById: owner.id },
     });
     await db.$transaction(async (tx) => {
       await openTaskWorkflowCycle(tx, { taskId: task2.id, openedWorkflowVersion: 1 });
@@ -146,7 +147,8 @@ async function main() {
       actor: { id: reviewerUser.id, kind: "human", username: "reviewer", role: "reviewer" },
       expectedWorkflowVersion: 1,
       idempotencyKey: "orch07:feedback",
-      source: "orch07-test",
+      source: "agent",
+      payload: { reviewRunId: "rr-2", candidateSha: "cand-2", reviewerComment: "Needs changes" },
     });
     assert.equal(feedback.status, "accepted", "request_review_changes accepted");
     // Run the procedure.
@@ -175,7 +177,7 @@ async function main() {
     // Try to accept the same lease again — should be rejected.
     // First, re-create a Review task with an awaiting_review lease.
     const task3 = await db.task.create({
-      data: { projectId: project.id, title: "Reuse task", status: "Review", workflowVersion: 1, assigneeId: assigneeUser.id, actingManagerId: reviewerUser.id, reporterId: owner.id, approvedOn: new Date(), approvedById: owner.id },
+      data: { projectId: project.id, title: "Reuse task", status: "Review", workflowVersion: 1, workflowEngine: "orchestrator_v2", workflowEnginePinnedAt: new Date(), assigneeId: assigneeUser.id, actingManagerId: reviewerUser.id, reporterId: owner.id, approvedOn: new Date(), approvedById: owner.id },
     });
     await db.$transaction(async (tx) => {
       await openTaskWorkflowCycle(tx, { taskId: task3.id, openedWorkflowVersion: 1 });
@@ -191,7 +193,8 @@ async function main() {
       actor: { id: reviewerUser.id, kind: "human", username: "reviewer", role: "reviewer" },
       expectedWorkflowVersion: 1,
       idempotencyKey: "orch07:accept3",
-      source: "orch07-test",
+      source: "agent",
+      payload: { reviewRunId: "rr-3", candidateSha: "cand-3" },
     });
     assert.equal(accept3.status, "accepted", "first accept accepted");
     // Try to accept AGAIN with the same idempotency key — should be replayed.
@@ -201,85 +204,13 @@ async function main() {
       actor: { id: reviewerUser.id, kind: "human", username: "reviewer", role: "reviewer" },
       expectedWorkflowVersion: 1,
       idempotencyKey: "orch07:accept3",
-      source: "orch07-test",
+      source: "agent",
+      payload: { reviewRunId: "rr-3", candidateSha: "cand-3" },
     });
     assert.equal(accept3Replay.status, "replayed", "duplicate accept is replayed (idempotent)");
     console.log("[orch07] accepted lease not reused PASS");
 
-    // --- Test 6: same-SHA finalization uses the active cycle lease ------
-    const repositoryProject = await db.project.create({
-      data: { slug: "orch07-cycle-fence", name: "Cycle-fenced finalization", repositoryPath: "/srv/Code/orch07-cycle-fence" },
-    });
-    const task4 = await db.task.create({
-      data: {
-        projectId: repositoryProject.id,
-        title: "Same SHA finalization",
-        status: "Review",
-        workflowVersion: 1,
-        assigneeId: assigneeUser.id,
-        actingManagerId: reviewerUser.id,
-        reporterId: owner.id,
-        approvedOn: new Date(),
-        approvedById: owner.id,
-      },
-    });
-    await db.$transaction((tx) => openTaskWorkflowCycle(tx, { taskId: task4.id, openedWorkflowVersion: 1 }));
-    const historicalCycle = await db.taskWorkflowCycle.findFirstOrThrow({ where: { taskId: task4.id, status: "open" } });
-    await db.$transaction((tx) => closeTaskWorkflowCycle(tx, { taskId: task4.id, outcome: "changes_requested", candidateSha: "shared-final-sha" }));
-    await db.$transaction((tx) => openTaskWorkflowCycle(tx, { taskId: task4.id, openedWorkflowVersion: 1 }));
-    const activeCycle = await db.taskWorkflowCycle.findFirstOrThrow({ where: { taskId: task4.id, status: "open" } });
-    await db.reviewRun.create({
-      data: {
-        taskId: task4.id,
-        workflowCycleId: activeCycle.id,
-        candidateSha: "shared-final-sha",
-        repoTouched: true,
-        validationOutcome: "valid",
-        status: "accepted",
-        reviewerId: reviewerUser.id,
-        reviewedAt: new Date(),
-      },
-    });
-    // Insert the historical lease later so a task+SHA "latest row" lookup
-    // would select the wrong reviewer. Cycle scoping must still choose active.
-    await db.reviewRun.create({
-      data: {
-        taskId: task4.id,
-        workflowCycleId: historicalCycle.id,
-        candidateSha: "shared-final-sha",
-        repoTouched: true,
-        validationOutcome: "valid",
-        status: "accepted",
-        reviewerId: owner.id,
-        reviewedAt: new Date(),
-      },
-    });
-    await db.taskRepositoryRun.create({
-      data: {
-        taskId: task4.id,
-        workflowCycleId: activeCycle.id,
-        phase: "completed",
-        candidateSha: "shared-final-sha",
-        reviewedSha: "shared-final-sha",
-        repoTouched: true,
-        validationOutcome: "valid",
-      },
-    });
-    const cycleFencedCompletion = await completeReviewedTaskAndAssignNext({
-      taskId: task4.id,
-      actor: { id: monitorUser.id, username: monitorUser.username, kind: "agent" },
-      via: "orch07-cycle-fence",
-      repositoryFinalized: true,
-    });
-    assert.equal(cycleFencedCompletion.completed, true, "active cycle accepted lease authorizes finalization");
-    const cycleFencedDone = await db.workflowTransition.findFirstOrThrow({
-      where: { taskId: task4.id, toStatus: "Done" },
-      select: { actorUserId: true },
-    });
-    assert.equal(cycleFencedDone.actorUserId, reviewerUser.id, "Done is attributed to the active cycle reviewer");
-    console.log("[orch07] same-SHA finalization is active-cycle fenced PASS");
-
-    // --- Test 7: finalization spool preserves procedure correlation ----
+    // --- Test 6: finalization spool preserves procedure correlation ----
     const { readFileSync } = await import("node:fs");
     const decisionSource = readFileSync(path.join(process.cwd(), "lib/tasks/orchestrator/handlers/review-decisions.ts"), "utf8");
     const drainSource = readFileSync(path.join(process.cwd(), "lib/tasks/workflow-outbox-drain.ts"), "utf8");
@@ -287,9 +218,9 @@ async function main() {
     const automationSource = readFileSync(path.join(process.cwd(), "lib/tasks/review-automation.ts"), "utf8");
     assert.ok(decisionSource.includes("procedureStepId: ctx.stepId"), "finalization effect carries exact step id");
     assert.ok(drainSource.includes("procedureStepId:"), "outbox drain preserves finalization step id");
-    assert.ok(mergeSource.includes("pm.repo.finalize.rejected_stale_cycle"), "finalizer rejects stale-cycle jobs");
-    assert.ok(mergeSource.includes("applyProcedureCallback: false"), "finalization failure does not invoke validation callback fallback");
-    assert.ok(automationSource.includes("id: callback.procedureStepId"), "finalization callback selects exact step");
+    assert.ok(mergeSource.includes("Legacy finalization jobs are retired"), "finalizer rejects non-V2 jobs");
+    assert.ok(!mergeSource.includes("applyProcedureCallback: false"), "finalization has no validation fallback");
+    assert.ok(automationSource.includes("stepId: callback.procedureStepId"), "finalization callback selects the exact step");
     console.log("[orch07] finalization callback correlation contract PASS");
 
     console.log("[orch07] PASS — all review feedback + finalization assertions held");

@@ -1,12 +1,9 @@
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
-import { publishBoardTouch } from "@/lib/pm/board-events";
 import { epicAllowsAgentAction } from "@/lib/tasks/workflow-actors";
-import { promoteEpicOnTaskInProgress } from "@/lib/epics/promote-on-start";
 import { effectiveTaskBranchName } from "@/lib/work-items/branches";
-import { ensureTaskCodeWorktree, TaskWorktreeError } from "@/lib/tasks/worktree-claim";
-import { applyTaskTransition, TaskTransitionRejected } from "@/lib/tasks/transition-kernel";
-import { drainWorkflowOutbox } from "@/lib/tasks/workflow-outbox-drain";
+import { submitWorkflowCommand } from "@/lib/tasks/orchestrator";
+import type { OrchestratorResult } from "@/lib/tasks/orchestrator/types";
 import { unresolvedTaskPrerequisites } from "@/lib/tasks/blocking";
 
 type Actor = {
@@ -109,18 +106,48 @@ export type TaskAutoStartResult =
         | "not_agent_assignee"
         | "blocked"
         | "epic_not_ready"
-        | "worktree_unavailable"
         | "busy"
-        | "changed";
+        | "changed"
+        | "command_rejected";
       activeTask?: { id: string; title: string } | null;
       task?: { id: string; title: string; projectSlug: string; assigneeId: string | null } | null;
-      worktreeError?: string;
+      commandResult?: OrchestratorResult;
     };
+
+export type PolicyTrigger = {
+  kind: "command_receipt" | "workflow_transition" | "monitor_incident" | "policy_event";
+  id: string;
+};
+
+function policyIdentityPart(value: string, maxLength = 160) {
+  return value.trim().replace(/[^a-zA-Z0-9._:-]+/g, "-").slice(0, maxLength) || "unspecified";
+}
+
+function mapRejectedStart(
+  result: Exclude<OrchestratorResult, { status: "accepted" | "replayed" }>,
+  task: { id: string; title: string; projectSlug: string; assigneeId: string | null },
+): TaskAutoStartResult {
+  if (result.status === "stale") {
+    return { started: false, reason: "changed", task, commandResult: result };
+  }
+  if (result.domainCode === "wip_conflict" || result.domainCode === "branch_collision") {
+    return { started: false, reason: "busy", task, commandResult: result };
+  }
+  if (result.domainCode === "prerequisites_unmet") {
+    return { started: false, reason: "blocked", task, commandResult: result };
+  }
+  if (result.domainCode === "epic_not_actionable") {
+    return { started: false, reason: "epic_not_ready", task, commandResult: result };
+  }
+  return { started: false, reason: "command_rejected", task, commandResult: result };
+}
 
 export async function startApprovedTodoTaskIfIdle(args: {
   taskId: string;
   actor: Actor;
   via: string;
+  trigger?: PolicyTrigger;
+  selectionReason?: string;
 }): Promise<TaskAutoStartResult> {
   const task = await db.task.findUnique({
     where: { id: args.taskId },
@@ -192,81 +219,67 @@ export async function startApprovedTodoTaskIfIdle(args: {
     return { started: false, reason: "epic_not_ready", task: taskRef };
   }
 
-  try {
-    await ensureTaskCodeWorktree(task.id, task.assigneeId);
-  } catch (err) {
+  // Selection is advisory only. The canonical start command repeats WIP,
+  // branch, prerequisite, Epic, plan, coding-capability, blocker, version and
+  // active-cycle guards at the authoritative transaction boundary.
+  const conflict = await findInProgressStartConflict(db, {
+    taskId: task.id,
+    projectId: task.projectId,
+    assigneeId: task.assigneeId,
+    candidateBranch: effectiveTaskBranchName(task),
+  });
+  if (conflict) {
     return {
       started: false,
-      reason: "worktree_unavailable",
+      reason: "busy",
       task: taskRef,
-      worktreeError: err instanceof TaskWorktreeError
-        ? err.message
-        : "Task worktree could not be created or validated.",
+      activeTask: { id: conflict.activeTask.id, title: conflict.activeTask.title },
     };
   }
 
-  let result: TaskAutoStartResult;
-  try {
-    result = await db.$transaction(async (tx) => {
-    // Shared In Progress entry gate (P4): per-project WIP limit + effective-
-    // branch clash. Same helper backs the workflow endpoint's `start` action.
-    const conflict = await findInProgressStartConflict(tx, {
-      taskId: task.id,
-      projectId: task.projectId,
-      assigneeId: task.assigneeId!,
-      candidateBranch: effectiveTaskBranchName(task),
-    });
-    if (conflict) {
-      return {
-        started: false as const,
-        reason: "busy" as const,
-        task: taskRef,
-        activeTask: { id: conflict.activeTask.id, title: conflict.activeTask.title },
-      };
-    }
-
-    await applyTaskTransition(tx, {
-      taskId: task.id,
-      projectId: task.projectId,
-      actorUserId: args.actor.id,
-      intent: "auto_start",
-      from: "To Do",
-      to: "In Progress",
-      source: args.via,
-      idempotencyKey: `auto-start:${args.via}:v${task.workflowVersion + 1}`,
-      evidence: { autoStart: true, assigneeId: task.assigneeId },
-      effects: [{ type: "board_touch", key: "board-auto-start", payload: {} }],
-    });
-
-    await promoteEpicOnTaskInProgress(tx, {
-      epicId: task.epicId,
-      projectId: task.projectId,
-      actorId: args.actor.id,
+  const trigger = args.trigger ?? { kind: "policy_event" as const, id: args.via };
+  const selectionReason = args.selectionReason ?? "approved_todo_assignee_lane_idle";
+  const result = await submitWorkflowCommand({
+    taskId: task.id,
+    intent: "start_implementation",
+    actor: args.actor,
+    expectedWorkflowVersion: task.workflowVersion,
+    workflowCycleId: null,
+    idempotencyKey: [
+      "pm-policy:start",
+      policyIdentityPart(trigger.kind),
+      policyIdentityPart(trigger.id),
+      policyIdentityPart(selectionReason, 120),
+      task.id,
+      task.assigneeId,
+      `v${task.workflowVersion}`,
+    ].join(":"),
+    source: "pm-service",
+    payload: { worktreePath: null, branchName: effectiveTaskBranchName(task) },
+    evidence: {
+      policy: "auto_start",
+      trigger,
+      selectionReason,
+      assigneeLane: `${task.projectId}:${task.assigneeId}`,
+      selectedTaskId: task.id,
+      selectedAssigneeId: task.assigneeId,
+      expectedWorkflowVersion: task.workflowVersion,
       via: args.via,
-    });
-
-    return {
-      started: true as const,
-      task: {
-        id: task.id,
-        title: task.title,
-        projectId: task.projectId,
-        projectSlug: task.project.slug,
-        assigneeId: task.assigneeId!,
-        assigneeUsername: task.assignee!.username,
-      },
-    };
-    });
-  } catch (error) {
-    if (error instanceof TaskTransitionRejected) {
-      return { started: false, reason: "changed", task: taskRef };
-    }
-    throw error;
+    },
+  });
+  if (result.status !== "accepted" && result.status !== "replayed") {
+    return mapRejectedStart(result, taskRef);
   }
 
-  if (result.started) {
-    await drainWorkflowOutbox({ limit: 1 }).catch(() => {});
-    publishBoardTouch(result.task.projectId);
-  }
-  return result;
+  return {
+    started: true,
+    task: {
+      id: task.id,
+      title: task.title,
+      projectId: task.projectId,
+      projectSlug: task.project.slug,
+      assigneeId: task.assigneeId,
+      assigneeUsername: task.assignee.username,
+    },
+  };
 }

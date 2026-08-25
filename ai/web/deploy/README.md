@@ -109,12 +109,35 @@ interpreting `remove` as a request to serve that worktree while the contract
 is being repaired.
 
 **Database model per project.** PM (`environment`) and WDT run
-`DB_ENGINE=sqlite`: every branch deployment gets its own database
-(`wt-<branch>.db`) forked once from the canonical seed and migrated
-before the build, so schema *and data* can differ between branches.
+`DB_ENGINE=sqlite`: every named worktree deployment gets its own database
+(`wt-<worktree>.db`) forked once from the canonical seed and migrated
+before the build, so schema *and data* can differ between worktrees. PM keys
+the database by the stable worktree name rather than its current Git branch;
+therefore the explicit `pm-switch --database=main main` always selects
+`wt-main.db`, even while that worktree temporarily hosts an Epic integration
+branch.
 Patricia runs `DB_ENGINE=none`: the switcher never touches a database,
 so all Patricia branch deployments share whatever database the PHP app
 is configured against.
+
+For PM CLI switches, database intent is explicit whenever the stable worktree
+name and checked-out branch disagree. In that state a bare command refuses to
+guess. Use `pm-switch --database=main main` to serve `wt-main.db`, or
+`--database=worktree` for the selected worktree's ordinary fork. Here “main”
+means the operational `wt-main.db`; the neutral seed at `pm.db` is never a live
+switch target. Browser requests always send `databaseSelection: worktree`,
+matching the UI's per-worktree data model.
+
+Before stopping live services, the switcher resolves the database to a real
+path, rejects paths outside the configured DB root, verifies the migration
+history exists, and runs SQLite `quick_check`. After both services and the
+hashed assets pass verification, it writes a durable receipt under
+`/srv/Data/pm/deployment-receipts/` and refreshes
+`deployment-receipts/last-deployment.receipt`. The installer provisions this
+directory for both the monitor and code-agent CLI deployers; a missing or
+unwritable receipt directory fails preflight before services stop. The receipt
+records worktree, branch, commit, dirty
+path count, exact database selection/path, and last applied migration.
 
 ### Live rebuild troubleshooting
 
@@ -469,9 +492,9 @@ For schema changes after Stage 1: generate the migration locally with
 `pnpm prisma migrate dev --name <change>`, commit the new directory under
 `prisma/migrations/`, and release with `update-managed-host.sh` or
 `pm-switch <worktree>`. The switcher applies `prisma migrate deploy` to the
-branch's live `wt-<branch>.db` before it builds or restarts either service.
+worktree's live `wt-<worktree>.db` before it builds or restarts either service.
 Running migration only against canonical `pm.db` does not update an existing
-live branch database.
+live worktree database.
 
 `pnpm prisma db push` is dev-only (rapid prototyping without a migration
 history) and **must not** be used against the production DB.

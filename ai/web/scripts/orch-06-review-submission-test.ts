@@ -60,6 +60,8 @@ async function main() {
         title: "Non-code review task",
         status: "In Progress",
         workflowVersion: 1,
+        workflowEngine: "orchestrator_v2",
+        workflowEnginePinnedAt: new Date(),
         assigneeId: assigneeUser.id,
         actingManagerId: reviewerUser.id,
         reporterId: owner.id,
@@ -74,12 +76,12 @@ async function main() {
     const submitResult = await submitWorkflowCommand({
       taskId: task.id,
       intent: "submit_for_review",
-      actor: { id: assigneeUser.id, kind: "agent", username: "impl", role: "assignee" },
+      actor: { id: assigneeUser.id, kind: "agent", username: "impl", role: "assignee", codingCapability: true },
       expectedWorkflowVersion: 1,
       workflowCycleId: cycle1.id,
       idempotencyKey: "orch06:submit:1",
-      source: "orch06-test",
-      payload: { candidateSha: "shared-sha" },
+      source: "agent",
+      payload: { candidateSha: "shared-sha", baseSha: null, repoTouched: false },
     });
     assert.equal(submitResult.status, "accepted", `submit accepted; got ${JSON.stringify(submitResult)}`);
     assert.ok(submitResult.procedureId, "procedure created");
@@ -124,12 +126,12 @@ async function main() {
     const submit2 = await submitWorkflowCommand({
       taskId: task.id,
       intent: "submit_for_review",
-      actor: { id: assigneeUser.id, kind: "agent", username: "impl", role: "assignee" },
+      actor: { id: assigneeUser.id, kind: "agent", username: "impl", role: "assignee", codingCapability: true },
       expectedWorkflowVersion: taskBeforeSubmit2.workflowVersion,
       workflowCycleId: cycle2.id,
       idempotencyKey: "orch06:submit:2",
-      source: "orch06-test",
-      payload: { candidateSha: "shared-sha" },
+      source: "agent",
+      payload: { candidateSha: "shared-sha", baseSha: null, repoTouched: false },
     });
     assert.equal(submit2.status, "accepted", "second submit accepted (same candidate, new cycle)");
     // Run the procedure.
@@ -169,7 +171,7 @@ async function main() {
     // Use a project with a repositoryPath so the task is treated as code-touching.
     const project4 = await db.project.create({ data: { slug: "orch06-4", name: "Code project", repositoryPath: "/srv/Code/test-repo-4" } });
     const task4 = await db.task.create({
-      data: { projectId: project4.id, title: "Validation fail task", status: "In Progress", workflowVersion: 1, workItemKey: "TEST-4", assigneeId: assigneeUser.id, actingManagerId: reviewerUser.id, reporterId: owner.id, approvedOn: new Date(), approvedById: owner.id },
+      data: { projectId: project4.id, title: "Validation fail task", status: "In Progress", workflowVersion: 1, workflowEngine: "orchestrator_v2", workflowEnginePinnedAt: new Date(), workItemKey: "TEST-4", assigneeId: assigneeUser.id, actingManagerId: reviewerUser.id, reporterId: owner.id, approvedOn: new Date(), approvedById: owner.id },
     });
     await db.$transaction((tx) => openTaskWorkflowCycle(tx, { taskId: task4.id, openedWorkflowVersion: 1 }));
     const cycle4 = await db.taskWorkflowCycle.findFirstOrThrow({ where: { taskId: task4.id, status: "open" } });
@@ -182,12 +184,12 @@ async function main() {
     const submit4 = await submitWorkflowCommand({
       taskId: task4.id,
       intent: "submit_for_review",
-      actor: { id: assigneeUser.id, kind: "agent", username: "impl", role: "assignee" },
+      actor: { id: assigneeUser.id, kind: "agent", username: "impl", role: "assignee", codingCapability: true },
       expectedWorkflowVersion: 1,
       workflowCycleId: cycle4.id,
       idempotencyKey: "orch06:submit:4",
-      source: "orch06-test",
-      payload: { candidateSha: "cand-4" },
+      source: "agent",
+      payload: { candidateSha: "cand-4", baseSha: null, repoTouched: false },
     });
     assert.equal(submit4.status, "accepted");
     // Run until the run_validation step is waiting for callback.
@@ -249,8 +251,8 @@ async function main() {
     assert.ok(handlerSource.includes("workflowCycleId: ctx.workflowCycleId"), "validation job carries workflow cycle id");
     assert.ok(verifierSource.includes("pm.repo.verify.rejected_stale_cycle"), "verifier durably rejects stale-cycle jobs");
     assert.ok(verifierSource.includes("procedureCallback: procedureCallbackForJob(job)"), "verifier forwards exact callback correlation");
-    assert.ok(handoffSource.includes("id: callback.procedureStepId"), "callback adapter selects the exact step");
-    assert.ok(handoffSource.includes("jobId = callback?.jobId"), "callback adapter uses verifier-supplied job identity");
+    assert.ok(handoffSource.includes("stepId: args.callback.procedureStepId"), "callback adapter selects the exact step");
+    assert.ok(handoffSource.includes("jobId: args.callback.jobId"), "callback adapter uses verifier-supplied job identity");
     console.log("[orch06] verifier callback correlation contract PASS");
 
     console.log("[orch06] PASS — all submit_candidate_for_review + V23-36 assertions held");

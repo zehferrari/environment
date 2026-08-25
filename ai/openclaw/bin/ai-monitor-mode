@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""Persist ai-monitor's active or observe-only operating mode."""
+
+import argparse
+import json
+import os
+import socket
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+DEFAULT_PATH = "/var/lib/ai-monitor/mode.json"
+
+
+def read_mode(path: Path):
+    try:
+        payload = json.loads(path.read_text())
+        if payload.get("mode") in ("active", "observe-only"):
+            return payload
+    except (OSError, ValueError, TypeError):
+        pass
+    return {"mode": "active", "source": "default"}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("mode", choices=("active", "observe-only", "status"))
+    parser.add_argument("--reason", default="operator request")
+    parser.add_argument("--path", default=os.environ.get("AI_MONITOR_MODE_PATH", DEFAULT_PATH))
+    args = parser.parse_args()
+    path = Path(args.path)
+
+    if args.mode == "status":
+        print(json.dumps(read_mode(path), sort_keys=True))
+        return
+    if os.geteuid() != 0:
+        parser.error("changing ai-monitor mode requires root")
+
+    payload = {
+        "mode": args.mode,
+        "changed_at": datetime.now(timezone.utc).isoformat(),
+        "changed_by_uid": os.getuid(),
+        "host": socket.gethostname(),
+        "reason": args.reason[:300],
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=".mode.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            json.dump(payload, handle, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp_name, 0o644)
+        os.replace(tmp_name, path)
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+    print(json.dumps(payload, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()

@@ -21,10 +21,12 @@
 //   - publish a PM notification.
 // Handlers may NOT directly change task status.
 
+import { createHash } from "crypto";
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
-import { getProcedureDefinition } from "@/lib/tasks/orchestrator/procedures";
+import { getProcedureDefinition, getLatestProcedureDefinition } from "@/lib/tasks/orchestrator/procedures";
 import type { TaskProcedureType } from "@/lib/tasks/orchestrator/types";
+import { writeDeduplicatedActivity, computeActivityDedupeKey } from "@/lib/tasks/orchestrator/activity-dedup";
 
 const LEASE_MS = 2 * 60_000;
 const DEFAULT_BATCH = 20;
@@ -52,18 +54,41 @@ export type StepHandler = (ctx: StepHandlerContext) => Promise<StepHandlerResult
 // time by the procedure implementations (ORCH-04..07). A handler that is not
 // registered causes the step to fail terminally — procedure definitions are
 // static code, and a missing handler is a bug, not a transient failure.
+//
+// PHASEE-06: The registry is now versioned — keyed by
+// `${procedureType}:${version}:${stepName}`. getStepHandler resolves by exact
+// version match ONLY. A run stamped definitionVersion=N with no registered vN
+// handler must fail to operational_error with alertReporter, never execute a
+// different version's handler. Silent cross-version fallback is prohibited —
+// it would defeat the purpose of versioning. If a compatibility window is
+// genuinely wanted later, it needs an explicit per-definition `compatibleWith`
+// declaration, not an implicit latest-wins lookup.
 const handlerRegistry = new Map<string, StepHandler>();
 
-export function registerStepHandler(procedureType: TaskProcedureType, stepName: string, handler: StepHandler): void {
-  handlerRegistry.set(`${procedureType}:${stepName}`, handler);
+export function registerStepHandler(
+  procedureType: TaskProcedureType,
+  version: number,
+  stepName: string,
+  handler: StepHandler,
+): void {
+  handlerRegistry.set(`${procedureType}:${version}:${stepName}`, handler);
 }
 
 export function clearStepHandlerRegistry(): void {
   handlerRegistry.clear();
 }
 
-export function getStepHandler(procedureType: TaskProcedureType, stepName: string): StepHandler | undefined {
-  return handlerRegistry.get(`${procedureType}:${stepName}`);
+/**
+ * Resolve a step handler by exact (procedureType, version, stepName) match.
+ * No cross-version fallback — a missing exact match returns undefined and
+ * the runner must fail the step to operational_error with alertReporter.
+ */
+export function getStepHandler(
+  procedureType: TaskProcedureType,
+  version: number,
+  stepName: string,
+): StepHandler | undefined {
+  return handlerRegistry.get(`${procedureType}:${version}:${stepName}`);
 }
 
 // --- Callback matching (§6.4) --------------------------------------------
@@ -79,10 +104,65 @@ export type ProcedureCallback = {
   jobId: string;
   candidateSha?: string | null;
   baseSha?: string | null;
+  // PHASEE-07: V2 identity fields for exact callback correlation.
+  schemaVersion?: number;
+  commandReceiptId?: string | null;
+  repositoryRunId?: string | null;
+  repositoryRunVersion?: number | null;
   // Additional callback data (e.g. validationOutcome, error) stored in the
   // step output for the next handler to consume.
   data?: Record<string, unknown>;
 };
+
+// PHASEE-07: Compute a stable dedupe fingerprint for a callback mismatch or
+// replay activity. Repeated identical mismatches increment a counter or are
+// suppressed — never spam.
+function callbackMismatchFingerprint(callback: ProcedureCallback, reason: string): string {
+  const parts = [
+    callback.procedureRunId,
+    callback.stepId,
+    callback.taskId,
+    callback.workflowCycleId ?? "null",
+    callback.jobId,
+    callback.candidateSha ?? "null",
+    callback.baseSha ?? "null",
+    reason,
+  ];
+  return createHash("sha256").update(parts.join("\0")).digest("hex").slice(0, 32);
+}
+
+// PHASEE-07: Record a callback mismatch or replay as a deduplicated ActivityLog
+// row. Repeated identical mismatches/replays suppress — never create user
+// comments.
+async function recordCallbackActivity(args: {
+  projectId: string;
+  taskId: string;
+  kind: string;
+  fingerprint: string;
+  payload: Record<string, unknown>;
+}): Promise<void> {
+  // Check for an existing activity with the same fingerprint in the last 24h.
+  // If found, suppress (deduplicate). Otherwise create a new row.
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const existing = await db.activityLog.findFirst({
+    where: {
+      taskId: args.taskId,
+      kind: args.kind,
+      createdAt: { gte: since },
+      payload: { contains: args.fingerprint },
+    },
+    select: { id: true },
+  });
+  if (existing) return; // suppress — deduplicated
+  await db.activityLog.create({
+    data: {
+      projectId: args.projectId,
+      taskId: args.taskId,
+      kind: args.kind,
+      payload: JSON.stringify({ ...args.payload, fingerprint: args.fingerprint }),
+    },
+  });
+}
 
 export async function applyProcedureCallback(callback: ProcedureCallback): Promise<{ applied: boolean; reason: string }> {
   const step = await db.taskProcedureStep.findUnique({
@@ -99,17 +179,88 @@ export async function applyProcedureCallback(callback: ProcedureCallback): Promi
       },
     },
   });
+  // Use only a durable procedure owner for activity attribution. A callback
+  // that misses its exact step may still be attributed through its exact run
+  // id; it is never recovered by searching for a task's latest waiting step.
+  const exactRun = !step
+    ? await db.taskProcedureRun.findUnique({
+        where: { id: callback.procedureRunId },
+        select: { taskId: true },
+      })
+    : null;
+  const trustedTaskId = step?.procedureRun?.taskId ?? exactRun?.taskId ?? null;
+  const taskRow = trustedTaskId
+    ? await db.task.findUnique({
+        where: { id: trustedTaskId },
+        select: { projectId: true, activeWorkflowCycleId: true },
+      })
+    : null;
+  const projectId = taskRow?.projectId ?? null;
+
   if (!step || !step.procedureRun) {
+    if (projectId) {
+      await recordCallbackActivity({
+        projectId,
+        taskId: trustedTaskId!,
+        kind: "task.workflow.callback.mismatch",
+        fingerprint: callbackMismatchFingerprint(callback, "step_not_found"),
+        payload: { reason: "Step not found.", callbackTaskId: callback.taskId, callback },
+      });
+    }
     return { applied: false, reason: "Step not found." };
   }
   if (step.procedureRun.id !== callback.procedureRunId) {
+    if (projectId) {
+      await recordCallbackActivity({
+        projectId,
+        taskId: trustedTaskId!,
+        kind: "task.workflow.callback.mismatch",
+        fingerprint: callbackMismatchFingerprint(callback, "procedure_id_mismatch"),
+        payload: { reason: "Procedure id mismatch.", callbackTaskId: callback.taskId, callback },
+      });
+    }
     return { applied: false, reason: "Procedure id mismatch." };
   }
   if (step.procedureRun.taskId !== callback.taskId) {
+    if (projectId) {
+      await recordCallbackActivity({
+        projectId,
+        taskId: trustedTaskId!,
+        kind: "task.workflow.callback.mismatch",
+        fingerprint: callbackMismatchFingerprint(callback, "task_id_mismatch"),
+        payload: { reason: "Task id mismatch.", callbackTaskId: callback.taskId, callback },
+      });
+    }
     return { applied: false, reason: "Task id mismatch." };
   }
   if (step.procedureRun.workflowCycleId !== callback.workflowCycleId) {
+    if (projectId) {
+      await recordCallbackActivity({
+        projectId,
+        taskId: trustedTaskId!,
+        kind: "task.workflow.callback.mismatch",
+        fingerprint: callbackMismatchFingerprint(callback, "cycle_id_mismatch"),
+        payload: { reason: "Cycle id mismatch.", callbackTaskId: callback.taskId, callback },
+      });
+    }
     return { applied: false, reason: "Cycle id mismatch — callback is from an older or different cycle." };
+  }
+  if (taskRow?.activeWorkflowCycleId !== callback.workflowCycleId) {
+    if (projectId) {
+      await recordCallbackActivity({
+        projectId,
+        taskId: trustedTaskId!,
+        kind: "task.workflow.callback.mismatch",
+        fingerprint: callbackMismatchFingerprint(callback, `active_cycle_mismatch:${taskRow?.activeWorkflowCycleId ?? "null"}`),
+        payload: {
+          reason: "Task active cycle does not match callback cycle.",
+          activeWorkflowCycleId: taskRow?.activeWorkflowCycleId ?? null,
+          callbackTaskId: callback.taskId,
+          callback,
+        },
+      });
+    }
+    return { applied: false, reason: "Task active cycle does not match callback cycle." };
   }
   // Verify the job id matches the one stored in step output when the step
   // entered waiting_callback.
@@ -123,6 +274,15 @@ export async function applyProcedureCallback(callback: ProcedureCallback): Promi
     }
   }
   if (storedJobId && storedJobId !== callback.jobId) {
+    if (projectId) {
+      await recordCallbackActivity({
+        projectId,
+        taskId: trustedTaskId!,
+        kind: "task.workflow.callback.mismatch",
+        fingerprint: callbackMismatchFingerprint(callback, "job_id_mismatch"),
+        payload: { reason: "Job id mismatch.", storedJobId, callbackJobId: callback.jobId, callbackTaskId: callback.taskId, callback },
+      });
+    }
     return { applied: false, reason: "Job id mismatch." };
   }
   // P1-6: verify the callback's candidate/base SHA match the expected values
@@ -138,26 +298,122 @@ export async function applyProcedureCallback(callback: ProcedureCallback): Promi
   }
   if (callback.candidateSha !== undefined && callback.candidateSha !== null
     && expectedCandidateSha && callback.candidateSha !== expectedCandidateSha) {
+    if (projectId) {
+      await recordCallbackActivity({
+        projectId,
+        taskId: trustedTaskId!,
+        kind: "task.workflow.callback.mismatch",
+        fingerprint: callbackMismatchFingerprint(callback, `candidate_sha_mismatch:${callback.candidateSha}:${expectedCandidateSha}`),
+        payload: { reason: `Candidate SHA mismatch: callback has ${callback.candidateSha}, expected ${expectedCandidateSha}.`, callbackTaskId: callback.taskId, callback },
+      });
+    }
     return { applied: false, reason: `Candidate SHA mismatch: callback has ${callback.candidateSha}, expected ${expectedCandidateSha}.` };
   }
   // A3: also check baseSha if both expected and callback values are present.
   if (callback.baseSha !== undefined && callback.baseSha !== null
     && expectedBaseSha && callback.baseSha !== expectedBaseSha) {
+    if (projectId) {
+      await recordCallbackActivity({
+        projectId,
+        taskId: trustedTaskId!,
+        kind: "task.workflow.callback.mismatch",
+        fingerprint: callbackMismatchFingerprint(callback, `base_sha_mismatch:${callback.baseSha}:${expectedBaseSha}`),
+        payload: { reason: `Base SHA mismatch: callback has ${callback.baseSha}, expected ${expectedBaseSha}.`, callbackTaskId: callback.taskId, callback },
+      });
+    }
     return { applied: false, reason: `Base SHA mismatch: callback has ${callback.baseSha}, expected ${expectedBaseSha}.` };
   }
   // Idempotent: a duplicate callback for an already-completed step is a no-op.
+  // PHASEE-07: record it as a deduplicated replay activity.
+  // PHASEE-07 Fix #2a: Move publicationState/replayCount logic HERE — before the
+  // completed-step return — so that a duplicate callback (replay) actually
+  // reaches the counter. Previously this block sat after the return and was
+  // dead code. Also write "pending" when a replay is detected so the state
+  // lifecycle is complete: publishing -> published -> pending (on replay).
   if (step.status === "completed") {
+    // Update publication state: this is a replay of a previously-published job.
+    // The row should already be in "published" state from the first callback.
+    try {
+      const existingRun = await db.taskRepositoryRun.findUnique({
+        where: { taskId: trustedTaskId! },
+        select: { id: true, publicationState: true, replayCount: true },
+      });
+      if (existingRun) {
+        await db.taskRepositoryRun.update({
+          where: { id: existingRun.id },
+          data: {
+            publicationState: "pending",
+            replayCount: existingRun.replayCount + 1,
+          },
+        });
+      }
+    } catch (e) {
+      // Narrow catch: only tolerate a missing TaskRepositoryRun row (P2025).
+      // Other errors (e.g. unknown field) should surface, not be swallowed.
+      if (!(e instanceof Error && 'code' in e && (e as { code: string }).code === 'P2025')) {
+        throw e;
+      }
+    }
+    if (projectId) {
+      await recordCallbackActivity({
+        projectId,
+        taskId: trustedTaskId!,
+        kind: "task.workflow.callback.replayed",
+        fingerprint: callbackMismatchFingerprint(callback, "replay"),
+        payload: { reason: "Step already completed (duplicate callback replayed).", callbackTaskId: callback.taskId, callback },
+      });
+    }
     return { applied: true, reason: "Step already completed (duplicate callback replayed)." };
   }
   if (step.status !== "waiting_callback") {
+    if (projectId) {
+      await recordCallbackActivity({
+        projectId,
+        taskId: trustedTaskId!,
+        kind: "task.workflow.callback.mismatch",
+        fingerprint: callbackMismatchFingerprint(callback, `wrong_status:${step.status}`),
+        payload: { reason: `Step is in ${step.status}, not waiting_callback.`, callbackTaskId: callback.taskId, callback },
+      });
+    }
     return { applied: false, reason: `Step is in ${step.status}, not waiting_callback.` };
   }
+  // PHASEE-07 Fix #2a: On first successful callback, transition publicationState
+  // from "publishing" to "published". The replayCount increment happens in the
+  // completed-step branch above (since a replay is a duplicate callback for an
+  // already-completed step). Narrow catch: only tolerate a missing
+  // TaskRepositoryRun row (P2025), not all errors.
+  try {
+    const existingRun = await db.taskRepositoryRun.findUnique({
+      where: { taskId: trustedTaskId! },
+      select: { id: true, publicationState: true, replayCount: true },
+    });
+    if (existingRun) {
+      await db.taskRepositoryRun.update({
+        where: { id: existingRun.id },
+        data: {
+          publicationState: "published",
+        },
+      });
+    }
+  } catch (e) {
+    // Narrow catch: only tolerate a missing TaskRepositoryRun row (P2025).
+    // Other errors should surface, not be swallowed.
+    if (!(e instanceof Error && 'code' in e && (e as { code: string }).code === 'P2025')) {
+      throw e;
+    }
+  }
+
   // Mark the step completed; the runner picks up the next step on the next
   // poll. The callback's evidence (candidateSha, baseSha, validationOutcome,
   // error) is stored in step output for the next step's handler to consume.
   const output: Record<string, unknown> = { jobId: callback.jobId };
   if (callback.candidateSha !== undefined) output.candidateSha = callback.candidateSha;
   if (callback.baseSha !== undefined) output.baseSha = callback.baseSha;
+  // PHASEE-07: persist V2 identity fields in step output for crash-replay.
+  if (callback.schemaVersion !== undefined) output.schemaVersion = callback.schemaVersion;
+  if (callback.commandReceiptId !== undefined) output.commandReceiptId = callback.commandReceiptId;
+  if (callback.repositoryRunId !== undefined) output.repositoryRunId = callback.repositoryRunId;
+  if (callback.repositoryRunVersion !== undefined) output.repositoryRunVersion = callback.repositoryRunVersion;
   if (callback.data) Object.assign(output, callback.data);
   await db.taskProcedureStep.update({
     where: { id: step.id },
@@ -174,6 +430,19 @@ export async function applyProcedureCallback(callback: ProcedureCallback): Promi
     where: { id: step.procedureRun.id },
     data: { status: "queued", currentStep: null },
   });
+  if (projectId) {
+    await recordCallbackActivity({
+      projectId,
+      taskId: trustedTaskId!,
+      kind: "task.workflow.callback.applied",
+      fingerprint: callbackMismatchFingerprint(callback, "applied"),
+      payload: {
+        reason: "Exact schema-v2 callback applied.",
+        activeWorkflowCycleId: taskRow?.activeWorkflowCycleId ?? null,
+        callback,
+      },
+    });
+  }
   return { applied: true, reason: "Callback applied; step completed." };
 }
 
@@ -230,6 +499,7 @@ export async function runProcedureRunner(args: {
             triggerTransitionId: true,
             status: true,
             input: true,
+            definitionVersion: true,
           },
         },
       },
@@ -242,16 +512,23 @@ export async function runProcedureRunner(args: {
       data: { status: "running", currentStep: step.name },
     });
 
-    const handler = getStepHandler(step.procedureRun.type as TaskProcedureType, step.name);
+    // PHASEE-06: Resolve handler by exact (type, definitionVersion, stepName).
+    // No cross-version fallback — a missing handler for the run's stamped
+    // version is a terminal operational_error with alertReporter.
+    const runDefVersion = step.procedureRun.definitionVersion ?? 1;
+    const handler = getStepHandler(step.procedureRun.type as TaskProcedureType, runDefVersion, step.name);
     if (!handler) {
-      // No handler registered — terminal failure (bug in procedure definition).
+      // No handler registered for this exact version — terminal failure.
+      // This is precisely the failure versioning exists to prevent: never
+      // execute a different version's handler silently.
+      const maxAttempts = getLatestProcedureDefinition(step.procedureRun.type as TaskProcedureType).maxAttemptsPerStep;
       await markStepTerminal({
         stepId: step.id,
         procedureRunId: step.procedureRun.id,
-        error: `No handler registered for ${step.procedureRun.type}:${step.name}`,
+        error: `No handler registered for ${step.procedureRun.type}:v${runDefVersion}:${step.name} — version mismatch is a terminal error`,
         retryable: false,
         attempts: step.attempts,
-        maxAttempts: getProcedureDefinition(step.procedureRun.type as TaskProcedureType).maxAttemptsPerStep,
+        maxAttempts,
         workerId,
       });
       failed += 1;
@@ -300,7 +577,7 @@ export async function runProcedureRunner(args: {
         });
         waiting += 1;
       } else if (result.status === "failed") {
-        const maxAttempts = getProcedureDefinition(step.procedureRun.type as TaskProcedureType).maxAttemptsPerStep;
+        const maxAttempts = (getProcedureDefinition(step.procedureRun.type as TaskProcedureType, step.procedureRun.definitionVersion ?? 1) ?? getLatestProcedureDefinition(step.procedureRun.type as TaskProcedureType)).maxAttemptsPerStep;
         if (result.retryable && step.attempts < maxAttempts) {
           // Transient failure: clear lease, retry with backoff.
           const backoff = Math.min(MAX_BACKOFF_MS, 1000 * 2 ** Math.min(step.attempts, 6));
@@ -331,7 +608,7 @@ export async function runProcedureRunner(args: {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const maxAttempts = getProcedureDefinition(step.procedureRun.type as TaskProcedureType).maxAttemptsPerStep;
+      const maxAttempts = (getProcedureDefinition(step.procedureRun.type as TaskProcedureType, step.procedureRun.definitionVersion ?? 1) ?? getLatestProcedureDefinition(step.procedureRun.type as TaskProcedureType)).maxAttemptsPerStep;
       if (step.attempts < maxAttempts) {
         const backoff = Math.min(MAX_BACKOFF_MS, 1000 * 2 ** Math.min(step.attempts, 6));
         await db.taskProcedureStep.update({
@@ -403,10 +680,17 @@ async function advanceProcedure(procedureRunId: string): Promise<void> {
   });
   const allCompleted = steps.length > 0 && steps.every((s) => s.status === "completed");
   if (allCompleted) {
-    await db.taskProcedureRun.update({
-      where: { id: procedureRunId },
-      data: { status: "completed", currentStep: null, completedAt: new Date() },
-    });
+    const completedAt = new Date();
+    await db.$transaction([
+      db.taskProcedureRun.update({
+        where: { id: procedureRunId },
+        data: { status: "completed", currentStep: null, completedAt },
+      }),
+      db.taskWorkflowCommandReceipt.updateMany({
+        where: { procedureRunId, status: "accepted" },
+        data: { status: "completed" },
+      }),
+    ]);
   } else {
     // Wake the procedure so the next runnable step is picked up.
     await db.taskProcedureRun.update({
@@ -454,21 +738,28 @@ async function markStepTerminal(args: {
         where: { id: run.taskId, deletedAt: null },
         data: { alertReporter: true },
       });
-      await db.activityLog.create({
-        data: {
-          projectId: task.projectId,
-          taskId: run.taskId,
-          kind: "task.workflow.procedure_operational_error",
-          payload: JSON.stringify({
+      await writeDeduplicatedActivity({
+        projectId: task.projectId,
+        taskId: run.taskId,
+        kind: "task.workflow.procedure_operational_error",
+        payload: {
+          procedureRunId: args.procedureRunId,
+          procedureType: run.type,
+          stepId: args.stepId,
+          error: args.error.slice(0, 1000),
+          attempts: args.attempts,
+          retryable: args.retryable,
+          workerId: args.workerId,
+        },
+        dedupeKey: computeActivityDedupeKey(
+          "task.workflow.procedure_operational_error",
+          run.taskId,
+          {
             procedureRunId: args.procedureRunId,
-            procedureType: run.type,
             stepId: args.stepId,
             error: args.error.slice(0, 1000),
-            attempts: args.attempts,
-            retryable: args.retryable,
-            workerId: args.workerId,
-          }),
-        },
+          },
+        ),
       });
     }
   }
@@ -509,13 +800,15 @@ export async function createProcedureRun(
     input?: Record<string, unknown> | null;
   },
 ): Promise<{ procedureRunId: string; stepIds: string[] }> {
-  const def = getProcedureDefinition(args.type);
+  const def = getLatestProcedureDefinition(args.type);
   const run = await tx.taskProcedureRun.create({
     data: {
       taskId: args.taskId,
       workflowCycleId: args.workflowCycleId,
       triggerTransitionId: args.triggerTransitionId,
       type: args.type,
+      definitionVersion: def.version,
+      inputSchemaVersion: def.inputSchemaVersion,
       status: "queued",
       input: args.input ? JSON.stringify(args.input) : null,
     },

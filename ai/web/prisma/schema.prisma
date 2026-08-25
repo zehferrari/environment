@@ -463,6 +463,11 @@ model Task {
   // queries filter deletedAt: null.
   deploymentStatus      String           @default("Not Required") @map("deployment_status")
   activeWorkflowCycleId String?          @map("active_workflow_cycle_id")
+  // Phase E §5.1 — Durable engine ownership. Determines which workflow engine
+  // (legacy or orchestrator_v2) owns this task's mutation path. Ownership is
+  // durable state, not a per-request environment-variable decision.
+  workflowEngine        String           @default("orchestrator_v2") @map("workflow_engine")
+  workflowEnginePinnedAt DateTime?       @default(now()) @map("workflow_engine_pinned_at")
   deletedAt             DateTime?
   deletedById           String?
   deletedBy             User?            @relation("TaskDeletedBy", fields: [deletedById], references: [id])
@@ -488,6 +493,7 @@ model Task {
   workflowOutbox         WorkflowOutbox[]
   workflowCycles         TaskWorkflowCycle[]
   procedureRuns          TaskProcedureRun[]
+  commandReceipts        TaskWorkflowCommandReceipt[]
 
   @@index([projectId])
   @@index([workItemKey])
@@ -504,6 +510,7 @@ model Task {
   @@index([archivedById])
   @@index([deletedAt])
   @@index([alertReporter])
+  @@index([workflowEngine])
 }
 
 // A Task can require multiple prerequisite Tasks. Dependencies are scheduling
@@ -542,6 +549,9 @@ model TaskWorkflowCycle {
   candidateSha          String?              @map("candidate_sha")
   openedAt              DateTime             @default(now()) @map("opened_at")
   closedAt              DateTime?            @map("closed_at")
+  // Phase E §5.1 — An open cycle is permanently pinned to its engine.
+  // Copied from Task.workflowEngine when the cycle is opened.
+  workflowEngine        String               @default("orchestrator_v2") @map("workflow_engine")
   createdAt             DateTime             @default(now()) @map("created_at")
   updatedAt             DateTime             @updatedAt @map("updated_at")
   transitions           WorkflowTransition[]
@@ -549,11 +559,51 @@ model TaskWorkflowCycle {
   reviewRun             ReviewRun?
   repositoryRun         TaskRepositoryRun?
   procedureRuns         TaskProcedureRun[]
+  commandReceipts       TaskWorkflowCommandReceipt[]
 
   @@unique([taskId, sequence])
   @@index([taskId, status])
   @@index([status, updatedAt])
+  @@index([workflowEngine])
   @@map("task_workflow_cycles")
+}
+
+// Phase E §6.1 — Durable command receipt: the single replay authority for
+// workflow commands. Replaces the ActivityLog substring scan as the
+// idempotency arbiter. Created atomically inside the workflow transaction
+// after transition + intent writes succeed, before commit. Rejected commands
+// are NOT stored here; operational failures that roll back leave no receipt.
+model TaskWorkflowCommandReceipt {
+  id                      String   @id @default(cuid())
+  taskId                  String   @map("task_id")
+  task                    Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  workflowCycleId         String?  @map("workflow_cycle_id")
+  workflowCycle           TaskWorkflowCycle? @relation(fields: [workflowCycleId], references: [id], onDelete: SetNull)
+  idempotencyKey          String   @map("idempotency_key")
+  requestFingerprint      String   @map("request_fingerprint")
+  intent                  String
+  source                  String
+  actorUserId             String?  @map("actor_user_id")
+  decisionActorId         String?  @map("decision_actor_id")
+  executorActorId         String?  @map("executor_actor_id")
+  expectedWorkflowVersion Int      @map("expected_workflow_version")
+  resultingWorkflowVersion Int     @map("resulting_workflow_version")
+  transitionId            String?  @map("transition_id")
+  procedureRunId          String?  @map("procedure_run_id")
+  // Milliseconds from transaction-client entry through durable receipt
+  // creation. This excludes the driver's final COMMIT round trip but captures
+  // fencing, aggregate refresh, domain writes, and receipt settlement.
+  executionDurationMs     Int?     @map("execution_duration_ms")
+  status                  String   // accepted | completed | rejected_operational
+  result                  String   // bounded canonical JSON response projection
+  createdAt               DateTime @default(now()) @map("created_at")
+  updatedAt               DateTime @updatedAt @map("updated_at")
+
+  @@unique([taskId, idempotencyKey])
+  @@index([workflowCycleId, createdAt])
+  @@index([intent, createdAt])
+  @@index([procedureRunId])
+  @@map("task_workflow_command_receipts")
 }
 
 // Durable procedure run: an ordered, replay-safe sequence of steps that
@@ -572,6 +622,10 @@ model TaskProcedureRun {
   workflowCycle       TaskWorkflowCycle?  @relation(fields: [workflowCycleId], references: [id], onDelete: SetNull)
   triggerTransitionId String              @map("trigger_transition_id")
   type                String
+  // Phase E §6 — Procedure definition versioning. Both default to 1 so
+  // existing rows backfill automatically. PHASEE-06 (ENV-148).
+  definitionVersion   Int                 @default(1) @map("definition_version")
+  inputSchemaVersion  Int                 @default(1) @map("input_schema_version")
   status              String              @default("queued")
   currentStep         String?             @map("current_step")
   input               String?
@@ -637,11 +691,21 @@ model TaskRepositoryRun {
   lastError         String?            @map("last_error")
   attempt           Int                @default(0)
   version           Int                @default(0)
+  // PHASEE-07: durable publication and replay state.
+  // Tracks publication state per job so crash-replay can re-publish
+  // deterministically without creating duplicate spool files.
+  // The original physical names were lost when the later-added ENV-159
+  // lifecycle migration rebuilt this table on databases that had already
+  // applied PHASEE-07. Use fresh physical names so a forward-only repair
+  // migration works both for those drifted databases and clean installs.
+  publicationState  String?            @map("publication_state_v2")
+  replayCount       Int                @default(0) @map("replay_count_v2")
   createdAt         DateTime           @default(now()) @map("created_at")
   updatedAt         DateTime           @updatedAt @map("updated_at")
 
   @@index([phase])
   @@index([validationOutcome])
+  @@index([publicationState])
   @@map("task_repository_runs")
 }
 
@@ -1158,6 +1222,12 @@ model ActivityLog {
   // PM project data.
   targetAgent String?
   targetFile  String?
+  // PHASEE-10 — Optional dedup key for structured deduplicated activities.
+  // When set, the partial unique index ensures replaying the same failure
+  // produces exactly one row. NULL keys are not constrained (multiple rows
+  // without dedupe keys remain valid). Shared-schema change: additive and
+  // NULL-tolerant so it sequences cleanly against PHASEE-08/09 migrations.
+  dedupeKey   String?  @map("dedupe_key")
   createdAt   DateTime @default(now())
 
   @@index([projectId])
@@ -1166,6 +1236,12 @@ model ActivityLog {
   @@index([targetAgent])
   @@index([targetFile])
   @@index([createdAt])
+  // PHASEE-10 — Composite index for legacy boundary invocation queries
+  // (kind + createdAt range scans in getLegacyInvocationSummary).
+  @@index([kind, createdAt])
+  // PHASEE-10 — Unique index on dedupeKey. SQLite UNIQUE constraints treat
+  // NULL values as distinct, so rows without a dedupe key remain valid.
+  @@unique([dedupeKey])
 }
 
 model DeploymentPullRequest {
@@ -1312,6 +1388,20 @@ model PmChannelRun {
   // effect. A continuation-required action lands here without settling.
   lastAction                 String?
   lastActionAt               DateTime?
+  // ENV-159: Lifecycle separation — `admittedAt` replaces `acceptedAt` to
+  // represent actual model execution admission, not merely gateway receipt.
+  // `acceptedAt` is kept as a compatibility read path during the migration;
+  // new code writes `admittedAt`. The delivery→capacity→admission chain is:
+  //   queued → claimed → delivered → waiting_capacity → admitted → streaming → terminal
+  admittedAt                 DateTime?
+  // ENV-159: Capacity-blocked run metadata. When an agent's execution lane is
+  // occupied, the run enters waiting_capacity instead of being delivered.
+  blockedReason              String?
+  blockedByRunId             String?
+  blockedByTaskId            String?
+  capacityBlockedAt          DateTime?
+  gatewayDispatchId          String?
+  // Legacy field retained for compatibility — new code uses admittedAt.
   acceptedAt                 DateTime?
   streamingAt                DateTime?
   completedAt                DateTime?
@@ -1331,6 +1421,7 @@ model PmChannelRun {
   contextGrants              ContextGrant[]
   continuations              PmChannelContinuation[]
   comments                   Comment[]
+  toolCalls                  PmChannelToolCall[]
 
   @@index([agentSlug])
   @@index([messageId])
@@ -1341,6 +1432,7 @@ model PmChannelRun {
   @@index([status])
   @@index([lastEventAt])
   @@index([supersededByRunId])
+  @@index([blockedByRunId])
 }
 
 // ENV-118 continuation outbox. A continuation-required workflow action (start,
@@ -1431,6 +1523,53 @@ model PmChannelStreamEvent {
   @@index([runId, createdAt])
   @@index([kind])
   @@index([createdAt])
+}
+
+// ENV-159: Durable tool-call correlation table. Each logical tool call gets
+// exactly one row per run, keyed by the stable toolCallId. This is what makes
+// tool accounting idempotent: duplicate callbacks/retries for the same
+// toolCallId find the existing row and do not increment the episode count.
+model PmChannelToolCall {
+  id          String       @id @default(cuid())
+  runId       String
+  run         PmChannelRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  toolCallId  String
+  toolName    String
+  provider    String?
+  model       String?
+  startedAt   DateTime     @default(now())
+  completedAt DateTime?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@unique([runId, toolCallId])
+  @@index([runId])
+  @@index([toolCallId])
+}
+
+// ENV-159: Durable per-agent execution lane. Ensures only one run per agent
+// is reserved/admitted/running at a time. The partial unique index on
+// (agentSlug) WHERE status IN (reserved, admitted, running) is the constraint
+// that makes the lane exclusive. Queue priority is enforced by the job
+// scheduler: continuation > review feedback > reviewer/manager decisions >
+// newly approved To Do > informational.
+model AgentExecutionLease {
+  id          String   @id @default(cuid())
+  agentSlug   String
+  runId       String?  @unique
+  taskId      String?
+  status      String   @default("reserved") // reserved | admitted | running | released
+  leaseToken  String   @unique @default(cuid())
+  acquiredAt  DateTime @default(now())
+  heartbeatAt DateTime?
+  expiresAt   DateTime?
+  releasedAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([agentSlug])
+  @@index([status])
+  @@index([taskId])
 }
 
 // Opaque, short-lived read capability handed to agents instead of putting a

@@ -31,12 +31,16 @@ import { MAX_SUBTASK_TEXT } from "@/lib/tasks/subtasks";
 import { unresolvedTaskPrerequisites, validateBlockedBy } from "@/lib/tasks/blocking";
 import { isActionableEpicStatus } from "@/lib/tasks/workflow-actors";
 import {
-  applyTaskTransition,
   enqueueWorkflowEffects,
-  type TaskTransitionIntent,
   type TaskWorkflowStatus,
 } from "@/lib/tasks/transition-kernel";
+import {
+  getWorkflowTransactionResolution,
+  submitWorkflowCommandInTransaction,
+} from "@/lib/tasks/orchestrator";
+import type { OrchestratorResult, TaskWorkflowCommand } from "@/lib/tasks/orchestrator/types";
 import { drainWorkflowOutbox } from "@/lib/tasks/workflow-outbox-drain";
+import { newTaskWorkflowOwnership } from "@/lib/tasks/orchestrator/ownership";
 
 type RawOp = Record<string, unknown>;
 
@@ -65,6 +69,13 @@ export interface CommitResult {
 }
 
 const ZERO: CommitCounts = { epics: 0, tasks: 0, subtasks: 0, updates: 0, comments: 0 };
+
+function assertProposalCommandApplied(result: OrchestratorResult, operationIndex: number): void {
+  if (result.status === "accepted" || result.status === "replayed") return;
+  throw new Error(
+    `proposal_workflow_command_rejected:op:${operationIndex}:${result.domainCode ?? result.status}:${result.reason}`,
+  );
+}
 
 function optionalText(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
@@ -236,9 +247,28 @@ export async function commitProposal(
     select: { username: true, kind: true },
   });
   const actorUsername = actorUser?.username ?? null;
+  const approverUser = await db.user.findUnique({
+    where: { id: approverUserId },
+    select: { id: true, username: true, kind: true, status: true },
+  });
+  const requesterUser = requesterUserId && requesterUserId !== approverUserId
+    ? await db.user.findUnique({
+        where: { id: requesterUserId },
+        select: { id: true, username: true, kind: true, status: true },
+      })
+    : null;
+  // Auto-applied owner grants are executed by the proposing agent on behalf
+  // of the authenticated owner message. Recover that human as the decision
+  // actor; ordinary UI approval uses the authenticated approver directly.
+  const proposalDecisionActor = approverUser?.kind === "human"
+    ? approverUser
+    : requesterUser?.kind === "human" && requesterUser.status === "active"
+      ? requesterUser
+      : null;
 
-  await db.$transaction(
-    async (tx) => {
+  try {
+    await db.$transaction(
+      async (tx) => {
       const refToId = new Map<string, string>();
       const resolveRef = (value: unknown): string | null => {
         if (typeof value !== "string" || !value) return null;
@@ -348,6 +378,7 @@ export async function commitProposal(
               : String(op.title);
             const task = await tx.task.create({
               data: {
+                ...newTaskWorkflowOwnership(),
                 projectId,
                 workItemKey: await allocateWorkItemKey(projectId, tx),
                 epicId,
@@ -627,7 +658,7 @@ export async function commitProposal(
             }
           }
           let targetStatus = task.status;
-          let statusIntent: TaskTransitionIntent | null = null;
+          let submitStatusCommand = false;
           if (typeof op.status === "string" && op.status !== task.status) {
             // Proposals must not be a side door around the workflow engine:
             // proposals never bypass the shared start boundary. Even an
@@ -660,34 +691,55 @@ export async function commitProposal(
                 throw new Error(`Proposal status ${targetStatus} requires the dedicated Review workflow.`);
               }
               const edge = `${task.status}->${targetStatus}`;
-              const intents: Record<string, TaskTransitionIntent> = {
-                "Backlog->To Do": "triage",
-                "To Do->Backlog": "cancel",
-                "In Progress->To Do": "queue",
-                "Review->To Do": "request_changes",
-                "Done->To Do": "reopen",
-              };
-              statusIntent = intents[edge] ?? null;
-              if (!statusIntent) {
+              const supportedEdges = new Set([
+                "Backlog->To Do",
+                "To Do->Backlog",
+                "In Progress->To Do",
+                "Review->To Do",
+                "Done->To Do",
+              ]);
+              submitStatusCommand = supportedEdges.has(edge);
+              if (!submitStatusCommand) {
                 throw new Error(`Proposal status edge ${edge} requires a dedicated workflow action.`);
               }
             }
           }
-          if (Object.keys(data).length > 0 || statusIntent) {
-            if (statusIntent && targetStatus !== task.status) {
-              await applyTaskTransition(tx, {
+          if (Object.keys(data).length > 0 || submitStatusCommand) {
+            if (submitStatusCommand && targetStatus !== task.status) {
+              if (!proposalDecisionActor) {
+                throw new Error("proposal_status_change_requires_authenticated_human_actor");
+              }
+              const command: TaskWorkflowCommand = {
                 taskId: id,
-                projectId,
-                actorUserId: approverUserId,
-                intent: statusIntent,
-                from: task.status as TaskWorkflowStatus,
-                to: targetStatus as TaskWorkflowStatus,
-                source: "proposal-apply",
-                idempotencyKey: `proposal:${proposal.id}:op:${currentOperationIndex}`,
-                expectedVersion: task.workflowVersion,
-                taskData: data as Prisma.TaskUncheckedUpdateManyInput,
-                evidence: { proposalId: proposal.id, proposedByUserId: agentId },
-              });
+                intent: "override_status",
+                actor: {
+                  id: proposalDecisionActor.id,
+                  username: proposalDecisionActor.username,
+                  kind: "human",
+                },
+                expectedWorkflowVersion: task.workflowVersion,
+                workflowCycleId: task.status === "In Progress" || task.status === "Review"
+                  ? undefined
+                  : null,
+                idempotencyKey: `proposal:${proposal.id}:op:${currentOperationIndex}:status`,
+                source: "browser",
+                messageId: proposal.grantMessageId,
+                evidence: {
+                  proposalId: proposal.id,
+                  proposedByUserId: agentId,
+                  approvedByUserId: proposalDecisionActor.id,
+                  operationIndex: currentOperationIndex,
+                },
+                payload: {
+                  targetStatus: targetStatus as TaskWorkflowStatus,
+                  reason: `Approved work-item proposal ${proposal.id}`,
+                },
+              };
+              const commandResult = await submitWorkflowCommandInTransaction(tx, command);
+              assertProposalCommandApplied(commandResult, currentOperationIndex);
+              if (Object.keys(data).length > 0) {
+                await tx.task.update({ where: { id }, data });
+              }
             } else {
               await tx.task.update({ where: { id }, data });
             }
@@ -840,8 +892,54 @@ export async function commitProposal(
         },
       });
     },
-    { timeout: 20000, maxWait: 10000 },
-  );
+      { timeout: 20000, maxWait: 10000 },
+    );
+  } catch (error) {
+    const receiptResolution = getWorkflowTransactionResolution(error);
+    if (receiptResolution) {
+      if (
+        receiptResolution.result.status === "invalid"
+        && receiptResolution.result.domainCode === "idempotency_conflict"
+      ) {
+        return {
+          ok: false,
+          error: receiptResolution.result.reason,
+          projectSlug,
+          agentSlug,
+          taskId,
+          epicId,
+          counts: ZERO,
+        };
+      }
+      // This read runs after the losing transaction rolled back. The receipt
+      // winner owns the batch result, including the proposal state change.
+      const winner = await db.workItemProposal.findUnique({
+        where: { id: proposal.id },
+        select: { status: true },
+      });
+      if (winner?.status === "applied") {
+        return { ok: true, projectSlug, agentSlug, taskId, epicId, counts: ZERO };
+      }
+      return {
+        ok: false,
+        error: "workflow_receipt_race_unsettled: the winning command is not visible yet; retry the proposal.",
+        projectSlug,
+        agentSlug,
+        taskId,
+        epicId,
+        counts: ZERO,
+      };
+    }
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+      projectSlug,
+      agentSlug,
+      taskId,
+      epicId,
+      counts: ZERO,
+    };
+  }
 
   const actor = {
     id: agentId,

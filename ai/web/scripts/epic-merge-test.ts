@@ -254,6 +254,7 @@ async function main() {
     const checkpointWt = join(root, "checkpoint-wt");
     git(cloneDir, "branch", "feat-checkpoint", "main");
     git(cloneDir, "worktree", "add", checkpointWt, "feat-checkpoint");
+    const checkpointPreviousBase = git(checkpointWt, "rev-parse", "HEAD");
     writeFileSync(join(checkpointWt, "checkpoint.txt"), "first\n");
     let checkpoint = await publishTaskCheckpointToEpic({
       repoPath: cloneDir,
@@ -286,6 +287,7 @@ async function main() {
       "published Epic history must contain the prefixed PM checkpoint commit",
     );
 
+    const firstCheckpoint = checkpoint;
     writeFileSync(join(checkpointWt, "checkpoint.txt"), "second\n");
     checkpoint = await publishTaskCheckpointToEpic({
       repoPath: cloneDir,
@@ -293,6 +295,31 @@ async function main() {
       epicBranch: "epic-checkpoint",
       taskBranch: "feat-checkpoint",
       baseBranch: "main",
+      previousBaseSha: checkpointPreviousBase,
+      gitUserName: "Checkpoint Bot",
+      gitUserEmail: "checkpoint@example.com",
+      commitSubject: "CHK-1 deployable checkpoint",
+      mergeMessage: "Checkpoint CHK-1 into epic-checkpoint",
+    });
+    assert(checkpoint.ok && checkpoint.kind === "already", "a post-push retry must recover the published checkpoint");
+    assert.equal(
+      checkpoint.ok ? checkpoint.epicSha : "",
+      firstCheckpoint.ok ? firstCheckpoint.epicSha : "",
+      "recovery must retain the exact published Epic tip",
+    );
+    assert.notEqual(
+      git(checkpointWt, "status", "--porcelain"),
+      "",
+      "recovery must preserve unrelated dirty work created after the checkpoint",
+    );
+
+    checkpoint = await publishTaskCheckpointToEpic({
+      repoPath: cloneDir,
+      worktreePath: checkpointWt,
+      epicBranch: "epic-checkpoint",
+      taskBranch: "feat-checkpoint",
+      baseBranch: "main",
+      previousBaseSha: firstCheckpoint.ok ? firstCheckpoint.epicSha : null,
       gitUserName: "Checkpoint Bot",
       gitUserEmail: "checkpoint@example.com",
       commitSubject: "CHK-1 second deployable checkpoint",

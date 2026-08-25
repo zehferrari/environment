@@ -170,9 +170,20 @@ The operator command is read-only unless `--apply` is explicit:
 pnpm workflow-doctor                    # inspect, metrics + findings, no writes
 pnpm workflow-doctor --json             # machine-readable health snapshot
 pnpm workflow-doctor --project=<id>     # scope one project
+pnpm workflow-doctor --since=<ISO>      # window counters, stop evidence + findings; splits out historical residue
 pnpm workflow-doctor --apply            # bounded safe repairs + escalation
-pnpm workflow-doctor --strict           # exit 1 when findings exist
+pnpm workflow-doctor --strict           # exit 1 when in-window findings exist
+pnpm workflow-doctor --strict --since=<ISO>   # rollout gate: pre-window residue does not fail the run
 ```
+
+`--since` windows event counters and event-backed Phase E stop conditions from
+the supplied rollout timestamp. It does not hide current aggregate invariant
+violations, active procedures, ownership distribution, or other live safety
+state. JSON output reports older counters separately as
+`phaseE.historicalResidueBeforeWindow`, so old evidence remains auditable
+without failing a clean new observation window. Use the timestamp from the
+successful `pm-switch` deployment receipt rather than an approximate shell
+start time.
 
 Its metrics report outbox counts by status, repository counts by phase,
 execution-state counts and unacknowledged cancellation count. These are the

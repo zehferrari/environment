@@ -128,6 +128,7 @@ log "[1/7] bin scripts"
 # copy instead of symlinking into the group-writable worktree; install.sh is
 # the explicit promotion boundary for repository changes.
 do_install 755 "$REPO_ROOT/bin/ai-monitor"                /usr/local/bin/ai-monitor
+do_install 755 "$REPO_ROOT/bin/ai-monitor-mode"           /usr/local/sbin/ai-monitor-mode
 do_install 755 "$REPO_ROOT/bin/openclaw-registry-check"   /usr/local/bin/openclaw-registry-check
 do_install 755 "$REPO_ROOT/bin/openclaw-integrity-check"  /usr/local/bin/openclaw-integrity-check
 do_install 755 "$REPO_ROOT/bin/openclaw-control"          /usr/local/sbin/openclaw-control

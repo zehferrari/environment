@@ -197,7 +197,7 @@ operation_lock_held=0
 
 say "Migrating, building, restarting, and verifying $BRANCH as $MONITOR_USER"
 sudo -n -H -u "$MONITOR_USER" -- env PM_DEPLOY_MAINTENANCE_BYPASS=1 \
-  /usr/local/sbin/pm-switch "$WORKTREE"
+  /usr/local/sbin/pm-switch --database=worktree "$WORKTREE"
 
 say "Release status"
 sudo -n -H -u "$MONITOR_USER" -- env PM_DEPLOY_MAINTENANCE_BYPASS=1 \

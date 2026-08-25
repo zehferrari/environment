@@ -64,15 +64,15 @@ assert.equal(typeof badBody.streamUrl, "string");
 assert.equal(pmChannelLatencyTransport({
   driver: "openclaw-pm-channel:inproc",
   createdAt: new Date(0),
-  acceptedAt: null,
+  acceptedAt: null, admittedAt: null,
   streamingAt: null,
   completedAt: new Date(10),
 }), "inproc");
 
 const byTransport = summarizePmLatencyByTransport([
-  { driver: "openclaw-pm-channel:http", createdAt: new Date(0), acceptedAt: null, streamingAt: null, completedAt: new Date(100) },
-  { driver: "openclaw-pm-channel:inproc", createdAt: new Date(0), acceptedAt: null, streamingAt: null, completedAt: new Date(20) },
-  { driver: "openclaw-pm-channel:inproc", createdAt: new Date(0), acceptedAt: null, streamingAt: null, completedAt: new Date(40) },
+  { driver: "openclaw-pm-channel:http", createdAt: new Date(0), acceptedAt: null, admittedAt: null, streamingAt: null, completedAt: new Date(100) },
+  { driver: "openclaw-pm-channel:inproc", createdAt: new Date(0), acceptedAt: null, admittedAt: null, streamingAt: null, completedAt: new Date(20) },
+  { driver: "openclaw-pm-channel:inproc", createdAt: new Date(0), acceptedAt: null, admittedAt: null, streamingAt: null, completedAt: new Date(40) },
 ]);
 assert.equal(byTransport.http.count, 1);
 assert.equal(byTransport.inproc.count, 2);

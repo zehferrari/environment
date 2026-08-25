@@ -218,6 +218,11 @@ function createPmStreamPublisher({ account, target, logger }) {
       final: async () => {},
       done: async () => {},
       error: async () => {},
+      dispatchDelivered: async () => {},
+      turnWaitingCapacity: async () => {},
+      turnAdmitted: async () => {},
+      contextUsage: async () => {},
+      turnTerminal: async () => {},
     };
   }
 
@@ -228,6 +233,7 @@ function createPmStreamPublisher({ account, target, logger }) {
   let selectedAgentMeta = null;
   const observedToolCalls = new Set();
   let anonymousToolCallNo = 0;
+  let modelSelectedEmitted = false;
 
   const post = (body) => {
     const payload = {
@@ -275,7 +281,7 @@ function createPmStreamPublisher({ account, target, logger }) {
     schedule();
   };
 
-  const flush = async () => {
+  const drainQueued = () => {
     if (timer) {
       clearTimeout(timer);
       timer = null;
@@ -287,6 +293,10 @@ function createPmStreamPublisher({ account, target, logger }) {
         .then(() => post(body))
         .catch((err) => logger.warn?.(`[pm-channel] stream event failed: ${String(err)}`));
     }
+  };
+
+  const flush = async () => {
+    drainQueued();
     await chain;
   };
 
@@ -301,6 +311,24 @@ function createPmStreamPublisher({ account, target, logger }) {
         ...(model ? { model } : {}),
         ...(typeof selection.thinkLevel === "string" ? { thinkLevel: selection.thinkLevel } : {}),
       };
+      // ENV-159: Emit canonical model:selected event exactly once.
+      if (!modelSelectedEmitted) {
+        modelSelectedEmitted = true;
+        // Move any coalesced text onto the existing chain before appending the
+        // model event. Calling flush() from inside chain.then() deadlocks: the
+        // flush awaits the same promise whose callback is currently running,
+        // preventing every later tool/stream event from reaching PM.
+        drainQueued();
+        chain = chain
+          .then(() => post({
+            event: "model:selected",
+            provider,
+            model,
+            ...(typeof selection.thinkLevel === "string" ? { thinkLevel: selection.thinkLevel } : {}),
+            ...(selection.fallback ? { fallback: true } : {}),
+          }))
+          .catch((err) => logger.warn?.(`[pm-channel] model:selected event failed: ${String(err)}`));
+      }
     },
     agentMeta: () => selectedAgentMeta,
     toolStart: async (payload) => {
@@ -320,12 +348,16 @@ function createPmStreamPublisher({ account, target, logger }) {
       // Preserve event order: reasoning emitted before the tool call must land
       // before the tool boundary that PM uses for episode accounting.
       await flush();
+      // ENV-159: Emit canonical tool:start with toolCallId for all backends.
       await post({
-        event: "tool:call",
-        toolStatus: "call",
+        event: "tool:start",
+        toolStatus: "start",
         toolName: typeof payload.name === "string" && payload.name.trim()
           ? payload.name.trim()
           : "tool",
+        toolCallId: typeof payload.toolCallId === "string" ? payload.toolCallId : undefined,
+        ...(selectedAgentMeta?.provider ? { provider: selectedAgentMeta.provider } : {}),
+        ...(selectedAgentMeta?.model ? { model: selectedAgentMeta.model } : {}),
       });
     },
     partial: (payload) => {
@@ -373,11 +405,36 @@ function createPmStreamPublisher({ account, target, logger }) {
     },
     done: async () => {
       await flush();
+      // ENV-159: Emit canonical turn:terminal before legacy done.
+      await post({ event: "turn:terminal" });
       await post({ event: "done" });
     },
     error: async (err) => {
       await flush();
       await post({ event: "error", error: err instanceof Error ? err.message : String(err) });
+    },
+    // ENV-159 canonical lifecycle events
+    dispatchDelivered: async () => {
+      await post({ event: "dispatch:delivered" });
+    },
+    turnWaitingCapacity: async (info) => {
+      await post({
+        event: "turn:waiting_capacity",
+        ...(info && typeof info === "object" ? {
+          blockedByRunId: info.blockedByRunId,
+          blockedByTaskId: info.blockedByTaskId,
+        } : {}),
+      });
+    },
+    turnAdmitted: async () => {
+      await post({ event: "turn:admitted" });
+    },
+    contextUsage: async (usage) => {
+      if (!usage || typeof usage !== "object") return;
+      await post({ event: "context:usage", usage });
+    },
+    turnTerminal: async () => {
+      await post({ event: "turn:terminal" });
     },
   };
 }
@@ -681,6 +738,10 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
       recordInboundSession: runtime.channel.session.recordInboundSession,
       dispatchReplyWithBufferedBlockDispatcher:
         runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher,
+      // OpenClaw fires this only after the turn owns the reply lane and its
+      // restart-recovery context has been persisted. This is the canonical
+      // execution-admission boundary, not the earlier HTTP/bus handoff.
+      onTurnAdopted: () => stream.turnAdmitted(),
       delivery: {
         deliver: async (replyPayload) => {
           const text = payloadText(replyPayload);

@@ -1,9 +1,7 @@
 import { db } from "@/lib/db";
 import { ACTIVE_TASK_ASSIGNMENT_STATUSES } from "@/lib/epics/assignment";
-import { startApprovedTodoTaskIfIdle } from "@/lib/tasks/auto-start";
-import { publishBoardTouch } from "@/lib/pm/board-events";
-import { applyTaskTransition, enqueueWorkflowEffects, type WorkflowEffect } from "@/lib/tasks/transition-kernel";
-import { drainWorkflowOutbox } from "@/lib/tasks/workflow-outbox-drain";
+import { startApprovedTodoTaskIfIdle, type PolicyTrigger } from "@/lib/tasks/auto-start";
+import { submitWorkflowCommand } from "@/lib/tasks/orchestrator";
 
 type Actor = {
   id: string;
@@ -142,6 +140,7 @@ export async function assignTaskAfterPlanApproval(args: {
   actor: Actor;
   assigneeUsername?: string;
   requireReviewerUserId?: string;
+  trigger?: PolicyTrigger;
 }): Promise<AssignmentResult> {
   const task = await db.task.findUnique({
     where: { id: args.taskId },
@@ -155,6 +154,7 @@ export async function assignTaskAfterPlanApproval(args: {
       actingManagerId: true,
       reporterId: true,
       approvedOn: true,
+      updatedAt: true,
       deletedAt: true,
       project: { select: { slug: true, defaultAssigneeId: true } },
       epic: { select: { actingManagerId: true } },
@@ -199,15 +199,50 @@ export async function assignTaskAfterPlanApproval(args: {
   // new assignee's plan is accepted.
   const planApproved = Boolean(task.approvedOn);
   const movedToTodo = planApproved && task.status === "Backlog";
-  const effects: WorkflowEffect[] = [
-    { type: "board_touch", key: "board-reviewer-assignment", payload: {} },
-    {
-      type: "task_notification",
-      key: `reviewer-assignment:${assignee.id}`,
-      payload: {
-        taskId: task.id,
-        targetUserId: assignee.id,
-        actor: args.actor,
+  const trigger = args.trigger ?? { kind: "policy_event" as const, id: "reviewer-plan-approval" };
+  const selectionReason = args.assigneeUsername
+    ? "reviewer_named_eligible_worker"
+    : "reviewer_selected_free_worker";
+  const queueGeneration = task.updatedAt.toISOString();
+  const idempotencyTriggerKind = trigger.kind.trim().replace(/[^a-zA-Z0-9._:-]+/g, "-").slice(0, 40) || "unspecified";
+  const idempotencyTrigger = trigger.id.trim().replace(/[^a-zA-Z0-9._:-]+/g, "-").slice(0, 160) || "unspecified";
+  const idempotencyReason = selectionReason.slice(0, 120);
+  const assignmentIdempotencyKey = [
+    "pm-policy:assign",
+    idempotencyTriggerKind,
+    idempotencyTrigger,
+    idempotencyReason,
+    queueGeneration,
+    task.id,
+    assignee.id,
+    `v${task.workflowVersion}`,
+  ].join(":");
+  const assignmentResult = await submitWorkflowCommand({
+    taskId: task.id,
+    intent: "assign_task",
+    actor: args.actor,
+    expectedWorkflowVersion: task.workflowVersion,
+    workflowCycleId: null,
+    idempotencyKey: assignmentIdempotencyKey,
+    source: "pm-service",
+    payload: {
+      assigneeUsername: assignee.username,
+      afterPlanApproval: planApproved,
+    },
+    evidence: {
+      policy: "reviewer_assignment",
+      trigger,
+      selectionReason,
+      queueGeneration,
+      assigneeLane: `${task.projectId}:${assignee.id}`,
+      selectedTaskId: task.id,
+      selectedAssigneeId: assignee.id,
+      selectedAssigneeUsername: assignee.username,
+      expectedWorkflowVersion: task.workflowVersion,
+      via: "reviewer-plan-approval",
+      approvedPlanPreserved: planApproved,
+      resetUnapprovedPlan: !planApproved,
+      notification: {
         reason: planApproved ? "todo_start_required" : "backlog_plan_requested",
         body: planApproved
           ? [
@@ -222,60 +257,46 @@ export async function assignTaskAfterPlanApproval(args: {
             ].join("\n"),
       },
     },
-  ];
-  await db.$transaction(async (tx) => {
-    if (movedToTodo) {
-      await applyTaskTransition(tx, {
-        taskId: task.id,
-        projectId: task.projectId,
-        actorUserId: args.actor.id,
-        intent: "queue",
-        from: "Backlog",
-        to: "To Do",
-        source: "reviewer-plan-approval",
-        idempotencyKey: `reviewer-assign:${assignee.id}:v${task.workflowVersion + 1}`,
-        taskData: { assigneeId: assignee.id },
-        effects,
-      });
-    } else {
-      await tx.task.update({ where: { id: task.id }, data: { assigneeId: assignee.id } });
-      await enqueueWorkflowEffects(tx, {
-        taskId: task.id,
-        projectId: task.projectId,
-        aggregateVersion: task.workflowVersion,
-        effects,
-      });
-    }
-    await tx.activityLog.create({
-      data: {
-        projectId: task.projectId,
-        taskId: task.id,
-        userId: args.actor.id,
-        kind: "task.assign",
-        payload: JSON.stringify({
-          from: null,
-          to: assignee.username,
-          via: "reviewer-plan-approval",
-          // Reviewer authority: assignee !== reviewer is enforced above, so
-          // this row can never be an agent granting itself a task.
-          assignedBy: "reviewer",
-          named: Boolean(args.assigneeUsername),
-        }),
-      },
-    });
   });
+  if (assignmentResult.status !== "accepted" && assignmentResult.status !== "replayed") {
+    const status = assignmentResult.status === "forbidden"
+      ? 403
+      : assignmentResult.status === "operational"
+        ? 503
+        : 409;
+    return { ok: false, error: assignmentResult.reason, status };
+  }
 
   let startedNow = false;
   if (planApproved) {
+    const assignmentReceipt = await db.taskWorkflowCommandReceipt.findUnique({
+      where: {
+        taskId_idempotencyKey: {
+          taskId: task.id,
+          idempotencyKey: assignmentIdempotencyKey,
+        },
+      },
+      select: { id: true },
+    });
+    if (!assignmentReceipt) {
+      return {
+        ok: false,
+        error: "Task assignment committed without a canonical command receipt; automatic start was not attempted",
+        status: 503,
+      };
+    }
     const autoStart = await startApprovedTodoTaskIfIdle({
       taskId: task.id,
       actor: args.actor,
       via: "reviewer-plan-approval",
+      trigger: {
+        kind: "command_receipt",
+        id: assignmentReceipt.id,
+      },
+      selectionReason: "newly_assigned_approved_task_lane_idle",
     });
     startedNow = autoStart.started;
   }
-  await drainWorkflowOutbox({ limit: effects.length }).catch(() => {});
-  publishBoardTouch(task.projectId);
 
   return {
     ok: true,

@@ -1,33 +1,22 @@
 import { notFound } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
-import {
-  checkStatusTransition,
-  type WorkflowErrorCode,
-} from "@/lib/workflow";
 import { reorderTasks } from "@/lib/tasks/reorder";
 import { listAssignablePrincipals } from "@/lib/principals";
 import { binTask } from "@/lib/bin/actions";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
-import { refillEpicQueue } from "@/lib/epics/queue";
-import { runTaskReviewHandoff } from "@/lib/tasks/review-handoff";
-import { ensureTaskCodeWorktree, TaskWorktreeError } from "@/lib/tasks/worktree-claim";
-import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation";
 import { nextEpicTaskTitle } from "@/lib/tasks/epic-numbering";
 import { allocateWorkItemKey } from "@/lib/work-items/keys";
 import { revalidateTaskShell } from "@/lib/tasks/cache";
-import { moveTaskStatus } from "@/lib/tasks/move-status";
-import { activeFormalBlockersByTask } from "@/lib/tasks/formal-blocker";
+import type { MoveTaskOptions, MoveTaskResult } from "@/lib/tasks/move-status";
 import {
-  REPOSITORY_FINALIZATION_FENCE_MESSAGE,
-  repositoryFinalizationFenceSelect,
-  repositoryFinalizationOwnsTask,
-} from "@/lib/tasks/repository-finalization";
+  isTaskWorkflowStatus,
+  submitBrowserStatusOverride,
+} from "@/lib/tasks/orchestrator/browser-status-adapter";
+import { activeFormalBlockersByTask } from "@/lib/tasks/formal-blocker";
 import Board from "./board-client";
 import AddTaskFab from "./add-task-fab";
-import { promoteEpicOnTaskInProgress } from "@/lib/epics/promote-on-start";
-import { syncEpicOnHumanTaskStatus } from "@/lib/epics/sync-on-human-task-move";
 import { COLUMNS, COLUMN_IDS } from "./columns";
 import {
   accessibleEpicWhere,
@@ -44,6 +33,7 @@ import {
   serializeVisibleActorAs,
   type ActorVisibility,
 } from "@/lib/users/actor-visibility";
+import { newTaskWorkflowOwnership } from "@/lib/tasks/orchestrator/ownership";
 
 type ActorRow = {
   id: string;
@@ -165,6 +155,7 @@ async function createTask(formData: FormData) {
 
   const task = await db.task.create({
     data: {
+      ...newTaskWorkflowOwnership(),
       projectId,
       workItemKey: await allocateWorkItemKey(projectId),
       title: taskTitle,
@@ -230,18 +221,15 @@ async function createTask(formData: FormData) {
 // move back instead of swallowing a generic thrown Error. Authentication
 // failure still throws — that is a true server fault, not a rule
 // rejection.
-export type MoveTaskResult =
-  | { ok: true }
-  | { ok: false; code: WorkflowErrorCode | "UNKNOWN_COLUMN"; message: string };
-
 async function moveTask(
   taskId: string,
   status: string,
   slug: string,
+  _options?: MoveTaskOptions,
 ): Promise<MoveTaskResult> {
   "use server";
   const actor = await requireActor();
-  if (!COLUMN_IDS.includes(status)) {
+  if (!isTaskWorkflowStatus(status)) {
     return {
       ok: false,
       code: "UNKNOWN_COLUMN",
@@ -252,128 +240,36 @@ async function moveTask(
     where: accessibleTaskWhere(actor, { id: taskId }),
     select: {
       id: true,
-      title: true,
       status: true,
+      workflowVersion: true,
+      activeWorkflowCycleId: true,
       projectId: true,
-      assigneeId: true,
-      actingManagerId: true,
-      reporterId: true,
-      approvedOn: true,
       deletedAt: true,
-      epicId: true,
-      repositoryRun: { select: repositoryFinalizationFenceSelect },
-      epic: { select: { status: true, actingManagerId: true } },
+      project: { select: { slug: true } },
     },
   });
-  if (!current || current.deletedAt) {
+  if (!current || current.deletedAt || current.project.slug !== slug) {
     return { ok: false, code: "UNKNOWN_COLUMN", message: "Task not found" };
   }
   await requireProjectAccess(actor, { id: current.projectId });
-  if (current.status === status) return { ok: true };
-  if (repositoryFinalizationOwnsTask(current.repositoryRun)) {
-    return {
-      ok: false,
-      code: "EXPLICIT_USER_ACTION_REQUIRED",
-      message: REPOSITORY_FINALIZATION_FENCE_MESSAGE,
-    };
+  if (!isTaskWorkflowStatus(current.status)) {
+    return { ok: false, code: "INVALID_STATUS", message: "Task has an invalid workflow status." };
   }
+  const result = await submitBrowserStatusOverride({
+    actor,
+    taskId,
+    currentStatus: current.status,
+    targetStatus: status,
+    expectedWorkflowVersion: current.workflowVersion,
+    activeWorkflowCycleId: current.activeWorkflowCycleId,
+    surface: "project-board",
+  });
+  if (!result.ok) return result;
 
-  // Browser-session human moves are authoritative. Workflow policy still
-  // constrains agent/generic automation paths, but a human board action must
-  // persist once the target column is a known PM status.
-  if (actor.kind !== "human") {
-    const check = checkStatusTransition({
-      from: current.status,
-      to: status,
-      actor,
-    });
-    if (!check.ok) {
-      return { ok: false, code: check.code, message: check.message };
-    }
-  }
-  if (actor.kind !== "human" && status === "In Progress" && !current.approvedOn) {
-    return {
-      ok: false,
-      code: "EXPLICIT_USER_ACTION_REQUIRED",
-      message: "Action Plan must be approved before this task can move to In Progress.",
-    };
-  }
-  if (status === "In Progress") {
-    try {
-      await ensureTaskCodeWorktree(current.id, actor.id);
-    } catch (err) {
-      return {
-        ok: false,
-        code: "EXPLICIT_USER_ACTION_REQUIRED",
-        message: err instanceof TaskWorktreeError
-          ? err.message
-          : "Task worktree could not be created or validated.",
-      };
-    }
-  }
-
-  if (current.status === "Review" && status === "Done") {
-    const actorUser = await db.user.findUnique({
-      where: { id: actor.id },
-      select: { username: true },
-    });
-    const completion = await completeReviewedTaskAndAssignNext({
-      taskId,
-      actor: {
-        id: actor.id,
-        username: actorUser?.username ?? "unknown",
-        kind: actor.kind,
-      },
-      via: "board-move",
-    });
-    if (!completion.completed) {
-      return {
-        ok: false,
-        code: "EXPLICIT_USER_ACTION_REQUIRED",
-        message: "Could not complete this reviewed task.",
-      };
-    }
-    revalidateTaskShell(taskId);
-    revalidatePath(`/projects/${slug}`);
-    for (const next of completion.nextTasks ?? []) {
-      revalidateTaskShell(next.id);
-      revalidatePath(`/projects/${slug}/tasks/${next.id}`);
-    }
-    publishBoardTouch(current.projectId);
-    return { ok: true };
-  }
-
-  if (status === "Review") {
-    if (current.status !== "In Progress") {
-      return {
-        ok: false,
-        code: "EXPLICIT_USER_ACTION_REQUIRED",
-        message: "A task can enter Review only through validation from In Progress.",
-      };
-    }
-    const actorUser = await db.user.findUnique({
-      where: { id: actor.id },
-      select: { username: true },
-    });
-    const handoff = await runTaskReviewHandoff({
-      taskId,
-      actor: { id: actor.id, kind: actor.kind, username: actorUser?.username ?? null },
-      via: "human-board-move",
-      movedFromStatus: current.status,
-    });
-    for (const assigned of handoff.refillAssignments) {
-      revalidatePath(`/projects/${slug}/tasks/${assigned.taskId}`);
-    }
-    revalidateTaskShell(taskId);
-    revalidatePath(`/projects/${slug}`);
-    publishBoardTouch(current.projectId);
-    return { ok: true };
-  }
-
-  // This legacy local action is retained only for source compatibility. The
-  // rendered board uses moveTaskStatus directly; if another caller reaches
-  // this function, it still crosses the same authoritative boundary.
-  return moveTaskStatus(taskId, status, slug);
+  revalidateTaskShell(taskId);
+  revalidatePath(`/projects/${slug}`);
+  publishBoardTouch(current.projectId);
+  return { ok: true };
 }
 
 export default async function ProjectBoardPage({
@@ -535,7 +431,7 @@ export default async function ProjectBoardPage({
             project: null,
           };
         })}
-        moveTaskAction={moveTaskStatus}
+        moveTaskAction={moveTask}
         reorderTasksAction={reorderBoardTasks}
         deleteTaskAction={binTask}
         canOperatorOverride={viewer.isOwner}

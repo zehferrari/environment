@@ -8,7 +8,7 @@ this runner picks it up, runs pm-switch.sh (build + privileged flip via
 pm-apply-worktree), and publishes state.json for the browser to poll.
 
 Spool (PM_SWITCH_DIR, default /var/lib/pm/switch):
-  request.json  — written by the web app: {id, target, requestedBy, requestedAt}
+  request.json  — written by the web app: {id, target, databaseSelection, requestedBy, requestedAt}
   state.json    — written here: {served, servedBranch, worktrees[], job{}, updatedAt}
 
 Config via env (set in the systemd unit):
@@ -167,6 +167,11 @@ def write_state(job):
 
 def run_switch(req):
     target = str(req.get("target", "")).strip()
+    database_selection = str(req.get("databaseSelection", "")).strip()
+    if database_selection not in {"", "worktree", "main"}:
+        return {"id": req["id"], "state": "error", "action": "serve", "target": target,
+                "message": "Invalid database selection.", "startedAt": now(),
+                "updatedAt": now(), "log": "Browser switches may select only a named worktree database."}
     valid = {w["name"] for w in worktrees(None)} | {w["path"] for w in worktrees(None)}
     if target not in valid:
         return {"id": req["id"], "state": "error", "action": "serve", "target": target,
@@ -177,7 +182,11 @@ def run_switch(req):
     write_state({"id": req["id"], "state": "building", "action": "serve", "target": target,
                  "message": f"Building & switching to {target}…", "startedAt": started,
                  "updatedAt": now(), "log": ""})
-    proc = subprocess.run([SWITCH_SCRIPT, target], capture_output=True, text=True)
+    command = [SWITCH_SCRIPT]
+    if database_selection:
+        command.append(f"--database={database_selection}")
+    command.append(target)
+    proc = subprocess.run(command, capture_output=True, text=True)
     log = ANSI.sub("", (proc.stdout or "") + (proc.stderr or ""))
     tail = "\n".join(log.splitlines()[-40:])
     if proc.returncode == 0:

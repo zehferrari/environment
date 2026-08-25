@@ -227,39 +227,31 @@ async function main() {
       "completed",
     );
 
-    // Service-layer contract: the browser move paths reach the
-    // operator_override intent only behind the explicit opt-in request flag,
-    // and reject non-admin actors server-side. moveTaskStatus needs a browser
-    // session, so (like the other UI contract tests) the gate is locked in at
-    // the source level.
+    // Service-layer contract: browser status surfaces are transports for the
+    // authoritative human override command. The old generic move-status file
+    // is types-only, and no page can fall back to a direct kernel mutation.
     const readSource = (rel: string) => readFileSync(path.join(process.cwd(), rel), "utf8");
+    const moveStatusSource = readSource("lib/tasks/move-status.ts");
+    assert(!moveStatusSource.includes("function moveTaskStatus"));
+    assert(!/submitWorkflowCommand|transitionTask\(|applyTaskTransition\(|\bdb\./.test(moveStatusSource));
+
+    const adapterSource = readSource("lib/tasks/orchestrator/browser-status-adapter.ts");
+    assert(adapterSource.includes('intent: "override_status"'));
+    assert(adapterSource.includes("expectedWorkflowVersion: args.expectedWorkflowVersion"));
+    assert(adapterSource.includes('if (args.actor.kind !== "human")'));
+    assert(adapterSource.includes('source: "browser"'));
+    assert(!/transitionTask\(|applyTaskTransition\(/.test(adapterSource));
+
     for (const rel of [
-      "lib/tasks/move-status.ts",
+      "app/(app)/projects/[slug]/page.tsx",
       "app/(app)/workspaces/[slug]/page.tsx",
       "app/(app)/workspaces/(landing)/page.tsx",
     ]) {
       const source = readSource(rel);
-      const overrideBranch = source.indexOf("if (options?.operatorOverride) {");
-      assert(overrideBranch !== -1, `${rel} must gate the override on the explicit request flag`);
-      const adminGuard = source.indexOf('if (actor.kind !== "human" || !actor.isOwner) {', overrideBranch);
-      assert(adminGuard !== -1, `${rel} must reject non-admin operator overrides`);
-      const intentUse = source.indexOf('intent: "operator_override"', adminGuard);
-      assert(intentUse !== -1, `${rel} must route the override through the audited kernel intent`);
-      assert.equal(
-        source.split('intent: "operator_override"').length,
-        2,
-        `${rel} must apply the operator_override intent only inside the admin-gated opt-in branch`,
-      );
+      assert(source.includes("submitBrowserStatusOverride"), `${rel} must submit the browser override command`);
+      assert(!/moveTaskStatus|transitionTask\(|applyTaskTransition\(/.test(source), `${rel} must have no direct status writer`);
+      assert(!source.includes("recordLegacyWorkflowBoundaryInvocation"), `${rel} must not be a legacy boundary`);
     }
-    const boardSource = readSource("app/(app)/projects/[slug]/board-client.tsx");
-    assert(
-      boardSource.includes("canOperatorOverride && !options?.operatorOverride"),
-      "board must offer the override confirm only to admins and never re-prompt a failed override",
-    );
-    assert(
-      boardSource.includes("{ operatorOverride: true }"),
-      "board must re-submit with the explicit override flag only after the confirm",
-    );
 
     await db.$disconnect();
     console.log("[workflow-transition-kernel] PASS");

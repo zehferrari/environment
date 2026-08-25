@@ -64,7 +64,7 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
     messageId: `msg-${runSeq}`,
     status: "completed",
     createdAt: FRESH,
-    acceptedAt: FRESH,
+    acceptedAt: FRESH, admittedAt: FRESH,
     streamingAt: null,
     completedAt: FRESH,
     failedAt: null,
@@ -244,7 +244,7 @@ function expectViolations(
   const anchored = run({
     lastEventAt: null,
     streamingAt: null,
-    acceptedAt: STALE,
+    acceptedAt: STALE, admittedAt: STALE,
     createdAt: STALE - 1000,
   });
   assertEqual(runLeaseAnchor(anchored), STALE, "lease falls back to acceptedAt");
@@ -252,7 +252,7 @@ function expectViolations(
   const bare = run({
     lastEventAt: null,
     streamingAt: null,
-    acceptedAt: null,
+    acceptedAt: null, admittedAt: null,
     createdAt: STALE,
   });
   assertEqual(runLeaseAnchor(bare), STALE, "lease falls back to createdAt");

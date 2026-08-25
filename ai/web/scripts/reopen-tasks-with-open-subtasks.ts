@@ -3,14 +3,13 @@
 // (clearing assignee + Action Plan approval). The new sub-task model treats the
 // checklist as the task's progress, so a task with open items is not finished.
 //
-// Safe by default: prints a dry-run plan. Pass --apply to write.
+// Read-only inventory. Phase E retired the direct repair writer; an operator
+// must submit an authenticated typed command for each selected task.
 //
 //   pnpm tsx scripts/reopen-tasks-with-open-subtasks.ts            # dry run
-//   pnpm tsx scripts/reopen-tasks-with-open-subtasks.ts --apply    # execute
+//   pnpm tsx scripts/reopen-tasks-with-open-subtasks.ts            # inspect
 
 import { db } from "@/lib/db";
-
-const APPLY = process.argv.includes("--apply");
 
 async function main() {
   const tasks = await db.task.findMany({
@@ -37,7 +36,7 @@ async function main() {
   }
 
   console.log(
-    `${APPLY ? "APPLYING" : "DRY RUN"} — ${tasks.length} task(s) with open sub-tasks:\n`,
+    `READ ONLY — ${tasks.length} task(s) with open sub-tasks:\n`,
   );
 
   let changed = 0;
@@ -53,55 +52,11 @@ async function main() {
     );
     if (!needsMove && !needsUnassign) continue;
 
-    if (APPLY) {
-      const now = new Date();
-      const maxRank = await db.task.aggregate({
-        where: { status: "To Do", deletedAt: null },
-        _max: { rank: true },
-      });
-      await db.$transaction([
-        db.task.update({
-          where: { id: task.id },
-          data: {
-            status: "To Do",
-            rank: (maxRank._max.rank ?? 0) + 1,
-            statusChangedAt: now,
-            assignee: { disconnect: true },
-            approvedOn: null,
-            approvedBy: { disconnect: true },
-          },
-        }),
-        ...(needsMove
-          ? [
-              db.activityLog.create({
-                data: {
-                  projectId: task.projectId,
-                  taskId: task.id,
-                  kind: "task.move",
-                  payload: JSON.stringify({ from: task.status, to: "To Do", via: "reopen-open-subtasks" }),
-                },
-              }),
-            ]
-          : []),
-        ...(needsUnassign
-          ? [
-              db.activityLog.create({
-                data: {
-                  projectId: task.projectId,
-                  taskId: task.id,
-                  kind: "task.assign",
-                  payload: JSON.stringify({ from: task.assignee?.username ?? null, to: null, via: "reopen-open-subtasks" }),
-                },
-              }),
-            ]
-          : []),
-      ]);
-    }
     changed += 1;
   }
 
   console.log(
-    `\n${APPLY ? "Updated" : "Would update"} ${changed} task(s).${APPLY ? "" : " Re-run with --apply to execute."}`,
+    `\nFound ${changed} task(s). Submit authenticated operator commands with explicit evidence; this inventory cannot mutate workflow state.`,
   );
 }
 

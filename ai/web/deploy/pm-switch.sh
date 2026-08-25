@@ -10,7 +10,7 @@
 # + daemon-reload + restarts — is delegated to /usr/local/sbin/pm-apply-worktree.
 #
 # Usage:
-#   pm-switch.sh <worktree-name | path>
+#   pm-switch.sh [--database=worktree|main] <worktree-name | path>
 #   pm-switch.sh status
 #
 # See deploy/MULTI_AGENT_WORKTREES.md.
@@ -41,6 +41,7 @@ APPLY="${PM_APPLY_HELPER:-/usr/local/sbin/pm-apply-worktree}"
 PM_DB_DIR="${PM_DB_DIR:-${PM_DEPLOY_DB_ROOT:-/srv/Data/pm}}"
 PM_CANONICAL_DB="${PM_CANONICAL_DB:-${PM_DEPLOY_CANONICAL_DB:-$PM_DB_DIR/pm.db}}"
 SWITCH_DIR="${PM_SWITCH_DIR:-${PM_DEPLOY_SWITCH_DIR:-/var/lib/pm/switch}}"
+RECEIPT_DIR="${PM_DEPLOY_RECEIPT_DIR:-$PM_DB_DIR/deployment-receipts}"
 MAINTENANCE_FILE="$SWITCH_DIR/.maintenance"
 
 log()  { printf '\n\033[1;36m==>\033[0m %s\n' "$*"; }
@@ -102,9 +103,38 @@ file_url_path() {
   esac
 }
 
-[[ -n "${1:-}" ]] || die "usage: pm-switch.sh <worktree-name | path>   (or: status)"
+usage() {
+  printf '%s\n' \
+    "usage: pm-switch.sh [--database=worktree|main] <worktree-name | path>" \
+    "       pm-switch.sh status"
+}
 
-if [[ "$1" == "status" || "$1" == "--status" ]]; then
+DATABASE_SELECTION="${PM_SWITCH_DATABASE:-auto}"
+TARGET=""
+while (($#)); do
+  case "$1" in
+    status|--status)
+      [[ -z "$TARGET" ]] || die "status does not accept a worktree target"
+      TARGET="status"
+      ;;
+    --database=*) DATABASE_SELECTION="${1#--database=}" ;;
+    --database)
+      shift
+      [[ -n "${1:-}" ]] || die "--database requires a value"
+      DATABASE_SELECTION="$1"
+      ;;
+    -h|--help) usage; exit 0 ;;
+    -*) die "unknown option: $1" ;;
+    *)
+      [[ -z "$TARGET" ]] || die "only one worktree target may be supplied"
+      TARGET="$1"
+      ;;
+  esac
+  shift
+done
+[[ -n "$TARGET" ]] || { usage >&2; exit 1; }
+
+if [[ "$TARGET" == "status" ]]; then
   wt="$(served_worktree || true)"; [[ -n "$wt" ]] || die "cannot read pm.service WorkingDirectory"
   consumer_wt="$(consumer_worktree || true)"
   db_url="$(active_database_url || true)"
@@ -116,7 +146,6 @@ if [[ "$1" == "status" || "$1" == "--status" ]]; then
 fi
 
 # ---- resolve target -> APP_DIR (an ai/web dir) ----------------------------
-TARGET="$1"
 if   [[ -d "$TARGET/ai/web" ]];         then APP_DIR="$TARGET/ai/web"
 elif [[ -d "$WT_DIR/$TARGET/ai/web" ]]; then APP_DIR="$WT_DIR/$TARGET/ai/web"
 elif [[ -f "$TARGET/package.json" ]];   then APP_DIR="$TARGET"
@@ -127,24 +156,71 @@ STANDALONE="$APP_DIR/.next/standalone"
 WT_ROOT="${APP_DIR%/ai/web}"
 BRANCH="$(git_in "$WT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
 [[ -n "$BRANCH" && "$BRANCH" != "HEAD" ]] || die "cannot resolve branch for $WT_ROOT"
-BRANCH_SLUG="${BRANCH//\//_}"
-BRANCH_DB="${PM_BRANCH_DB:-$PM_DB_DIR/wt-$BRANCH_SLUG.db}"
+WORKTREE_NAME="$(basename "$WT_ROOT")"
+[[ -n "$WORKTREE_NAME" && "$WORKTREE_NAME" != "." && "$WORKTREE_NAME" != ".." ]] \
+  || die "cannot resolve database identity for $WT_ROOT"
+# The UI and CLI switch a named worktree, not a branch ref. A managed worktree
+# can temporarily host an Epic integration branch (for example, worktree
+# `main` on branch `phase-e`). Keying the DB by the checked-out branch makes
+# `pm-switch main` silently select wt-phase-e.db and appear to lose production
+# records. Keep the database attached to the stable worktree identity instead.
+WORKTREE_SLUG="${WORKTREE_NAME//\//_}"
+case "$DATABASE_SELECTION" in
+  auto)
+    if [[ -n "${PM_BRANCH_DB:-}" ]]; then
+      DATABASE_SELECTION="environment"
+      BRANCH_DB="$PM_BRANCH_DB"
+    elif [[ "$WORKTREE_NAME" == "main" && "$BRANCH" != "main" ]]; then
+      die "database intent is ambiguous: worktree 'main' currently checks out branch '$BRANCH'; rerun with --database=main (wt-main.db) or another explicit --database selection"
+    else
+      DATABASE_SELECTION="worktree"
+      BRANCH_DB="$PM_DB_DIR/wt-$WORKTREE_SLUG.db"
+    fi
+    ;;
+  worktree)
+    BRANCH_DB="$PM_DB_DIR/wt-$WORKTREE_SLUG.db"
+    ;;
+  main)
+    [[ "$WORKTREE_NAME" == "main" ]] || die "--database=main is valid only for the main worktree"
+    BRANCH_DB="$PM_DB_DIR/wt-main.db"
+    ;;
+  *) die "invalid --database selection '$DATABASE_SELECTION' (use worktree or main)" ;;
+esac
+[[ "$BRANCH_DB" == /* ]] || die "database path must be absolute: $BRANCH_DB"
+db_root_real="$(readlink -m "$PM_DB_DIR")"
+db_requested_real="$(readlink -m "$BRANCH_DB")"
+[[ "$db_requested_real" == "$db_root_real"/* ]] \
+  || die "database must remain below the configured PM DB root $db_root_real"
+BRANCH_DB="$db_requested_real"
 BRANCH_DB_URL="file:$BRANCH_DB"
 
 [[ -x "$PNPM" ]]                 || die "pnpm not executable at $PNPM (set PM_PNPM)."
 [[ -d "$APP_DIR/node_modules" ]] || die "no node_modules in $APP_DIR — run 'pnpm install' there (worktrees don't share it; created via: claim-branch environment <branch>)."
 [[ -x "$APPLY" ]]                || die "privileged helper missing: $APPLY (run ai/web/deploy/install-pm-switch.sh)."
 command -v sqlite3 >/dev/null 2>&1 || die "sqlite3 is required for per-worktree DB forks."
+[[ -d "$RECEIPT_DIR" && -w "$RECEIPT_DIR" ]] \
+  || die "deployment receipt directory is missing or not writable: $RECEIPT_DIR (run ai/web/deploy/install-pm-switch.sh)"
 
-# 0. Ensure this branch has an isolated DB fork, then apply this branch's
-#    migrations to that fork only.
-log "Preparing DB fork $BRANCH_DB for branch $BRANCH …"
+# 0. Resolve and validate database intent before stopping either live service.
+log "Preflight: worktree=$WORKTREE_NAME branch=$BRANCH database=$DATABASE_SELECTION path=$BRANCH_DB …"
 mkdir -p "$PM_DB_DIR"
 if [[ ! -f "$BRANCH_DB" ]]; then
+  [[ "$DATABASE_SELECTION" == "worktree" || "$DATABASE_SELECTION" == "main" || "$DATABASE_SELECTION" == "environment" ]] \
+    || die "managed worktree database does not exist: $BRANCH_DB"
   [[ -f "$PM_CANONICAL_DB" ]] || die "canonical DB not found at $PM_CANONICAL_DB"
   sqlite3 "$PM_CANONICAL_DB" ".backup '$BRANCH_DB'"
 fi
+[[ -f "$APP_DIR/prisma/schema.prisma" && -d "$APP_DIR/prisma/migrations" ]] \
+  || die "Prisma schema or migration history is missing from $APP_DIR"
+quick_check="$(sqlite3 "$BRANCH_DB" 'PRAGMA quick_check;' 2>&1)" \
+  || die "database preflight failed for $BRANCH_DB: $quick_check"
+[[ "$quick_check" == "ok" ]] || die "database quick_check failed for $BRANCH_DB: $quick_check"
+DEPLOY_COMMIT="$(git_in "$WT_ROOT" rev-parse HEAD)"
+DEPLOY_DIRTY_COUNT="$(git_in "$WT_ROOT" status --porcelain=v1 | wc -l | tr -d ' ')"
+log "Preparing and migrating $BRANCH_DB (commit $DEPLOY_COMMIT; dirty paths $DEPLOY_DIRTY_COUNT) …"
 branch_db_real="$(readlink -f "$BRANCH_DB")"
+[[ "$branch_db_real" == "$db_root_real"/* ]] \
+  || die "resolved database escapes the configured PM DB root: $branch_db_real"
 served_wt="$(served_worktree || true)"
 active_db_url="$(active_database_url || true)"
 active_db_path="$(file_url_path "$active_db_url" || true)"
@@ -156,6 +232,14 @@ if [[ "$served_wt" == "$WT_ROOT" || "$active_db_real" == "$branch_db_real" ]]; t
   log "Target worktree or DB is already live; stopping PM services before migrate/build to avoid SQLite and build-tree locks…"
   sudo -n "$APPLY" --stop-live "$STANDALONE" "$BRANCH_DB_URL"
 fi
+# systemd can report both writers stopped while a final SQLite connection is
+# still unwinding. Wait for that reader and checkpoint its WAL before Prisma
+# requests the schema lock; otherwise a healthy deployment can fail once with
+# a transient `database is locked` and leave the site in maintenance.
+checkpoint="$(sqlite3 -cmd '.timeout 10000' "$BRANCH_DB" 'PRAGMA wal_checkpoint(TRUNCATE);')" \
+  || die "database WAL checkpoint failed before migration: $BRANCH_DB"
+[[ "${checkpoint%%|*}" == 0 ]] \
+  || die "database remained busy after stopping live writers: $BRANCH_DB ($checkpoint)"
 sqlite3 "$BRANCH_DB" 'PRAGMA journal_mode=WAL;' >/dev/null
 chmod g+rw "$BRANCH_DB" "$BRANCH_DB"-wal "$BRANCH_DB"-shm 2>/dev/null || true
 DATABASE_URL="$BRANCH_DB_URL" "$PNPM" --dir "$APP_DIR" exec prisma migrate deploy
@@ -205,3 +289,33 @@ if [[ -n "$ref" ]]; then
 else
   log "OK — pm.service and pm-consumer.service now use $APP_DIR (/login responded)."
 fi
+
+# 5. Persist the exact code/database pairing only after end-to-end health
+# verification. This receipt makes post-incident diagnosis independent of
+# shell history or the branch currently attached to the worktree.
+DEPLOYED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+# Historical databases can contain ISO timestamps and epoch milliseconds in
+# finished_at. SQLite sorts those storage classes separately, so use Prisma's
+# timestamp-prefixed migration name as the stable schema-order authority.
+LAST_MIGRATION="$(sqlite3 "$BRANCH_DB" "SELECT migration_name FROM _prisma_migrations WHERE finished_at IS NOT NULL ORDER BY migration_name DESC LIMIT 1;" 2>/dev/null || true)"
+RECEIPT_FILE="$RECEIPT_DIR/${DEPLOYED_AT//:/}-${WORKTREE_SLUG}-${DEPLOY_COMMIT:0:12}.receipt"
+RECEIPT_TMP="$(mktemp "$RECEIPT_DIR/.deployment.XXXXXX")"
+{
+  printf 'deployed_at=%s\n' "$DEPLOYED_AT"
+  printf 'worktree=%s\n' "$WORKTREE_NAME"
+  printf 'worktree_path=%s\n' "$WT_ROOT"
+  printf 'branch=%s\n' "$BRANCH"
+  printf 'commit=%s\n' "$DEPLOY_COMMIT"
+  printf 'dirty_path_count=%s\n' "$DEPLOY_DIRTY_COUNT"
+  printf 'database_selection=%s\n' "$DATABASE_SELECTION"
+  printf 'database_path=%s\n' "$BRANCH_DB"
+  printf 'last_migration=%s\n' "$LAST_MIGRATION"
+  printf 'pm_service=active\n'
+  printf 'pm_consumer_service=active\n'
+} > "$RECEIPT_TMP"
+chmod 0640 "$RECEIPT_TMP"
+mv -f "$RECEIPT_TMP" "$RECEIPT_FILE"
+LAST_RECEIPT_TMP="$(mktemp "$RECEIPT_DIR/.last-deployment.XXXXXX")"
+cp "$RECEIPT_FILE" "$LAST_RECEIPT_TMP"
+mv -f "$LAST_RECEIPT_TMP" "$RECEIPT_DIR/last-deployment.receipt"
+log "Deployment receipt: $RECEIPT_FILE"

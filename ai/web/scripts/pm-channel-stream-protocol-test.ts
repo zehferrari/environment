@@ -14,6 +14,7 @@ import {
 import { pmChannelRunTargetKey } from "@/lib/agents/pm-channel/runs";
 import { replayPmChannelStreamFrames } from "@/lib/agents/pm-channel/stream-log";
 import { isRetryablePmChannelTurnFailure } from "@/lib/agents/pm-channel/jobs";
+import { reserveExecutionLane } from "@/lib/agents/pm-channel/execution-lane";
 
 const target = {
   kind: "direct" as const,
@@ -124,17 +125,21 @@ async function assertCallbackProtocolBoundary() {
   });
   assert.equal(forged.status, 403, "stream callback must reject a target without a dispatched run");
   const targetKey = pmChannelRunTargetKey(callbackTarget);
-  await db.pmChannelRun.create({
+  const protocolRun = await db.pmChannelRun.create({
     data: {
       targetKey,
       kind: "direct",
       agentSlug,
       messageId: original.id,
       status: "accepted",
-      acceptedAt: new Date(),
+      acceptedAt: new Date(), admittedAt: new Date(),
       lastEventAt: new Date(),
     },
   });
+  assert(
+    (await reserveExecutionLane({ agentSlug, runId: protocolRun.id })).acquired,
+    "the protocol run reserves its durable execution lane",
+  );
 
   const post = (payload: Record<string, unknown>) => applyPmChannelStreamCallback({
     payload: { target: callbackTarget, ...payload },
@@ -142,8 +147,21 @@ async function assertCallbackProtocolBoundary() {
     transportMode: "http",
   });
 
-  let result = await post({ event: "status", statusKind: "reading" });
+  let result = await post({ event: "turn:admitted", provider: "openai", model: "test-model" });
+  assert.equal(result.status, 200, "callback accepts the canonical admission event");
+  assert.equal(
+    (await db.agentExecutionLease.findUniqueOrThrow({ where: { runId: protocolRun.id } })).status,
+    "admitted",
+    "canonical admission advances the durable execution lane",
+  );
+
+  result = await post({ event: "status", statusKind: "reading" });
   assert.equal(result.status, 200, "callback accepts legacy status events with statusKind metadata");
+  assert.equal(
+    (await db.agentExecutionLease.findUniqueOrThrow({ where: { runId: protocolRun.id } })).status,
+    "running",
+    "the first progress callback advances the durable lane to running",
+  );
 
   result = await post({ event: "status:working" });
   assert.equal(result.status, 200, "callback accepts typed lifecycle status events");
@@ -157,6 +175,13 @@ async function assertCallbackProtocolBoundary() {
   result = await post({ event: "token", delta: PM_SILENT_REPLY_TOKEN });
   assert.equal(result.status, 200, "callback accepts token events before silent-text guard");
   assert.equal(result.body.silent, true, "callback suppresses silent token text without persisting it");
+  result = await post({ event: "final", text: PM_SILENT_REPLY_TOKEN });
+  assert.equal(result.body.silent, true, "a silent final settles without creating a visible reply");
+  assert.equal(
+    (await db.agentExecutionLease.findUniqueOrThrow({ where: { runId: protocolRun.id } })).status,
+    "released",
+    "a silent terminal callback releases the durable execution lane",
+  );
 
   const run = await db.pmChannelRun.findUniqueOrThrow({
     where: { targetKey },
@@ -169,13 +194,13 @@ async function assertCallbackProtocolBoundary() {
   });
   assert.deepEqual(
     rows.map((row) => row.kind),
-    ["status", "status:working", "tool:call", "token"],
+    ["turn:admitted", "status", "status:working", "tool:call", "token"],
     "callback persists the typed protocol events and does not persist silent token text",
   );
 
-  const statusPayload = JSON.parse(rows[0].payload) as Record<string, unknown>;
+  const statusPayload = JSON.parse(rows[1].payload) as Record<string, unknown>;
   assert.equal(statusPayload.statusKind, "reading", "callback preserves statusKind metadata");
-  const toolPayload = JSON.parse(rows[2].payload) as Record<string, unknown>;
+  const toolPayload = JSON.parse(rows[3].payload) as Record<string, unknown>;
   assert.equal(toolPayload.toolStatus, "call", "callback preserves toolStatus metadata");
   assert.equal(toolPayload.toolName, "memory_search", "callback preserves toolName metadata");
 
@@ -192,17 +217,21 @@ async function assertCallbackProtocolBoundary() {
   });
   const failureTarget = { kind: "direct" as const, agentSlug, messageId: failureOriginal.id };
   const failureKey = pmChannelRunTargetKey(failureTarget);
-  await db.pmChannelRun.create({
+  const failureProtocolRun = await db.pmChannelRun.create({
     data: {
       targetKey: failureKey,
       kind: "direct",
       agentSlug,
       messageId: failureOriginal.id,
       status: "accepted",
-      acceptedAt: new Date(),
+      acceptedAt: new Date(), admittedAt: new Date(),
       lastEventAt: new Date(),
     },
   });
+  assert(
+    (await reserveExecutionLane({ agentSlug, runId: failureProtocolRun.id })).acquired,
+    "the terminal-failure run reserves its lane",
+  );
   const failureText = "⚠️ Auto-compaction could not recover this turn. I kept this conversation mapped to the current session.";
   result = await applyPmChannelStreamCallback({
     payload: { target: failureTarget, event: "final", text: failureText },
@@ -213,6 +242,11 @@ async function assertCallbackProtocolBoundary() {
   assert.equal(result.body.status, "error", "terminal recovery text must publish an error state, not a successful final");
   let failedRun = await db.pmChannelRun.findUniqueOrThrow({ where: { targetKey: failureKey } });
   assert.equal(failedRun.status, "failed", "terminal recovery text must fail a conversation run without a durable reply");
+  assert.equal(
+    (await db.agentExecutionLease.findUniqueOrThrow({ where: { runId: failureProtocolRun.id } })).status,
+    "released",
+    "a terminal failure releases the durable execution lane",
+  );
   await applyPmChannelStreamCallback({
     payload: { target: failureTarget, event: "done" },
     rateLimit: false,
@@ -233,17 +267,21 @@ async function assertCallbackProtocolBoundary() {
   });
   const transientTarget = { kind: "direct" as const, agentSlug, messageId: transientOriginal.id };
   const transientKey = pmChannelRunTargetKey(transientTarget);
-  await db.pmChannelRun.create({
+  const transientProtocolRun = await db.pmChannelRun.create({
     data: {
       targetKey: transientKey,
       kind: "direct",
       agentSlug,
       messageId: transientOriginal.id,
       status: "accepted",
-      acceptedAt: new Date(),
+      acceptedAt: new Date(), admittedAt: new Date(),
       lastEventAt: new Date(),
     },
   });
+  assert(
+    (await reserveExecutionLane({ agentSlug, runId: transientProtocolRun.id })).acquired,
+    "the transient-progress run reserves its lane",
+  );
   result = await applyPmChannelStreamCallback({
     payload: {
       target: transientTarget,
@@ -255,8 +293,14 @@ async function assertCallbackProtocolBoundary() {
   });
   assert.equal(result.body.transient, true);
   const transientRun = await db.pmChannelRun.findUniqueOrThrow({ where: { targetKey: transientKey } });
-  assert.equal(transientRun.status, "accepted", "transient compaction progress must not settle the PM run");
+  assert.equal(transientRun.status, "streaming", "transient compaction progress must heartbeat without settling the PM run");
+  assert.equal(
+    (await db.agentExecutionLease.findUniqueOrThrow({ where: { runId: transientProtocolRun.id } })).status,
+    "running",
+    "transient progress keeps the durable execution lane active",
+  );
 
+  await db.agentExecutionLease.deleteMany({ where: { agentSlug } });
   await db.pmChannelRun.deleteMany({ where: { targetKey: { in: [targetKey, failureKey, transientKey] } } });
   await db.directAgentChatMessage.deleteMany({ where: { agentSlug } });
   await db.user.delete({ where: { id: agentUser.id } });

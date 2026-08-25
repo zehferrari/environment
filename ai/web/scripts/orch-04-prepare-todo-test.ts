@@ -53,6 +53,8 @@ async function main() {
         projectId: project1.id,
         title: "Non-code task",
         status: "Backlog",
+        workflowEngine: "orchestrator_v2",
+        workflowEnginePinnedAt: new Date(),
         assigneeId: assigneeUser.id,
         actingManagerId: reviewerUser.id,
         reporterId: owner.id,
@@ -86,8 +88,9 @@ async function main() {
       actor: { id: reviewerUser.id, kind: "human", username: "reviewer", role: "reviewer" },
       expectedWorkflowVersion: 0,
       idempotencyKey: "orch04:approve:1",
-      source: "orch04-test",
+      source: "agent",
       evidence: { actionPlanId: plan1.id },
+      payload: { actionPlanId: plan1.id, actionPlanVersion: 1 },
     });
     assert.equal(approve1.status, "accepted", `approve_plan accepted; got ${JSON.stringify(approve1)}`);
     assert.ok(approve1.procedureId, "approve_plan created a procedure");
@@ -134,8 +137,9 @@ async function main() {
       actor: { id: reviewerUser.id, kind: "human", username: "reviewer", role: "reviewer" },
       expectedWorkflowVersion: 0,
       idempotencyKey: "orch04:approve:1", // same key
-      source: "orch04-test",
+      source: "agent",
       evidence: { actionPlanId: plan1.id },
+      payload: { actionPlanId: plan1.id, actionPlanVersion: 1 },
     });
     assert.equal(replayApprove.status, "replayed", "repeated approval is replayed");
     const proceduresForTask1After = await db.taskProcedureRun.count({ where: { taskId: task1.id } });
@@ -151,6 +155,8 @@ async function main() {
         projectId: project2.id,
         title: "Task 2",
         status: "Backlog",
+        workflowEngine: "orchestrator_v2",
+        workflowEnginePinnedAt: new Date(),
         assigneeId: assigneeUser.id,
         actingManagerId: reviewerUser.id,
         reporterId: owner.id,
@@ -167,8 +173,9 @@ async function main() {
       actor: { id: reviewerUser.id, kind: "human", username: "reviewer", role: "reviewer" },
       expectedWorkflowVersion: 0,
       idempotencyKey: "orch04:approve:2",
-      source: "orch04-test",
+      source: "agent",
       evidence: { actionPlanId: plan2.id },
+      payload: { actionPlanId: plan2.id, actionPlanVersion: 1 },
     });
     assert.equal(approve2.status, "accepted");
     // Manually move task2 to In Progress (simulating concurrent start).
@@ -190,7 +197,7 @@ async function main() {
     // Use a third task with a non-code project to verify the projection.
     const project3 = await db.project.create({ data: { slug: "orch04-3", name: "Project 3" } });
     const task3 = await db.task.create({
-      data: { projectId: project3.id, title: "Task 3", status: "Backlog", assigneeId: assigneeUser.id, actingManagerId: reviewerUser.id, reporterId: owner.id },
+      data: { projectId: project3.id, title: "Task 3", status: "Backlog", workflowEngine: "orchestrator_v2", workflowEnginePinnedAt: new Date(), assigneeId: assigneeUser.id, actingManagerId: reviewerUser.id, reporterId: owner.id },
     });
     const plan3 = await db.actionPlan.create({ data: { taskId: task3.id, summary: "Plan 3", version: 1, status: "draft", authorId: assigneeUser.id, contentHash: "hash-3" } });
     await db.actionPlanStep.create({ data: { actionPlanId: plan3.id, stepId: "s1", title: "Step 1", acceptanceCriteria: "[]", kind: "sequential", rank: 0 } });
@@ -200,8 +207,9 @@ async function main() {
       actor: { id: reviewerUser.id, kind: "human", username: "reviewer", role: "reviewer" },
       expectedWorkflowVersion: 0,
       idempotencyKey: "orch04:approve:3",
-      source: "orch04-test",
+      source: "agent",
       evidence: { actionPlanId: plan3.id },
+      payload: { actionPlanId: plan3.id, actionPlanVersion: 1 },
     });
     // The procedure was just created and should be in queued status.
     const projection = await buildTaskWorkflowProjection(task3.id);

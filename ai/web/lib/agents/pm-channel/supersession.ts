@@ -1,5 +1,6 @@
 import { db } from "@/lib/db";
 import { resolvePmChannelToken } from "@/lib/agents/pm-channel/openclaw";
+import { releaseExecutionLane } from "@/lib/agents/pm-channel/execution-lane";
 
 export type SupersessionFenceResult =
   | { ok: true; cancelledRunIds: string[] }
@@ -116,7 +117,7 @@ export async function fenceSupersededPmChannelRuns(args: {
       agentSlug: true,
       gatewayPort: true,
       sessionKey: true,
-      acceptedAt: true,
+      admittedAt: true,
       streamingAt: true,
     },
   });
@@ -130,12 +131,13 @@ export async function fenceSupersededPmChannelRuns(args: {
 
     // A queued run was never handed to a gateway, so retiring its job is the
     // complete cancellation acknowledgement.
-    const wasDelivered = predecessor.acceptedAt !== null || predecessor.streamingAt !== null;
+    const wasDelivered = predecessor.admittedAt !== null || predecessor.streamingAt !== null;
     if (!wasDelivered) {
       await db.pmChannelRun.update({
         where: { id: predecessor.id },
         data: { cancellationAcknowledgedAt: new Date(), cancellationError: null },
       });
+      await releaseExecutionLane({ runId: predecessor.id });
       cancelledRunIds.push(predecessor.id);
       continue;
     }
@@ -165,6 +167,7 @@ export async function fenceSupersededPmChannelRuns(args: {
       where: { id: predecessor.id },
       data: { cancellationAcknowledgedAt: new Date(), cancellationError: null },
     });
+    await releaseExecutionLane({ runId: predecessor.id });
     cancelledRunIds.push(predecessor.id);
   }
   return { ok: true, cancelledRunIds };

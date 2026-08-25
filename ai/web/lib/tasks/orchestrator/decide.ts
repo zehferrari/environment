@@ -39,6 +39,7 @@ export function decideCommand(
   command: {
     intent: TaskWorkflowIntent;
     actor: { id: string; username?: string | null };
+    source?: string;
     evidence?: Record<string, unknown>;
     payload?: Record<string, unknown>;
   },
@@ -51,6 +52,96 @@ export function decideCommand(
   const executorActorId = auth.executorActorId ?? null;
 
   switch (command.intent) {
+    case "override_status": {
+      const targetStatus = command.payload?.targetStatus;
+      if (
+        targetStatus !== "Backlog" &&
+        targetStatus !== "To Do" &&
+        targetStatus !== "In Progress" &&
+        targetStatus !== "Review" &&
+        targetStatus !== "Done"
+      ) {
+        return { status: "invalid", reason: "override_status requires a workflow targetStatus" };
+      }
+      const abandonsCycle = Boolean(state.activeWorkflowCycleId) &&
+        (targetStatus === "Backlog" || targetStatus === "To Do" || targetStatus === "Done");
+      return {
+        fromStatus: state.status,
+        toStatus: targetStatus,
+        kernelIntent: "operator_override",
+        cycleOperation: abandonsCycle ? "close" : "none",
+        cycleOutcome: abandonsCycle ? "abandoned" : undefined,
+        effects: [{ type: "board_touch", key: "board-status-override", payload: {} }],
+        evidence: {
+          ...command.evidence ?? {},
+          decisionActorId,
+          executorActorId,
+          humanStatusOverride: true,
+          reason: command.payload?.reason ?? null,
+        },
+        decisionActorId,
+        executorActorId,
+      };
+    }
+
+    case "epic_child_update": {
+      const targetStatus = command.payload?.targetStatus;
+      const epicId = command.payload?.epicId;
+      if (
+        typeof epicId !== "string" ||
+        (targetStatus !== "Backlog" &&
+          targetStatus !== "To Do" &&
+          targetStatus !== "In Progress" &&
+          targetStatus !== "Review" &&
+          targetStatus !== "Done")
+      ) {
+        return { status: "invalid", reason: "epic_child_update requires an Epic and workflow targetStatus" };
+      }
+      const closesCycle = Boolean(state.activeWorkflowCycleId) &&
+        (targetStatus === "Backlog" || targetStatus === "To Do" || targetStatus === "Done");
+      const notification = command.payload?.notification;
+      return {
+        fromStatus: state.status,
+        toStatus: targetStatus,
+        kernelIntent: "operator_override",
+        cycleOperation: closesCycle ? "close" : "none",
+        // Epic child updates are operator overrides, not review decisions.
+        // Closing a cycle here records abandonment; only the accepted-review
+        // finalization command may record a completed cycle.
+        cycleOutcome: closesCycle ? "abandoned" : undefined,
+        rank: command.payload?.rank === "front" ? "front" : "back",
+        taskData: {
+          ...(command.payload?.clearAssignee === true ? { assigneeId: null } : {}),
+          ...(command.payload?.clearArchive === true ? { archivedAt: null, archivedById: null } : {}),
+          ...(command.payload?.resetPlanApproval === true ? { approvedOn: null, approvedById: null } : {}),
+        },
+        effects: [
+          { type: "board_touch", key: `epic-child:${epicId}`, payload: { epicId } },
+          ...(notification && typeof notification === "object"
+            ? [{
+                type: "task_notification" as const,
+                key: `epic-child:${epicId}:${String((notification as Record<string, unknown>).targetUserId ?? "unknown")}`,
+                payload: notification as Record<string, unknown>,
+              }]
+            : []),
+        ],
+        evidence: {
+          ...command.evidence ?? {},
+          decisionActorId,
+          executorActorId,
+          epicId,
+          epicChildUpdate: true,
+          reason: command.payload?.reason ?? null,
+          clearAssignee: command.payload?.clearAssignee === true,
+          clearArchive: command.payload?.clearArchive === true,
+          archive: command.payload?.archive === true,
+          resetPlanApproval: command.payload?.resetPlanApproval === true,
+        },
+        decisionActorId,
+        executorActorId,
+      };
+    }
+
     case "approve_plan": {
       // Backlog -> To Do. Opens the prepare_todo_task procedure (ORCH-04).
       // Cycle operation is "none" — the cycle opens at start_implementation,
@@ -77,7 +168,11 @@ export function decideCommand(
       return {
         fromStatus: state.status,
         toStatus: "To Do",
-        kernelIntent: "approve_plan",
+        // Approval promotes Backlog work into the executable queue. A task
+        // already queued in To Do still needs the same atomic plan/checklist
+        // writes and prepare procedure, but there is no workflow edge to
+        // traverse; record that approval as the canonical audited no-op.
+        kernelIntent: state.status === "Backlog" ? "approve_plan" : "operator_override",
         cycleOperation: "none",
         procedureType: "prepare_todo_task",
         effects,
@@ -232,6 +327,42 @@ export function decideCommand(
       };
     }
 
+    case "worktree_revalidation_failed": {
+      // In Progress -> To Do (front). Cycle operation "close" with
+      // abandoned outcome. Used by the start_implementation_cycle procedure
+      // when worktree revalidation fails terminally — the worktree is
+      // unusable, not a validation failure. The assignee notification
+      // accurately describes the worktree failure, not a validation failure.
+      const effects: WorkflowEffect[] = [
+        { type: "board_touch", key: "board-worktree-revalidation-failed", payload: {} },
+      ];
+      if (state.assigneeId) {
+        effects.push({
+          type: "task_notification",
+          key: `worktree-revalidation-failed:${state.assigneeId}`,
+          payload: {
+            taskId: state.id,
+            targetUserId: state.assigneeId,
+            actor: command.actor,
+            reason: "worktree_failure",
+            body: "Worktree revalidation failed — the task returned to the front of To Do. The worktree could not be used.",
+          },
+        });
+      }
+      return {
+        fromStatus: "In Progress",
+        toStatus: "To Do",
+        kernelIntent: "worktree_revalidation_failed",
+        cycleOperation: "close",
+        cycleOutcome: "abandoned",
+        effects,
+        evidence: { ...command.evidence ?? {}, decisionActorId, executorActorId, mechanical: true },
+        decisionActorId,
+        executorActorId,
+        rank: "front",
+      };
+    }
+
     case "request_review_changes": {
       // Review -> To Do (front). Cycle operation "close" with
       // changes_requested outcome. The procedure (ORCH-07) sends the
@@ -364,12 +495,29 @@ export function decideCommand(
     case "raise_blocker":
     case "clear_blocker": {
       // No status change. Blocker state is recorded as evidence + activity.
+      const targetUserId = command.intent === "raise_blocker"
+        ? (state.resolvedReviewOwnerId ?? state.reporterId)
+        : state.assigneeId;
       return {
         fromStatus: state.status,
         toStatus: state.status,
         kernelIntent: "operator_override",
         cycleOperation: "none",
-        effects: [],
+        effects: targetUserId
+          ? [{
+              type: "task_notification",
+              key: `${command.intent}:${targetUserId}`,
+              payload: {
+                taskId: state.id,
+                targetUserId,
+                actor: command.actor,
+                reason: command.intent === "raise_blocker" ? "blocker" : "blocker_response",
+                body: command.intent === "raise_blocker"
+                  ? "A formal workflow blocker requires attention."
+                  : "The workflow blocker was cleared.",
+              },
+            }]
+          : [],
         evidence: { ...command.evidence ?? {}, decisionActorId, executorActorId, blocker: command.intent },
         decisionActorId,
         executorActorId,
@@ -392,19 +540,151 @@ export function decideCommand(
 
     case "submit_plan": {
       // No status change. The plan is recorded; the reviewer is notified.
+      const reviewerId = state.resolvedReviewOwnerId;
       return {
         fromStatus: state.status,
         toStatus: state.status,
         kernelIntent: "operator_override",
         cycleOperation: "none",
-        effects: [],
+        effects: reviewerId
+          ? [{
+              type: "task_notification",
+              key: `action-plan-review:${reviewerId}`,
+              payload: {
+                taskId: state.id,
+                targetUserId: reviewerId,
+                actor: command.actor,
+                reason: "action_plan_review_requested",
+                body: "A structured Action Plan is ready for review.",
+              },
+            }]
+          : [],
         evidence: { ...command.evidence ?? {}, decisionActorId, executorActorId, planSubmitted: true },
         decisionActorId,
         executorActorId,
       };
     }
 
-    default:
-      return { status: "invalid", reason: `decideCommand: unsupported intent ${command.intent}` };
+    case "triage_task": {
+      const targetStatus = command.payload?.targetStatus;
+      if (targetStatus !== "To Do" && targetStatus !== "Backlog") {
+        return { status: "invalid", reason: "triage_task requires targetStatus To Do or Backlog" };
+      }
+      return {
+        fromStatus: state.status,
+        toStatus: targetStatus,
+        kernelIntent: "triage",
+        cycleOperation: "none",
+        effects: [{ type: "board_touch", key: "board-triage", payload: {} }],
+        evidence: { ...command.evidence ?? {}, decisionActorId, executorActorId, triaged: true },
+        decisionActorId,
+        executorActorId,
+      };
+    }
+
+    case "assign_task":
+    case "raise_scope_blocker":
+    case "add_subtask":
+    case "complete_subtask":
+    case "remove_subtask":
+    case "request_subtask":
+    case "request_task": {
+      const payload = command.payload ?? {};
+      const policyAssignPromotes = command.intent === "assign_task"
+        && command.source === "pm-service"
+        && command.payload?.afterPlanApproval === true
+        && state.status === "Backlog";
+      return {
+        fromStatus: state.status,
+        toStatus: policyAssignPromotes ? "To Do" : state.status,
+        kernelIntent: policyAssignPromotes ? "triage" : "operator_override",
+        cycleOperation: "none",
+        effects: command.intent === "assign_task"
+          ? [{ type: "board_touch", key: "board-assignment", payload: {} }]
+          : command.intent === "request_subtask" && state.assigneeId
+            ? [{
+                type: "task_notification",
+                key: `subtask-request:${state.assigneeId}`,
+                payload: {
+                  taskId: state.id,
+                  targetUserId: state.assigneeId,
+                  actor: command.actor,
+                  reason: "subtask_requested",
+                  body: `A reviewer requested implementation sub-task: ${String(payload.subtaskText ?? "")}`,
+                },
+              }]
+            : command.intent === "request_task" && state.epic?.actingManagerId
+              ? [{
+                  type: "task_notification",
+                  key: `task-request:${state.epic.actingManagerId}`,
+                  payload: {
+                    taskId: state.id,
+                    targetUserId: state.epic.actingManagerId,
+                    actor: command.actor,
+                    reason: "task_requested",
+                    body: `The assignee requested a new Epic task: ${String(payload.taskTitle ?? "")}`,
+                  },
+                }]
+              : command.intent === "raise_scope_blocker" && state.resolvedReviewOwnerId
+                ? [{
+                    type: "task_notification",
+                    key: `extra-work-blocker:${state.resolvedReviewOwnerId}`,
+                    payload: {
+                      taskId: state.id,
+                      targetUserId: state.resolvedReviewOwnerId,
+                      actor: command.actor,
+                      reason: "extra_work_blocker",
+                      body: String(payload.scopeDescription ?? ""),
+                    },
+                  }]
+                : [],
+        evidence: {
+          ...command.evidence ?? {},
+          ...payload,
+          decisionActorId,
+          executorActorId,
+          operationalIntent: command.intent,
+        },
+        decisionActorId,
+        executorActorId,
+      };
+    }
+
+    case "publish_checkpoint": {
+      const payload = command.payload ?? {};
+      const authorizationCommentId = String(payload.authorizationCommentId ?? "");
+      return {
+        fromStatus: state.status,
+        toStatus: state.status,
+        kernelIntent: "operator_override",
+        cycleOperation: "none",
+        effects: [{
+          type: "repository_checkpoint",
+          key: `checkpoint:${authorizationCommentId}`,
+          payload: {
+            taskId: state.id,
+            projectId: state.projectId,
+            requestedByUserId: decisionActorId,
+            requestedByUsername: command.actor.username ?? "unknown",
+            authorizationCommentId,
+            note: payload.comment ?? "Authorized intermediate checkpoint",
+          },
+        }],
+        evidence: {
+          ...command.evidence ?? {},
+          ...payload,
+          decisionActorId,
+          executorActorId,
+          operationalIntent: command.intent,
+        },
+        decisionActorId,
+        executorActorId,
+      };
+    }
+
+    default: {
+      const exhaustiveIntent: never = command.intent;
+      return { status: "invalid", reason: `decideCommand: unsupported intent ${exhaustiveIntent}` };
+    }
   }
 }

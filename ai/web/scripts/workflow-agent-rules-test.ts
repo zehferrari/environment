@@ -92,11 +92,13 @@ assert(!subjectHasCommitPrefix("V23-30 Add another task", "V23-3"), "a longer hu
 
 const root = process.cwd();
 const workflowRoute = readFileSync(join(root, "app/api/agent/epics/[epicId]/workflow/route.ts"), "utf8");
+const intentExecutors = readFileSync(join(root, "lib/tasks/orchestrator/intents/index.ts"), "utf8");
 assert(!workflowRoute.includes("effectiveEpicBranchName(epic)"), "Epic manager workflow must not persist a generated branch");
 assert(workflowRoute.includes("branchName: null"), "Epic-created Tasks must keep a null branch override");
 assert(workflowRoute.includes("commitPrefix: null"), "Epic-created Tasks must keep a null commit-prefix override");
 assert(
-  workflowRoute.includes("markActionPlanRevisionRequired") &&
+  intentExecutors.includes("markActionPlanRevisionRequired") &&
+    intentExecutors.includes("payload.resetPlanApproval") &&
     workflowRoute.includes('reason: "completion_review_reject"'),
   "whole-Epic rejection must preserve plan history while requiring a new repair revision",
 );
@@ -154,15 +156,15 @@ assert(
   "the short-lived monitor nudge CLI must leave queued dispatch to the durable consumer instead of killing an inline claim",
 );
 
-const reviewAutomation = readFileSync(join(root, "lib/tasks/review-automation.ts"), "utf8");
+const authoritativeIntents = readFileSync(join(root, "lib/tasks/orchestrator/intents/index.ts"), "utf8");
 assert(
-  reviewAutomation.includes('status: "Review"') &&
-    reviewAutomation.includes('completionReviewStatus: "Preparing"') &&
-    reviewAutomation.includes('type: "epic_completion_review"') &&
-    reviewAutomation.includes("enqueueWorkflowEffects"),
+  authoritativeIntents.includes('status: "Review"') &&
+    authoritativeIntents.includes('completionReviewStatus: "Preparing"') &&
+    authoritativeIntents.includes('type: "epic_completion_review"') &&
+    authoritativeIntents.includes("enqueueWorkflowEffects"),
   "last Epic task completion must enter and durably outbox mandatory whole-Epic acceptance review",
 );
-assert(reviewAutomation.includes("remainingOpenTasks === 0"), "the Epic Done rollup must only happen on the last open Epic task");
+assert(authoritativeIntents.includes("remainingOpenTasks === 0"), "the Epic Done rollup must only happen on the last open Epic task");
 
 const taskNotifications = readFileSync(join(root, "lib/agents/workflow/notifications/task.ts"), "utf8");
 const pmChannelReplyRoute = readFileSync(join(root, "app/api/openclaw/pm-channel/reply/route.ts"), "utf8");
@@ -246,68 +248,53 @@ assert(
 );
 
 const taskWorkflowRoute = readFileSync(join(root, "app/api/agent/tasks/[taskId]/workflow/route.ts"), "utf8");
+const agentRouteAdapter = readFileSync(join(root, "lib/tasks/orchestrator/agent-route-adapter.ts"), "utf8");
+const orchestratorGuards = readFileSync(join(root, "lib/tasks/orchestrator/guards.ts"), "utf8");
+const orchestratorDecisions = readFileSync(join(root, "lib/tasks/orchestrator/decide.ts"), "utf8");
+const prepareTodoProcedure = readFileSync(join(root, "lib/tasks/orchestrator/handlers/prepare-todo-task.ts"), "utf8");
+const startImplementationHandler = readFileSync(join(root, "lib/tasks/orchestrator/handlers/start-implementation-cycle.ts"), "utf8");
 assert(
-  taskWorkflowRoute.includes('"remove_subtask"'),
+  authoritativeIntents.includes('remove_subtask: removeSubtaskExecutor') &&
+    agentRouteAdapter.includes('args.action === "complete_subtask" || args.action === "remove_subtask"'),
   "the task workflow route must support obsolete/duplicate checklist cleanup",
 );
-// start = To Do → In Progress only; the Review-resume branch is deleted.
-assert(taskWorkflowRoute.includes('task.status !== "To Do"'), "workflow start must be allowed from To Do only");
 assert(
-  !taskWorkflowRoute.includes("To Do or Review before start"),
-  "the start action must not accept tasks in Review (no resume path)",
+  orchestratorGuards.includes('guardStatus(state, command.intent, ["To Do"])'),
+  "workflow start must be allowed from To Do only",
 );
 assert(
-  taskWorkflowRoute.includes("start cannot resume a task from Review"),
-  "the start rejection must explain the review_feedback → To Do front flow",
-);
-// P4: start runs the shared per-project WIP + branch-clash gate.
-assert(
-  taskWorkflowRoute.includes("findInProgressStartConflict"),
-  "workflow start must run the shared WIP/branch-clash gate before transition",
+  orchestratorGuards.includes("guardProjectWIP(state, command.intent)") &&
+    orchestratorGuards.includes("guardEffectiveBranchCollision(state, command.intent)"),
+  "workflow start must run the canonical WIP and branch-collision guards",
 );
 assert(
-  taskWorkflowRoute.includes("1 In Progress task per agent per project"),
-  "the WIP rejection must state the per-project limit so agents know what to finish",
+  prepareTodoProcedure.includes("reserveTaskRepositoryState(task.id)") &&
+    startImplementationHandler.includes("ensureTaskCodeWorktree(ctx.taskId"),
+  "approval reserves repository state and start provisions the worktree",
 );
 assert(
-  taskWorkflowRoute.includes("reserveTaskRepositoryState(task.id)") &&
-    taskWorkflowRoute.split("ensureTaskCodeWorktree(").length - 1 >= 1,
-  "agent Action Plan approval must reserve only; start must provision the worktree",
-);
-// P3: ready_for_review is rejected while open implementation sub-tasks exist.
-assert(
-  taskWorkflowRoute.includes("openImplementationSubtasks"),
-  "ready_for_review must reject when open implementation sub-tasks exist",
+  orchestratorGuards.includes("guardSubmitForReviewChecklist") &&
+    orchestratorGuards.includes("checklist_incomplete"),
+  "submit_for_review must reject while implementation checklist items remain",
 );
 assert(
-  taskWorkflowRoute.includes("ready_for_review rejected"),
-  "the sub-task gate rejection must list the open items and how to clear them",
+  orchestratorGuards.includes('case "complete_subtask"') &&
+    orchestratorGuards.includes('case "remove_subtask"') &&
+    orchestratorGuards.includes("guardApprovedPlan(state, command.intent)"),
+  "implementation checklist mutations must pass authoritative approval guards",
 );
 assert(
-  taskWorkflowRoute.includes("wait for approval before adding implementation sub-tasks"),
-  "implementation checklist actions must not mutate an unapproved planning task",
-);
-assert(
-  taskWorkflowRoute.includes('action === "publish_checkpoint"') &&
-    taskWorkflowRoute.includes("authorizationCommentId") &&
-    taskWorkflowRoute.includes("authorization.createdAt < task.approvedOn") &&
-    taskWorkflowRoute.includes("validateCheckpointAuthorizationText") &&
-    taskWorkflowRoute.includes("priorAuthorizationUses") &&
-    taskWorkflowRoute.includes("enqueueTaskCheckpoint"),
+  authoritativeIntents.includes('const publishCheckpointExecutor') &&
+    authoritativeIntents.includes("authorization.createdAt < task.approvedOn") &&
+    authoritativeIntents.includes("validateCheckpointAuthorizationText") &&
+    authoritativeIntents.includes("priorUses.some") &&
+    orchestratorDecisions.includes('case "publish_checkpoint"'),
   "deployment-dependent Epic checkpoints must require a fresh explicit single-use owner authorization and use the trusted repository runner",
 );
 assert(
-  taskWorkflowRoute.includes("inspectValidatedCandidateWorktree") &&
-    taskWorkflowRoute.includes("inspectOriginBranch") &&
-    taskWorkflowRoute.includes("alreadyPublished: true") &&
-    taskWorkflowRoute.includes("Nothing is waiting to be published") &&
     taskNotifications.includes("already-published SHA") &&
     taskNotifications.includes("pipeline/deployed-SHA failure evidence"),
   "a clean repository baseline already published as the Epic tip must not create a redundant checkpoint permission blocker",
-);
-assert(
-  taskWorkflowRoute.indexOf('action === "publish_checkpoint"') < taskWorkflowRoute.indexOf("openImplementationSubtasks"),
-  "publish_checkpoint must remain available before the completed-checklist review gate",
 );
 assert(
   taskNotifications.includes("never SSH to the target") &&
@@ -315,18 +302,13 @@ assert(
   "checkpoint guidance must keep target-host Git/deployment inside configured project automation",
 );
 assert(
-  taskWorkflowRoute.includes('action === "flag_blocker"') &&
-    taskWorkflowRoute.includes('task.status !== "In Progress"') &&
-    taskWorkflowRoute.includes("data: { alertReporter: true }") &&
-    taskWorkflowRoute.includes("permissionKind") &&
-    taskWorkflowRoute.includes("permissionScope") &&
-    taskWorkflowRoute.includes("commentId: row.id, permissionRequest"),
+  authoritativeIntents.includes('const raiseBlockerExecutor') &&
+    authoritativeIntents.includes("data: { alertReporter: true }") &&
+    authoritativeIntents.includes("permissionKind") &&
+    authoritativeIntents.includes("permissionScope") &&
+    authoritativeIntents.includes("commentId: comment.id") &&
+    authoritativeIntents.includes("permissionRequest"),
   "active external blockers must have a durable assignee escalation action",
-);
-assert(
-  taskWorkflowRoute.includes("formalBlockerReportFromValue(parsed.report)") &&
-    taskWorkflowRoute.includes("blockerFailureSignature(priorReport)"),
-  "the blocker escalation ladder must recompute stable signatures from historical structured incident reports",
 );
 assert(
   taskNotifications.includes("permissionKind=reporter_approval") &&
@@ -335,38 +317,21 @@ assert(
   "agents must receive the narrow structured permission-only blocker contract",
 );
 assert(
-  taskWorkflowRoute.includes("if (!permissionRequest && reviewerId) targets.add(reviewerId)"),
-  "permission-only blockers must not recruit a reviewer/Epic-manager coding agent into the assignee's task",
-);
-assert(
-  taskWorkflowRoute.includes('action === "clear_blocker"') &&
-    taskWorkflowRoute.includes("preserveIndependentAlert") &&
-    taskWorkflowRoute.includes("alreadyCleared"),
+  authoritativeIntents.includes('const clearBlockerExecutor') &&
+    authoritativeIntents.includes("preserveIndependentAlert"),
   "resolved external blockers must clear only formal blocker state and preserve independent alerts",
 );
 assert(
-  !taskWorkflowRoute.includes("delegate_dependency") &&
-    !taskWorkflowRoute.includes("resolve_dependency") &&
+  !agentRouteAdapter.includes("delegate_dependency") &&
+    !agentRouteAdapter.includes("resolve_dependency") &&
     !taskNotifications.includes("delegate_dependency") &&
     !taskNotifications.includes("resolve_dependency"),
   "task execution ownership must never move through hidden agent dependency state",
 );
-// PH-124 close-the-loop: ticking the last open implementation sub-task tells
-// the agent to call ready_for_review with the same reusable token AND
-// dispatches a belt-and-braces fresh workflow turn.
 assert(
-  taskWorkflowRoute.includes("allImplementationSubtasksComplete"),
-  "complete_subtask must flag when the last implementation sub-task closes",
-);
-assert(
-  taskWorkflowRoute.includes("call action=ready_for_review NOW with this same messageId and token"),
-  "complete_subtask must instruct an immediate ready_for_review with the reusable token",
-);
-assert(
-  taskWorkflowRoute.includes("do not dispatch a competing process") &&
-    taskWorkflowRoute.includes("the outbox owns") &&
-    !taskWorkflowRoute.includes('reason: "ready_for_review_available"'),
-  "complete_subtask must rely on its durable continuation instead of dispatching a competing turn",
+  authoritativeIntents.includes('const completeSubtaskExecutor') &&
+    authoritativeIntents.includes("setSubTaskCompletion"),
+  "complete_subtask must be owned by the authoritative intent executor",
 );
 
 // P4: the shared gate lives in auto-start and is per-project.
@@ -380,12 +345,18 @@ assert(
   "the shared WIP gate must scope the busy check to the task's project",
 );
 assert(
-  autoStartLib.includes("findInProgressStartConflict(tx"),
-  "auto-start must consume the shared gate inside its transaction",
+  autoStartLib.includes("findInProgressStartConflict(db") &&
+    autoStartLib.includes("submitWorkflowCommand({") &&
+    autoStartLib.includes('intent: "start_implementation"') &&
+    autoStartLib.includes('source: "pm-service"'),
+  "auto-start selection must submit the canonical PM-service start command",
 );
 assert(
-  autoStartLib.includes("ensureTaskCodeWorktree(task.id"),
-  "auto-start must refuse In Progress without a validated linked worktree",
+  !autoStartLib.includes("applyTaskTransition") &&
+    !autoStartLib.includes("ensureTaskCodeWorktree") &&
+    autoStartLib.includes("expectedWorkflowVersion: task.workflowVersion") &&
+    autoStartLib.includes("assigneeLane"),
+  "auto-start must leave workflow/repository writes to canonical command guards and procedures",
 );
 assert(
   autoStartLib.includes('task.assignee.agent.role !== "coding"'),
@@ -400,45 +371,39 @@ assert(ackRoute.includes("transitioned: false"), "ack must always report transit
 const workflowLib = readFileSync(join(root, "lib/workflow.ts"), "utf8");
 assert(!workflowLib.includes("export function autoTransitionOnAck"), "lib/workflow must not export the ack auto-transition");
 
-// P5: one shared Review-entry handoff, called by the agent route AND every
-// human board-move surface, with the epicChild fields the verifier consumes.
+// Phase E: Review entry is owned by the command procedure. Explicit browser
+// moves remain authoritative human overrides through their typed adapter.
 const reviewHandoff = readFileSync(join(root, "lib/tasks/review-handoff.ts"), "utf8");
-assert(reviewHandoff.includes("export async function runTaskReviewHandoff"), "review-handoff must export runTaskReviewHandoff");
-assert(reviewHandoff.includes("epicChild"), "the verify job must carry epicChild");
-assert(reviewHandoff.includes("epicBranch"), "the verify job must carry epicBranch");
-assert(reviewHandoff.includes("preferUserId"), "the Review refill must prefer the freed worker");
 assert(
-  reviewHandoff.includes("syncEpicOnHumanTaskStatus"),
-  "the shared Review handoff must reopen a Done parent Epic for human Review moves",
+  reviewHandoff.includes("Exact schema-v2") && !reviewHandoff.includes("runTaskReviewHandoff"),
+  "the retained handoff accepts only exact callbacks and has no legacy decision path",
 );
-assert(taskWorkflowRoute.includes("runTaskReviewHandoff"), "the agent workflow route must use the shared Review handoff");
+assert(taskWorkflowRoute.includes("submitAuthoritativeAgentWorkflowAction"), "the agent route uses the authoritative command adapter");
 for (const pagePath of [
   "app/(app)/projects/[slug]/page.tsx",
   "app/(app)/workspaces/[slug]/page.tsx",
   "app/(app)/workspaces/(landing)/page.tsx",
 ]) {
   const pageSource = readFileSync(join(root, pagePath), "utf8");
-  assert(pageSource.includes("runTaskReviewHandoff"), `${pagePath} must run the shared Review handoff on human moves to Review`);
-  assert(pageSource.includes("human-board-move"), `${pagePath} must audit human moves with via: human-board-move`);
-  assert(
-    pageSource.includes("syncEpicOnHumanTaskStatus"),
-    `${pagePath} must keep a parent Epic actionable after a human child-task move`,
-  );
-  assert(
-    pageSource.includes("ensureTaskCodeWorktree"),
-    `${pagePath} must provision/validate the linked worktree before a human In Progress move`,
-  );
+  assert(pageSource.includes("submitBrowserStatusOverride"), `${pagePath} must submit the canonical human override command`);
+  assert(!pageSource.includes("runTaskReviewHandoff"), `${pagePath} must not run Review automation outside the command`);
+  assert(!pageSource.includes("ensureTaskCodeWorktree"), `${pagePath} must not prepare a worktree for a blocked human override`);
 }
 assert(
-  taskPage.includes('moveTaskStatus as transitionTaskStatus') &&
-    taskPage.includes('transitionTaskStatus(taskId, statusChangedTo, slug)'),
-  "task editor status changes must delegate to the authoritative browser transition action",
+  taskPage.includes("submitBrowserStatusOverride") &&
+    !taskPage.includes("transitionTaskStatus(taskId, statusChangedTo, slug)"),
+  "task editor status changes must submit the authoritative browser override command",
 );
 
 assert(
-  taskPage.includes("await reserveTaskRepositoryState(task.id)") &&
-    !taskPage.includes("await ensureTaskCodeWorktree(task.id, actor.id, { reconcile: true })"),
-  "human Action Plan approval must reserve the repository contract without provisioning a worktree",
+  taskPage.includes("submitBrowserPlanApproval") &&
+    !taskPage.includes("await reserveTaskRepositoryState(task.id)"),
+  "human Action Plan approval must enter the canonical approval command",
+);
+const prepareTodoHandler = readFileSync(join(root, "lib/tasks/orchestrator/handlers/prepare-todo-task.ts"), "utf8");
+assert(
+  prepareTodoHandler.includes("reserveTaskRepositoryState(task.id)"),
+  "the canonical prepare_todo_task procedure must reserve the repository contract",
 );
 const repositoryJob = readFileSync(join(root, "scripts/pm-epic-merge-job.ts"), "utf8");
 assert(repositoryJob.includes('job.kind === "claim"'), "the unsandboxed repository runner must execute worktree claim jobs");
@@ -454,61 +419,29 @@ assert(
   "claim validation must require a linked .git file and exact Git registration",
 );
 assert(
-  reviewHandoff.includes('status: "In Progress"') &&
-    reviewHandoff.includes("completeTaskReviewHandoffAfterValidation") &&
-    reviewHandoff.includes("failTaskReviewValidation"),
-  "code submissions must remain In Progress until validation explicitly releases or rejects them",
+  reviewHandoff.includes("applyExactValidationCallback") &&
+    reviewHandoff.includes("Exact schema-v2 validation callback identity is required"),
+  "repository validation callbacks must enter through exact V2 procedure identity",
 );
+const branchVerifier = readFileSync(join(root, "scripts/pm-verify-branch-pushed.ts"), "utf8");
 assert(
-  reviewHandoff.includes("resolveActiveMonitorAgent") &&
-    !reviewHandoff.includes('username: "karen"'),
+  branchVerifier.includes('agent: { is: { role: "monitor", deactivatedAt: null } }') &&
+    !branchVerifier.includes('username: "karen"'),
   "repository validation must resolve the Monitor Agent by role rather than a deployment username",
 );
 
-// PH-124 item B: every workflow action with a durable outcome records against
-// the PM-channel run. ENV-118 splits HOW by effect: an episode-terminal action
-// settles through the standalone recorder, while a continuation-required one
-// must go through runWorkflowActionAtomically so its domain mutation and its
-// continuation-outbox row commit together (the ENV-118 review finding).
 assert(
-  (taskWorkflowRoute.split("recordPmChannelRunWorkflowAction(").length - 1) +
-    (taskWorkflowRoute.split("runWorkflowActionAtomically(").length - 1) === 18,
-  "every workflow path with a durable outcome must use a standalone or atomic PM-run recorder",
+  (taskWorkflowRoute.match(/submitAuthoritativeAgentWorkflowAction\(/g) ?? []).length === 1 &&
+    !taskWorkflowRoute.includes("recordPmChannelRunWorkflowAction(") &&
+    !taskWorkflowRoute.includes("runWorkflowActionAtomically("),
+  "the HTTP route must have one authoritative command caller and no alternate PM-run mutation path",
 );
-{
-  const CONTINUATION_REQUIRED_ROUTE_ACTIONS = [
-    "start",
-    "publish_checkpoint",
-    "add_subtask",
-    "complete_subtask",
-    "remove_subtask",
-    "clear_blocker",
-  ];
-  // Slice each action's handler out of the route and check it in isolation, so
-  // a new continuation-required action cannot pass by sitting next to one that
-  // does the right thing.
-  const blockStarts = [...taskWorkflowRoute.matchAll(/\n {2}if \(action === /g)].map((m) => m.index ?? 0);
-  for (const action of CONTINUATION_REQUIRED_ROUTE_ACTIONS) {
-    const start = taskWorkflowRoute.indexOf(`\n  if (action === "${action}"`);
-    assert(start >= 0, `the task workflow route still handles "${action}"`);
-    const end = blockStarts.find((index) => index > start) ?? taskWorkflowRoute.length;
-    const block = taskWorkflowRoute.slice(start, end);
-    assert(
-      block.includes("runWorkflowActionAtomically("),
-      `continuation-required action "${action}" must record through runWorkflowActionAtomically, ` +
-        "so its domain mutation cannot commit without the continuation",
-    );
-    // A standalone recorder call inside one of these blocks is only legitimate
-    // when the branch declares it wrote nothing durable.
-    const standaloneCalls = block.split("recordPmChannelRunWorkflowAction(").length - 1;
-    const declaredNoops = block.split("withoutDomainMutation: true").length - 1;
-    assert(
-      standaloneCalls === declaredNoops,
-      `every standalone recorder call inside "${action}" must declare withoutDomainMutation ` +
-        `(found ${standaloneCalls} calls, ${declaredNoops} declared)`,
-    );
-  }
-}
+assert(
+  agentRouteAdapter.includes("executionContext:") &&
+    agentRouteAdapter.includes("pmChannelRunId: args.pmChannelRunId") &&
+    agentRouteAdapter.includes("submitWorkflowCommand(normalized.command)"),
+  "the authoritative adapter must carry PM-run identity into the atomic command",
+);
 
 // request-workflow-turn: PM-bearer-authenticated self-service turn re-arm.
 const requestTurnRoute = readFileSync(join(root, "app/api/agent/tasks/[taskId]/request-workflow-turn/route.ts"), "utf8");
@@ -516,7 +449,7 @@ assert(requestTurnRoute.includes("authorizePmChannelCallback"), "request-workflo
 assert(requestTurnRoute.includes("task.workflow.turn_requested"), "request-workflow-turn must log an ActivityLog row");
 assert(requestTurnRoute.includes("ready_for_review_available"), "request-workflow-turn must arm ready_for_review from In Progress");
 assert(
-  requestTurnRoute.includes('status: { in: ["queued", "accepted", "streaming"] }') &&
+  requestTurnRoute.includes('status: { in: ["queued", "delivered", "accepted", "streaming"] }') &&
     requestTurnRoute.includes("alreadyActive: true") &&
     requestTurnRoute.includes("dispatched: false"),
   "request-workflow-turn must not supersede a still-live PM execution lane",
@@ -538,7 +471,6 @@ assert(
   taskNotifications.includes("NEVER commit or push this branch yourself"),
   "Epic-child submission guidance must reserve commit/push for PM",
 );
-const branchVerifier = readFileSync(join(root, "scripts/pm-verify-branch-pushed.ts"), "utf8");
 assert(
   branchVerifier.includes("inspectOriginBranch(job.repositoryPath, job.branchName)"),
   "the Epic-child reviewer gate must inspect the remote itself for forbidden task refs",
@@ -736,12 +668,24 @@ async function pmRunSettlementSlice() {
         epicId: epic.id,
         title: "Settle task",
         status: "In Progress",
+        workflowEngine: "orchestrator_v2",
+        workflowEnginePinnedAt: new Date(),
         assigneeId: assigneeUser.id,
         actingManagerId: reviewerUser.id,
         reporterId: owner.id,
         approvedOn: new Date(),
       },
     });
+    const cycle = await db.taskWorkflowCycle.create({
+      data: {
+        taskId: task.id,
+        sequence: 1,
+        status: "open",
+        openedWorkflowVersion: task.workflowVersion,
+        workflowEngine: "orchestrator_v2",
+      },
+    });
+    await db.task.update({ where: { id: task.id }, data: { activeWorkflowCycleId: cycle.id } });
 
     // One grant per action: message + BOTH PM run target keys + jobs, seeded
     // in the settleable "accepted" state (the state a live turn is in while
@@ -814,22 +758,20 @@ async function pmRunSettlementSlice() {
       const { runStatuses, jobStatuses } = await runStates(slug, messageId);
       assert(runStatuses.length === 2, `${action}: both target-key runs must exist`);
       assert(
-        // Run vocabulary is "completed" (ENV-117); the job vocabulary is
-        // "complete". They are deliberately different words.
-        runStatuses.every((status) => status === "completed"),
-        `${action}: both PM runs must settle completed (got ${runStatuses.join(", ")})`,
+        runStatuses.filter((status) => status === "completed").length === 1,
+        `${action}: only the exact authenticated PM run must settle (got ${runStatuses.join(", ")})`,
       );
       assert(
-        jobStatuses.every((status) => status === "complete"),
-        `${action}: both PM jobs must settle complete (got ${jobStatuses.join(", ")})`,
+        jobStatuses.filter((status) => status === "complete").length === 1,
+        `${action}: only the exact authenticated PM job must settle (got ${jobStatuses.join(", ")})`,
       );
       const dispositions = await db.pmChannelRun.findMany({
         where: { messageId, agentSlug: slug },
         select: { disposition: true, settledByAction: true },
       });
       assert(
-        dispositions.every((run) => run.disposition != null && run.settledByAction != null),
-        `${action}: a settling action must record its disposition and settledByAction`,
+        dispositions.filter((run) => run.disposition != null && run.settledByAction != null).length === 1,
+        `${action}: a settling action must record the exact run disposition and settledByAction`,
       );
     };
 
@@ -849,32 +791,29 @@ async function pmRunSettlementSlice() {
         select: { id: true, status: true, disposition: true, settledByAction: true },
       });
       assert(
-        runs.every((run) => run.disposition === "continue" && run.settledByAction === null),
-        `${action}: a continuation-required action records the continue disposition and settles nothing (got ${runs
+        runs.filter((run) => run.disposition === "continue" && run.settledByAction === null).length === 1 &&
+          runs.filter((run) => run.disposition === null && run.settledByAction === null).length === 1,
+        `${action}: a continuation-required action records only the exact run and settles nothing (got ${runs
           .map((run) => `${run.status}:${run.disposition ?? "null"}/${run.settledByAction ?? "null"}`)
           .join(", ")})`,
       );
-      // Only a run that is still live in its lane arms a continuation. If the
-      // action's own follow-up notification already queued a newer run
-      // (ENV-117 supersedes the old one), that newer run IS the continuation
-      // and arming a second one would put two turns in the same lane.
-      const liveRunIds = runs
-        .filter((run) => run.status === "queued" || run.status === "accepted" || run.status === "streaming")
+      const continuedRunIds = runs
+        .filter((run) => run.disposition === "continue")
         .map((run) => run.id);
       assert(
         await db.pmChannelContinuation.count({
-          where: { runId: { in: liveRunIds }, status: "armed" },
-        }) === liveRunIds.length,
-        `${action}: each live run arms a continuation in the same transaction`,
+          where: { runId: { in: continuedRunIds }, status: "armed" },
+        }) === continuedRunIds.length,
+        `${action}: the exact continued run arms one continuation in the same transaction`,
       );
       assert(
         await db.pmChannelContinuation.count({
           where: {
-            runId: { in: runs.filter((run) => !liveRunIds.includes(run.id)).map((run) => run.id) },
+            runId: { in: runs.filter((run) => !continuedRunIds.includes(run.id)).map((run) => run.id) },
             status: "armed",
           },
         }) === 0,
-        `${action}: a superseded run must not keep a second continuation lane armed`,
+        `${action}: an uncorrelated run must not gain a continuation lane`,
       );
     };
 
@@ -903,7 +842,7 @@ async function pmRunSettlementSlice() {
       action: "add_subtask",
       subtaskText: "settle step one",
     });
-    assert(added.status === 200, `add_subtask must succeed (got ${added.status}: ${JSON.stringify(added.body)})`);
+    assert(added.status === 202, `add_subtask must succeed (got ${added.status}: ${JSON.stringify(added.body)})`);
     assertActionResult(added.body, "add_subtask", "continue");
     await assertContinued("wf-assignee", addGrant, "add_subtask");
 
@@ -914,7 +853,7 @@ async function pmRunSettlementSlice() {
       subtaskId: added.body.subtaskId,
       minutesSpent: 3,
     });
-    assert(completed.status === 200, `complete_subtask must succeed (got ${completed.status}: ${JSON.stringify(completed.body)})`);
+    assert(completed.status === 202, `complete_subtask must succeed (got ${completed.status}: ${JSON.stringify(completed.body)})`);
     assertActionResult(completed.body, "complete_subtask", "continue");
     await assertContinued("wf-assignee", completeGrant, "complete_subtask");
 
@@ -925,14 +864,14 @@ async function pmRunSettlementSlice() {
       action: "add_subtask",
       subtaskText: "obsolete duplicate step",
     });
-    assert(obsolete.status === 200, `obsolete add_subtask must succeed (got ${obsolete.status}: ${JSON.stringify(obsolete.body)})`);
+    assert(obsolete.status === 202, `obsolete add_subtask must succeed (got ${obsolete.status}: ${JSON.stringify(obsolete.body)})`);
     await assertContinued("wf-assignee", addObsoleteGrant, "add_subtask obsolete item");
     const removeGrant = await grantFor("wf-assignee");
     const removed = await call("wf-assignee", removeGrant, {
       action: "remove_subtask",
       subtaskId: obsolete.body.subtaskId,
     });
-    assert(removed.status === 200, `remove_subtask must succeed (got ${removed.status}: ${JSON.stringify(removed.body)})`);
+    assert(removed.status === 202, `remove_subtask must succeed (got ${removed.status}: ${JSON.stringify(removed.body)})`);
     assertActionResult(removed.body, "remove_subtask", "continue");
     await assertContinued("wf-assignee", removeGrant, "remove_subtask");
     assert(
@@ -948,7 +887,7 @@ async function pmRunSettlementSlice() {
       comment: "the fix needs a test",
     });
     assert(
-      requestedSubtask.status === 200,
+      requestedSubtask.status === 202,
       `request_subtask must succeed (got ${requestedSubtask.status}: ${JSON.stringify(requestedSubtask.body)})`,
     );
     assertActionResult(requestedSubtask.body, "request_subtask", "wait");
@@ -962,7 +901,7 @@ async function pmRunSettlementSlice() {
       comment: "out of current scope",
     });
     assert(
-      requestedTask.status === 200,
+      requestedTask.status === 202,
       `request_task must succeed (got ${requestedTask.status}: ${JSON.stringify(requestedTask.body)})`,
     );
     await assertSettled("wf-assignee", requestTaskGrant, "request_task");
@@ -976,7 +915,7 @@ async function pmRunSettlementSlice() {
       permissionKind: "reporter_approval",
       permissionScope: "Allow the assignee to retry the named deployment-host repository check after the reporter updates access.",
     });
-    assert(activeFlagged.status === 200, `flag_blocker must succeed (got ${activeFlagged.status}: ${JSON.stringify(activeFlagged.body)})`);
+    assert(activeFlagged.status === 202, `flag_blocker must succeed (got ${activeFlagged.status}: ${JSON.stringify(activeFlagged.body)})`);
     assertActionResult(activeFlagged.body, "flag_blocker", "wait");
     await assertSettled("wf-assignee", activeBlockerGrant, "flag_blocker");
     assert((await db.task.findUniqueOrThrow({ where: { id: task.id } })).alertReporter, "flag_blocker must set alertReporter");
@@ -999,7 +938,7 @@ async function pmRunSettlementSlice() {
       permissionKind: "reporter_approval",
       permissionScope: "Allow the assignee to retry the named deployment-host repository check after the reporter updates access.",
     });
-    assert(sameBlocker.status === 200 && sameBlocker.body.alreadyFlagged === true, "the exact ungranted request must remain idempotent");
+    assert(sameBlocker.status === 202 && sameBlocker.body.alreadyFlagged === true, "the exact ungranted request must remain idempotent");
     await assertSettled("wf-assignee", sameBlockerGrant, "idempotent flag_blocker");
 
     const conflictingBlockerGrant = await grantFor("wf-assignee");
@@ -1038,7 +977,7 @@ async function pmRunSettlementSlice() {
       action: "clear_blocker",
       comment: "dedicated deploy key now authenticates and git fetch succeeds",
     });
-    assert(cleared.status === 200, `clear_blocker must succeed (got ${cleared.status}: ${JSON.stringify(cleared.body)})`);
+    assert(cleared.status === 202, `clear_blocker must succeed (got ${cleared.status}: ${JSON.stringify(cleared.body)})`);
     assertActionResult(cleared.body, "clear_blocker", "continue");
     await assertContinued("wf-assignee", clearBlockerGrant, "clear_blocker");
     assert(!(await db.task.findUniqueOrThrow({ where: { id: task.id } })).alertReporter, "clear_blocker must clear alertReporter");
@@ -1059,7 +998,7 @@ async function pmRunSettlementSlice() {
         reporterCanResolve: true,
       },
     });
-    assert(preservedFlagged.status === 200, `second flag_blocker must succeed (got ${preservedFlagged.status}: ${JSON.stringify(preservedFlagged.body)})`);
+    assert(preservedFlagged.status === 202, `second flag_blocker must succeed (got ${preservedFlagged.status}: ${JSON.stringify(preservedFlagged.body)})`);
     await assertSettled("wf-assignee", preservedBlockerGrant, "flag_blocker");
     await new Promise((resolve) => setTimeout(resolve, 5));
     await db.activityLog.create({
@@ -1075,7 +1014,7 @@ async function pmRunSettlementSlice() {
       action: "clear_blocker",
       comment: "external decision arrived; repository alert still needs operator attention",
     });
-    assert(preservedClear.status === 200, `clear_blocker with independent alert must succeed (got ${preservedClear.status}: ${JSON.stringify(preservedClear.body)})`);
+    assert(preservedClear.status === 202, `clear_blocker with independent alert must succeed (got ${preservedClear.status}: ${JSON.stringify(preservedClear.body)})`);
     await assertContinued("wf-assignee", preservedClearGrant, "clear_blocker");
     assert((await db.task.findUniqueOrThrow({ where: { id: task.id } })).alertReporter, "clear_blocker must preserve a newer independent true alert");
     await db.task.update({ where: { id: task.id }, data: { alertReporter: false } });
@@ -1086,7 +1025,7 @@ async function pmRunSettlementSlice() {
       action: "flag_extra_work_blocker",
       comment: "requested extra scope blocks the approved plan",
     });
-    assert(flagged.status === 200, `flag_extra_work_blocker must succeed (got ${flagged.status}: ${JSON.stringify(flagged.body)})`);
+    assert(flagged.status === 202, `flag_extra_work_blocker must succeed (got ${flagged.status}: ${JSON.stringify(flagged.body)})`);
     assertActionResult(flagged.body, "flag_extra_work_blocker", "wait");
     await assertSettled("wf-assignee", blockerGrant, "flag_extra_work_blocker");
 

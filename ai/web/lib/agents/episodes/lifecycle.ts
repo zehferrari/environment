@@ -310,10 +310,15 @@ const EPISODE_SELECT = {
 
 async function openEpisodeRow(
   tx: Prisma.TransactionClient,
-  args: { taskId: string; agentSlug: string },
+  args: { taskId: string; agentSlug: string; expectedEpisodeId?: string | null },
 ) {
   return tx.taskExecutionEpisode.findFirst({
-    where: { taskId: args.taskId, agentSlug: args.agentSlug, status: EPISODE_STATUS.open },
+    where: {
+      ...(args.expectedEpisodeId ? { id: args.expectedEpisodeId } : {}),
+      taskId: args.taskId,
+      agentSlug: args.agentSlug,
+      status: EPISODE_STATUS.open,
+    },
     orderBy: { episodeNo: "desc" },
     select: EPISODE_SELECT,
   });
@@ -501,12 +506,17 @@ export async function recordTaskExecutionEpisodeCycle(
     sessionKey?: string | null;
     messageId?: string | null;
     runId?: string | null;
+    /** Fence an authenticated workflow action to the episode PM resolved. */
+    expectedEpisodeId?: string | null;
     checkpoint?: EpisodeCheckpoint | null;
     /** Set false for an explicit checkpoint write that should not spend budget. */
     countsAgainstBudget?: boolean;
   },
 ): Promise<EpisodeCycleOutcome> {
   const existing = await openEpisodeRow(tx, args);
+  if (args.expectedEpisodeId && !existing) {
+    throw new Error("execution_episode_mismatch");
+  }
   const episode = existing
     ? summarizeEpisode(existing)
     : await openTaskExecutionEpisode(tx, args);
@@ -529,6 +539,7 @@ export async function recordTaskExecutionEpisodeCycle(
       ...checkpointUpdateData(args.checkpoint),
       ...(countsAgainstBudget ? { cycleCount: { increment: 1 } } : {}),
       ...(args.sessionKey && !episode.sessionKey ? { sessionKey: args.sessionKey } : {}),
+      ...(args.messageId && !episode.messageId ? { messageId: args.messageId } : {}),
       ...(args.runId && !episode.runId ? { runId: args.runId } : {}),
     },
     select: EPISODE_SELECT,
@@ -663,8 +674,22 @@ export async function resolveEpisodeRolloverBarrier(args: {
   agentSlug: string;
   messageId: string;
 }): Promise<EpisodeRolloverBarrier | null> {
-  const row = await db.taskExecutionEpisode.findFirst({
+  return resolveEpisodeRolloverBarrierInTransaction(db, args);
+}
+
+/** Transaction-client form used by authoritative command acceptance. */
+export async function resolveEpisodeRolloverBarrierInTransaction(
+  tx: Prisma.TransactionClient | typeof db,
+  args: {
+    taskId: string;
+    agentSlug: string;
+    messageId: string;
+    expectedEpisodeId?: string | null;
+  },
+): Promise<EpisodeRolloverBarrier | null> {
+  const row = await tx.taskExecutionEpisode.findFirst({
     where: {
+      ...(args.expectedEpisodeId ? { id: args.expectedEpisodeId } : {}),
       taskId: args.taskId,
       agentSlug: args.agentSlug,
       exhaustedByMessageId: args.messageId,
@@ -861,6 +886,8 @@ export async function closeOpenTaskExecutionEpisode(
     agentSlug: string;
     closeReason: string;
     checkpoint?: EpisodeCheckpoint | null;
+    /** Fence a command-originated close to the server-resolved episode. */
+    expectedEpisodeId?: string | null;
   },
 ) {
   const existing = await openEpisodeRow(tx, args);

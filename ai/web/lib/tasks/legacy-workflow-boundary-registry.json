@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 3,
+  "registryPath": "ai/web/lib/tasks/legacy-workflow-boundary-registry.json",
+  "summary": "Phase E completed: no legacy workflow mutation boundary remains registered.",
+  "kernelInternals": [
+    { "file": "lib/tasks/transition-kernel.ts", "reason": "single Task.status/workflowVersion writer" },
+    { "file": "lib/tasks/workflow-cycle.ts", "reason": "workflow cycle lifecycle internals" },
+    { "file": "lib/tasks/orchestrator/execute.ts", "reason": "canonical command transaction executor" },
+    { "file": "lib/tasks/orchestrator/ownership.ts", "reason": "durable ownership migration internals" },
+    { "file": "lib/tasks/orchestrator/procedure-runner.ts", "reason": "procedure and exact callback state engine" },
+    { "file": "lib/tasks/orchestrator/handlers/start-implementation-cycle.ts", "reason": "start implementation procedure handler" },
+    { "file": "lib/tasks/orchestrator/handlers/submit-candidate-for-review.ts", "reason": "review submission procedure handler" },
+    { "file": "lib/tasks/orchestrator/handlers/review-decisions.ts", "reason": "review decision procedure handler" },
+    { "file": "lib/tasks/repository-state.ts", "reason": "exact repository-run mechanical state helper" },
+    { "file": "lib/tasks/workflow-outbox-drain.ts", "reason": "durable workflow effect state engine" },
+    { "file": "lib/tasks/workflow-reconciler.ts", "reason": "durable workflow recovery state engine" },
+    { "file": "scripts/pm-verify-branch-pushed.ts", "reason": "exact schema-v2 repository validation worker" }
+  ],
+  "boundaries": []
+}

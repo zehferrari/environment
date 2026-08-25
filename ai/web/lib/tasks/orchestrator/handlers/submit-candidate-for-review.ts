@@ -2,6 +2,15 @@
 //
 // Trigger: assignee intent submit_for_review while In Progress.
 //
+// §17 side-effect ownership audit (PHASEE-06):
+//   Row: submitted for review — command owns: comment, execution freeze,
+//   candidate intent, procedure, receipt. This procedure owns: candidate prep,
+//   validation, lease, Review, reviewer wake. No dual ownership.
+//   Row: validation failed — mechanical command owns: To Do, cycle close,
+//   repo state, receipt. This procedure owns: one feedback wake only.
+//   Fixed: applyValidationResult now submits through submitWorkflowCommand
+//   instead of calling applyTaskTransition directly.
+//
 // Ordered steps (§9):
 //   1. freeze_execution — close the assignee execution episode for the active
 //      cycle. Reject further implementation actions from that message/cycle
@@ -32,10 +41,10 @@
 // half-states.
 
 import { db } from "@/lib/db";
-import { closeTaskWorkflowCycle, updateTaskWorkflowCycleCandidate } from "@/lib/tasks/workflow-cycle";
+import { updateTaskWorkflowCycleCandidate } from "@/lib/tasks/workflow-cycle";
 import { updateTaskRepositoryState } from "@/lib/tasks/repository-state";
-import { enqueueWorkflowEffects, applyTaskTransition } from "@/lib/tasks/transition-kernel";
-import { resolveReviewOwnerIdFromSnapshot } from "@/lib/tasks/orchestrator/authorize";
+import { enqueueWorkflowEffects } from "@/lib/tasks/transition-kernel";
+import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { registerStepHandler } from "@/lib/tasks/orchestrator/procedure-runner";
 import type { StepHandlerResult, StepHandlerContext } from "@/lib/tasks/orchestrator/procedure-runner";
 import type { TaskProcedureType } from "@/lib/tasks/orchestrator/types";
@@ -45,6 +54,7 @@ import { resolveValidationProfileSnapshot } from "@/lib/tasks/validation-profile
 import { effectiveTaskBranchName, effectiveEpicBranchName } from "@/lib/work-items/branches";
 import { effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
 import type { BranchVerifyJob } from "@/lib/deploy/branch-verify";
+import { REPOSITORY_JOB_SCHEMA_V2 } from "@/lib/deploy/branch-verify";
 
 const PROCEDURE_TYPE: TaskProcedureType = "submit_candidate_for_review";
 
@@ -141,7 +151,11 @@ async function prepareCandidate(ctx: StepHandlerContext): Promise<StepHandlerRes
   const candidateSha = (procInput?.candidateSha as string) ?? task.repositoryRun?.candidateSha ?? null;
   const baseSha = task.repositoryRun?.baseSha ?? null;
   if (!candidateSha) {
-    return { status: "failed", error: "No candidate SHA available from procedure input or repository run.", retryable: true };
+    // The branch verifier is the sole owner of submission-commit creation. A
+    // dirty worktree therefore has no candidate SHA yet; carry null as the
+    // previous candidate and let the correlated verifier callback establish
+    // the authoritative candidate after it creates/validates the commit.
+    return { status: "completed", output: { codeTouching: true, candidateSha: null, baseSha } };
   }
   // Update the cycle with the candidate SHA.
   await db.$transaction((tx) =>
@@ -217,7 +231,15 @@ async function runValidation(ctx: StepHandlerContext): Promise<StepHandlerResult
     deploymentPrTargetBranch: task.project.deploymentPrTargetBranch,
   });
   const validationProfile = await resolveValidationProfileSnapshot(task.projectId);
-  const jobId = `proc-val-${ctx.procedureRunId}-${Date.now()}`;
+  // PHASEE-07 Fix #3: Deterministic job ID based on procedure run + step —
+  // a crash-replay re-publishes the same jobId, hitting the same spool path,
+  // so no duplicate spool file is created.
+  const jobId = `proc-val-${ctx.procedureRunId}-${ctx.stepId}`;
+  // PHASEE-07: Resolve repository run for V2 identity fields.
+  const repoRun = await db.taskRepositoryRun.findUnique({
+    where: { taskId: task.id },
+    select: { id: true, version: true, baseSha: true, candidateSha: true },
+  });
   const job: BranchVerifyJob = {
     jobId,
     taskId: task.id,
@@ -225,9 +247,14 @@ async function runValidation(ctx: StepHandlerContext): Promise<StepHandlerResult
     projectSlug: task.project.slug,
     repositoryPath: task.project.repositoryPath,
     branchName,
+    // PHASEE-07: emit schema-v2 job with mandatory V2 identity fields.
+    schemaVersion: REPOSITORY_JOB_SCHEMA_V2,
     procedureRunId: ctx.procedureRunId,
     procedureStepId: ctx.stepId,
     workflowCycleId: ctx.workflowCycleId,
+    commandReceiptId: null, // populated when command receipt is available in ctx
+    repositoryRunId: repoRun?.id ?? null,
+    repositoryRunVersion: repoRun?.version ?? null,
     baseBranch: effectiveSettings.deployment.prTargetBranch.value,
     epicChild: Boolean(task.epicId),
     epicBranch: task.epic ? effectiveEpicBranchName(task.epic) : null,
@@ -269,7 +296,44 @@ async function runValidation(ctx: StepHandlerContext): Promise<StepHandlerResult
     lastError: null,
     incrementAttempt: true,
   });
-  return { status: "waiting_callback", jobId, output: { candidateSha: task.repositoryRun?.candidateSha, baseSha: task.repositoryRun?.baseSha, branchName } };
+  // PHASEE-07: Publication lifecycle:
+  //   publishing  → set here at enqueue time.
+  //   published   → set by procedure-runner when the callback is applied (step completes).
+  //   pending     → set by procedure-runner when a duplicate callback arrives for an
+  //                 already-completed step; replayCount is incremented there.
+  // A re-enqueue after crash-recovery sees publicationState="published" and
+  // increments replayCount here, then sets "publishing" for the new enqueue.
+  // PHASEE-07 Fix #3: Store full V2 identity packet in waiting_callback output
+  // so a crash-replay can re-publish the same job deterministically.
+  const existingRepoRun = await db.taskRepositoryRun.findUnique({
+    where: { taskId: task.id },
+    select: { id: true, publicationState: true, replayCount: true },
+  });
+  const isReplay = existingRepoRun?.publicationState === "published";
+  await db.taskRepositoryRun.update({
+    where: { taskId: task.id },
+    data: {
+      publicationState: "publishing",
+      replayCount: isReplay ? (existingRepoRun?.replayCount ?? 0) + 1 : existingRepoRun?.replayCount ?? 0,
+    },
+  });
+  const v2Identity = {
+    schemaVersion: REPOSITORY_JOB_SCHEMA_V2,
+    jobId,
+    taskId: task.id,
+    workflowCycleId: ctx.workflowCycleId,
+    procedureRunId: ctx.procedureRunId,
+    procedureStepId: ctx.stepId,
+    commandReceiptId: null,
+    repositoryRunId: repoRun?.id ?? null,
+    repositoryRunVersion: repoRun?.version ?? null,
+    // PHASEE-07 Fix #1: Use the same source as job.previousCandidateSha/job.baseSha
+    // (candidateOutput) so exact correlation never rejects a legitimate callback.
+    // The DB row's candidateSha can lag behind on resubmission after review_feedback.
+    candidateSha: typeof candidateOutput?.candidateSha === "string" ? candidateOutput.candidateSha : task.repositoryRun?.candidateSha ?? null,
+    baseSha: typeof candidateOutput?.baseSha === "string" ? candidateOutput.baseSha : task.repositoryRun?.baseSha ?? null,
+  };
+  return { status: "waiting_callback", jobId, output: { ...v2Identity, branchName } };
 }
 
 // --- Step 4: apply_validation_result ------------------------------------
@@ -313,37 +377,49 @@ async function applyValidationResult(ctx: StepHandlerContext): Promise<StepHandl
   }
   if (outcome === "invalid") {
     // Validation failed — close the cycle, move to To Do (front), enqueue
-    // feedback. This is a mechanical transition performed by the procedure
-    // engine (not a human decision).
+    // feedback. Per §17 ownership matrix, the mechanical command (To Do,
+    // cycle close, repo state, receipt) is owned by the command boundary,
+    // NOT the procedure handler. The procedure submits the mechanical intent
+    // through submitWorkflowCommand so the orchestrator's execute path owns
+    // the transition atomically. The procedure only owns the feedback
+    // notification (outbox effect).
     const error = (validationOutput?.error as string) ?? "Repository validation failed.";
     await updateTaskRepositoryState(ctx.taskId, {
       phase: "action_required",
       validationOutcome: "invalid",
       lastError: error,
     });
-    // Close the cycle as validation_failed.
-    await db.$transaction(async (tx) => {
-      await closeTaskWorkflowCycle(tx, {
-        taskId: ctx.taskId,
-        outcome: "validation_failed",
-        candidateSha: candidateSha ?? null,
-      });
-      // Move In Progress -> To Do (front) via the kernel.
-      const task = await tx.task.findUniqueOrThrow({ where: { id: ctx.taskId }, select: { projectId: true, status: true } });
-      if (task.status === "In Progress") {
-        await applyTaskTransition(tx, {
-          taskId: ctx.taskId,
-          projectId: task.projectId,
-          intent: "repository_validation_failed",
-          from: "In Progress",
-          to: "To Do",
-          source: "procedure-validation",
-          idempotencyKey: `procedure-validation-failed:${ctx.procedureRunId}`,
-          rank: "front",
-          evidence: { validationOutcome: "invalid", candidateSha, error, mechanical: true },
-        });
-      }
+    // Submit the mechanical validation_failed intent through the command
+    // boundary (§17 row: validation_failed — atomic DB owner is the
+    // mechanical command, NOT the procedure handler).
+    const freshTask = await db.task.findUniqueOrThrow({
+      where: { id: ctx.taskId },
+      select: { workflowVersion: true, activeWorkflowCycleId: true, assigneeId: true, status: true },
     });
+    if (freshTask.status === "In Progress") {
+      const result = await submitWorkflowCommand({
+        taskId: ctx.taskId,
+        intent: "repository_validation_failed",
+        actor: { id: freshTask.assigneeId ?? "procedure-engine", kind: "agent", username: "procedure-engine", role: "monitor" },
+        expectedWorkflowVersion: freshTask.workflowVersion,
+        workflowCycleId: freshTask.activeWorkflowCycleId,
+        idempotencyKey: `procedure-validation-failed:${ctx.procedureRunId}`,
+        source: "callback",
+        evidence: { validationOutcome: "invalid", candidateSha, error, procedureRunId: ctx.procedureRunId, mechanical: true },
+        payload: {
+          procedureRunId: ctx.procedureRunId,
+          procedureStepId: ctx.stepId,
+          jobId: null,
+          candidateSha: candidateSha ?? null,
+          baseSha: null,
+          outcome: "failed",
+          failureReason: error,
+        },
+      });
+      if (result.status !== "accepted" && result.status !== "replayed") {
+        return { status: "failed", error: `Failed to submit validation failure: ${result.status} — ${result.reason ?? "no reason"}`, retryable: result.status === "stale" };
+      }
+    }
     // Enqueue feedback notification to assignee.
     const taskForFeedback = await db.task.findUnique({ where: { id: ctx.taskId }, select: { id: true, projectId: true, assigneeId: true, assignee: { select: { id: true, username: true } }, title: true } });
     if (taskForFeedback?.assigneeId && taskForFeedback.assignee) {
@@ -420,7 +496,7 @@ async function createReviewLease(ctx: StepHandlerContext): Promise<StepHandlerRe
     try { prepareOutput = JSON.parse(prepareStep.output); } catch { /* ignore */ }
   }
   const candidateSha = (prepareOutput?.candidateSha as string) ?? task.repositoryRun?.candidateSha ?? "no-repo";
-  const reviewerId = resolveReviewOwnerIdFromSnapshot({
+  const reviewerId = resolveReviewOwnerId({
     actingManagerId: task.actingManagerId,
     reporterId: task.reporterId,
     epic: task.epic ? { status: task.epic.status, actingManagerId: task.epic.actingManagerId } : null,
@@ -490,8 +566,9 @@ async function enterReview(ctx: StepHandlerContext): Promise<StepHandlerResult> 
   // it may have changed since the procedure was created. Use the assignee's
   // user ID as the mechanical actor (the procedure acts on the assignee's
   // behalf; the decision actor is recorded separately by the orchestrator).
-  const freshTask = await db.task.findUniqueOrThrow({ where: { id: task.id }, select: { workflowVersion: true, activeWorkflowCycleId: true, assigneeId: true } });
+  const freshTask = await db.task.findUniqueOrThrow({ where: { id: task.id }, select: { workflowVersion: true, activeWorkflowCycleId: true, assigneeId: true, repositoryRun: { select: { baseSha: true } } } });
   const candidateSha = (leaseOutput?.candidateSha as string) ?? null;
+  const realBaseSha = freshTask.repositoryRun?.baseSha ?? null;
   const result = await submitWorkflowCommand({
     taskId: task.id,
     intent: "repository_validation_succeeded",
@@ -499,9 +576,16 @@ async function enterReview(ctx: StepHandlerContext): Promise<StepHandlerResult> 
     expectedWorkflowVersion: freshTask.workflowVersion,
     workflowCycleId: freshTask.activeWorkflowCycleId,
     idempotencyKey: `procedure-enter-review:${ctx.procedureRunId}`,
-    source: "procedure-submit-candidate",
+    source: "callback",
     evidence: { candidateSha, procedureRunId: ctx.procedureRunId },
-    payload: { candidateSha },
+    payload: {
+      procedureRunId: ctx.procedureRunId,
+      procedureStepId: ctx.stepId,
+      jobId: null,
+      candidateSha: candidateSha ?? null,
+      baseSha: realBaseSha ?? null,
+      outcome: "succeeded",
+    },
   });
   if (result.status !== "accepted" && result.status !== "replayed") {
     return { status: "failed", error: `Failed to enter Review: ${result.status} — ${result.reason ?? "no reason"}`, retryable: result.status === "stale" };
@@ -541,7 +625,7 @@ async function wakeReviewer(ctx: StepHandlerContext): Promise<StepHandlerResult>
   if (!task) {
     return { status: "completed", output: { skipped: true, reason: "task_not_found" } };
   }
-  const reviewerId = resolveReviewOwnerIdFromSnapshot({
+  const reviewerId = resolveReviewOwnerId({
     actingManagerId: task.actingManagerId,
     reporterId: task.reporterId,
     epic: task.epic ? { status: task.epic.status, actingManagerId: task.epic.actingManagerId } : null,
@@ -578,11 +662,11 @@ async function wakeReviewer(ctx: StepHandlerContext): Promise<StepHandlerResult>
 
 // --- Register handlers ----------------------------------------------------
 export function registerSubmitCandidateForReviewHandlers(): void {
-  registerStepHandler(PROCEDURE_TYPE, "freeze_execution", freezeExecution);
-  registerStepHandler(PROCEDURE_TYPE, "prepare_candidate", prepareCandidate);
-  registerStepHandler(PROCEDURE_TYPE, "run_validation", runValidation);
-  registerStepHandler(PROCEDURE_TYPE, "apply_validation_result", applyValidationResult);
-  registerStepHandler(PROCEDURE_TYPE, "create_review_lease", createReviewLease);
-  registerStepHandler(PROCEDURE_TYPE, "enter_review", enterReview);
-  registerStepHandler(PROCEDURE_TYPE, "wake_reviewer", wakeReviewer);
+  registerStepHandler(PROCEDURE_TYPE, 1, "freeze_execution", freezeExecution);
+  registerStepHandler(PROCEDURE_TYPE, 1, "prepare_candidate", prepareCandidate);
+  registerStepHandler(PROCEDURE_TYPE, 1, "run_validation", runValidation);
+  registerStepHandler(PROCEDURE_TYPE, 1, "apply_validation_result", applyValidationResult);
+  registerStepHandler(PROCEDURE_TYPE, 1, "create_review_lease", createReviewLease);
+  registerStepHandler(PROCEDURE_TYPE, 1, "enter_review", enterReview);
+  registerStepHandler(PROCEDURE_TYPE, 1, "wake_reviewer", wakeReviewer);
 }

@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "evidenceId": "ENV-155-e2-YYYYMMDDTHHMMSSZ",
+  "generatedAt": "2026-08-19T00:00:00.000Z",
+  "targetProjectSlug": "synthetic-private-canary",
+  "mode": "e2_internal_canary",
+  "syntheticPrivateProject": true,
+  "checks": {
+    "migrations": false,
+    "typecheck": false,
+    "workflowSuite": false,
+    "phaseESuites": false,
+    "build": false,
+    "lint": false,
+    "procedureHandlerIdempotency": false,
+    "callbackV2Correlation": false,
+    "comparisonParity": false,
+    "doctorInvariants": false
+  },
+  "ownership": {
+    "backupOwner": "",
+    "rollbackOwner": "",
+    "onCallOwner": ""
+  },
+  "artifacts": []
+}

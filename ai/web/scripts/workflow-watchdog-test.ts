@@ -78,7 +78,7 @@ function run(overrides: Partial<WatchdogRunRecord> = {}): WatchdogRunRecord {
     status: "accepted",
     sessionKey: "session-1",
     createdAt: NOW - 2 * MINUTE,
-    acceptedAt: NOW - 2 * MINUTE,
+    acceptedAt: NOW - 2 * MINUTE, admittedAt: NOW - 2 * MINUTE,
     streamingAt: null,
     lastEventAt: NOW - 2 * MINUTE,
     lastAction: null,
@@ -115,10 +115,10 @@ function byDetector(findings: WatchdogFinding[], id: string): WatchdogFinding[] 
 // Registry
 // ------------------------------------------------------------------
 
-assertEqual(WATCHDOG_DETECTORS.length, 8, "all execution and pre-start failure modes have a detector");
+assertEqual(WATCHDOG_DETECTORS.length, 14, "all execution and pre-start failure modes have a detector");
 assertEqual(
   new Set(WATCHDOG_DETECTORS.map((detector) => detector.id)).size,
-  8,
+  14,
   "detector ids are unique",
 );
 for (const detector of WATCHDOG_DETECTORS) {
@@ -177,7 +177,7 @@ for (const detector of WATCHDOG_DETECTORS) {
 // ------------------------------------------------------------------
 
 {
-  const stale = run({ lastEventAt: NOW - 60 * MINUTE, acceptedAt: NOW - 60 * MINUTE });
+  const stale = run({ lastEventAt: NOW - 60 * MINUTE, acceptedAt: NOW - 60 * MINUTE, admittedAt: NOW - 60 * MINUTE });
   const findings = detectWatchdogFindings(
     snapshot({ tasks: [task()], runs: [stale] }),
   );

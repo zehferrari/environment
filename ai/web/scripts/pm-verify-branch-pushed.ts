@@ -27,6 +27,7 @@ import {
   existsSync,
   readFileSync,
   realpathSync,
+  renameSync,
   unlinkSync,
 } from "node:fs";
 import path from "node:path";
@@ -97,54 +98,31 @@ type RebuildResult =
   | { attempted: true; ok: true; target: string; log: string }
   | { attempted: true; ok: false; target: string; error: string; log: string };
 
-function procedureCallbackForJob(job: BranchVerifyJob): RepositoryProcedureCallback | undefined {
-  if (!job.procedureRunId || !job.procedureStepId || job.workflowCycleId === undefined) return undefined;
+function procedureCallbackForJob(job: BranchVerifyJob): RepositoryProcedureCallback {
+  if (
+    job.schemaVersion !== 2 ||
+    !job.procedureRunId ||
+    !job.procedureStepId ||
+    job.workflowCycleId === undefined ||
+    !job.repositoryRunId ||
+    typeof job.repositoryRunVersion !== "number"
+  ) {
+    throw new Error("Exact schema-v2 validation job identity is required.");
+  }
   return {
     procedureRunId: job.procedureRunId,
     procedureStepId: job.procedureStepId,
     workflowCycleId: job.workflowCycleId,
     jobId: job.jobId,
     baseSha: job.baseSha ?? null,
+    // PHASEE-07: round-trip V2 identity fields from the spooled job so the
+    // callback carries the full V2RepositoryJobIdentity for exact correlation.
+    schemaVersion: job.schemaVersion,
+    commandReceiptId: job.commandReceiptId ?? null,
+    repositoryRunId: job.repositoryRunId ?? null,
+    repositoryRunVersion: job.repositoryRunVersion ?? null,
+    candidateSha: job.previousCandidateSha ?? null,
   };
-}
-
-async function supersedeCorrelatedProcedure(job: BranchVerifyJob, reason: string): Promise<void> {
-  if (!job.procedureRunId || !job.procedureStepId || job.workflowCycleId === undefined) return;
-  const run = await db.taskProcedureRun.findFirst({
-    where: {
-      id: job.procedureRunId,
-      taskId: job.taskId,
-      workflowCycleId: job.workflowCycleId,
-      status: { in: ["queued", "running"] },
-    },
-    select: { id: true },
-  });
-  if (!run) return;
-  const completedAt = new Date();
-  await db.$transaction([
-    db.taskProcedureStep.updateMany({
-      where: {
-        procedureRunId: run.id,
-        status: { in: ["pending", "running", "failed", "waiting_callback"] },
-      },
-      data: {
-        status: "completed",
-        completedAt,
-        leaseOwner: null,
-        leaseExpiresAt: null,
-        output: JSON.stringify({ superseded: true, reason, jobId: job.jobId }),
-      },
-    }),
-    db.taskProcedureRun.update({
-      where: { id: run.id },
-      data: {
-        status: "completed",
-        completedAt,
-        currentStep: null,
-        output: JSON.stringify({ superseded: true, reason, jobId: job.jobId }),
-      },
-    }),
-  ]);
 }
 
 type CommitResult =
@@ -870,6 +848,28 @@ async function main() {
   }
 
   const job = JSON.parse(readFileSync(jobFile, "utf8")) as BranchVerifyJob;
+  // Legacy and unknown jobs are preserved for operator inspection but never
+  // guessed back onto a task or procedure.
+  if (
+    job.schemaVersion !== 2 ||
+    !job.procedureRunId ||
+    !job.procedureStepId ||
+    job.workflowCycleId === undefined ||
+    !job.repositoryRunId ||
+    typeof job.repositoryRunVersion !== "number"
+  ) {
+    const skipPath = `${jobFile}.skipped`;
+    console.error(
+      `[pm-verify] retired or incomplete job ${job.jobId}; renaming to ${skipPath}.`,
+    );
+    try {
+      renameSync(jobFile, skipPath);
+    } catch {
+      // If rename fails (e.g. permissions), unlink to prevent re-read loop.
+      try { unlinkSync(jobFile); } catch { /* best effort */ }
+    }
+    return;
+  }
   let actor: Awaited<ReturnType<typeof monitorActor>> | null = null;
   try {
     actor = await monitorActor(job);
@@ -907,7 +907,6 @@ async function main() {
         }),
       },
     });
-    await supersedeCorrelatedProcedure(job, reason);
     console.error(`[pm-verify] rejecting stale verifier job ${job.jobId}: job cycle ${job.workflowCycleId ?? "null"}, active cycle ${taskCycle?.activeWorkflowCycleId ?? "null"}`);
     unlinkSync(jobFile);
     return;
@@ -1119,7 +1118,6 @@ async function main() {
             }),
           },
         });
-        await supersedeCorrelatedProcedure(job, "verifier job arrived for a cycle whose lease is already decided");
         console.error(`[pm-verify] rejecting verifier job ${job.jobId}: cycle ${workflowCycleId} has a decided lease (${runStatus.status})`);
         unlinkSync(jobFile);
         return;

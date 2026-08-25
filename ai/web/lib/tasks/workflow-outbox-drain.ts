@@ -1,9 +1,11 @@
 import { db } from "@/lib/db";
+import { writeDeduplicatedActivity, computeActivityDedupeKey } from "@/lib/tasks/orchestrator/activity-dedup";
 import { enqueueBranchVerifyJob, type BranchVerifyJob } from "@/lib/deploy/branch-verify";
 import {
   enqueueEpicCompletionReview,
   enqueueEpicCompletionReviewApproval,
   enqueueEpicDoneCleanup,
+  enqueueTaskCheckpoint,
   enqueueTaskReviewFinalization,
 } from "@/lib/deploy/epic-merge";
 import {
@@ -28,6 +30,7 @@ type OutboxRow = {
   id: string;
   taskId: string;
   projectId: string;
+  transitionId: string | null;
   effectType: string;
   payload: string;
   dedupeKey: string;
@@ -68,6 +71,19 @@ async function dispatch(row: OutboxRow) {
         : typeof payload.stepId === "string" ? payload.stepId : undefined,
       workflowCycleId: typeof payload.workflowCycleId === "string" || payload.workflowCycleId === null
         ? payload.workflowCycleId
+        : undefined,
+      schemaVersion: typeof payload.schemaVersion === "number" ? payload.schemaVersion : undefined,
+      commandReceiptId: typeof payload.commandReceiptId === "string" || payload.commandReceiptId === null
+        ? payload.commandReceiptId
+        : undefined,
+      repositoryRunId: typeof payload.repositoryRunId === "string" || payload.repositoryRunId === null
+        ? payload.repositoryRunId
+        : undefined,
+      repositoryRunVersion: typeof payload.repositoryRunVersion === "number" || payload.repositoryRunVersion === null
+        ? payload.repositoryRunVersion
+        : undefined,
+      baseSha: typeof payload.baseSha === "string" || payload.baseSha === null
+        ? payload.baseSha
         : undefined,
     });
     if (result.blockedByFailedJob) {
@@ -131,6 +147,22 @@ async function dispatch(row: OutboxRow) {
     if (!delivered) throw new Error("Task workflow notification has no active eligible recipient.");
     return;
   }
+  if (row.effectType === "repository_checkpoint") {
+    const result = await enqueueTaskCheckpoint({
+      taskId: String(payload.taskId),
+      projectId: String(payload.projectId),
+      requestedByUserId: String(payload.requestedByUserId),
+      requestedByUsername: String(payload.requestedByUsername),
+      authorizationCommentId: String(payload.authorizationCommentId),
+      note: String(payload.note),
+    });
+    if (result.blockedByFailedJob) {
+      throw new TerminalWorkflowEffectError(
+        "A failed checkpoint runner job requires operator recovery.",
+      );
+    }
+    return;
+  }
   if (row.effectType === "board_touch") {
     publishBoardTouch(row.projectId);
     return;
@@ -139,6 +171,10 @@ async function dispatch(row: OutboxRow) {
     await refillDependentEpicQueuesForDoneTask({
       prerequisiteTaskId: String(payload.prerequisiteTaskId),
       actorUserId: typeof payload.actorUserId === "string" ? payload.actorUserId : null,
+      trigger: {
+        kind: row.transitionId ? "workflow_transition" : "command_receipt",
+        id: row.transitionId ?? row.id,
+      },
     });
     return;
   }
@@ -160,49 +196,45 @@ async function escalate(row: OutboxRow, message: string) {
           completionReviewLastError: message,
         },
       }),
-      db.task.updateMany({
-        where: { id: row.taskId, deletedAt: null },
-        data: { alertReporter: true },
-      }),
-      db.activityLog.create({
-        data: {
-          projectId: row.projectId,
-          taskId: row.taskId,
-          kind: "epic.completion_review.operational_error",
-          payload: JSON.stringify({
-            epicId,
-            outboxId: row.id,
-            dedupeKey: row.dedupeKey,
-            effectType: row.effectType,
-            attempts: row.attempts,
-            error: message,
-            via: "workflow_outbox",
-          }),
-        },
-      }),
     ]);
+    await writeDeduplicatedActivity({
+      projectId: row.projectId,
+      taskId: row.taskId,
+      kind: "epic.completion_review.operational_error",
+      payload: {
+        epicId,
+        outboxId: row.id,
+        dedupeKey: row.dedupeKey,
+        effectType: row.effectType,
+        attempts: row.attempts,
+        error: message,
+        via: "workflow_outbox",
+      },
+      dedupeKey: computeActivityDedupeKey("epic.completion_review.operational_error", row.taskId, {
+        outboxId: row.id,
+        effectType: row.effectType,
+        error: message,
+      }),
+    });
     return;
   }
-  await db.$transaction([
-    db.task.updateMany({
-      where: { id: row.taskId, deletedAt: null },
-      data: { alertReporter: true },
+  await writeDeduplicatedActivity({
+    projectId: row.projectId,
+    taskId: row.taskId,
+    kind: "task.workflow.effect_failed",
+    payload: {
+      outboxId: row.id,
+      dedupeKey: row.dedupeKey,
+      effectType: row.effectType,
+      attempts: row.attempts,
+      error: message,
+    },
+    dedupeKey: computeActivityDedupeKey("task.workflow.effect_failed", row.taskId, {
+      outboxId: row.id,
+      effectType: row.effectType,
+      error: message,
     }),
-    db.activityLog.create({
-      data: {
-        projectId: row.projectId,
-        taskId: row.taskId,
-        kind: "task.workflow.effect_failed",
-        payload: JSON.stringify({
-          outboxId: row.id,
-          dedupeKey: row.dedupeKey,
-          effectType: row.effectType,
-          attempts: row.attempts,
-          error: message,
-        }),
-      },
-    }),
-  ]);
+  });
 }
 
 export async function drainWorkflowOutbox(args: {
@@ -252,6 +284,7 @@ export async function drainWorkflowOutbox(args: {
         id: true,
         taskId: true,
         projectId: true,
+        transitionId: true,
         effectType: true,
         payload: true,
         dedupeKey: true,

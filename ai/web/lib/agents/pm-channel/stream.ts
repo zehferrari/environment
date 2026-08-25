@@ -12,11 +12,19 @@ export type PmChannelStreamEventKind =
   | "reasoning"
   | "final"
   | "done"
-  | "error";
+  | "error"
+  // ENV-159 canonical provider-neutral gateway protocol events
+  | "dispatch:delivered"
+  | "turn:waiting_capacity"
+  | "turn:admitted"
+  | "model:selected"
+  | "tool:start"
+  | "context:usage"
+  | "turn:terminal";
 
 export type PmChannelLifecycleStatus = "thinking" | "reading" | "working";
 
-export type PmChannelToolStatus = "call" | "result";
+export type PmChannelToolStatus = "call" | "result" | "start" | "update";
 
 export interface PmChannelStreamInput {
   target: PmChannelReplyTarget;
@@ -28,6 +36,10 @@ export interface PmChannelStreamInput {
   statusKind?: PmChannelLifecycleStatus;
   toolStatus?: PmChannelToolStatus;
   toolName?: string;
+  toolCallId?: string;
+  provider?: string;
+  model?: string;
+  degradedTelemetry?: boolean;
   seq?: number;
   runStatus?: PmChannelStreamState["runStatus"];
 }
@@ -41,7 +53,11 @@ export interface PmChannelStreamState {
   lifecycleStatus: PmChannelLifecycleStatus | null;
   toolStatus: PmChannelToolStatus | null;
   toolName: string | null;
-  runStatus?: "queued" | "accepted" | "streaming" | "completed" | "failed" | "timed_out" | "cancelled" | "superseded";
+  toolCallId?: string | null;
+  provider?: string | null;
+  model?: string | null;
+  degradedTelemetry?: boolean;
+  runStatus?: "queued" | "accepted" | "delivered" | "streaming" | "completed" | "failed" | "timed_out" | "cancelled" | "superseded" | "waiting_capacity" | "admitted";
   error: string | null;
   seq?: number;
   updatedAt: number;
@@ -140,7 +156,7 @@ function statusFromEvent(input: PmChannelStreamInput): PmChannelLifecycleStatus 
 }
 
 function toolStatusFromEvent(input: PmChannelStreamInput): PmChannelToolStatus | null {
-  if (input.event === "tool:call") return "call";
+  if (input.event === "tool:call" || input.event === "tool:start") return input.event === "tool:start" ? "start" : "call";
   if (input.event === "tool:result") return "result";
   return input.toolStatus ?? null;
 }
@@ -186,7 +202,29 @@ export function applyPmChannelStreamInput(
   const lifecycleStatus = statusFromEvent(input);
   const toolStatus = toolStatusFromEvent(input);
 
-  if (input.event === "status" || lifecycleStatus) {
+  // ENV-159 canonical provider-neutral gateway protocol events
+  if (input.event === "dispatch:delivered") {
+    state.status = "streaming";
+    state.runStatus = "accepted";
+    state.error = null;
+  } else if (input.event === "turn:waiting_capacity") {
+    state.status = "streaming";
+    state.runStatus = "waiting_capacity";
+    state.error = null;
+  } else if (input.event === "turn:admitted") {
+    state.status = "streaming";
+    state.runStatus = "admitted";
+    state.error = null;
+  } else if (input.event === "model:selected") {
+    if (input.provider) state.provider = input.provider;
+    if (input.model) state.model = input.model;
+  } else if (input.event === "context:usage") {
+    // Usage events are metadata-only; they don't change stream state
+  } else if (input.event === "turn:terminal") {
+    state.status = "done";
+    state.runStatus = "completed";
+    state.error = null;
+  } else if (input.event === "status" || lifecycleStatus) {
     state.lifecycleStatus = lifecycleStatus ?? state.lifecycleStatus;
     state.toolStatus = null;
     state.toolName = null;
@@ -202,6 +240,7 @@ export function applyPmChannelStreamInput(
   } else if (toolStatus) {
     state.toolStatus = toolStatus;
     state.toolName = input.toolName ?? input.text ?? null;
+    if (input.toolCallId) state.toolCallId = input.toolCallId;
     state.lifecycleStatus = "working";
     state.status = "streaming";
     state.runStatus = "streaming";

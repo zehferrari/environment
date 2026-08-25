@@ -4,6 +4,21 @@
 //   1. return_review_for_changes — triggered by request_review_changes.
 //   2. finalize_accepted_review — triggered by accept_review.
 //
+// §17 side-effect ownership audit (PHASEE-06):
+//   Row: review changes requested — command owns: comment, exact lease
+//   decision, To Do, cycle close, repo state, procedure. This procedure
+//   (return_review_for_changes) owns: invalidate mechanical effects,
+//   revalidation mark, wake. No dual ownership — handlers do not call
+//   applyTaskTransition.
+//   Row: review accepted — command owns: exact immutable acceptance,
+//   finalization procedure. This procedure (finalize_accepted_review) owns:
+//   repository finalization and verification. No dual ownership.
+//   Row: finalization succeeded — mechanical command owns: Done, cycle
+//   close, lease completion, lane release. This procedure owns: cleanup,
+//   refill, completion notification. complete_review uses
+//   submitWorkflowCommand (repository_finalization_succeeded) — no direct
+//   applyTaskTransition calls.
+//
 // Review feedback (§10.1): the reviewer decision transaction marks the lease
 // changes_requested, closes the cycle, moves Review -> To Do (front), and
 // creates the procedure. The procedure then invalidates finalization effects,
@@ -28,6 +43,7 @@ import { submitWorkflowCommand } from "@/lib/tasks/orchestrator";
 import { registerStepHandler } from "@/lib/tasks/orchestrator/procedure-runner";
 import type { StepHandlerResult, StepHandlerContext } from "@/lib/tasks/orchestrator/procedure-runner";
 import type { TaskProcedureType } from "@/lib/tasks/orchestrator/types";
+import { REPOSITORY_JOB_SCHEMA_V2 } from "@/lib/deploy/branch-verify";
 
 // =====================================================================
 // return_review_for_changes
@@ -127,9 +143,9 @@ async function wakeAssigneeWithFeedback(ctx: StepHandlerContext): Promise<StepHa
 }
 
 export function registerReturnReviewForChangesHandlers(): void {
-  registerStepHandler(FEEDBACK_TYPE, "invalidate_finalization_effects", invalidateFinalizationEffects);
-  registerStepHandler(FEEDBACK_TYPE, "mark_worktree_for_revalidation", markWorktreeForRevalidation);
-  registerStepHandler(FEEDBACK_TYPE, "wake_assignee_with_feedback", wakeAssigneeWithFeedback);
+  registerStepHandler(FEEDBACK_TYPE, 1, "invalidate_finalization_effects", invalidateFinalizationEffects);
+  registerStepHandler(FEEDBACK_TYPE, 1, "mark_worktree_for_revalidation", markWorktreeForRevalidation);
+  registerStepHandler(FEEDBACK_TYPE, 1, "wake_assignee_with_feedback", wakeAssigneeWithFeedback);
 }
 
 // =====================================================================
@@ -155,7 +171,7 @@ async function finalizeRepository(ctx: StepHandlerContext): Promise<StepHandlerR
       assigneeId: true,
       assignee: { select: { id: true, username: true } },
       project: { select: { repositoryPath: true } },
-      repositoryRun: { select: { phase: true, candidateSha: true, reviewedSha: true, repoTouched: true, branchName: true } },
+      repositoryRun: { select: { phase: true, candidateSha: true, baseSha: true, reviewedSha: true, repoTouched: true, branchName: true } },
       reviewRuns: { where: { status: "accepted" }, orderBy: { updatedAt: "desc" }, take: 1, select: { id: true, candidateSha: true, reviewerId: true } },
     },
   });
@@ -183,10 +199,18 @@ async function finalizeRepository(ctx: StepHandlerContext): Promise<StepHandlerR
     reviewedSha: candidateSha,
     lastError: null,
   });
+  // PHASEE-07: Resolve repository run for V2 identity fields.
+  const repoRun = await db.taskRepositoryRun.findUnique({
+    where: { taskId: task.id },
+    select: { id: true, version: true, baseSha: true },
+  });
   // Enqueue the review_finalize outbox effect. The outbox drain enqueues the
   // actual finalization spool job. The callback will come back via
-  // applyProcedureCallback.
-  const jobId = `proc-finalize-${ctx.procedureRunId}-${Date.now()}`;
+  // applyProcedureCallback. PHASEE-07: include V2 identity fields.
+  // PHASEE-07 Fix #3: Deterministic job ID based on procedure run + step —
+  // a crash-replay re-publishes the same jobId, hitting the same spool path,
+  // so no duplicate spool file is created.
+  const jobId = `proc-finalize-${ctx.procedureRunId}-${ctx.stepId}`;
   await enqueueWorkflowEffects(db, {
     taskId: task.id,
     projectId: task.projectId,
@@ -203,10 +227,50 @@ async function finalizeRepository(ctx: StepHandlerContext): Promise<StepHandlerR
         procedureRunId: ctx.procedureRunId,
         procedureStepId: ctx.stepId,
         workflowCycleId: task.activeWorkflowCycleId,
+        // PHASEE-07: V2 identity fields for exact callback correlation.
+        schemaVersion: REPOSITORY_JOB_SCHEMA_V2,
+        commandReceiptId: null,
+        repositoryRunId: repoRun?.id ?? null,
+        repositoryRunVersion: repoRun?.version ?? null,
+        baseSha: repoRun?.baseSha ?? null,
       },
     }],
   });
-  return { status: "waiting_callback", jobId, output: { candidateSha } };
+  // PHASEE-07: Publication lifecycle:
+  //   publishing  → set here at enqueue time.
+  //   published   → set by procedure-runner when the callback is applied (step completes).
+  //   pending     → set by procedure-runner when a duplicate callback arrives for an
+  //                 already-completed step; replayCount is incremented there.
+  // A re-enqueue after crash-recovery sees publicationState="published" and
+  // increments replayCount here, then sets "publishing" for the new enqueue.
+  // PHASEE-07 Fix #3: Store full V2 identity packet in waiting_callback output
+  // so a crash-replay can re-publish the same job deterministically.
+  const existingRepoRun = await db.taskRepositoryRun.findUnique({
+    where: { taskId: task.id },
+    select: { id: true, publicationState: true, replayCount: true },
+  });
+  const isReplay = existingRepoRun?.publicationState === "published";
+  await db.taskRepositoryRun.update({
+    where: { taskId: task.id },
+    data: {
+      publicationState: "publishing",
+      replayCount: isReplay ? (existingRepoRun?.replayCount ?? 0) + 1 : existingRepoRun?.replayCount ?? 0,
+    },
+  });
+  const v2Identity = {
+    schemaVersion: REPOSITORY_JOB_SCHEMA_V2,
+    jobId,
+    taskId: task.id,
+    workflowCycleId: task.activeWorkflowCycleId,
+    procedureRunId: ctx.procedureRunId,
+    procedureStepId: ctx.stepId,
+    commandReceiptId: null,
+    repositoryRunId: repoRun?.id ?? null,
+    repositoryRunVersion: repoRun?.version ?? null,
+    candidateSha,
+    baseSha: repoRun?.baseSha ?? null,
+  };
+  return { status: "waiting_callback", jobId, output: { ...v2Identity } };
 }
 
 // --- Step 2: verify_finalization --------------------------------------
@@ -280,7 +344,8 @@ async function completeReview(ctx: StepHandlerContext): Promise<StepHandlerResul
   // Use the assignee's user ID as the mechanical actor (the procedure acts on
   // the reviewer's behalf; the decision actor is recovered from the accepted
   // lease by authorize.ts).
-  const freshTask = await db.task.findUniqueOrThrow({ where: { id: task.id }, select: { workflowVersion: true, activeWorkflowCycleId: true, assigneeId: true } });
+  const freshTask = await db.task.findUniqueOrThrow({ where: { id: task.id }, select: { workflowVersion: true, activeWorkflowCycleId: true, assigneeId: true, repositoryRun: { select: { baseSha: true } } } });
+  const realBaseSha = freshTask.repositoryRun?.baseSha ?? null;
   const result = await submitWorkflowCommand({
     taskId: task.id,
     intent: "repository_finalization_succeeded",
@@ -288,9 +353,17 @@ async function completeReview(ctx: StepHandlerContext): Promise<StepHandlerResul
     expectedWorkflowVersion: freshTask.workflowVersion,
     workflowCycleId: freshTask.activeWorkflowCycleId,
     idempotencyKey: `procedure-complete-review:${ctx.procedureRunId}`,
-    source: "procedure-finalize-accepted",
+    source: "callback",
     evidence: { candidateSha, procedureRunId: ctx.procedureRunId },
-    payload: { candidateSha },
+    payload: {
+      procedureRunId: ctx.procedureRunId,
+      procedureStepId: ctx.stepId,
+      jobId: null,
+      candidateSha,
+      baseSha: realBaseSha ?? null,
+      outcome: "succeeded",
+      publishedSha: null,
+    },
   });
   if (result.status !== "accepted" && result.status !== "replayed") {
     return { status: "failed", error: `Failed to complete review: ${result.status} — ${result.reason ?? "no reason"}`, retryable: result.status === "stale" };
@@ -397,10 +470,10 @@ async function notifyCompletion(ctx: StepHandlerContext): Promise<StepHandlerRes
 }
 
 export function registerFinalizeAcceptedReviewHandlers(): void {
-  registerStepHandler(FINALIZE_TYPE, "finalize_repository", finalizeRepository);
-  registerStepHandler(FINALIZE_TYPE, "verify_finalization", verifyFinalization);
-  registerStepHandler(FINALIZE_TYPE, "complete_review", completeReview);
-  registerStepHandler(FINALIZE_TYPE, "cleanup_worktree", cleanupWorktree);
-  registerStepHandler(FINALIZE_TYPE, "refill_queues", refillQueues);
-  registerStepHandler(FINALIZE_TYPE, "notify_completion", notifyCompletion);
+  registerStepHandler(FINALIZE_TYPE, 1, "finalize_repository", finalizeRepository);
+  registerStepHandler(FINALIZE_TYPE, 1, "verify_finalization", verifyFinalization);
+  registerStepHandler(FINALIZE_TYPE, 1, "complete_review", completeReview);
+  registerStepHandler(FINALIZE_TYPE, 1, "cleanup_worktree", cleanupWorktree);
+  registerStepHandler(FINALIZE_TYPE, 1, "refill_queues", refillQueues);
+  registerStepHandler(FINALIZE_TYPE, 1, "notify_completion", notifyCompletion);
 }

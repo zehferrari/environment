@@ -749,8 +749,23 @@ async function main(): Promise<void> {
     // replay of history rather than a scenario invented for the test.
     await db.task.update({
       where: { id: seededTask.id },
-      data: { status: statusAtOutage, alertReporter: false },
+      data: {
+        status: statusAtOutage,
+        alertReporter: false,
+        workflowEngine: "orchestrator_v2",
+        workflowEnginePinnedAt: new Date(),
+      },
     });
+    const replayCycle = await db.taskWorkflowCycle.create({
+      data: {
+        taskId: seededTask.id,
+        sequence: 1,
+        status: "open",
+        openedWorkflowVersion: 0,
+        workflowEngine: "orchestrator_v2",
+      },
+    });
+    await db.task.update({ where: { id: seededTask.id }, data: { activeWorkflowCycleId: replayCycle.id } });
     if (seededTask.epicId) {
       await db.epic.update({ where: { id: seededTask.epicId }, data: { status: "In Progress" } });
     }
@@ -914,7 +929,7 @@ async function main(): Promise<void> {
           sessionKey: String(historicalRun.sessionKey ?? "replay-e4-session"),
           status: "accepted",
           createdAt: abandonedAt,
-          acceptedAt: abandonedAt,
+          acceptedAt: abandonedAt, admittedAt: abandonedAt,
           lastEventAt: abandonedAt,
         },
       });
@@ -990,7 +1005,7 @@ async function main(): Promise<void> {
         permissionKind: "reporter_approval",
         permissionScope: permission!.scope,
       });
-      c.assertEqual(raised.status, 200, `the permission blocker was accepted: ${JSON.stringify(raised.body)}`);
+      c.assertEqual(raised.status, 202, `the permission blocker was accepted: ${JSON.stringify(raised.body)}`);
       c.assertEqual(raised.body.flagged, "blocker", "the route reports a raised blocker");
 
       const blocked = await readTaskProgress(db, seededTask.id);
@@ -1007,7 +1022,7 @@ async function main(): Promise<void> {
       const clearedResponse = await clearTurn.post("clear_blocker", {
         comment: "Replay: the reporter granted the scoped permission, so the drill resumes.",
       });
-      c.assertEqual(clearedResponse.status, 200, "a fresh authorized turn clears the blocker after external action");
+      c.assertEqual(clearedResponse.status, 202, "a fresh authorized turn clears the blocker after external action");
       const resumed = await readTaskProgress(db, seededTask.id);
       c.assertEqual(resumed.alertReporter, false, "clearing the blocker lowers the reporter alert");
       c.assertEqual(resumed.status, "In Progress", "and the task resumes where it was");
@@ -1038,7 +1053,7 @@ async function main(): Promise<void> {
         comments: await db.comment.count(),
         checklist: await db.subTask.count(),
       };
-      const observed = await checkWorkflowInvariants({ projectId: world.projectId, now: Date.now() });
+      const observed = await checkWorkflowInvariants({ projectId: world.projectId, now: Date.now(), sinceMs: 365 * 24 * 60 * 60 * 1000 });
       const after = {
         runs: await db.pmChannelRun.count(),
         tasks: await db.task.count(),

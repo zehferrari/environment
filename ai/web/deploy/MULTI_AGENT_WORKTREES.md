@@ -147,11 +147,12 @@ sudo code-tree-perms --tree /srv/Code --group code-agents --monitor <monitor-use
 
 ## 3. Switchable single site
 
-`pm.service` serves exactly **one** worktree at a time. Each branch uses an
-isolated SQLite fork under `/srv/Data/pm/wt-<branch>.db`, while `/etc/default/pm`
-remains the base environment. Switching changes both the served code and the
-active `DATABASE_URL`, so Prisma schema changes are kept with the branch that
-introduced them.
+`pm.service` serves exactly **one** worktree at a time. Each named worktree uses
+an isolated SQLite fork under `/srv/Data/pm/wt-<worktree>.db`, while
+`/etc/default/pm` remains the base environment. Switching changes both the
+served code and the active `DATABASE_URL`, so Prisma schema changes are kept
+with that preview deployment. The worktree name, not its currently checked-out
+branch, is the database identity.
 
 ### From the browser (monitor-driven)
 
@@ -198,8 +199,9 @@ browser ─▶ POST action ─▶ /var/lib/pm/switch/request.json   (web app, as
 ### From the CLI
 
 ```bash
-pm-switch <worktree-name | path>    # build + flip PM web + PM consumer + verify
-pm-switch status                    # which worktree/branch is live for both services
+pm-switch [--database=worktree|main] <worktree-name | path>
+                                    # preflight + migrate + build + flip + verify + receipt
+pm-switch status                    # which worktree/branch/DB is live for both services
 ```
 
 Do not run the legacy direct rebuild path against a managed worktree. In this
@@ -223,10 +225,22 @@ pointed at `/srv/Code/environment.worktrees/.../ai/web`.
   stale code from an older worktree.
 - `30-switch-spool.conf` adds the spool to pm.service's `ReadWritePaths` so the
   web app can drop a request.
-- `pm-switch.sh` creates `/srv/Data/pm/wt-<branch>.db` from the canonical DB
-  when the branch DB does not exist, enables WAL, runs `prisma migrate deploy`
-  against that branch DB only, then builds and delegates the service flip to
-  `pm-apply-worktree`.
+- `pm-switch.sh` creates `/srv/Data/pm/wt-<worktree>.db` from the canonical DB
+  when the worktree DB does not exist, enables WAL, runs
+  `prisma migrate deploy` against that worktree DB only, then builds and
+  delegates the service flip to `pm-apply-worktree`. The stable worktree name
+  is authoritative even if its checked-out Git branch changes temporarily, so
+  selecting `main` cannot silently switch from `wt-main.db` to an Epic branch
+  database.
+- A CLI switch refuses to infer database intent when a worktree/branch name
+  mismatch makes it ambiguous. `--database=main` explicitly selects
+  `wt-main.db`; the canonical seed `pm.db` is not a live switch target.
+  Browser requests explicitly select `worktree`.
+- Database resolution, root containment, migration-history presence, and
+  SQLite `quick_check` run before either live service stops. A successful
+  switch writes an immutable deployment receipt plus
+  `/srv/Data/pm/deployment-receipts/last-deployment.receipt` with the exact
+  code/DB pairing.
 - If the target worktree or DB is already live, `pm-switch.sh` first asks
   `pm-apply-worktree --stop-live` to stop `pm-consumer.service` and
   `pm.service`. This prevents `prisma migrate deploy` from failing with
@@ -284,11 +298,11 @@ monitor-runner and sudo-helper boundary. Runtime credentials remain in
 
 ## 5. Caveats
 
-- **Branch DB freshness.** If a branch DB already exists, `pm-switch.sh` keeps
+- **Worktree DB freshness.** If a worktree DB already exists, `pm-switch.sh` keeps
   using it. When production data has changed in another live DB and you need
-  that latest state in the branch preview, refresh the branch DB deliberately
+  that latest state in the worktree preview, refresh the worktree DB deliberately
   first, for example with `sqlite3 /srv/Data/pm/<source>.db ".backup
-  '/srv/Data/pm/wt-<branch>.db'"`, then run `pm-switch <branch>`.
+  '/srv/Data/pm/wt-<worktree>.db'"`, then run `pm-switch <worktree>`.
 - **Canonical DB outside worktrees.** The canonical SQLite source should live at
   a neutral path such as `/srv/Data/pm/pm.db`, not under any branch checkout.
   Use `ai/web/deploy/move-sqlite-db.sh` for the controlled backup + `VACUUM

@@ -10,6 +10,7 @@ already restarts services with a 120s cooldown.
 
 Usage:
   ai-monitor                   one tick (alerts on failure)
+  ai-monitor --observe-only    probe + judge + log, never alert or remediate
   ai-monitor --dry-run         probe + judge, no alerts, prints full JSON
   ai-monitor --test-notify     send one Telegram test message and exit
 """
@@ -35,11 +36,32 @@ from pathlib import Path
 CONFIG_PATH = "/etc/ai-monitor/config.json"
 STATE_PATH = "/var/lib/ai-monitor/state.json"
 RUN_LOCK_PATH = "/var/lib/ai-monitor/run.lock"
+MODE_PATH = "/var/lib/ai-monitor/mode.json"
 RUNUSER_BIN = "/usr/sbin/runuser"
 MIB = 1024 ** 2
 GIB = 1024 ** 3
 DEFAULT_GATEWAY_WARN_BYTES = 8 * GIB
 DEFAULT_GATEWAY_CRITICAL_BYTES = 10 * GIB
+
+
+def operating_mode(cli_observe_only=False):
+    """Resolve the persistent/CLI operating mode without changing it."""
+    if cli_observe_only:
+        return "observe-only"
+    configured = os.environ.get("AI_MONITOR_MODE", "").strip().lower()
+    if configured in ("active", "observe-only"):
+        return configured
+    path = Path(os.environ.get("AI_MONITOR_MODE_PATH", MODE_PATH))
+    try:
+        raw = path.read_text().strip()
+        if raw.startswith("{"):
+            raw = str(json.loads(raw).get("mode", ""))
+        normalized = raw.strip().lower()
+        if normalized in ("active", "observe-only"):
+            return normalized
+    except (OSError, ValueError, TypeError):
+        pass
+    return "active"
 
 
 def acquire_run_lock():
@@ -5493,9 +5515,15 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="probe + judge but do not alert")
     ap.add_argument("--test-notify", action="store_true", help="send one Telegram test message and exit")
     ap.add_argument("--probe-only", action="store_true", help="dump probe JSON, skip AI")
+    ap.add_argument(
+        "--observe-only",
+        action="store_true",
+        help="probe, judge, and log without alerts, nudges, restarts, or state advancement",
+    )
     args = ap.parse_args()
 
     cfg = load_config()
+    mode = operating_mode(args.observe_only)
 
     if args.test_notify:
         registry, _ = load_registry(cfg)
@@ -5541,10 +5569,27 @@ def main():
     # dispatcher can resolve the monitor agent (role='monitor') without
     # going through cfg.
     registry, _ = load_registry(cfg)
-    actions = dedupe_and_act(cfg, verdict, state, registry=registry, dry_run=args.dry_run)
+    if mode == "observe-only":
+        actionable = [
+            {
+                "unit": issue.get("unit"),
+                "kind": issue.get("kind"),
+                "severity": issue.get("severity"),
+            }
+            for issue in verdict.get("issues", [])
+            if issue.get("severity") in ("warn", "crit")
+        ]
+        actions = [{
+            "type": "observe_only",
+            "issue_count": len(actionable),
+            "would_intervene": actionable,
+        }]
+    else:
+        actions = dedupe_and_act(cfg, verdict, state, registry=registry, dry_run=args.dry_run)
 
     record = {
         "ts": probes["ts"],
+        "operating_mode": mode,
         "verdict": verdict,
         "actions": actions,
         "probe_summary": {
@@ -5580,7 +5625,8 @@ def main():
     if not args.dry_run:
         append_jsonl(cfg["log"]["jsonl_path"], record)
         rotate_log(cfg["log"]["jsonl_path"], cfg["log"].get("max_age_days", 14))
-        save_state(state)
+        if mode == "active":
+            save_state(state)
 
     if args.dry_run:
         print(
@@ -5591,7 +5637,7 @@ def main():
         )
     else:
         print(
-            f"healthy={verdict.get('healthy')} "
+            f"mode={mode} healthy={verdict.get('healthy')} "
             f"issues={len(verdict.get('issues', []))} "
             f"actions={len(actions)} "
             f"model={verdict.get('_model')} "

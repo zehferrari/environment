@@ -17,6 +17,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 const execFileP = promisify(execFile);
+import type { TaskWorkflowCommand } from "@/lib/tasks/orchestrator/types";
 
 async function freshDb(): Promise<{ dbUrl: string; cleanup: () => Promise<void> }> {
   const sandbox = await mkdtemp(path.join(tmpdir(), "orch02-"));
@@ -29,7 +30,7 @@ async function freshDb(): Promise<{ dbUrl: string; cleanup: () => Promise<void> 
   return { dbUrl, cleanup: () => rm(sandbox, { recursive: true, force: true }) };
 }
 
-type Actor = { id: string; kind: "human" | "agent"; username: string; role?: "reporter" | "reviewer" | "assignee" | "monitor" | "admin" | null };
+type Actor = { id: string; kind: "human" | "agent"; username: string; role?: "reporter" | "reviewer" | "assignee" | "monitor" | "admin" | null; codingCapability?: boolean };
 
 async function main() {
   const { dbUrl, cleanup } = await freshDb();
@@ -60,13 +61,35 @@ async function main() {
         projectId: project.id,
         title: "ORCH-02 task",
         status: "Backlog",
+        workflowEngine: "orchestrator_v2",
+        workflowEnginePinnedAt: new Date(),
         assigneeId: assigneeUser.id,
         actingManagerId: reviewerUser.id,
         reporterId: owner.id,
       },
     });
+    await db.actionPlan.create({
+      data: {
+        id: "plan-1",
+        taskId: task.id,
+        summary: "ORCH-02 plan",
+        version: 1,
+        status: "draft",
+        authorId: assigneeUser.id,
+        contentHash: "orch02-plan",
+        steps: {
+          create: [{
+            stepId: "step-1",
+            title: "Implement",
+            acceptanceCriteria: JSON.stringify(["Done"]),
+            kind: "sequential",
+            rank: 0,
+          }],
+        },
+      },
+    });
 
-    const assigneeActor: Actor = { id: assigneeUser.id, kind: "agent", username: "assignee", role: "assignee" };
+    const assigneeActor: Actor = { id: assigneeUser.id, kind: "agent", username: "assignee", role: "assignee", codingCapability: true };
     const reviewerActor: Actor = { id: reviewerUser.id, kind: "human", username: "reviewer", role: "reviewer" };
     const monitorActor: Actor = { id: monitorUser.id, kind: "agent", username: "monitor", role: "monitor" };
     const ownerActor: Actor = { id: owner.id, kind: "human", username: "owner", role: "reporter" };
@@ -104,7 +127,7 @@ async function main() {
       assert.ok(state, `case ${i}: state loaded`);
       // For review intents, set up a fake lease by adjusting the snapshot.
       const stateForCase = { ...state!, activeReviewRun: case_.intent === "accept_review" || case_.intent === "request_review_changes" || case_.intent === "repository_finalization_succeeded" || case_.intent === "repository_finalization_failed"
-        ? { id: "lease-1", status: case_.intent === "repository_finalization_succeeded" ? "accepted" : "awaiting_review", candidateSha: "sha-1", reviewerId: reviewerUser.id }
+        ? { id: "lease-1", status: case_.intent === "repository_finalization_succeeded" ? "accepted" : "awaiting_review", candidateSha: "sha-1", reviewerId: reviewerUser.id, baseSha: null, repoTouched: true, validationOutcome: "valid" }
         : state!.activeReviewRun };
       const result = authorizeCommand(stateForCase, { intent: case_.intent as never, actor: case_.actor });
       assert.equal(
@@ -135,9 +158,10 @@ async function main() {
       actor: reviewerActor,
       expectedWorkflowVersion: 0,
       idempotencyKey: "orch02:approve:1",
-      source: "orch02-test",
+      source: "agent",
       evidence: { actionPlanId: "plan-1" },
-    });
+      payload: { actionPlanId: "plan-1", actionPlanVersion: 1 },
+    } as unknown as TaskWorkflowCommand);
     assert.equal(approveResult.status, "accepted", `approve_plan should be accepted, got ${JSON.stringify(approveResult)}`);
     const taskAfterApprove = await db.task.findUniqueOrThrow({ where: { id: task.id } });
     assert.equal(taskAfterApprove.status, "To Do");
@@ -150,11 +174,12 @@ async function main() {
       taskId: task.id,
       intent: "approve_plan",
       actor: reviewerActor,
-      expectedWorkflowVersion: 0, // stale version, but replay short-circuits
+      expectedWorkflowVersion: 0,
       idempotencyKey: "orch02:approve:1",
-      source: "orch02-test",
+      source: "agent",
       evidence: { actionPlanId: "plan-1" },
-    });
+      payload: { actionPlanId: "plan-1", actionPlanVersion: 1 },
+    } as unknown as TaskWorkflowCommand);
     // The kernel dedup happens at the transition level. Since approve_plan
     // goes through the kernel, the replay should return "replayed".
     assert.equal(replayResult.status, "replayed", `replay should return replayed, got ${JSON.stringify(replayResult)}`);
@@ -165,10 +190,11 @@ async function main() {
       taskId: task.id,
       intent: "start_implementation",
       actor: assigneeActor,
-      expectedWorkflowVersion: 99, // wrong version
+      expectedWorkflowVersion: 99,
       idempotencyKey: "orch02:start:stale",
-      source: "orch02-test",
-    });
+      source: "agent",
+      payload: {},
+    } as unknown as TaskWorkflowCommand);
     assert.equal(staleResult.status, "stale", `stale version should return stale, got ${JSON.stringify(staleResult)}`);
     console.log("[orch02] stale version PASS");
 
@@ -179,8 +205,9 @@ async function main() {
       actor: monitorActor,
       expectedWorkflowVersion: 1,
       idempotencyKey: "orch02:monitor-approve",
-      source: "orch02-test",
-    });
+      source: "agent",
+      payload: { actionPlanId: "plan-1", actionPlanVersion: 1 },
+    } as unknown as TaskWorkflowCommand);
     assert.equal(forbiddenResult.status, "forbidden", `monitor approve should be forbidden, got ${JSON.stringify(forbiddenResult)}`);
     console.log("[orch02] forbidden monitor PASS");
 
@@ -193,16 +220,18 @@ async function main() {
       actor: assigneeActor,
       expectedWorkflowVersion: taskAfterApprove.workflowVersion,
       idempotencyKey: "orch02:start:A",
-      source: "orch02-test-A",
-    });
+      source: "agent",
+      payload: {},
+    } as unknown as TaskWorkflowCommand);
     const startB = submitWorkflowCommand({
       taskId: task.id,
       intent: "start_implementation",
       actor: assigneeActor,
       expectedWorkflowVersion: taskAfterApprove.workflowVersion,
       idempotencyKey: "orch02:start:B",
-      source: "orch02-test-B",
-    });
+      source: "agent",
+      payload: {},
+    } as unknown as TaskWorkflowCommand);
     const [resultA, resultB] = await Promise.all([startA, startB]);
     const statuses = [resultA.status, resultB.status].sort();
     // One should be accepted, the other stale (version conflict).

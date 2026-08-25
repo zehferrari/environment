@@ -276,7 +276,7 @@ async function main(): Promise<void> {
         taskId: t2.id,
         status: "accepted",
         createdAt: stale,
-        acceptedAt: stale,
+        acceptedAt: stale, admittedAt: stale,
         lastEventAt: stale,
       },
     });

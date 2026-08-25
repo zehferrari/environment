@@ -12,6 +12,11 @@ import {
   pmChannelRunTargetKey,
   recordPmChannelRunQueued,
 } from "@/lib/agents/pm-channel/runs";
+import {
+  reconcileAbandonedLeases,
+  reserveExecutionLane,
+  releaseExecutionLane,
+} from "@/lib/agents/pm-channel/execution-lane";
 import { publishPmChannelStreamEvent } from "@/lib/agents/pm-channel/stream";
 import { enqueuePmChannelStreamDurability } from "@/lib/agents/pm-channel/stream-log";
 import {
@@ -25,6 +30,7 @@ import {
   armPmChannelContinuations,
   CONTEXT_PRESSURE_RECOVERY_ACTION,
 } from "@/lib/agents/pm-channel/continuations";
+import { resolveAgentTaskAccess } from "@/lib/agents/private-task-access";
 
 // Idempotency discriminator for the turn-failure retry policy: only
 // PM-generated notification/nudge turns are safe to auto-replay. Stamped at
@@ -77,7 +83,10 @@ function parseJobPayload(value: string): DispatchJobPayload {
   return { ...payload, replyTarget: target };
 }
 
-async function dispatchTargetIsEffectivelyPublic(target: PmChannelReplyTarget) {
+async function dispatchTargetIsAuthorized(
+  target: PmChannelReplyTarget,
+  agentSlug: string,
+) {
   if (target.kind === "direct") return true;
   if (target.kind === "epic-chat") {
     return Boolean(await db.epic.findFirst({
@@ -85,28 +94,7 @@ async function dispatchTargetIsEffectivelyPublic(target: PmChannelReplyTarget) {
       select: { id: true },
     }));
   }
-  return Boolean(await db.task.findFirst({
-    where: {
-      id: target.taskId,
-      deletedAt: null,
-      private: false,
-      AND: [
-        { OR: [{ epicId: null }, { epic: { private: false } }] },
-        {
-          OR: [
-            { parentTaskId: null },
-            {
-              parent: {
-                private: false,
-                OR: [{ epicId: null }, { epic: { private: false } }],
-              },
-            },
-          ],
-        },
-      ],
-    },
-    select: { id: true },
-  }));
+  return (await resolveAgentTaskAccess({ taskId: target.taskId, agentSlug })).allowed;
 }
 
 async function cancelJobForPolicy(args: {
@@ -210,7 +198,7 @@ function recoveryMaxAgeMs() {
 
 async function appendAndPublishStatus(args: {
   payload: DispatchJobPayload;
-  runStatus: "queued" | "accepted" | "completed" | "failed" | "timed_out" | "cancelled" | "superseded";
+  runStatus: "queued" | "accepted" | "delivered" | "waiting_capacity" | "admitted" | "completed" | "failed" | "timed_out" | "cancelled" | "superseded";
   error?: string | null;
 }) {
   const input = {
@@ -553,7 +541,7 @@ export async function runPmChannelJob(job: NonNullable<Awaited<ReturnType<typeof
       error: "PM channel dispatch canceled: the original human sender is not the active Mission Control owner",
     });
   }
-  if (!(await dispatchTargetIsEffectivelyPublic(payload.replyTarget))) {
+  if (!(await dispatchTargetIsAuthorized(payload.replyTarget, payload.agentSlug))) {
     return cancelJobForPolicy({
       job,
       payload,
@@ -591,6 +579,45 @@ export async function runPmChannelJob(job: NonNullable<Awaited<ReturnType<typeof
     await appendAndPublishStatus({ payload, runStatus: "queued", error });
     return { ok: false, driver: "openclaw-pm-channel", error } satisfies SendPmChannelTurnResult;
   }
+  // ENV-159: Reserve the execution lane before dispatching. If the lane is
+  // occupied by another run, mark this run as waiting_capacity and retry
+  // later — capacity waiting does not consume retry attempts.
+  const agentSlug = payload.replyTarget.agentSlug;
+  const laneResult = await reserveExecutionLane({
+    agentSlug,
+    runId: job.runId,
+    taskId: payload.replyTarget.kind === "task-chat" || payload.replyTarget.kind === "task-comment"
+      ? payload.replyTarget.taskId
+      : null,
+  });
+  if (!laneResult.acquired) {
+    const now = new Date();
+    await db.$transaction([
+      db.pmChannelJob.update({
+        where: { id: job.id },
+        data: {
+          status: "retryable",
+          availableAt: new Date(now.getTime() + 5000),
+          claimedBy: null,
+          claimedAt: null,
+          lastError: `agent_capacity: blocked by run ${laneResult.blockedByRunId}`,
+        },
+      }),
+      db.pmChannelRun.update({
+        where: { id: job.runId },
+        data: {
+          status: "waiting_capacity",
+          blockedReason: "agent_capacity",
+          blockedByRunId: laneResult.blockedByRunId,
+          blockedByTaskId: laneResult.blockedByTaskId,
+          capacityBlockedAt: now,
+          lastEventAt: now,
+        },
+      }),
+    ]);
+    await appendAndPublishStatus({ payload, runStatus: "waiting_capacity" });
+    return { ok: true, status: 202, driver: "openclaw-pm-channel" } satisfies SendPmChannelTurnResult;
+  }
   // A job whose last failure was a retryable TURN failure (no-reply/abort) is
   // being re-run: warn the agent the previous attempt may have partially
   // completed. Dispatch-copy only; the stored payload stays pristine.
@@ -617,6 +644,8 @@ export async function runPmChannelJob(job: NonNullable<Awaited<ReturnType<typeof
     return result;
   }
 
+  // ENV-159: Release the execution lane on dispatch failure.
+  await releaseExecutionLane({ runId: job.runId });
   const attemptCount = job.attemptCount;
   const exhausted = attemptCount >= (Number.isFinite(MAX_ATTEMPTS) && MAX_ATTEMPTS > 0 ? MAX_ATTEMPTS : 3);
   const jobStatus = exhausted ? "failed" : "retryable";
@@ -886,6 +915,16 @@ export async function runPmChannelWorkerDrain(
   let retryableOrFailed = 0;
   const errors: string[] = [];
 
+  // Recover leaked lane rows before any watchdog or outbox path can dispatch a
+  // replacement. This is the no-manual-repair path for a service crash after a
+  // run became terminal but before its callback released the lane.
+  let executionLanesReconciled = 0;
+  try {
+    executionLanesReconciled = await reconcileAbandonedLeases();
+  } catch (err) {
+    console.warn("[pm-channel] abandoned execution lane reconciliation failed", err);
+  }
+
   // ENV-118: drain the continuation outbox alongside the job queue. A turn
   // that took a continuation-required action and then ended gets its next
   // execution turn from here, so "start" can never leave a task silently
@@ -1002,6 +1041,7 @@ export async function runPmChannelWorkerDrain(
     episodeBarriers,
     episodeSuccessors,
     watchdog,
+    executionLanesReconciled,
   };
 }
 

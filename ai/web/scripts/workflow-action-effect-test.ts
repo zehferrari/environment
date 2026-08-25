@@ -81,6 +81,8 @@ const TASK_ROUTE_ACTIONS = [
   "review_done",
   "triage_to_todo",
   "approve_plan",
+  "submit_plan",
+  "assign_task",
   "assign_after_plan_approval",
   "add_subtask",
   "complete_subtask",
@@ -298,6 +300,8 @@ async function sectionB(): Promise<void> {
         assigneeId: agentUser.id,
         reporterId: owner.id,
         approvedOn: new Date(),
+        workflowEngine: "legacy",
+        workflowEnginePinnedAt: null,
       },
     });
 
@@ -500,6 +504,8 @@ async function sectionB(): Promise<void> {
         status: "Review",
         actingManagerId: agentUser.id,
         reporterId: owner.id,
+        workflowEngine: "legacy",
+        workflowEnginePinnedAt: null,
       },
     });
     const reviewSource = await recordPmChannelRunQueued({
@@ -552,6 +558,15 @@ async function sectionB(): Promise<void> {
       1,
       "the episode armed a continuation",
     );
+    await db.agentExecutionLease.create({
+      data: {
+        agentSlug: AGENT_SLUG,
+        runId: b6.id,
+        taskId: task.id,
+        status: "running",
+        expiresAt: new Date(Date.now() + 120_000),
+      },
+    });
     const submitted = await recordPmChannelRunWorkflowAction({
       taskId: task.id,
       agentSlug: AGENT_SLUG,
@@ -564,6 +579,11 @@ async function sectionB(): Promise<void> {
     assertEqual(b6Row.disposition, "ready_for_review", "the settle records its disposition");
     assertEqual(b6Row.settledByAction, "ready_for_review", "the settle names its action");
     assertEqual(b6Row.jobs[0]?.status, "complete", "an episode-terminal action settles the job");
+    assertEqual(
+      (await db.agentExecutionLease.findUniqueOrThrow({ where: { runId: b6.id } })).status,
+      "released",
+      "an episode-terminal action releases the execution lane in the same transaction",
+    );
     assertEqual(
       await db.pmChannelContinuation.count({ where: { runId: b6.id, status: "superseded" } }),
       1,
@@ -608,7 +628,7 @@ async function sectionB(): Promise<void> {
       "@/app/api/agent/tasks/[taskId]/workflow/route"
     );
     const { createTaskWorkflowToken } = await import("@/lib/agents/workflow/token/task");
-    const { __setWorkflowActionCrashHook } = await import(
+    const { __setWorkflowCommandCrashHook } = await import(
       "@/lib/agents/workflow/transactional-action"
     );
 
@@ -623,6 +643,8 @@ async function sectionB(): Promise<void> {
         projectId: startProject.id,
         title: "Atomic start task",
         status: "To Do",
+        workflowEngine: "orchestrator_v2",
+        workflowEnginePinnedAt: new Date(),
         assigneeId: agentUser.id,
         reporterId: owner.id,
         approvedOn: new Date(),
@@ -666,23 +688,29 @@ async function sectionB(): Promise<void> {
       const res = await runRouteHandler(() =>
         taskWorkflowPost(req, { params: Promise.resolve({ taskId: startTask.id }) }),
       );
-      return { runId: run.id, status: res.status };
+      return { runId: run.id, status: res.status, body: await res.text() };
     };
 
-    __setWorkflowActionCrashHook(() => {
-      throw new Error("simulated crash between the task mutation and the outbox arm");
+    __setWorkflowCommandCrashHook((boundary) => {
+      if (boundary === "after_domain_writes_before_execution_bookkeeping") {
+        throw new Error("simulated crash between the task mutation and execution bookkeeping");
+      }
     });
     let crashedStatus = 0;
+    let crashedBody = "";
     try {
-      crashedStatus = (await callStart("effect-b8-crash")).status;
+      const crashed = await callStart("effect-b8-crash");
+      crashedStatus = crashed.status;
+      crashedBody = crashed.body;
     } catch {
       // A throw that escapes the route is equally acceptable evidence: what
       // matters is that nothing committed.
       crashedStatus = 500;
     } finally {
-      __setWorkflowActionCrashHook(null);
+      __setWorkflowCommandCrashHook(null);
     }
-    assert(crashedStatus >= 500, "the injected crash failed the action rather than reporting success");
+    assert(crashedStatus >= 500,
+      `the injected crash failed the action rather than reporting success (status=${crashedStatus}, body=${crashedBody})`);
     assertEqual(
       (await db.task.findUniqueOrThrow({ where: { id: startTask.id }, select: { status: true } })).status,
       "To Do",
@@ -701,7 +729,7 @@ async function sectionB(): Promise<void> {
 
     // Same call, no crash: both halves must land together.
     const clean = await callStart("effect-b8-ok");
-    assertEqual(clean.status, 200, "the uninjected start succeeds");
+    assertEqual(clean.status, 202, "the uninjected start succeeds");
     assertEqual(
       (await db.task.findUniqueOrThrow({ where: { id: startTask.id }, select: { status: true } })).status,
       "In Progress",

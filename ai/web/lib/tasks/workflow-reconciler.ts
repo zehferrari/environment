@@ -1,8 +1,7 @@
 import { db } from "@/lib/db";
 import { fenceSupersededPmChannelRuns } from "@/lib/agents/pm-channel/supersession";
 import { writeTaskExecutionState } from "@/lib/agents/watchdog/state";
-import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation";
-import { resolveActiveMonitorAgent } from "@/lib/tasks/repository-state";
+import { detectPhaseEInvariants, type PhaseEInvariantFinding } from "@/lib/tasks/orchestrator/phase-e-invariants";
 
 const DEFAULT_STALE_MS = 10 * 60_000;
 const DEFAULT_LIMIT = 100;
@@ -25,14 +24,20 @@ export type WorkflowReconciliationKind =
   | "finalization_completed_no_done_transition"
   | "multiple_open_cycles"
   | "procedure_step_waiting_on_terminal_job"
-  | "done_cycle_incomplete";
+  | "done_cycle_incomplete"
+  // PHASEE-10 invariant detectors
+  | "engine_ownership_mismatch"
+  | "stale_receipt_without_transition"
+  | "procedure_run_without_cycle"
+  | "dual_engine_active"
+  | "unknown_engine_value";
 
 export type WorkflowReconciliationFinding = {
   kind: WorkflowReconciliationKind;
   taskId: string | null;
   rowId: string;
   detail: string;
-  repair: "drain" | "requeue" | "complete_review" | "retry_cancellation" | "escalate";
+  repair: "drain" | "requeue" | "retry_cancellation" | "escalate";
   repaired: boolean;
   error: string | null;
 };
@@ -104,10 +109,6 @@ async function escalateTask(args: {
     recoveryAt: undefined,
     detectorId: `workflow_reconciler:${args.kind}`,
   });
-  await db.task.updateMany({
-    where: { id: args.taskId, deletedAt: null },
-    data: { alertReporter: true },
-  });
   const alreadyLogged = await db.activityLog.findFirst({
     where: {
       taskId: args.taskId,
@@ -170,6 +171,8 @@ export async function runWorkflowReconciliation(options: {
       status: true,
       workflowVersion: true,
       activeWorkflowCycleId: true,
+      workflowEngine: true,
+      workflowEnginePinnedAt: true,
       repositoryRun: {
         select: {
           id: true,
@@ -182,7 +185,9 @@ export async function runWorkflowReconciliation(options: {
         },
       },
       reviewRuns: {
-        where: { status: { in: ["validating", "awaiting_review", "accepted"] } },
+        // Done-state reconciliation needs the immutable completed lease too;
+        // filtering it out made every correctly finalized task look incomplete.
+        where: { status: { in: ["validating", "awaiting_review", "accepted", "completed"] } },
         orderBy: { createdAt: "desc" },
         select: {
           id: true,
@@ -213,7 +218,7 @@ export async function runWorkflowReconciliation(options: {
       },
       workflowCycles: {
         where: { status: "open" },
-        select: { id: true, sequence: true, status: true, outcome: true },
+        select: { id: true, sequence: true, status: true, outcome: true, workflowEngine: true },
       },
       procedureRuns: {
         where: { status: { in: ["queued", "running", "operational_error"] } },
@@ -224,10 +229,22 @@ export async function runWorkflowReconciliation(options: {
           status: true,
           currentStep: true,
           lastError: true,
+          workflowCycleId: true,
           steps: {
             where: { status: "waiting_callback" },
             select: { id: true, name: true, status: true, output: true, availableAt: true },
           },
+        },
+      },
+      commandReceipts: {
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        select: {
+          idempotencyKey: true,
+          intent: true,
+          status: true,
+          transitionId: true,
+          createdAt: true,
         },
       },
     },
@@ -373,7 +390,10 @@ export async function runWorkflowReconciliation(options: {
           taskId: task.id,
           rowId: repository.id,
           detail: "review was accepted and the validated candidate was merged, but the audited Review-to-Done transition is missing",
-          repair: "complete_review",
+          // Reconciliation reports the contradiction but never fabricates a
+          // review/finalization decision. An operator must submit the exact
+          // typed repair command using the recorded lease/callback evidence.
+          repair: "escalate",
           repaired: false,
           error: null,
         });
@@ -465,7 +485,8 @@ export async function runWorkflowReconciliation(options: {
 
     // Finalization completed (repository phase) but task still in Review.
     // Escalate (do not auto-complete) — the existing review_completion_missing
-    // detector handles the evidence-gated complete_review repair.
+    // detector reports the evidence-gated contradiction for an explicit
+    // operator command; the reconciler never completes the review itself.
     if (
       task.status === "Review" &&
       repository?.phase === "completed" &&
@@ -528,6 +549,46 @@ export async function runWorkflowReconciliation(options: {
           });
         }
       }
+    }
+
+    // --- PHASEE-10 invariant detectors -----------------------------------
+    // Read the open cycle's engine from the cycle row itself (not the task
+    // field) so detectEngineOwnershipMismatch compares two independent values.
+    const openCycle = task.workflowCycles.find((c) => c.status === "open") ?? null;
+    const lastReceipt = task.commandReceipts.length > 0 ? task.commandReceipts[0] : null;
+    const phaseEFindings = detectPhaseEInvariants({
+      taskId: task.id,
+      taskEngine: task.workflowEngine,
+      taskEnginePinnedAt: task.workflowEnginePinnedAt,
+      activeCycle: openCycle
+        ? { id: openCycle.id, workflowEngine: openCycle.workflowEngine, status: task.status }
+        : null,
+      lastReceipt: lastReceipt
+        ? {
+            idempotencyKey: lastReceipt.idempotencyKey,
+            intent: lastReceipt.intent,
+            status: lastReceipt.status,
+            transitionId: lastReceipt.transitionId,
+            createdAt: lastReceipt.createdAt,
+          }
+        : null,
+      activeProcedureRuns: task.procedureRuns.map((p) => ({
+        id: p.id,
+        type: p.type,
+        workflowCycleId: p.workflowCycleId,
+      })),
+      taskStatus: task.status,
+    });
+    for (const finding of phaseEFindings) {
+      add({
+        kind: finding.kind as WorkflowReconciliationKind,
+        taskId: finding.taskId,
+        rowId: finding.taskId,
+        detail: finding.detail,
+        repair: finding.repair,
+        repaired: false,
+        error: null,
+      });
     }
   }
 
@@ -615,61 +676,6 @@ export async function runWorkflowReconciliation(options: {
           // The generic outbox drain immediately follows this pass in the PM
           // worker. Expired leases are claimable without rewriting them here.
           finding.repaired = true;
-        } else if (finding.repair === "complete_review" && finding.taskId) {
-          const task = tasks.find((candidate) => candidate.id === finding.taskId);
-          const candidateSha = task?.repositoryRun?.candidateSha;
-          const monitor = await resolveActiveMonitorAgent();
-          if (!task || !candidateSha) {
-            throw new Error("The stale review no longer has its recorded repository candidate.");
-          }
-          if (!monitor.ok) {
-            await escalateTask({
-              taskId: task.id,
-              projectId: task.projectId,
-              kind: finding.kind,
-              detail: `${finding.detail}; ${monitor.error}`,
-              rowId: finding.rowId,
-              now,
-            });
-            finding.repaired = true;
-            escalated += 1;
-          } else {
-            try {
-              const completion = await completeReviewedTaskAndAssignNext({
-                taskId: task.id,
-                actor: { ...monitor.user, kind: "agent" },
-                via: "workflow-reconciliation",
-                repositoryFinalized: true,
-              });
-              finding.repaired = completion.completed
-                && completion.finalizing === false
-                && completion.status === "Done";
-            } catch (error) {
-              const current = await db.task.findUnique({
-                where: { id: task.id },
-                select: { status: true },
-              });
-              if (current?.status === "Done") {
-                finding.repaired = true;
-              } else {
-                throw error;
-              }
-            }
-            if (!finding.repaired) {
-              const current = await db.task.findUnique({
-                where: { id: task.id },
-                select: { status: true },
-              });
-              finding.repaired = current?.status === "Done";
-            }
-            if (!finding.repaired) {
-              throw new Error("The evidence-gated review completion did not reach Done.");
-            }
-            await db.reviewRun.updateMany({
-              where: { taskId: task.id, candidateSha, status: "accepted" },
-              data: { status: "completed" },
-            });
-          }
         } else if (finding.repair === "retry_cancellation") {
           const row = cancellationRows.find((candidate) => candidate.id === finding.rowId);
           if (!row?.supersededByRunId) continue;

@@ -3,6 +3,15 @@
 // Trigger: approve_plan or any authorized transition that makes an approved
 // task enter To Do.
 //
+// §17 side-effect ownership audit (PHASEE-06):
+//   Row: plan approved — command owns: approval fields, revision, checklist,
+//   To Do transition, procedure, episode state. This procedure owns: repository
+//   prep, assignee wake/auto-start request. No dual ownership — handlers do
+//   not call applyTaskTransition; mechanical transitions go through
+//   submitWorkflowCommand.
+//   Row: board/cache refresh — intentionally owner-less (best-effort projection
+//   invalidation). No handler action needed.
+//
 // Ordered steps (§7):
 //   1. resolve_repository_contract — determine if code-touching, resolve repo
 //      path/branch/identity. Store a versioned snapshot on the procedure run.
@@ -278,8 +287,8 @@ async function wakeAssignee(ctx: StepHandlerContext): Promise<StepHandlerResult>
 
 // --- Register handlers ----------------------------------------------------
 export function registerPrepareTodoTaskHandlers(): void {
-  registerStepHandler(PROCEDURE_TYPE, "resolve_repository_contract", resolveRepositoryContract);
-  registerStepHandler(PROCEDURE_TYPE, "prepare_worktree", prepareWorktree);
-  registerStepHandler(PROCEDURE_TYPE, "verify_actionability", verifyActionability);
-  registerStepHandler(PROCEDURE_TYPE, "wake_assignee", wakeAssignee);
+  registerStepHandler(PROCEDURE_TYPE, 1, "resolve_repository_contract", resolveRepositoryContract);
+  registerStepHandler(PROCEDURE_TYPE, 1, "prepare_worktree", prepareWorktree);
+  registerStepHandler(PROCEDURE_TYPE, 1, "verify_actionability", verifyActionability);
+  registerStepHandler(PROCEDURE_TYPE, 1, "wake_assignee", wakeAssignee);
 }

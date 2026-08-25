@@ -31,6 +31,16 @@ import {
   type EpisodeCheckpoint,
   type EpisodeCycleOutcome,
 } from "@/lib/agents/episodes/lifecycle";
+import {
+  EPISODE_SEAL_REASON,
+  sealEpisodeRolloverBarrierInTransaction,
+} from "@/lib/agents/episodes/rollover";
+import type { AgentExecutionContext } from "@/lib/tasks/orchestrator/types";
+import {
+  activateExecutionLaneForRun,
+  releaseExecutionLane,
+  releaseExecutionLanesInTransaction,
+} from "@/lib/agents/pm-channel/execution-lane";
 
 // Re-exported for existing importers; the definition moved to bus.ts so the
 // bus envelope id and the run identity can never drift apart.
@@ -40,7 +50,11 @@ export { pmChannelRunTargetKey };
 // "retryable" is removed from run status — it lives only on PmChannelJob.
 export type PmChannelRunStatus =
   | "queued"
+  | "claimed"
+  | "delivered"
+  | "waiting_capacity"
   | "accepted"
+  | "admitted"
   | "streaming"
   | "completed"
   | "failed"
@@ -67,7 +81,15 @@ const TERMINAL_STATUSES = new Set<PmChannelRunStatus>([
 ]);
 
 // Non-terminal statuses that represent active runs.
-const ACTIVE_STATUSES = new Set<string>(["queued", "accepted", "streaming"]);
+const ACTIVE_STATUSES = new Set<string>([
+  "queued",
+  "claimed",
+  "delivered",
+  "waiting_capacity",
+  "accepted",
+  "admitted",
+  "streaming",
+]);
 
 function leaseDurationMs() {
   return Number.isFinite(LEASE_DURATION_MS) && LEASE_DURATION_MS >= 30_000
@@ -564,15 +586,103 @@ export async function recordPmChannelRunQueued(args: {
   }
 }
 
+// ENV-159: Durable per-agent execution lane.
+// Only one run per agent may hold the lane in reserved/admitted/running status.
+// This prevents the duplicate-dispatch problem when maxConcurrent=1.
+export async function acquireAgentExecutionLane(args: {
+  agentSlug: string;
+  runId: string;
+  taskId: string;
+}): Promise<
+  | { ok: true; leaseToken: string; status: "reserved" | "admitted" }
+  | { ok: false; blockedByRunId: string | null; blockedByTaskId: string | null }
+> {
+  const now = new Date();
+  const leaseDuration = Number.parseInt(
+    process.env.PM_OPENCLAW_LEASE_MS ?? "120000",
+    10,
+  );
+  const expiresAt = new Date(now.getTime() + leaseDuration);
+  try {
+    // Try to create a new lease. The UNIQUE constraint on runId prevents
+    // duplicate leases for the same run.
+    const lease = await db.agentExecutionLease.create({
+      data: {
+        agentSlug: args.agentSlug,
+        runId: args.runId,
+        taskId: args.taskId,
+        status: "reserved",
+        expiresAt,
+      },
+    });
+    return { ok: true, leaseToken: lease.leaseToken, status: "reserved" };
+  } catch (err) {
+    // If the lane is already held, find the blocking run.
+    const existing = await db.agentExecutionLease.findFirst({
+      where: {
+        agentSlug: args.agentSlug,
+        status: { in: ["reserved", "admitted", "running"] },
+      },
+      select: { runId: true, taskId: true },
+    });
+    return {
+      ok: false,
+      blockedByRunId: existing?.runId ?? null,
+      blockedByTaskId: existing?.taskId ?? null,
+    };
+  }
+}
+
+export async function releaseAgentExecutionLane(args: {
+  leaseToken: string;
+}): Promise<void> {
+  const now = new Date();
+  await db.agentExecutionLease.updateMany({
+    where: { leaseToken: args.leaseToken },
+    data: { status: "released", releasedAt: now },
+  });
+}
+
+export async function admitAgentExecutionLane(args: {
+  leaseToken: string;
+}): Promise<void> {
+  const now = new Date();
+  const leaseDuration = Number.parseInt(
+    process.env.PM_OPENCLAW_LEASE_MS ?? "120000",
+    10,
+  );
+  const expiresAt = new Date(now.getTime() + leaseDuration);
+  await db.agentExecutionLease.updateMany({
+    where: { leaseToken: args.leaseToken },
+    data: { status: "admitted", expiresAt },
+  });
+}
+
+export async function heartbeatAgentExecutionLane(args: {
+  leaseToken: string;
+}): Promise<void> {
+  const now = new Date();
+  const leaseDuration = Number.parseInt(
+    process.env.PM_OPENCLAW_LEASE_MS ?? "120000",
+    10,
+  );
+  const expiresAt = new Date(now.getTime() + leaseDuration);
+  await db.agentExecutionLease.updateMany({
+    where: { leaseToken: args.leaseToken },
+    data: { heartbeatAt: now, expiresAt },
+  });
+}
+
 export async function recordPmChannelRunDispatch(args: {
   target: PmChannelReplyTarget;
   result: SendPmChannelTurnResult;
 }) {
   const now = new Date();
   const ok = args.result.ok;
-  const leaseExpiresAt = ok ? new Date(now.getTime() + leaseDurationMs()) : null;
-  // ENV-122: Persist provider/model provenance from the dispatch response
-  // so comment creation sites can copy them from the run.
+  // ENV-159: HTTP 202 means delivered, not accepted. The run transitions
+  // through delivered → waiting_capacity → admitted → streaming → terminal.
+  // A file-drop accepted by OpenClaw is now "delivered", and the turn may
+  // actually be waiting behind another run because the agent has maxConcurrent=1.
   const provider = ok ? (args.result.provider ?? null) : null;
   const model = ok ? (args.result.model ?? null) : null;
   await record(
@@ -582,19 +692,21 @@ export async function recordPmChannelRunDispatch(args: {
         // Dispatch results are allowed to settle only the generation that is
         // still awaiting/holding this handoff. A delayed file-drop result for
         // a terminal generation must never resurrect it into the active lane.
-        status: { in: ["queued", "accepted"] },
+        status: { in: ["queued", "delivered", "accepted"] },
       },
       data: {
           httpStatus: args.result.status ?? null,
           driver: args.result.transportMode
             ? `openclaw-pm-channel:${args.result.transportMode}`
             : "openclaw-pm-channel",
-          status: ok ? "accepted" : "failed",
+          // ENV-159: delivered replaces accepted as the gateway-handoff state.
+          // accepted is kept as a compatibility read path during migration.
+          status: ok ? "delivered" : "failed",
           error: ok ? null : clippedError(args.result.error),
+          // ENV-159: Set acceptedAt as compatibility for old code; new code
+          // uses admittedAt which is set by the canonical turn:admitted event.
           acceptedAt: ok ? now : null,
           failedAt: ok ? null : now,
-          leaseExpiresAt,
-          heartbeatAt: ok ? now : null,
           finishedAt: ok ? null : now,
           finishedReason: ok ? null : clippedError(args.result.error) ?? "dispatch_failed",
           lastEventAt: now,
@@ -642,6 +754,61 @@ export interface PmChannelWorkflowActionArgs {
   countsAgainstEpisodeBudget?: boolean;
 }
 
+export class PmChannelExecutionContextError extends Error {
+  constructor(
+    readonly reason: "mismatch" | "fenced" | "already_consumed",
+    message: string,
+  ) {
+    super(message);
+    this.name = "PmChannelExecutionContextError";
+  }
+}
+
+/** Exact, server-resolved PM execution identity for a command transaction. */
+export interface AuthenticatedPmChannelWorkflowActionArgs {
+  taskId: string;
+  executionContext: AgentExecutionContext;
+  taskState?: string | null;
+  checkpoint?: EpisodeCheckpoint | null;
+  countsAgainstEpisodeBudget?: boolean;
+}
+
+type ExactPmChannelRun = {
+  id: string;
+  status: string;
+  projectId: string | null;
+  taskId: string | null;
+  epicId: string | null;
+  sessionKey: string | null;
+};
+
+function episodeProgress(args: {
+  episode: {
+    episodeNo: number;
+    cycleCount: number;
+    cycleBudget: number;
+    toolCycleCount: number;
+    toolCycleBudget: number;
+  };
+  rolledOver: boolean;
+  nextEpisodeNo: number | null;
+}) {
+  return {
+    episodeNo: args.episode.episodeNo,
+    cycleCount: args.episode.cycleCount,
+    cycleBudget: args.episode.cycleBudget,
+    cyclesRemaining: Math.max(0, args.episode.cycleBudget - args.episode.cycleCount),
+    toolCycleCount: args.episode.toolCycleCount,
+    toolCycleBudget: args.episode.toolCycleBudget,
+    toolCyclesRemaining: Math.max(
+      0,
+      args.episode.toolCycleBudget - args.episode.toolCycleCount,
+    ),
+    rolledOver: args.rolledOver,
+    nextEpisodeNo: args.nextEpisodeNo,
+  };
+}
+
 function workflowActionTargetKeys(args: PmChannelWorkflowActionArgs): string[] {
   return args.epicId
     ? [pmChannelRunTargetKey({
@@ -680,7 +847,12 @@ function workflowActionTargetKeys(args: PmChannelWorkflowActionArgs): string[] {
  */
 async function applyWorkflowActionEpisode(
   tx: Prisma.TransactionClient,
-  args: PmChannelWorkflowActionArgs,
+  args: PmChannelWorkflowActionArgs & {
+    projectId?: string | null;
+    sessionKey?: string | null;
+    runId?: string | null;
+    expectedEpisodeId?: string | null;
+  },
   effect: ReturnType<typeof workflowActionEffectOrFinish>,
 ) {
   if (!args.taskId) return null;
@@ -691,32 +863,309 @@ async function applyWorkflowActionEpisode(
       agentSlug: args.agentSlug,
       closeReason: `${EPISODE_CLOSE_REASON.terminalAction}:${args.action}`,
       checkpoint: args.checkpoint ?? null,
+      expectedEpisodeId: args.expectedEpisodeId ?? null,
     });
     return null;
   }
 
   const outcome: EpisodeCycleOutcome = await recordTaskExecutionEpisodeCycle(tx, {
     taskId: args.taskId,
+    projectId: args.projectId ?? null,
     agentSlug: args.agentSlug,
     // An explicit `checkpoint` carries the agent's OWN completed-work list;
     // appending PM's derived "execution_checkpoint_saved" line on top of it
     // would bury the thing the next episode actually needs to read.
     action: args.action === "checkpoint" ? null : args.action,
     messageId: args.messageId,
+    sessionKey: args.sessionKey ?? null,
+    runId: args.runId ?? null,
+    expectedEpisodeId: args.expectedEpisodeId ?? null,
     checkpoint: args.checkpoint ?? null,
     countsAgainstBudget: args.countsAgainstEpisodeBudget !== false,
   });
-  return {
-    episodeNo: outcome.episode.episodeNo,
-    cycleCount: outcome.episode.cycleCount,
-    cycleBudget: outcome.episode.cycleBudget,
-    cyclesRemaining: Math.max(0, outcome.episode.cycleBudget - outcome.episode.cycleCount),
-    toolCycleCount: outcome.episode.toolCycleCount,
-    toolCycleBudget: outcome.episode.toolCycleBudget,
-    toolCyclesRemaining: Math.max(0, outcome.episode.toolCycleBudget - outcome.episode.toolCycleCount),
+  return episodeProgress({
+    episode: outcome.episode,
     rolledOver: outcome.rolledOver,
     nextEpisodeNo: outcome.nextEpisode?.episodeNo ?? null,
+  });
+}
+
+async function applyWorkflowActionToRuns(
+  tx: Prisma.TransactionClient,
+  args: PmChannelWorkflowActionArgs,
+  runs: ExactPmChannelRun[],
+  result: WorkflowActionResult,
+  options: { continuationMode?: "arm" | "rollover_barrier" | "already_scheduled" } = {},
+): Promise<WorkflowActionResult> {
+  if (runs.length === 0) return result;
+  const now = new Date();
+  const runIds = runs.map((run) => run.id);
+  const effect = workflowActionEffectOrFinish(args.action);
+  const disposition = workflowActionDisposition(args.action);
+  const liveRuns = runs.filter((run) => ACTIVE_STATUSES.has(run.status));
+
+  if (effect === "continue") {
+    await tx.pmChannelRun.updateMany({
+      where: { id: { in: runIds } },
+      data: {
+        error: null,
+        heartbeatAt: now,
+        leaseExpiresAt: new Date(now.getTime() + leaseDurationMs()),
+        lastEventAt: now,
+        lastAction: args.action,
+        lastActionAt: now,
+        disposition: "continue",
+      },
+    });
+    const continuationMode = options.continuationMode ?? "arm";
+    if (continuationMode === "arm") {
+      await armPmChannelContinuations(tx, {
+        runs: liveRuns,
+        agentSlug: args.agentSlug,
+        messageId: args.messageId,
+        action: args.action,
+        now,
+      });
+    } else if (continuationMode === "rollover_barrier") {
+      // The successor is deliberately gated on the final checkpoint. Retire
+      // any earlier per-action arm so settling this run cannot dispatch N+1
+      // before the single-use rollover seal is durable.
+      await supersedePmChannelContinuations(tx, {
+        runIds,
+        reason: "episode rollover awaits its final checkpoint",
+      });
+    }
+    const retiredRunIds = runs
+      .filter((run) => !ACTIVE_STATUSES.has(run.status))
+      .map((run) => run.id);
+    if (retiredRunIds.length > 0) {
+      await supersedePmChannelContinuations(tx, {
+        runIds: retiredRunIds,
+        reason: "a newer run took over the episode",
+      });
+    }
+    return result;
+  }
+
+  await tx.pmChannelRun.updateMany({
+    where: {
+      id: { in: runIds },
+      status: { in: [...ACTIVE_STATUSES] },
+    },
+    data: {
+      status: "completed",
+      error: null,
+      completedAt: now,
+      failedAt: null,
+      finishedAt: now,
+      finishedReason: `workflow_action:${args.action}`,
+      lastEventAt: now,
+      lastAction: args.action,
+      lastActionAt: now,
+      settledByAction: args.action,
+      disposition,
+    },
+  });
+  await releaseExecutionLanesInTransaction(tx, { runIds: liveRuns.map((run) => run.id), releasedAt: now });
+  await tx.pmChannelJob.updateMany({
+    where: {
+      runId: { in: runIds },
+      status: { in: ["queued", "claimed", "accepted", "retryable"] },
+    },
+    data: {
+      status: "complete",
+      completedAt: now,
+      lastError: null,
+    },
+  });
+  await supersedePmChannelContinuations(tx, {
+    runIds,
+    reason: `episode ended by ${args.action}`,
+  });
+  return result;
+}
+
+async function resolveAuthenticatedWorkflowActionRun(
+  tx: Prisma.TransactionClient,
+  args: AuthenticatedPmChannelWorkflowActionArgs,
+) {
+  const context = args.executionContext;
+  const run = await tx.pmChannelRun.findUnique({
+    where: { id: context.pmChannelRunId },
+    select: {
+      id: true,
+      kind: true,
+      agentSlug: true,
+      messageId: true,
+      projectId: true,
+      taskId: true,
+      epicId: true,
+      sessionKey: true,
+      status: true,
+    },
+  });
+  if (
+    !run ||
+    (run.kind !== "task-chat" && run.kind !== "task-comment") ||
+    run.taskId !== args.taskId ||
+    run.agentSlug !== context.agentSlug ||
+    run.messageId !== context.sourceMessageId
+  ) {
+    throw new PmChannelExecutionContextError(
+      "mismatch",
+      "pm_execution_context_mismatch: run, task, agent, or source message does not match",
+    );
+  }
+  if (!ACTIVE_STATUSES.has(run.status)) {
+    throw new PmChannelExecutionContextError(
+      "fenced",
+      `pm_execution_context_fenced: run ${run.id} is ${run.status}`,
+    );
+  }
+
+  const [expectedEpisode, sourceBarrier, openEpisode] = await Promise.all([
+    context.expectedEpisodeId
+      ? tx.taskExecutionEpisode.findUnique({
+          where: { id: context.expectedEpisodeId },
+          select: {
+            id: true,
+            taskId: true,
+            agentSlug: true,
+            status: true,
+            exhaustedByMessageId: true,
+            barrierReleasedAt: true,
+          },
+        })
+      : null,
+    tx.taskExecutionEpisode.findFirst({
+      where: {
+        taskId: args.taskId,
+        agentSlug: context.agentSlug,
+        exhaustedByMessageId: context.sourceMessageId,
+      },
+      orderBy: { episodeNo: "desc" },
+      select: { id: true, barrierReleasedAt: true },
+    }),
+    tx.taskExecutionEpisode.findFirst({
+      where: { taskId: args.taskId, agentSlug: context.agentSlug, status: "open" },
+      orderBy: { episodeNo: "desc" },
+      select: { id: true },
+    }),
+  ]);
+
+  if (!context.expectedEpisodeId) {
+    if (sourceBarrier || openEpisode) {
+      throw new PmChannelExecutionContextError(
+        "mismatch",
+        "pm_execution_context_mismatch: expected episode identity is missing",
+      );
+    }
+    return { run, finalCheckpoint: false };
+  }
+  if (
+    !expectedEpisode ||
+    expectedEpisode.taskId !== args.taskId ||
+    expectedEpisode.agentSlug !== context.agentSlug
+  ) {
+    throw new PmChannelExecutionContextError(
+      "mismatch",
+      "pm_execution_context_mismatch: expected episode does not match task and agent",
+    );
+  }
+  if (sourceBarrier && sourceBarrier.id !== expectedEpisode.id) {
+    throw new PmChannelExecutionContextError(
+      "fenced",
+      "pm_execution_context_fenced: source turn belongs to a closed episode",
+    );
+  }
+  if (expectedEpisode.status === "open") {
+    return { run, finalCheckpoint: false };
+  }
+  if (
+    expectedEpisode.exhaustedByMessageId === context.sourceMessageId &&
+    context.publicAction === "checkpoint"
+  ) {
+    if (expectedEpisode.barrierReleasedAt) {
+      throw new PmChannelExecutionContextError(
+        "already_consumed",
+        "pm_execution_context_fenced: final checkpoint was already recorded",
+      );
+    }
+    return { run, finalCheckpoint: true };
+  }
+  throw new PmChannelExecutionContextError(
+    "fenced",
+    "pm_execution_context_fenced: the expected episode is closed",
+  );
+}
+
+/**
+ * Exact transaction-client application used by authoritative commands.
+ * Unlike the legacy target-key recorder, this rejects any run/message/agent/
+ * task/episode drift and never falls back to another run in the same lane.
+ */
+export async function applyAuthenticatedPmChannelWorkflowAction(
+  tx: Prisma.TransactionClient,
+  args: AuthenticatedPmChannelWorkflowActionArgs,
+): Promise<WorkflowActionResult> {
+  const { executionContext: context } = args;
+  const resolved = await resolveAuthenticatedWorkflowActionRun(tx, args);
+  const actionArgs: PmChannelWorkflowActionArgs = {
+    taskId: args.taskId,
+    agentSlug: context.agentSlug,
+    messageId: context.sourceMessageId,
+    action: context.publicAction,
+    taskState: args.taskState ?? null,
+    checkpoint: args.checkpoint ?? null,
+    countsAgainstEpisodeBudget: args.countsAgainstEpisodeBudget,
   };
+  const result = workflowActionResult({
+    action: context.publicAction,
+    taskState: args.taskState,
+  });
+
+  if (resolved.finalCheckpoint) {
+    const sealed = await sealEpisodeRolloverBarrierInTransaction(tx, {
+      taskId: args.taskId,
+      agentSlug: context.agentSlug,
+      messageId: context.sourceMessageId,
+      expectedEpisodeId: context.expectedEpisodeId!,
+      runId: resolved.run.id,
+      checkpoint: args.checkpoint,
+      reason: EPISODE_SEAL_REASON.agentCheckpoint,
+    });
+    if (!sealed) {
+      throw new PmChannelExecutionContextError(
+        "already_consumed",
+        "pm_execution_context_fenced: final checkpoint was already recorded",
+      );
+    }
+    result.episode = episodeProgress({
+      episode: sealed.episode,
+      rolledOver: true,
+      nextEpisodeNo: sealed.nextEpisodeNo,
+    });
+    result.successorScheduled = sealed.successorScheduled;
+    return applyWorkflowActionToRuns(tx, actionArgs, [resolved.run], result, {
+      continuationMode: "already_scheduled",
+    });
+  }
+
+  const effect = workflowActionEffectOrFinish(context.publicAction);
+  result.episode = await applyWorkflowActionEpisode(
+    tx,
+    {
+      ...actionArgs,
+      projectId: resolved.run.projectId,
+      sessionKey: resolved.run.sessionKey,
+      runId: resolved.run.id,
+      expectedEpisodeId: context.expectedEpisodeId,
+    },
+    effect,
+  );
+  return applyWorkflowActionToRuns(tx, actionArgs, [resolved.run], result, {
+    continuationMode: result.episode?.rolledOver ? "rollover_barrier" : "arm",
+  });
 }
 
 /**
@@ -742,11 +1191,9 @@ export async function applyPmChannelRunWorkflowAction(
   tx: Prisma.TransactionClient,
   args: PmChannelWorkflowActionArgs,
 ): Promise<WorkflowActionResult> {
-  const now = new Date();
   const targetKeys = workflowActionTargetKeys(args);
   const result = workflowActionResult({ action: args.action, taskState: args.taskState });
   const effect = workflowActionEffectOrFinish(args.action);
-  const disposition = workflowActionDisposition(args.action);
 
   // ENV-121. Episode accounting is about the TASK, not about whether a
   // PmChannelRun row happens to exist for this turn — a replayed or
@@ -759,91 +1206,18 @@ export async function applyPmChannelRunWorkflowAction(
 
   const runs = await tx.pmChannelRun.findMany({
     where: { targetKey: { in: targetKeys } },
-    select: { id: true, status: true, projectId: true, taskId: true, epicId: true },
-  });
-  if (runs.length === 0) return result;
-  const runIds = runs.map((run) => run.id);
-  // A workflow action can queue its own follow-up notification (completing
-  // the last subtask raises `ready_for_review_available`), and ENV-117
-  // supersedes the older run the moment the newer one queues. So by the
-  // time we get here the run this action belongs to may already be
-  // superseded. The action still happened and must still be recorded — but
-  // the newer run IS the continuation, so arming a second one would put two
-  // turns in the same lane (WFI-001).
-  const liveRuns = runs.filter((run) => ACTIVE_STATUSES.has(run.status));
-
-  if (effect === "continue") {
-    // Record the action on every run the agent's grant covers, live or
-    // already superseded: `continue` settles nothing, so there is no
-    // terminal write to protect with a status guard, and a superseded
-    // run whose disposition stayed null would read as "turn ended, no
-    // reason given".
-    await tx.pmChannelRun.updateMany({
-      where: { id: { in: runIds } },
-      data: {
-        error: null,
-        lastEventAt: now,
-        lastAction: args.action,
-        lastActionAt: now,
-        disposition: "continue",
-      },
-    });
-    // Only a live run arms a continuation. A superseded one already has
-    // its successor queued.
-    await armPmChannelContinuations(tx, {
-      runs: liveRuns,
-      agentSlug: args.agentSlug,
-      messageId: args.messageId,
-      action: args.action,
-      now,
-    });
-    const retiredRunIds = runs
-      .filter((run) => !ACTIVE_STATUSES.has(run.status))
-      .map((run) => run.id);
-    if (retiredRunIds.length > 0) {
-      await supersedePmChannelContinuations(tx, {
-        runIds: retiredRunIds,
-        reason: "a newer run took over the episode",
-      });
-    }
-    return result;
-  }
-
-  await tx.pmChannelRun.updateMany({
-    where: {
-      id: { in: runIds },
-      status: { in: ["queued", "accepted", "streaming"] },
-    },
-    data: {
-      status: "completed",
-      error: null,
-      completedAt: now,
-      failedAt: null,
-      finishedAt: now,
-      finishedReason: `workflow_action:${args.action}`,
-      lastEventAt: now,
-      lastAction: args.action,
-      lastActionAt: now,
-      settledByAction: args.action,
-      disposition,
+    select: {
+      id: true,
+      status: true,
+      projectId: true,
+      taskId: true,
+      epicId: true,
+      sessionKey: true,
     },
   });
-  await tx.pmChannelJob.updateMany({
-    where: {
-      runId: { in: runIds },
-      status: { in: ["queued", "claimed", "accepted", "retryable"] },
-    },
-    data: {
-      status: "complete",
-      completedAt: now,
-      lastError: null,
-    },
+  return applyWorkflowActionToRuns(tx, args, runs, result, {
+    continuationMode: result.episode?.rolledOver ? "rollover_barrier" : "arm",
   });
-  await supersedePmChannelContinuations(tx, {
-    runIds,
-    reason: `episode ended by ${args.action}`,
-  });
-  return result;
 }
 
 /**
@@ -894,7 +1268,8 @@ export async function recordPmChannelRunEvent(args: {
   const targetKey = pmChannelRunTargetKey(args.target);
   const leaseExpiresAt = new Date(now.getTime() + leaseDurationMs());
 
-  if (args.event === "done") {
+  // ENV-159: turn:terminal is the canonical equivalent of done for run settling.
+  if (args.event === "done" || args.event === "turn:terminal") {
     await record(
       async () => {
         const existing = await db.pmChannelRun.findUnique({
@@ -1008,6 +1383,8 @@ export async function recordPmChannelRunEvent(args: {
       },
       "done run state",
     );
+    const run = await db.pmChannelRun.findUnique({ where: { targetKey }, select: { id: true } });
+    if (run) await releaseExecutionLane({ runId: run.id });
     return;
   }
 
@@ -1117,6 +1494,8 @@ export async function recordPmChannelRunEvent(args: {
       },
       "error run state",
     );
+    const run = await db.pmChannelRun.findUnique({ where: { targetKey }, select: { id: true } });
+    if (run) await releaseExecutionLane({ runId: run.id });
     return;
   }
 
@@ -1129,7 +1508,7 @@ export async function recordPmChannelRunEvent(args: {
     async () => {
       const existing = await db.pmChannelRun.findUnique({
         where: { targetKey },
-        select: { id: true, status: true, createdAt: true, acceptedAt: true, streamingAt: true },
+        select: { id: true, status: true, createdAt: true, acceptedAt: true, admittedAt: true, streamingAt: true },
       });
       // Never resurrect a run the watchdog (or a prior terminal event) already
       // settled. A late streaming chunk must not reopen a terminal run
@@ -1138,10 +1517,14 @@ export async function recordPmChannelRunEvent(args: {
       if (existing?.status === "completed" || existing?.status === "cancelled" || existing?.status === "superseded") return;
       if (existing?.status === "failed" && status !== "completed") return;
       if (existing?.status === "timed_out" && status !== "completed") return;
+      // ENV-159: First model callback transitions admitted→streaming.
+      // The first token arrives after admission; streamingAt marks the first
+      // visible progress, and the lease is renewed from the admitted baseline.
       const firstTokenAt = existing?.streamingAt ?? now;
-      const firstStreamMs = existing?.streamingAt || !existing?.acceptedAt
+      const admissionAnchor = existing?.admittedAt ?? existing?.acceptedAt;
+      const firstStreamMs = existing?.streamingAt || !admissionAnchor
         ? null
-        : now.getTime() - existing.acceptedAt.getTime();
+        : now.getTime() - admissionAnchor.getTime();
       // A `final` is a turn ending: if a continuation is armed, this settle is
       // `continue`, not a successful completion, and the outbox row becomes
       // drainable. A plain streaming chunk settles nothing.
@@ -1213,6 +1596,11 @@ export async function recordPmChannelRunEvent(args: {
     },
     "stream run state",
   );
+  const run = await db.pmChannelRun.findUnique({ where: { targetKey }, select: { id: true } });
+  if (run) {
+    if (status === "completed") await releaseExecutionLane({ runId: run.id });
+    else await activateExecutionLaneForRun({ runId: run.id });
+  }
 }
 
 export async function getPmChannelRunSnapshot(target: PmChannelReplyTarget) {
@@ -1226,7 +1614,7 @@ export async function getPmChannelRunSnapshot(target: PmChannelReplyTarget) {
       streamSeq: true,
       createdAt: true,
       updatedAt: true,
-      acceptedAt: true,
+      admittedAt: true,
       streamingAt: true,
       completedAt: true,
       failedAt: true,

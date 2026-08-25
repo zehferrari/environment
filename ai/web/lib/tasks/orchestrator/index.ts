@@ -18,98 +18,39 @@ import { authorizeCommand } from "@/lib/tasks/orchestrator/authorize";
 import { runGuards } from "@/lib/tasks/orchestrator/guards";
 import { decideCommand } from "@/lib/tasks/orchestrator/decide";
 import { executeWorkflowCommand } from "@/lib/tasks/orchestrator/execute";
-import { resolveReviewOwnerIdFromSnapshot } from "@/lib/tasks/orchestrator/authorize";
+import { executeWorkflowCommandInTransaction } from "@/lib/tasks/orchestrator/execute";
+import { computeRequestFingerprint } from "@/lib/tasks/orchestrator/receipts";
+import { validateCommandPayload } from "@/lib/tasks/orchestrator/command-schema";
+import { resolveEngineOwnership, ENGINE_LEGACY } from "@/lib/tasks/orchestrator/ownership";
+import { refreshTaskAggregateForTx } from "@/lib/tasks/orchestrator/state";
+import type { Prisma } from "@prisma/client";
 import type {
+  DomainErrorCode,
   OrchestrationDecision,
   OrchestratorResult,
   TaskStateSnapshot,
   TaskWorkflowCommand,
 } from "@/lib/tasks/orchestrator/types";
 
+function domainCodeFromReason(reason: string, fallback: DomainErrorCode): DomainErrorCode {
+  const match = reason.match(/^\[([a-z_]+)\]/);
+  return (match?.[1] as DomainErrorCode | undefined) ?? fallback;
+}
+
 /**
  * Build a TaskStateSnapshot from the DB for the decision function. The
  * snapshot is a frozen view of the task's current state; the decision
  * function is pure and does not touch the DB.
+ *
+ * Delegates to loadTaskAggregate (state.ts) which loads the complete
+ * task aggregate (spec §8). TaskAggregate extends TaskStateSnapshot, so
+ * the returned object is structurally compatible with all existing
+ * guards/decide/authorize consumers.
  */
 export async function loadTaskStateSnapshot(taskId: string): Promise<TaskStateSnapshot | null> {
-  const task = await db.task.findUnique({
-    where: { id: taskId, deletedAt: null },
-    select: {
-      id: true,
-      status: true,
-      workflowVersion: true,
-      projectId: true,
-      epicId: true,
-      assigneeId: true,
-      actingManagerId: true,
-      reporterId: true,
-      approvedOn: true,
-      approvedById: true,
-      activeWorkflowCycleId: true,
-      project: {
-        select: {
-          onlyReportersCanApproveActionPlans: true,
-          onlyReportersCanSetTasksDone: true,
-          repositoryPath: true,
-        },
-      },
-      epic: { select: { status: true, actingManagerId: true } },
-      repositoryRun: {
-        select: {
-          phase: true,
-          candidateSha: true,
-          baseSha: true,
-          repoTouched: true,
-          reviewedSha: true,
-        },
-      },
-    },
-  });
-  if (!task) return null;
-
-  const reviewRun = task.activeWorkflowCycleId
-    ? await db.reviewRun.findUnique({
-        where: { workflowCycleId: task.activeWorkflowCycleId },
-        select: { id: true, status: true, candidateSha: true, reviewerId: true },
-      })
-    : null;
-
-  return {
-    id: task.id,
-    status: task.status as TaskStateSnapshot["status"],
-    workflowVersion: task.workflowVersion,
-    projectId: task.projectId,
-    epicId: task.epicId,
-    assigneeId: task.assigneeId,
-    actingManagerId: task.actingManagerId,
-    reporterId: task.reporterId,
-    approvedOn: task.approvedOn,
-    approvedById: task.approvedById,
-    activeWorkflowCycleId: task.activeWorkflowCycleId,
-    resolvedReviewOwnerId: resolveReviewOwnerIdFromSnapshot({
-      actingManagerId: task.actingManagerId,
-      reporterId: task.reporterId,
-      epic: task.epic ? { status: task.epic.status, actingManagerId: task.epic.actingManagerId } : null,
-    }),
-    activeReviewRun: reviewRun
-      ? { id: reviewRun.id, status: reviewRun.status, candidateSha: reviewRun.candidateSha, reviewerId: reviewRun.reviewerId }
-      : null,
-    repositoryRun: task.repositoryRun
-      ? {
-          phase: task.repositoryRun.phase,
-          candidateSha: task.repositoryRun.candidateSha,
-          baseSha: task.repositoryRun.baseSha,
-          repoTouched: task.repositoryRun.repoTouched,
-          reviewedSha: task.repositoryRun.reviewedSha,
-        }
-      : null,
-    project: {
-      onlyReportersCanApproveActionPlans: task.project.onlyReportersCanApproveActionPlans,
-      onlyReportersCanSetTasksDone: task.project.onlyReportersCanSetTasksDone,
-      repositoryPath: task.project.repositoryPath,
-    },
-    epic: task.epic ? { status: task.epic.status, actingManagerId: task.epic.actingManagerId } : null,
-  };
+  const { loadTaskAggregate } = await import("@/lib/tasks/orchestrator/state");
+  const aggregate = await loadTaskAggregate(taskId);
+  return aggregate;
 }
 
 /**
@@ -117,66 +58,143 @@ export async function loadTaskStateSnapshot(taskId: string): Promise<TaskStateSn
  * every workflow mutation. Returns an OrchestratorResult.
  */
 export async function submitWorkflowCommand(command: TaskWorkflowCommand): Promise<OrchestratorResult> {
-  const state = await loadTaskStateSnapshot(command.taskId);
+  return submitWorkflowCommandWithClient(db, command, false);
+}
+
+/**
+ * Submit a canonical workflow command inside a caller-owned transaction.
+ * This is intentionally narrow: batch transports receive no alternate
+ * mutation API, and a rejected result can be promoted to an exception by the
+ * caller so every operation in the batch rolls back together.
+ */
+export async function submitWorkflowCommandInTransaction(
+  tx: Prisma.TransactionClient,
+  command: TaskWorkflowCommand,
+): Promise<OrchestratorResult> {
+  return submitWorkflowCommandWithClient(tx, command, true);
+}
+
+async function submitWorkflowCommandWithClient(
+  client: Prisma.TransactionClient | typeof db,
+  command: TaskWorkflowCommand,
+  inTransaction: boolean,
+): Promise<OrchestratorResult> {
+  const validated = validateCommandPayload(command.intent, command.payload);
+  if (!validated.ok) {
+    return {
+      status: "invalid",
+      reason: validated.message,
+      domainCode: validated.code,
+      ...(validated.details ? { details: validated.details } : {}),
+    };
+  }
+  command = { ...command, payload: validated.payload } as TaskWorkflowCommand;
+
+  const state = inTransaction
+    ? await refreshTaskAggregateForTx(client as Prisma.TransactionClient, command.taskId)
+    : await loadTaskStateSnapshot(command.taskId);
   if (!state) {
-    return { status: "invalid", reason: "Task not found." };
+    return { status: "invalid", reason: "Task not found.", domainCode: "invalid_payload" };
+  }
+
+  // --- Engine ownership resolution (Phase E §3.2) ----------------------
+  // Resolve durable engine ownership BEFORE any writes. This gate runs
+  // before guards, decision, and execution so a rejection never mutates.
+  // Legacy ownership is retired. Exact receipt replay remains available
+  // below for already-accepted V2 commands, but no new mutation may enter
+  // the kernel until the task has durable V2 ownership.
+  const ownership = await resolveEngineOwnership(client, command.taskId);
+  if (!ownership.ok) {
+    return {
+      status: ownership.code === "task_not_found" ? "invalid" : "stale",
+      reason: ownership.reason,
+      domainCode: ownership.code === "task_not_found" ? "invalid_payload" : "cycle_mismatch",
+    };
   }
 
   // --- Idempotency replay check (before guards, per kernel semantics) ----
-  // The transition kernel deduplicates by idempotencyKey. A replay of the
-  // same command returns the original transition without side effects, even
-  // if the workflow version has since moved on. We check here so the guard's
-  // version check doesn't reject a legitimate replay.
-  const existingTransition = await db.workflowTransition.findUnique({
+  // TaskWorkflowCommandReceipt is the single replay authority (Phase E §6).
+  // The ActivityLog substring scan (payload contains idempotencyKey) is
+  // removed because a `contains` match on serialized JSON is not an
+  // exact-correlation check and cannot reliably reconstruct the original
+  // response. The receipt stores the serialized OrchestratorResult projection
+  // so an exact replay returns an identical response.
+  //
+  const existingReceipt = await client.taskWorkflowCommandReceipt.findUnique({
     where: {
       taskId_idempotencyKey: {
         taskId: command.taskId,
         idempotencyKey: command.idempotencyKey,
       },
     },
-    select: { id: true, workflowVersion: true },
+    select: { id: true, requestFingerprint: true, result: true },
   });
-  if (existingTransition) {
-    return { status: "replayed", transitionId: existingTransition.id, workflowVersion: existingTransition.workflowVersion, procedureId: null };
+  if (existingReceipt) {
+    const fingerprint = computeRequestFingerprint(command);
+    if (existingReceipt.requestFingerprint === fingerprint) {
+      // Exact replay — return the stored result with replay status.
+      const stored = JSON.parse(existingReceipt.result) as OrchestratorResult;
+      if (stored.status === "accepted") {
+        // Preserve the exact stored disposition/episode projection. Replay
+        // changes only the transport status; it never recomputes or drops the
+        // execution bookkeeping committed with the command.
+        return {
+          ...stored,
+          status: "replayed",
+          transitionId: stored.transitionId,
+          workflowVersion: stored.workflowVersion,
+          procedureId: stored.procedureId ?? null,
+        } as OrchestratorResult;
+      }
+      return stored;
+    }
+    // Same key, different payload — idempotency conflict (domain error, not HTTP status).
+    return {
+      status: "invalid",
+      reason: "idempotency_conflict: idempotency key reused with different payload.",
+      domainCode: "idempotency_conflict",
+    };
   }
-  // For no-op decisions (accept_review, checkpoint, etc.) that don't create a
-  // kernel transition, check for an existing activity log with the same
-  // idempotency key. This makes no-op decisions replay-safe too.
-  const existingActivity = await db.activityLog.findFirst({
-    where: {
-      taskId: command.taskId,
-      kind: { startsWith: "task.workflow." },
-      payload: { contains: command.idempotencyKey },
-    },
-    select: { id: true },
-  });
-  if (existingActivity) {
-    return { status: "replayed", transitionId: existingActivity.id, workflowVersion: state.workflowVersion, procedureId: null };
+  if (ownership.engine === ENGINE_LEGACY) {
+    return {
+      status: "stale",
+      reason: "Legacy workflow mutation ownership is retired.",
+      domainCode: "cycle_mismatch",
+    };
   }
 
   // --- Authorize ---------------------------------------------------------
   const auth = authorizeCommand(state, command);
   if (!auth.allowed) {
-    return { status: "forbidden", reason: auth.reason };
+    const code: DomainErrorCode = auth.reason === "not_assignee"
+      ? "not_assignee"
+      : auth.reason === "not_reviewer"
+        ? "not_reviewer"
+        : auth.reason === "not_coding_capable"
+          ? "not_coding_capable"
+          : "not_authorized";
+    return { status: "forbidden", reason: auth.reason, domainCode: code };
   }
 
   // --- Guards (pure preconditions) --------------------------------------
   const guardResult = runGuards(state, command);
   if (!guardResult.ok) {
     return guardResult.status === "stale"
-      ? { status: "stale", reason: guardResult.reason }
-      : { status: "invalid", reason: guardResult.reason };
+      ? { status: "stale", reason: guardResult.reason, domainCode: domainCodeFromReason(guardResult.reason, "stale_version") }
+      : { status: "invalid", reason: guardResult.reason, domainCode: domainCodeFromReason(guardResult.reason, "invalid_payload") };
   }
 
   // --- Decide (pure) -----------------------------------------------------
   const decision = decideCommand(state, command, auth);
   if ("status" in decision && decision.status === "invalid") {
-    return { status: "invalid", reason: decision.reason };
+    return { status: "invalid", reason: decision.reason, domainCode: domainCodeFromReason(decision.reason, "invalid_payload") };
   }
   const orchestrationDecision = decision as OrchestrationDecision;
 
   // --- Execute (atomic) --------------------------------------------------
-  return executeWorkflowCommand(command, orchestrationDecision);
+  return inTransaction
+    ? executeWorkflowCommandInTransaction(client as Prisma.TransactionClient, command, orchestrationDecision, state)
+    : executeWorkflowCommand(command, orchestrationDecision, state);
 }
 
 // Re-export the public API so routes can import from a single module.
@@ -184,6 +202,24 @@ export { authorizeCommand } from "@/lib/tasks/orchestrator/authorize";
 export { runGuards } from "@/lib/tasks/orchestrator/guards";
 export { decideCommand } from "@/lib/tasks/orchestrator/decide";
 export { executeWorkflowCommand } from "@/lib/tasks/orchestrator/execute";
+export { executeWorkflowCommandInTransaction } from "@/lib/tasks/orchestrator/execute";
+export {
+  getIntentReceiptResolution as getWorkflowTransactionResolution,
+  type IntentReceiptResolutionKind as WorkflowTransactionResolutionKind,
+} from "@/lib/tasks/orchestrator/intents/shared";
 export { buildTaskWorkflowProjection } from "@/lib/tasks/orchestrator/projection";
+export {
+  loadTaskAggregate,
+  refreshTaskAggregateForTx,
+  fenceState,
+  mapFenceResultToOrchestratorResult,
+  FENCE_ERROR_CODES,
+  type TaskAggregate,
+  type FenceResult,
+  type FenceErrorCode,
+} from "@/lib/tasks/orchestrator/state";
+// Backward-compatible re-export: loadTaskStateSnapshot delegates to
+// loadTaskAggregate in state.ts. The existing guards/decide/authorize consume
+// TaskStateSnapshot, which is structurally compatible with TaskAggregate.
 export { loadTaskStateSnapshot as loadTaskState };
 export type { TaskWorkflowCommand, OrchestratorResult, OrchestrationDecision, TaskStateSnapshot };
