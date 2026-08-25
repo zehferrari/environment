@@ -340,6 +340,83 @@ async function main() {
     assert.deepEqual(windowDoctor.phaseE.historicalResidueBeforeWindow?.receiptStats, { accepted: 1 });
     assert.ok((windowDoctor.phaseE.historicalResidueBeforeWindow?.legacyInvocationCount ?? 0) > 0);
 
+    // --strict must gate on in-window findings only. Reconciler findings assert
+    // current aggregate state, so without this split an unwindowed strict run
+    // gates on pre-Phase-E residue and the documented rollout gate can never
+    // pass on a database with history.
+    // Its own project so the gate counts are deterministic — the shared
+    // fixture projects carry unrelated in-window findings by design.
+    const residueProject = await db.project.create({
+      data: { slug: "phasee10-residue", name: "PHASEE-10 Residue" },
+    });
+    const residueTask = await db.task.create({
+      data: {
+        projectId: residueProject.id,
+        title: "Legacy task left Done without an accepted review lease",
+        status: "Done",
+        workflowEngine: "legacy",
+        statusChangedAt: new Date(windowStart.getTime() - 60_000),
+      },
+    });
+    // Prisma stamps updatedAt on write; findings are dated by the LATEST of
+    // statusChangedAt/updatedAt, so backdate it too or the row reads as live.
+    await db.$executeRawUnsafe(
+      `UPDATE Task SET updatedAt = ${windowStart.getTime() - 60_000} WHERE id = '${residueTask.id}'`,
+    );
+
+    const runDoctor = async (args: string[]) => {
+      try {
+        const ok = await execFileP(
+          path.join(process.cwd(), "node_modules/.bin/tsx"),
+          ["scripts/pm-workflow-doctor.ts", "--json", `--project=${residueProject.id}`, ...args],
+          { cwd: process.cwd(), env: { ...process.env, DATABASE_URL: dbUrl } },
+        );
+        return { code: 0, json: JSON.parse(ok.stdout) };
+      } catch (error) {
+        const failed = error as { code?: number; stdout?: string };
+        return { code: failed.code ?? 1, json: JSON.parse(failed.stdout ?? "{}") };
+      }
+    };
+
+    const strictWindowed = await runDoctor(["--strict", `--since=${windowStart.toISOString()}`]);
+    assert.equal(strictWindowed.code, 0, "pre-window residue must not fail a windowed strict gate");
+    assert.equal(strictWindowed.json.phaseE.gatingFindingCount, 0);
+    assert.ok(
+      (strictWindowed.json.phaseE.historicalResidueBeforeWindow?.reconcilerFindingCount ?? 0) >= 1,
+      "the residue finding is still reported, just not gating",
+    );
+    assert.equal(
+      strictWindowed.json.phaseE.historicalResidueBeforeWindow?.reconcilerFindingsByKind
+        ?.done_cycle_incomplete,
+      1,
+    );
+    assert.ok(
+      strictWindowed.json.findings.some(
+        (f: { taskId: string | null }) => f.taskId === residueTask.id,
+      ),
+      "residue is never hidden from the findings list",
+    );
+
+    const strictUnwindowed = await runDoctor(["--strict"]);
+    assert.equal(strictUnwindowed.code, 1, "an unwindowed strict run still gates on every finding");
+    assert.ok(strictUnwindowed.json.phaseE.gatingFindingCount >= 1);
+    assert.equal(strictUnwindowed.json.phaseE.historicalResidueBeforeWindow, null);
+
+    // Move the same condition inside the window: it must now fail the gate.
+    await db.$executeRawUnsafe(
+      `UPDATE Task SET statusChangedAt = ${windowStart.getTime() + 60_000} WHERE id = '${residueTask.id}'`,
+    );
+    const strictRegression = await runDoctor(["--strict", `--since=${windowStart.toISOString()}`]);
+    assert.equal(strictRegression.code, 1, "a finding on a task touched in-window must gate");
+    assert.equal(strictRegression.json.phaseE.gatingFindingCount, 1);
+    assert.equal(
+      strictRegression.json.phaseE.historicalResidueBeforeWindow?.reconcilerFindingCount,
+      0,
+    );
+
+    await db.task.delete({ where: { id: residueTask.id } });
+    await db.project.delete({ where: { id: residueProject.id } });
+
     const projectionMismatchTask = await db.task.create({
       data: {
         projectId: alpha.id,

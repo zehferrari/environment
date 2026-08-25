@@ -10,6 +10,9 @@
 //   - Cohort coverage
 //   - --json output includes a phaseE section with all Phase E-specific metrics
 //   - --strict exits non-zero if any Phase E invariant violation is detected
+//   - --since=<ISO> windows the counters, stop evidence, and reconciler
+//     findings. Use it for rollout gates: findings on tasks untouched since
+//     the window opened are reported as historical residue, not failures.
 
 import { runWorkflowReconciliation } from "@/lib/tasks/workflow-reconciler";
 import {
@@ -43,6 +46,36 @@ async function main() {
     projectId: projectId,
     dryRun: !apply,
   });
+
+  // Reconciler findings are assertions about *current* aggregate state, not
+  // events, so they carry no createdAt to window by. Date each finding by the
+  // most recent state change on its task: a finding counts as pre-window
+  // residue only when its task has not moved at all since the window opened.
+  // Erring toward "in window" is deliberate — it can never file a genuinely
+  // new regression as historical residue.
+  const findingTaskIds = [...new Set(
+    report.findings.map((finding) => finding.taskId).filter((id): id is string => Boolean(id)),
+  )];
+  const findingTaskActivity = findingTaskIds.length
+    ? await db.task.findMany({
+        where: { id: { in: findingTaskIds } },
+        select: { id: true, statusChangedAt: true, updatedAt: true },
+      })
+    : [];
+  const lastMovedAt = new Map(findingTaskActivity.map((task) => [
+    task.id,
+    Math.max(task.statusChangedAt?.getTime() ?? 0, task.updatedAt?.getTime() ?? 0),
+  ]));
+  const isPreWindowResidue = (finding: (typeof report.findings)[number]) => {
+    if (!since) return false;
+    // A finding with no task anchor cannot be proven stale — gate on it.
+    if (!finding.taskId) return false;
+    const moved = lastMovedAt.get(finding.taskId);
+    if (moved === undefined) return false;
+    return moved < since.getTime();
+  };
+  const gatingFindings = report.findings.filter((finding) => !isPreWindowResidue(finding));
+  const residueFindings = report.findings.filter(isPreWindowResidue);
 
   // PHASEE-10 — Gather Phase E specific metrics.
   const [cohortSummary, legacyInvocationSummary, allTimeLegacyInvocationSummary, legacyDrainInventory, engineDistribution, receiptStats, allTimeReceiptStats, procedureStats, diagnosticActivities, allTimeDiagnosticActivities, v2LegacyInvocations, mechanicalDecisionActors] = await Promise.all([
@@ -207,8 +240,8 @@ async function main() {
     observationWindow: {
       startedAt: since?.toISOString() ?? null,
       semantics: since
-        ? "event counters and stop evidence are windowed; current aggregate invariants remain unwindowed"
-        : "all-time event counters; current aggregate invariants are live",
+        ? "event counters, stop evidence, and reconciler findings are windowed; findings are dated by their task's last state change"
+        : "all-time event counters and reconciler findings; current aggregate invariants are live",
     },
     engineOwnershipDistribution: Object.fromEntries(
       engineDistribution.map((row) => [row.workflowEngine, row._count._all]),
@@ -237,7 +270,15 @@ async function main() {
         0,
         allTimeLegacyInvocationSummary.totalInvocations - legacyInvocationSummary.totalInvocations,
       ),
+      reconcilerFindingCount: residueFindings.length,
+      reconcilerFindingsByKind: residueFindings.reduce<Record<string, number>>((acc, finding) => {
+        acc[finding.kind] = (acc[finding.kind] ?? 0) + 1;
+        return acc;
+      }, {}),
     } : null,
+    // The findings --strict actually gates on. Without --since this is every
+    // finding; with --since it excludes tasks untouched since the window opened.
+    gatingFindingCount: gatingFindings.length,
     invariantViolations: phaseEFindings.length,
     invariantFindings: phaseEFindings.map((f) => ({
       kind: f.kind,
@@ -278,17 +319,27 @@ async function main() {
       `invariantViolations=${phaseE.invariantViolations} ` +
       `stopConditionGate=${phaseE.stopConditionGatePassed ? "pass" : "FAIL"}`,
     );
-    for (const finding of report.findings) {
+    for (const finding of gatingFindings) {
       console.log(
         `  ${finding.kind} ${finding.taskId ?? finding.rowId}: ${finding.detail} ` +
         `→ ${finding.repair}${finding.repaired ? " [done]" : ""}${finding.error ? ` [${finding.error}]` : ""}`,
       );
     }
+    if (residueFindings.length > 0) {
+      console.log(
+        `  historical residue (untouched since ${since?.toISOString()}): ` +
+        `${residueFindings.length} finding(s) not gating this window`,
+      );
+    }
     for (const error of report.errors) console.log(`  error: ${error}`);
   }
 
-  // --strict exits non-zero if any finding (including Phase E invariants) exists.
-  if (flag("strict") && (report.findings.length > 0 || !phaseE.stopConditionGatePassed)) process.exit(1);
+  // --strict exits non-zero if any in-window finding (including Phase E
+  // invariants) exists, or a stop condition fired. Pre-window residue is
+  // reported under historicalResidueBeforeWindow but never gates a rollout:
+  // an unwindowed strict run on a database with history could otherwise never
+  // pass, which made the documented rollout gate unreachable in production.
+  if (flag("strict") && (gatingFindings.length > 0 || !phaseE.stopConditionGatePassed)) process.exit(1);
 }
 
 main().catch((error) => {

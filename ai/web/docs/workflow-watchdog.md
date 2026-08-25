@@ -170,9 +170,10 @@ The operator command is read-only unless `--apply` is explicit:
 pnpm workflow-doctor                    # inspect, metrics + findings, no writes
 pnpm workflow-doctor --json             # machine-readable health snapshot
 pnpm workflow-doctor --project=<id>     # scope one project
-pnpm workflow-doctor --since=<ISO>      # rollout-window event evidence + historical residue
+pnpm workflow-doctor --since=<ISO>      # window counters, stop evidence + findings; splits out historical residue
 pnpm workflow-doctor --apply            # bounded safe repairs + escalation
-pnpm workflow-doctor --strict           # exit 1 when findings exist
+pnpm workflow-doctor --strict           # exit 1 when in-window findings exist
+pnpm workflow-doctor --strict --since=<ISO>   # rollout gate: pre-window residue does not fail the run
 ```
 
 `--since` windows event counters and event-backed Phase E stop conditions from

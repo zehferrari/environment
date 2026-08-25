@@ -38,8 +38,15 @@ pnpm phasee:admission unpin --project=synthetic-private-canary --task=<task-id-o
 ## E5 V2 default and legacy drain
 
 Every product task-creation boundary stamps `orchestrator_v2` ownership and a
-pin timestamp. The Prisma default remains `legacy` only for historical imports
-and explicit test fixtures; it is not the application default.
+pin timestamp. Since `20260824090000_phase_e_v2_schema_defaults`, the Prisma
+column default is also `orchestrator_v2` (`Task.workflowEngine`), so a row
+inserted outside those boundaries — a historical import, a raw fixture — is
+V2-owned too. Set `workflowEngine: "legacy"` explicitly to opt a row out.
+
+This means new work does not pass through `pinToV2`, and therefore does not
+consult `PM_ORCHESTRATOR_V2_MUTATION_PROJECTS`. The effectful cohort gates
+**admission of existing legacy tasks only**; it is not a kill switch for newly
+created work. `resolveEngineOwnership` routes purely on durable row state.
 
 Fresh legacy mutations are rejected. An existing legacy cycle, procedure, or
 repository run may continue only long enough to drain. Archived tasks are
@@ -101,12 +108,21 @@ Required evidence:
 - named backup, rollback, and on-call owners; and
 - retained artifact paths or durable URLs, with no secrets.
 
-`pnpm workflow-doctor --json --strict` exposes configured effectful cohorts,
-eligible/admitted/skipped tasks, engine distribution, active procedures,
-receipt and callback health, legacy invocations, invariant findings, and a
-stable diagnostic for every Phase E stop condition. Cohort rows also expose
-`commandExecutionLatencyMs` (sample count plus p50/p95/p99/max) from the
-transaction-client entry through durable receipt creation.
+`pnpm workflow-doctor --json --strict --since=<ISO-cutover-timestamp>` exposes
+configured effectful cohorts, eligible/admitted/skipped tasks, engine
+distribution, active procedures, receipt and callback health, legacy
+invocations, invariant findings, and a stable diagnostic for every Phase E stop
+condition. Cohort rows also expose `commandExecutionLatencyMs` (sample count
+plus p50/p95/p99/max) from the transaction-client entry through durable receipt
+creation.
+
+**Always pass `--since` for a rollout gate.** Reconciler findings assert current
+aggregate state, so an unwindowed `--strict` run also gates on pre-Phase-E
+residue — legacy tasks left Done without an accepted review lease, or in Review
+with no cycle — which no amount of Phase E work can clear. With `--since`, a
+finding whose task has not changed state since the window opened is reported
+under `historicalResidueBeforeWindow.reconcilerFindingCount` instead of failing
+the gate. `gatingFindingCount` is what `--strict` acts on.
 
 ## Incident posture
 
