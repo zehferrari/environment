@@ -123,6 +123,7 @@ import {
   type ActorVisibility,
 } from "@/lib/users/actor-visibility";
 import { buildAgentRedactor } from "@/lib/users/redact-agents";
+import { parseAcceptanceCriteria } from "@/lib/tasks/action-plan-store";
 
 type ActorRow = {
   id: string;
@@ -1700,6 +1701,8 @@ export default async function TaskDetailPage({
   const visibleAssignee = serializeVisibleActorAs(task.assignee, "assignee", actorVisibility);
   const visibleReviewer = serializeVisibleActorAs(task.actingManager, "reviewer", actorVisibility);
   const visibleApprover = serializeActor(task.approvedBy, actorVisibility);
+  const visibleActionPlanAuthor = serializeActor(task.actionPlan?.author ?? null, actorVisibility);
+  const visibleActionPlanApprover = serializeActor(task.actionPlan?.approvedBy ?? null, actorVisibility);
   const showApproverAvatar = Boolean(
     task.approvedOn &&
     visibleApprover &&
@@ -2285,6 +2288,90 @@ export default async function TaskDetailPage({
                         : `Structured plan v${task.actionPlan.version} is ${task.actionPlan.status}. The messages below are its discussion and review history.`
                       : "No structured Action Plan has been submitted. Messages below are discussion only and cannot be approved until the assignee calls action=submit_plan."}
                   </div>
+                  {task.actionPlan ? (
+                    <article
+                      data-structured-action-plan
+                      className="overflow-hidden rounded-card border border-line bg-panel"
+                    >
+                      <header className="flex flex-wrap items-start justify-between gap-3 border-b border-line px-card py-4">
+                        <div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h2 className="text-body font-semibold text-text">Action Plan v{task.actionPlan.version}</h2>
+                            <span className={`rounded-full border px-2 py-0.5 text-nano font-semibold uppercase tracking-wide ${
+                              task.actionPlan.status === "approved"
+                                ? "border-ok/40 bg-ok/10 text-ok"
+                                : task.actionPlan.status === "revision_required"
+                                  ? "border-warn/50 bg-warn/10 text-warn"
+                                  : "border-line bg-bg-elev text-text-muted"
+                            }`}>
+                              {task.actionPlan.status.replaceAll("_", " ")}
+                            </span>
+                          </div>
+                          <p className="mt-1 text-caption text-text-muted">
+                            Submitted {timeAgo(task.actionPlan.createdAt)}
+                            {visibleActionPlanAuthor ? ` by ${actorDisplayName(visibleActionPlanAuthor)}` : ""}
+                          </p>
+                        </div>
+                        {task.actionPlan.approvedOn ? (
+                          <div className="text-right text-caption text-text-muted">
+                            <div className="font-medium text-text">Approved {timeAgo(task.actionPlan.approvedOn)}</div>
+                            {visibleActionPlanApprover ? <div>by {actorDisplayName(visibleActionPlanApprover)}</div> : null}
+                          </div>
+                        ) : null}
+                      </header>
+
+                      <div className="space-y-5 px-card py-5">
+                        <section>
+                          <h3 className="text-micro font-semibold uppercase tracking-wider text-text-muted">Summary</h3>
+                          <p className="mt-2 whitespace-pre-wrap text-body leading-relaxed text-text">
+                            {task.actionPlan.summary}
+                          </p>
+                        </section>
+
+                        <section>
+                          <h3 className="text-micro font-semibold uppercase tracking-wider text-text-muted">Steps</h3>
+                          <ol className="mt-3 space-y-3">
+                            {task.actionPlan.steps.map((step, index) => {
+                              const criteria = parseAcceptanceCriteria(step.acceptanceCriteria);
+                              const visibleStepAssignee = serializeActor(step.assignee, actorVisibility);
+                              return (
+                                <li key={step.id} className="rounded-lg border border-line bg-panel-soft p-4">
+                                  <div className="flex items-start gap-3">
+                                    <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-accent-soft text-caption font-semibold text-accent">
+                                      {index + 1}
+                                    </span>
+                                    <div className="min-w-0 flex-1">
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <h4 className="font-medium text-text">{step.title}</h4>
+                                        <span className="rounded-full border border-line bg-bg-elev px-2 py-0.5 text-nano uppercase tracking-wide text-text-muted">
+                                          {step.kind}
+                                        </span>
+                                      </div>
+                                      {visibleStepAssignee ? (
+                                        <p className="mt-1 text-caption text-text-muted">
+                                          Assigned to {actorDisplayName(visibleStepAssignee)}
+                                        </p>
+                                      ) : null}
+                                      {criteria.length > 0 ? (
+                                        <ul className="mt-3 space-y-1.5 text-caption leading-relaxed text-text-muted">
+                                          {criteria.map((criterion, criterionIndex) => (
+                                            <li key={`${step.id}:${criterionIndex}`} className="flex gap-2">
+                                              <span aria-hidden="true" className="text-accent">✓</span>
+                                              <span>{criterion}</span>
+                                            </li>
+                                          ))}
+                                        </ul>
+                                      ) : null}
+                                    </div>
+                                  </div>
+                                </li>
+                              );
+                            })}
+                          </ol>
+                        </section>
+                      </div>
+                    </article>
+                  ) : null}
                   {canApproveActionPlan ? (
                     <form action={approveTaskActionPlan} className="flex justify-end">
                       <input type="hidden" name="taskId" value={task.id} />

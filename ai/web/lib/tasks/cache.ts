@@ -195,9 +195,53 @@ export function getCachedTaskDetailShell(taskId: string) {
         actionPlan: {
           select: {
             id: true,
+            summary: true,
             version: true,
             status: true,
             approvedOn: true,
+            createdAt: true,
+            updatedAt: true,
+            author: {
+              select: {
+                id: true,
+                username: true,
+                name: true,
+                kind: true,
+                avatarUpdatedAt: true,
+                agent: { select: { slug: true, name: true, avatar: true } },
+              },
+            },
+            approvedBy: {
+              select: {
+                id: true,
+                username: true,
+                name: true,
+                kind: true,
+                avatarUpdatedAt: true,
+                agent: { select: { slug: true, name: true, avatar: true } },
+              },
+            },
+            steps: {
+              orderBy: { rank: "asc" },
+              select: {
+                id: true,
+                stepId: true,
+                title: true,
+                acceptanceCriteria: true,
+                kind: true,
+                rank: true,
+                assignee: {
+                  select: {
+                    id: true,
+                    username: true,
+                    name: true,
+                    kind: true,
+                    avatarUpdatedAt: true,
+                    agent: { select: { slug: true, name: true, avatar: true } },
+                  },
+                },
+              },
+            },
           },
         },
         blockedBy: { select: { id: true, workItemKey: true, title: true, status: true } },

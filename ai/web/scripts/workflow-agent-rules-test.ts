@@ -128,6 +128,7 @@ assert(projectPage.includes("branchName: null"), "board-created Tasks must retai
 assert(projectPage.includes("commitPrefix: null"), "board-created Tasks must retain a null prefix override");
 
 const taskPage = readFileSync(join(root, "app/(app)/projects/[slug]/tasks/[taskId]/page.tsx"), "utf8");
+const taskCache = readFileSync(join(root, "lib/tasks/cache.ts"), "utf8");
 assert(taskPage.includes("data.branchName = newBranch"), "clearing a Task branch override must persist null, not a copied fallback");
 assert(taskPage.includes("data.commitPrefix = newCommitPrefix"), "clearing a Task prefix override must persist null, not a copied fallback");
 assert(taskPage.includes('defaultValue={task.branchName ?? ""}'), "the Task form must not submit an inherited branch as an override");
@@ -137,6 +138,17 @@ assert(
     taskPage.includes("Messages below are discussion only") &&
     taskPage.includes("action=submit_plan"),
   "the Action Plan tab must distinguish durable structured state from discussion chat",
+);
+assert(
+  taskPage.includes("data-structured-action-plan") &&
+    taskPage.includes("task.actionPlan.summary") &&
+    taskPage.includes("task.actionPlan.steps.map") &&
+    taskPage.includes("parseAcceptanceCriteria(step.acceptanceCriteria)") &&
+    taskCache.includes("summary: true") &&
+    taskCache.includes("acceptanceCriteria: true") &&
+    taskCache.includes("author:") &&
+    taskCache.includes("approvedBy:"),
+  "a tool-submitted structured Action Plan must be fully visible in the Action Plan room without a duplicate chat reply",
 );
 assert(
   taskPage.includes('task.actionPlan?.status === "draft"') &&
