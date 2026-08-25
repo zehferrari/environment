@@ -617,42 +617,7 @@ const ACCEPTED_NO_STREAMING: WatchdogDetector = {
   },
 };
 
-// 6b — a run is tool-capable (has a model/provider) but reports zero tool
-// events despite being streaming or completed. This catches the Ollama
-// zero-count gap: if tool:start is not emitted, the episode safety boundary
-// is effectively disabled.
-const TOOL_CAPABLE_ZERO_TOOLS: WatchdogDetector = {
-  id: "tool_capable_zero_tools",
-  statement:
-    "A completed or streaming run with a known provider/model that recorded zero tool cycles may have a tool telemetry coverage gap.",
-  detect: (snapshot) => {
-    const findings: WatchdogFinding[] = [];
-    for (const run of snapshot.runs) {
-      if (!run.taskId) continue;
-      if (run.status !== "streaming" && run.status !== "completed") continue;
-      if (!run.provider || !run.model) continue;
-      // Check if the run has been streaming long enough to expect tool calls
-      const streamStart = run.streamingAt ?? run.createdAt;
-      if (snapshot.now - streamStart < 60_000) continue; // 1 min grace
-      // Zero tool events on a tool-capable run that has been streaming for a while
-      // This is a telemetry finding, not a repair — escalate for investigation
-      findings.push({
-        detectorId: "tool_capable_zero_tools",
-        taskId: run.taskId,
-        runId: run.id,
-        agentSlug: run.agentSlug,
-        state: "stalled",
-        reasonCode: "zero_tool_events_on_tool_capable_run",
-        reasonDetail: `${run.provider}/${run.model} run has been streaming for ${Math.round((snapshot.now - streamStart) / 1000)}s with zero tool cycles`,
-        repair: "escalate",
-        priority: 50,
-      });
-    }
-    return findings;
-  },
-};
-
-// 6c — two active lanes for one agent. The AgentExecutionLease partial
+// 6b — two active lanes for one agent. The AgentExecutionLease partial
 // unique index should prevent this, but the detector catches DB corruption
 // or race conditions.
 const TWO_ACTIVE_LANES_ONE_AGENT: WatchdogDetector = {
@@ -786,7 +751,6 @@ export const WATCHDOG_DETECTORS: readonly WatchdogDetector[] = [
   OPEN_CHECKLIST_NO_CONTINUATION,
   // ENV-159 provider-neutral execution admission detectors
   ACCEPTED_NO_STREAMING,
-  TOOL_CAPABLE_ZERO_TOOLS,
   TWO_ACTIVE_LANES_ONE_AGENT,
   MISSING_PROVIDER_AFTER_ADMISSION,
   CAPACITY_WAIT_STALE,

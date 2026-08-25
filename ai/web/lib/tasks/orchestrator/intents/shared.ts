@@ -200,13 +200,23 @@ export async function executeDecisionWrites(args: {
 
   if (command.intent === "request_review_changes" || command.intent === "accept_review") {
     const lease = await tx.reviewRun.findFirst({
-      where: { taskId: command.taskId, status: "awaiting_review" },
+      where: {
+        taskId: command.taskId,
+        status: command.intent === "request_review_changes"
+          ? { in: ["awaiting_review", "accepted"] }
+          : "awaiting_review",
+      },
       orderBy: { createdAt: "desc" },
       take: 1,
     });
     if (lease) {
       await tx.reviewRun.updateMany({
-        where: { id: lease.id, status: "awaiting_review" },
+        where: {
+          id: lease.id,
+          status: command.intent === "request_review_changes"
+            ? { in: ["awaiting_review", "accepted"] }
+            : "awaiting_review",
+        },
         data: {
           status: command.intent === "request_review_changes" ? "changes_requested" : "accepted",
           reviewerId: decision.decisionActorId,

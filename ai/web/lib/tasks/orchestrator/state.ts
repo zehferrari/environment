@@ -983,11 +983,14 @@ export async function fenceState(
       };
     }
 
-    if (lease.status !== "awaiting_review") {
+    const allowedLeaseStatuses = command.intent === "request_review_changes"
+      ? ["awaiting_review", "accepted"]
+      : ["awaiting_review"];
+    if (!allowedLeaseStatuses.includes(lease.status)) {
       return {
         ok: false,
         code: "lease_mismatch",
-        expected: "lease status=awaiting_review",
+        expected: `lease status=${allowedLeaseStatuses.join(" or ")}`,
         actual: `lease status=${lease.status}`,
       };
     }

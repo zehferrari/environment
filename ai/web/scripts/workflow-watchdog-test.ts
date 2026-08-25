@@ -115,14 +115,42 @@ function byDetector(findings: WatchdogFinding[], id: string): WatchdogFinding[] 
 // Registry
 // ------------------------------------------------------------------
 
-assertEqual(WATCHDOG_DETECTORS.length, 14, "all execution and pre-start failure modes have a detector");
+assertEqual(WATCHDOG_DETECTORS.length, 13, "all actionable execution and pre-start failure modes have a detector");
 assertEqual(
   new Set(WATCHDOG_DETECTORS.map((detector) => detector.id)).size,
-  14,
+  13,
   "detector ids are unique",
 );
 for (const detector of WATCHDOG_DETECTORS) {
   assert(detector.statement.trim().length > 0, `${detector.id} states what it checks`);
+}
+assertEqual(
+  WATCHDOG_DETECTORS.some((detector) => detector.id === "tool_capable_zero_tools"),
+  false,
+  "historical runs without tool calls are telemetry, not a task-stall detector",
+);
+
+{
+  const findings = detectWatchdogFindings(snapshot({
+    tasks: [task()],
+    runs: [
+      run({
+        id: "historic-conversation",
+        status: "completed",
+        provider: "anthropic",
+        model: "claude-sonnet",
+        createdAt: NOW - 90 * MINUTE,
+        streamingAt: NOW - 90 * MINUTE,
+        lastEventAt: NOW - 89 * MINUTE,
+      }),
+      run(),
+    ],
+  }));
+  assertEqual(
+    byDetector(findings, "tool_capable_zero_tools").length,
+    0,
+    "an old conversational run cannot override the current execution state",
+  );
 }
 
 // ------------------------------------------------------------------

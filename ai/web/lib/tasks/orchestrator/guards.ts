@@ -273,11 +273,14 @@ export function guardReviewLease(
       reason: `Intent ${intent} requires an active review lease, but none exists for the active cycle.`,
     };
   }
-  if (lease.status !== "awaiting_review") {
+  const allowedStatuses = intent === "request_review_changes"
+    ? ["awaiting_review", "accepted"]
+    : ["awaiting_review"];
+  if (!allowedStatuses.includes(lease.status)) {
     return {
       ok: false,
       status: "stale",
-      reason: `[lease_mismatch] Intent ${intent} requires an awaiting_review lease, but the lease is ${lease.status}.`,
+      reason: `[lease_mismatch] Intent ${intent} requires ${allowedStatuses.join(" or ")} lease, but the lease is ${lease.status}.`,
     };
   }
   if (expectedCandidateSha && lease.candidateSha !== expectedCandidateSha) {

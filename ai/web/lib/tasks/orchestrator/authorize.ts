@@ -410,7 +410,7 @@ export function authorizeCommand(
       // Invariant 8: only the resolved reviewer (or reporter under policy)
       // may request changes, and only against the active immutable lease.
       const lease = state.activeReviewRun ?? null;
-      if (!lease || lease.status !== "awaiting_review") {
+      if (!lease || (lease.status !== "awaiting_review" && lease.status !== "accepted")) {
         return {
           allowed: false,
           reason: "no_active_lease",
