@@ -1,28 +1,19 @@
 import { notFound } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
-import { reorderTasks } from "@/lib/tasks/reorder";
 import { listAssignablePrincipals } from "@/lib/principals";
 import { binTask } from "@/lib/bin/actions";
-import { publishBoardTouch } from "@/lib/pm/board-events";
 import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
 import { nextEpicTaskTitle } from "@/lib/tasks/epic-numbering";
 import { allocateWorkItemKey } from "@/lib/work-items/keys";
-import { revalidateTaskShell } from "@/lib/tasks/cache";
-import type { MoveTaskOptions, MoveTaskResult } from "@/lib/tasks/move-status";
-import {
-  isTaskWorkflowStatus,
-  submitBrowserStatusOverride,
-} from "@/lib/tasks/orchestrator/browser-status-adapter";
 import { activeFormalBlockersByTask } from "@/lib/tasks/formal-blocker";
 import Board from "./board-client";
 import AddTaskFab from "./add-task-fab";
-import { COLUMNS, COLUMN_IDS } from "./columns";
+import { COLUMNS } from "./columns";
 import {
   accessibleEpicWhere,
   accessibleTaskWhere,
   assertAgentAssignmentAllowed,
-  requireTaskAccess,
   requireProjectAccess,
   requireViewer,
   type Viewer,
@@ -216,62 +207,6 @@ async function createTask(formData: FormData) {
   revalidatePath(`/projects/${projectSlug}`);
 }
 
-// Workflow rejections (invalid edge, agent-touches-Review/Done, unknown
-// column) are returned as data so the client can roll the optimistic
-// move back instead of swallowing a generic thrown Error. Authentication
-// failure still throws — that is a true server fault, not a rule
-// rejection.
-async function moveTask(
-  taskId: string,
-  status: string,
-  slug: string,
-  _options?: MoveTaskOptions,
-): Promise<MoveTaskResult> {
-  "use server";
-  const actor = await requireActor();
-  if (!isTaskWorkflowStatus(status)) {
-    return {
-      ok: false,
-      code: "UNKNOWN_COLUMN",
-      message: `Unknown column: ${status}`,
-    };
-  }
-  const current = await db.task.findFirst({
-    where: accessibleTaskWhere(actor, { id: taskId }),
-    select: {
-      id: true,
-      status: true,
-      workflowVersion: true,
-      activeWorkflowCycleId: true,
-      projectId: true,
-      deletedAt: true,
-      project: { select: { slug: true } },
-    },
-  });
-  if (!current || current.deletedAt || current.project.slug !== slug) {
-    return { ok: false, code: "UNKNOWN_COLUMN", message: "Task not found" };
-  }
-  await requireProjectAccess(actor, { id: current.projectId });
-  if (!isTaskWorkflowStatus(current.status)) {
-    return { ok: false, code: "INVALID_STATUS", message: "Task has an invalid workflow status." };
-  }
-  const result = await submitBrowserStatusOverride({
-    actor,
-    taskId,
-    currentStatus: current.status,
-    targetStatus: status,
-    expectedWorkflowVersion: current.workflowVersion,
-    activeWorkflowCycleId: current.activeWorkflowCycleId,
-    surface: "project-board",
-  });
-  if (!result.ok) return result;
-
-  revalidateTaskShell(taskId);
-  revalidatePath(`/projects/${slug}`);
-  publishBoardTouch(current.projectId);
-  return { ok: true };
-}
-
 export default async function ProjectBoardPage({
   params,
 }: {
@@ -359,23 +294,6 @@ export default async function ProjectBoardPage({
   const activeFormalBlockers = activeFormalBlockersByTask(taskActivityRows, legacyBlockerComments);
   const visibleBlockerById = new Map(visibleBlockers.map((task) => [task.id, task]));
 
-  const projectId = project.id;
-  async function reorderBoardTasks(orderedIds: string[]): Promise<void> {
-    "use server";
-    const actor = await requireViewer();
-    await requireProjectAccess(actor, { id: projectId });
-    const ids = [...new Set(orderedIds)];
-    const taskCount = await db.task.count({
-      where: accessibleTaskWhere(actor, { id: { in: ids }, projectId }),
-    });
-    if (taskCount !== ids.length) throw new Error("Not authorized");
-    await Promise.all(ids.map((id) => requireTaskAccess(actor, id)));
-    await reorderTasks(ids);
-    for (const id of ids) revalidateTaskShell(id);
-    revalidatePath(`/projects/${slug}`);
-    publishBoardTouch(projectId);
-  }
-
   return (
     <div>
       <Board
@@ -431,29 +349,7 @@ export default async function ProjectBoardPage({
             project: null,
           };
         })}
-        moveTaskAction={moveTask}
-        reorderTasksAction={reorderBoardTasks}
         deleteTaskAction={binTask}
-        canOperatorOverride={viewer.isOwner}
-        canManageTaskRoles={viewer.isOwner}
-        roleOptions={viewer.isOwner ? principals.map((principal) => ({
-          value: principal.id,
-          label: principal.name,
-          actor: {
-            id: principal.id,
-            username: principal.username,
-            kind: principal.kind,
-            name: principal.name,
-            avatarUpdatedAt: principal.avatarUpdatedAt,
-            agent: principal.kind === "agent"
-              ? {
-                  slug: principal.agentSlug ?? principal.username,
-                  name: principal.name,
-                  avatar: principal.agentAvatar,
-                }
-              : null,
-          },
-        })) : []}
       />
 
       {/* The shared board (+) speed-dial is the visible FAB; AddTaskFab stays

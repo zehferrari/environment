@@ -29,7 +29,7 @@ async function assertSourceContracts() {
     "app/(app)/workspaces/(landing)/page.tsx",
   ]) {
     const source = await readFile(file, "utf8");
-    assert.match(source, /submitBrowserStatusOverride/, `${file} submits the canonical browser command`);
+    assert.doesNotMatch(source, /submitBrowserStatusOverride|moveTaskAction|reorderTasksAction/, `${file} exposes no board status-move transport`);
     assert.doesNotMatch(source, /moveTaskStatus|transitionTask\(|applyTaskTransition\(/, `${file} has no direct status writer`);
     assert.doesNotMatch(source, /recordLegacyWorkflowBoundaryInvocation/, `${file} is no longer a legacy boundary`);
   }
@@ -37,7 +37,19 @@ async function assertSourceContracts() {
   const taskDetail = await readFile("app/(app)/projects/[slug]/tasks/[taskId]/page.tsx", "utf8");
   assert.match(taskDetail, /submitBrowserStatusOverride/);
   assert.match(taskDetail, /submitBrowserPlanApproval/);
+  assert.match(taskDetail, /TaskHeaderWorkflowActions/);
   assert.doesNotMatch(taskDetail, /moveTaskStatus|applyTaskTransition\(|recordLegacyWorkflowBoundaryInvocation/);
+
+  const createFab = await readFile("components/create-fab.tsx", "utf8");
+  for (const label of ["Just Comment", "Suspend Work", "Isn't Ready Yet", "Task is Complete"]) {
+    assert.match(createFab, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `comment composer exposes ${label}`);
+  }
+  assert.match(createFab, /ConfirmPopup/, "status-changing composer actions require confirmation");
+  assert.match(createFab, /textareaRef\.current\?\.focus/, "cancelled confirmation returns focus to the preserved draft");
+
+  const board = await readFile("app/(app)/projects/[slug]/board-client.tsx", "utf8");
+  assert.doesNotMatch(board, /DndContext|useSortable|useDroppable|SortableContext|DragOverlay/, "boards do not change status through drag and drop");
+  assert.doesNotMatch(board, /type="checkbox"|selectedIds|TaskBulkEditControls/, "boards do not expose multi-select controls");
 }
 
 async function main() {
@@ -49,6 +61,12 @@ async function main() {
     const { db } = await import("@/lib/db");
     const { submitBrowserStatusOverride } = await import("@/lib/tasks/orchestrator/browser-status-adapter");
     const { submitBrowserPlanApproval } = await import("@/lib/tasks/orchestrator/browser-plan-adapter");
+    const {
+      getBrowserTaskWorkflowActions,
+      submitBrowserAcceptReview,
+      submitBrowserCancelTask,
+    } = await import("@/lib/tasks/orchestrator/browser-review-adapter");
+    const { openTaskWorkflowCycle } = await import("@/lib/tasks/workflow-cycle");
 
     const human = await db.user.create({
       data: { username: "owner", email: "owner@example.test", kind: "human", isOwner: true },
@@ -86,8 +104,8 @@ async function main() {
     const afterOverride = await db.task.findUniqueOrThrow({ where: { id: overrideTask.id } });
     assert.equal(afterOverride.status, "In Progress");
     assert.equal(afterOverride.workflowVersion, 1);
-    assert.equal(await db.activityLog.count({ where: { taskId: overrideTask.id, kind: "task.blocker" } }), 1);
-    assert.equal(await db.comment.count({ where: { taskId: overrideTask.id, commentKind: "blocker_notice" } }), 1);
+    assert.equal(await db.activityLog.count({ where: { taskId: overrideTask.id, kind: "task.blocker" } }), 0);
+    assert.equal(await db.comment.count({ where: { taskId: overrideTask.id, commentKind: "blocker_notice" } }), 0);
 
     const replay = await submitBrowserStatusOverride({
       actor,
@@ -99,7 +117,7 @@ async function main() {
       surface: "project-board",
     });
     assert.equal(replay.ok, true, "same browser evidence replays exactly");
-    assert.equal(await db.activityLog.count({ where: { taskId: overrideTask.id, kind: "task.blocker" } }), 1);
+    assert.equal(await db.activityLog.count({ where: { taskId: overrideTask.id, kind: "task.blocker" } }), 0);
 
     const stale = await submitBrowserStatusOverride({
       actor,
@@ -130,8 +148,8 @@ async function main() {
     assert.equal((await db.task.findUniqueOrThrow({ where: { id: overrideTask.id } })).status, "Done");
     assert.equal(
       await db.activityLog.count({ where: { taskId: overrideTask.id, kind: "task.blocker" } }),
-      1,
-      "Done creates no additional wait-for-human blocker",
+      0,
+      "human status updates never create wait-for-human blockers",
     );
 
     const planTask = await db.task.create({
@@ -251,6 +269,123 @@ async function main() {
     });
     assert.equal(approvalReplay.ok, true);
     assert.equal(await db.taskProcedureRun.count({ where: { taskId: planTask.id, type: "prepare_todo_task" } }), 1);
+
+    const reviewTask = await db.task.create({
+      data: {
+        projectId: project.id,
+        title: "Browser reviewer actions",
+        status: "Review",
+        workflowVersion: 1,
+        workflowEngine: "orchestrator_v2",
+        workflowEnginePinnedAt: new Date(),
+        assigneeId: agent.id,
+        actingManagerId: human.id,
+        reporterId: human.id,
+        approvedOn: new Date(),
+        approvedById: human.id,
+      },
+    });
+    await db.$transaction(async (tx) => {
+      await openTaskWorkflowCycle(tx, { taskId: reviewTask.id, openedWorkflowVersion: 1 });
+      const cycle = await tx.taskWorkflowCycle.findFirstOrThrow({
+        where: { taskId: reviewTask.id, status: "open" },
+      });
+      await tx.reviewRun.create({
+        data: {
+          taskId: reviewTask.id,
+          workflowCycleId: cycle.id,
+          candidateSha: "review-candidate",
+          baseSha: "review-base",
+          repoTouched: true,
+          validationOutcome: "valid",
+          status: "awaiting_review",
+        },
+      });
+      await tx.taskRepositoryRun.create({
+        data: {
+          taskId: reviewTask.id,
+          workflowCycleId: cycle.id,
+          repositoryPath: "/srv/Code/test-repo",
+          branchName: "review-actions",
+          worktreePath: "/srv/Code/test-repo.worktrees/review-actions",
+          baseSha: "review-base",
+          candidateSha: "review-candidate",
+          phase: "review_ready",
+          validationOutcome: "valid",
+          repoTouched: true,
+        },
+      });
+    });
+
+    const available = await getBrowserTaskWorkflowActions({ actor, taskId: reviewTask.id });
+    assert.equal(available.canCancel, true, "authorized reviewer can suspend work");
+    assert.equal(available.canRequestChanges, true, "authorized reviewer can request another implementation pass");
+    assert.equal(available.canAccept, true, "authorized reviewer can accept the immutable candidate");
+    assert.ok(available.reviewRunId && available.candidateSha && available.workflowCycleId);
+
+    const accepted = await submitBrowserAcceptReview({
+      actor,
+      taskId: reviewTask.id,
+      expectedWorkflowVersion: available.workflowVersion,
+      workflowCycleId: available.workflowCycleId!,
+      reviewRunId: available.reviewRunId!,
+      candidateSha: available.candidateSha!,
+      reviewerComment: "The reviewed candidate is complete.",
+    });
+    assert.equal(accepted.ok, true);
+    const afterAccept = await db.task.findUniqueOrThrow({ where: { id: reviewTask.id } });
+    assert.equal(afterAccept.status, "Review", "acceptance waits for repository finalization before Done");
+    assert.equal(
+      await db.taskProcedureRun.count({
+        where: { taskId: reviewTask.id, type: "finalize_accepted_review", status: "queued" },
+      }),
+      1,
+      "acceptance schedules one finalization procedure",
+    );
+    assert.equal(
+      await db.comment.count({ where: { taskId: reviewTask.id, body: "The reviewed candidate is complete." } }),
+      1,
+      "the reviewer note commits with acceptance",
+    );
+
+    const acceptedActions = await getBrowserTaskWorkflowActions({ actor, taskId: reviewTask.id });
+    assert.equal(acceptedActions.canAccept, false, "an accepted lease cannot be accepted twice");
+    assert.equal(acceptedActions.canRequestChanges, true, "the reviewer may still revoke stuck finalization");
+    assert.equal(acceptedActions.canCancel, true, "the reviewer may suspend stuck finalization");
+
+    const suspended = await submitBrowserCancelTask({
+      actor,
+      taskId: reviewTask.id,
+      expectedWorkflowVersion: acceptedActions.workflowVersion,
+      workflowCycleId: acceptedActions.workflowCycleId,
+      reason: "Suspend this work while requirements are reconsidered.",
+    });
+    assert.equal(suspended.ok, true);
+    const afterSuspend = await db.task.findUniqueOrThrow({ where: { id: reviewTask.id } });
+    assert.equal(afterSuspend.status, "Backlog");
+    assert.equal(afterSuspend.assigneeId, agent.id, "suspension preserves the assignee");
+    const suspendedCycle = await db.taskWorkflowCycle.findUniqueOrThrow({
+      where: { id: available.workflowCycleId! },
+    });
+    assert.equal(suspendedCycle.status, "closed");
+    assert.equal(suspendedCycle.outcome, "cancelled");
+    assert.equal(
+      (await db.taskProcedureRun.findFirstOrThrow({
+        where: { taskId: reviewTask.id, type: "finalize_accepted_review" },
+      })).status,
+      "superseded",
+      "suspension retires the old finalizer",
+    );
+    const suspendedRepo = await db.taskRepositoryRun.findUniqueOrThrow({ where: { taskId: reviewTask.id } });
+    assert.equal(suspendedRepo.phase, "action_required");
+    assert.equal(suspendedRepo.worktreePath, "/srv/Code/test-repo.worktrees/review-actions");
+    assert.equal(
+      await db.comment.count({
+        where: { taskId: reviewTask.id, body: "Suspend this work while requirements are reconsidered." },
+      }),
+      1,
+      "the suspension reason commits as an audit comment",
+    );
 
     console.log("phasee-09 browser adapters: PASS");
   } finally {

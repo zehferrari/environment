@@ -2,10 +2,7 @@ import Link from "next/link";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
-import { reorderTasks } from "@/lib/tasks/reorder";
 import { binTask } from "@/lib/bin/actions";
-import { publishBoardTouch } from "@/lib/pm/board-events";
-import { revalidateTaskShell } from "@/lib/tasks/cache";
 import { activeFormalBlockersByTask } from "@/lib/tasks/formal-blocker";
 import { createWorkspace, restoreWorkspace } from "@/lib/workspaces/service";
 import { workspaceLogoPublicUrl } from "@/lib/workspaces/storage";
@@ -13,17 +10,10 @@ import { uploadAttachment } from "@/lib/attachments/actions";
 import { attachmentMaxBytes } from "@/lib/attachments/storage";
 import Board from "../../projects/[slug]/board-client";
 import { COLUMNS } from "../../projects/[slug]/columns";
-import type { MoveTaskOptions, MoveTaskResult } from "@/lib/tasks/move-status";
-import {
-  isTaskWorkflowStatus,
-  submitBrowserStatusOverride,
-} from "@/lib/tasks/orchestrator/browser-status-adapter";
 import {
   accessibleProjectWhere,
   accessibleTaskWhere,
   requireOwner,
-  requireProjectAccess,
-  requireTaskAccess,
   requireViewer,
   workspaceAccessWhere,
   type Viewer,
@@ -131,64 +121,6 @@ async function restoreWorkspaceAction(formData: FormData) {
   revalidatePath(`/workspaces/${slug}/settings`);
 }
 
-// Landing-board move: identical workflow rules to the per-workspace board,
-// but the membership proof accepts any accessible active workspace that
-// contains the task's project.
-async function moveTask(
-  taskId: string,
-  status: string,
-  _scopeSlug: string,
-  _options?: MoveTaskOptions,
-): Promise<MoveTaskResult> {
-  "use server";
-  const actor = await requireViewer();
-  if (!isTaskWorkflowStatus(status)) {
-    return { ok: false, code: "UNKNOWN_COLUMN", message: `Unknown column: ${status}` };
-  }
-  const current = await db.task.findFirst({
-    where: accessibleTaskWhere(actor, { id: taskId }),
-    select: {
-      id: true,
-      status: true,
-      workflowVersion: true,
-      activeWorkflowCycleId: true,
-      projectId: true,
-      deletedAt: true,
-      project: { select: { slug: true } },
-    },
-  });
-  if (!current || current.deletedAt || !isTaskWorkflowStatus(current.status)) {
-    return { ok: false, code: "UNKNOWN_COLUMN", message: "Task not found" };
-  }
-  await requireProjectAccess(actor, { id: current.projectId });
-  const workspaceProject = await db.workspaceProject.findFirst({
-    where: {
-      projectId: current.projectId,
-      workspace: { AND: [{ archivedAt: null }, workspaceAccessWhere(actor)] },
-    },
-    select: { id: true },
-  });
-  if (!workspaceProject) {
-    return { ok: false, code: "UNKNOWN_COLUMN", message: "Task not found" };
-  }
-
-  const result = await submitBrowserStatusOverride({
-    actor,
-    taskId,
-    currentStatus: current.status,
-    targetStatus: status,
-    expectedWorkflowVersion: current.workflowVersion,
-    activeWorkflowCycleId: current.activeWorkflowCycleId,
-    surface: "workspace-landing",
-  });
-  if (!result.ok) return result;
-
-  revalidateTaskShell(taskId);
-  revalidatePath(`/projects/${current.project.slug}`);
-  revalidatePath("/workspaces");
-  publishBoardTouch(current.projectId);
-  return { ok: true };
-}
 export const dynamic = "force-dynamic";
 
 export default async function WorkspacesLandingPage({ searchParams }: { searchParams?: Promise<{ archived?: string }> }) {
@@ -302,28 +234,6 @@ export default async function WorkspacesLandingPage({ searchParams }: { searchPa
   const activeFormalBlockers = activeFormalBlockersByTask(taskActivityRows, legacyBlockerComments);
   const visibleBlockerById = new Map(visibleBlockers.map((task) => [task.id, task]));
 
-  async function reorderLandingTasks(orderedIds: string[]): Promise<void> {
-    "use server";
-    const actor = await requireViewer();
-    const ids = [...new Set(orderedIds)];
-    const allowedProjects = await db.workspaceProject.findMany({
-      where: {
-        workspace: { AND: [{ archivedAt: null }, workspaceAccessWhere(actor)] },
-        project: accessibleProjectWhere(actor, { deletedAt: null, archivedAt: null }),
-      },
-      select: { projectId: true },
-    });
-    const allowedProjectIds = [...new Set(allowedProjects.map((row) => row.projectId))];
-    const visibleCount = await db.task.count({
-      where: accessibleTaskWhere(actor, { id: { in: ids }, projectId: { in: allowedProjectIds } }),
-    });
-    if (visibleCount !== ids.length) throw new Error("Not authorized");
-    await Promise.all(ids.map((id) => requireTaskAccess(actor, id)));
-    await reorderTasks(ids);
-    for (const id of ids) revalidateTaskShell(id);
-    revalidatePath("/workspaces");
-  }
-
   return (
     // data-board-focus-root scopes the sidebar's hover-to-highlight effect
     // (desktop landing only) to this board's cards.
@@ -387,10 +297,7 @@ export default async function WorkspacesLandingPage({ searchParams }: { searchPa
               projectColor: project?.backgroundColor ?? null,
             };
           })}
-          moveTaskAction={moveTask}
-          reorderTasksAction={reorderLandingTasks}
           deleteTaskAction={binTask}
-          canOperatorOverride={viewer.isOwner}
         />
       )}
     </div>

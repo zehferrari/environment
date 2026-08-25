@@ -1,27 +1,15 @@
 import { notFound } from "next/navigation";
-import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
-import { reorderTasks } from "@/lib/tasks/reorder";
 import { binTask } from "@/lib/bin/actions";
-import { publishBoardTouch } from "@/lib/pm/board-events";
-import { revalidateTaskShell } from "@/lib/tasks/cache";
 import { activeFormalBlockersByTask } from "@/lib/tasks/formal-blocker";
 import { normalizeWorkspaceSlug } from "@/lib/workspaces/service";
 import Board from "../../projects/[slug]/board-client";
 import { COLUMNS } from "../../projects/[slug]/columns";
-import type { MoveTaskOptions, MoveTaskResult } from "@/lib/tasks/move-status";
-import {
-  isTaskWorkflowStatus,
-  submitBrowserStatusOverride,
-} from "@/lib/tasks/orchestrator/browser-status-adapter";
 import {
   accessibleProjectWhere,
   accessibleTaskWhere,
-  requireProjectAccess,
-  requireTaskAccess,
   requireViewer,
   workspaceAccessWhere,
-  type Viewer,
 } from "@/lib/auth/permissions";
 import {
   getActorVisibility,
@@ -96,65 +84,6 @@ function buildTaskActivityActorMaps(rows: TaskActivityActorRow[], visibility: Ac
   return { createdBy, updatedBy };
 }
 
-async function requireActor(): Promise<Viewer> {
-  return requireViewer();
-}
-
-async function moveTask(
-  taskId: string,
-  status: string,
-  workspaceSlug: string,
-  _options?: MoveTaskOptions,
-): Promise<MoveTaskResult> {
-  "use server";
-  const actor = await requireActor();
-  if (!isTaskWorkflowStatus(status)) {
-    return { ok: false, code: "UNKNOWN_COLUMN", message: `Unknown column: ${status}` };
-  }
-  const current = await db.task.findFirst({
-    where: accessibleTaskWhere(actor, { id: taskId }),
-    select: {
-      id: true,
-      status: true,
-      workflowVersion: true,
-      activeWorkflowCycleId: true,
-      projectId: true,
-      deletedAt: true,
-      project: { select: { slug: true } },
-    },
-  });
-  if (!current || current.deletedAt || !isTaskWorkflowStatus(current.status)) {
-    return { ok: false, code: "UNKNOWN_COLUMN", message: "Task not found" };
-  }
-  await requireProjectAccess(actor, { id: current.projectId });
-  const workspaceProject = await db.workspaceProject.findFirst({
-    where: {
-      projectId: current.projectId,
-      workspace: { slug: workspaceSlug, AND: [workspaceAccessWhere(actor)] },
-    },
-    select: { id: true },
-  });
-  if (!workspaceProject) {
-    return { ok: false, code: "UNKNOWN_COLUMN", message: "Task not found" };
-  }
-
-  const result = await submitBrowserStatusOverride({
-    actor,
-    taskId,
-    currentStatus: current.status,
-    targetStatus: status,
-    expectedWorkflowVersion: current.workflowVersion,
-    activeWorkflowCycleId: current.activeWorkflowCycleId,
-    surface: "workspace-board",
-  });
-  if (!result.ok) return result;
-
-  revalidateTaskShell(taskId);
-  revalidatePath(`/projects/${current.project.slug}`);
-  revalidatePath(`/workspaces/${workspaceSlug}`);
-  publishBoardTouch(current.projectId);
-  return { ok: true };
-}
 export const dynamic = "force-dynamic";
 
 export default async function WorkspaceBoardPage({ params }: { params: Promise<{ slug: string }> }) {
@@ -178,8 +107,6 @@ export default async function WorkspaceBoardPage({ params }: { params: Promise<{
     },
   });
   if (!workspace) notFound();
-  const workspaceId = workspace.id;
-
   const projectIds = workspace.projects.map(({ project }) => project.id);
   const tasks = projectIds.length > 0
     ? await db.task.findMany({
@@ -244,31 +171,6 @@ export default async function WorkspaceBoardPage({ params }: { params: Promise<{
   const activeFormalBlockers = activeFormalBlockersByTask(taskActivityRows, legacyBlockerComments);
   const visibleBlockerById = new Map(visibleBlockers.map((task) => [task.id, task]));
 
-  async function reorderWorkspaceTasks(orderedIds: string[]): Promise<void> {
-    "use server";
-    const actor = await requireViewer();
-    const ids = [...new Set(orderedIds)];
-    const allowedWorkspace = await db.workspace.findFirst({
-      where: { AND: [{ id: workspaceId }, workspaceAccessWhere(actor)] },
-      select: {
-        projects: {
-          where: { project: accessibleProjectWhere(actor, { deletedAt: null, archivedAt: null }) },
-          select: { projectId: true },
-        },
-      },
-    });
-    if (!allowedWorkspace) throw new Error("Not authorized");
-    const allowedProjectIds = allowedWorkspace.projects.map((row) => row.projectId);
-    const visibleCount = await db.task.count({
-      where: accessibleTaskWhere(actor, { id: { in: ids }, projectId: { in: allowedProjectIds } }),
-    });
-    if (visibleCount !== ids.length) throw new Error("Not authorized");
-    await Promise.all(ids.map((id) => requireTaskAccess(actor, id)));
-    await reorderTasks(ids);
-    for (const id of ids) revalidateTaskShell(id);
-    revalidatePath(`/workspaces/${slug}`);
-  }
-
   const boardChromeScope = `workspace-${workspace.slug}`;
 
   return (
@@ -320,10 +222,7 @@ export default async function WorkspaceBoardPage({ params }: { params: Promise<{
             project: { slug: t.project.slug, name: t.project.name },
           };
         })}
-        moveTaskAction={moveTask}
-        reorderTasksAction={reorderWorkspaceTasks}
         deleteTaskAction={binTask}
-        canOperatorOverride={viewer.isOwner}
       />
     </div>
   );

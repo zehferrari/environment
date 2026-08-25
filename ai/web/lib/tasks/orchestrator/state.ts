@@ -592,12 +592,11 @@ async function loadTaskAggregateWithClient(
       : null,
   });
 
-  // --- Resolve the active formal blocker (wait-for-human or permission) ---
-  // The override executor raises a task.blocker activity for every non-Done
-  // human status override; clear_blocker writes task.blocker.cleared. The
-  // newest-first resolver returns the active blocker for this task, which
-  // guardNoUnresolvedBlocker uses to refuse agent commands until a human
-  // clears it.
+  // --- Resolve the active formal blocker (including historical wait-for-human
+  // markers and current permission/operational blockers) ------------------
+  // clear_blocker writes task.blocker.cleared. The newest-first resolver
+  // returns the active blocker for this task, which the relevant workflow
+  // guards use until it is resolved.
   const activeBlocker = activeFormalBlockerStatesByTask(blockerActivityRows).get(taskId) ?? null;
 
   // --- Build the aggregate ---
