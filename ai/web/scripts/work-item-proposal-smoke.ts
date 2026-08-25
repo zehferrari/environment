@@ -567,10 +567,10 @@ async function main(): Promise<void> {
       { statusResult, statusState },
     );
     check(
-      "non-Done proposal override creates wait-for-human blocker atomically",
+      "successful proposal status override creates no implicit blocker",
       await prisma.activityLog.count({
         where: { taskId: statusTarget.id, kind: "task.blocker", payload: { contains: "wait_for_human" } },
-      }) === 1,
+      }) === 0,
     );
     check(
       "proposal status command stores deterministic receipt",

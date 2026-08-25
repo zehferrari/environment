@@ -5,41 +5,13 @@ import { useRouter } from "next/navigation";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useTransition } from "react";
 import { createPortal } from "react-dom";
 import {
-  closestCenter,
-  DndContext,
-  DragOverlay,
-  KeyboardSensor,
-  PointerSensor,
-  pointerWithin,
-  rectIntersection,
-  useDroppable,
-  useSensor,
-  useSensors,
-  type CollisionDetection,
-  type DragEndEvent,
-  type DragStartEvent,
-} from "@dnd-kit/core";
-import {
-  SortableContext,
-  arrayMove,
-  sortableKeyboardCoordinates,
-  useSortable,
-  verticalListSortingStrategy,
-} from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
-import type { MoveTaskOptions, MoveTaskResult } from "@/lib/tasks/move-status";
-import {
   actorDisplayName,
   MessageAvatar,
   type MessageActor,
 } from "@/components/message-avatar";
 import { useAgentPresenceMap } from "@/components/agent-presence-provider";
 import { formatGridDate } from "@/lib/date-format";
-import { bulkBinTasks } from "@/lib/bin/actions";
-import { bulkUpdateTaskRole, type BulkTaskRoleField } from "@/lib/tasks/bulk-roles";
 import ConfirmPopup from "@/components/confirm-popup";
-import TaskBulkEditControls, { type BulkTaskEditField } from "@/components/task-bulk-edit-controls";
-import type { AvatarComboboxOption } from "@/components/avatar-combobox";
 import { canShowDeploymentForTask, deploymentStatusIcon } from "@/lib/deploy/deployment-status";
 import { boardAvailableHeight, boardChromeSlotId, boardStickyTop } from "@/lib/board-chrome";
 
@@ -243,18 +215,7 @@ type BoardProps = {
   boardStreamUrl?: string | null;
   columns: ReadonlyArray<Column>;
   tasks: Task[];
-  moveTaskAction: (
-    taskId: string,
-    status: string,
-    slug: string,
-    options?: MoveTaskOptions,
-  ) => Promise<MoveTaskResult>;
-  reorderTasksAction: (orderedIds: string[]) => Promise<void>;
   deleteTaskAction: (formData: FormData) => Promise<void>;
-  roleOptions?: AvatarComboboxOption[];
-  canManageTaskRoles?: boolean;
-  /** Admin viewers may force a rejected drag as an audited operator override. */
-  canOperatorOverride?: boolean;
 };
 
 // Per Stage 0 sign-off (HOMELAB-44 description): the Backlog column has a
@@ -268,23 +229,7 @@ const FOCUS_VISIBLE_KEY_PREFIX = "pm.board.focusVisible.";
 
 const DONE_VISIBLE_KEY_PREFIX = "pm.board.doneVisible.";
 
-// Backlog rows are full-width while the four workflow columns are
-// quarter-width. closestCorners can't disambiguate here: a full-width drag
-// rect ties across all four columns (their summed corner-distance is the
-// same constant) and the full-width Backlog droppable wins outright because
-// it x-aligns with the dragged row. The result was that a backlog→To Do
-// drop resolved its `over` back to "Backlog", hit the same-status no-op, and
-// snapped the card back. Pointer-based detection targets whatever sits under
-// the cursor, which is unambiguous regardless of element width; fall back to
-// rectIntersection for the rare pointer frame where the cursor is over a gap.
-// Keyboard dragging has no pointer coordinates, so it uses closest-center.
-const boardCollisionDetection: CollisionDetection = (args) => {
-  if (!args.pointerCoordinates) return closestCenter(args);
-  const pointer = pointerWithin(args);
-  return pointer.length > 0 ? pointer : rectIntersection(args);
-};
-
-export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, columns, tasks, moveTaskAction, reorderTasksAction, deleteTaskAction, roleOptions = [], canManageTaskRoles = false, canOperatorOverride = false }: BoardProps) {
+export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, columns, tasks, deleteTaskAction }: BoardProps) {
   // Card colour context drives which identity cues a card shows:
   //   home  (aggregate landing) → workspace left border + project background
   //   workspace board           → project background only (no border)
@@ -300,16 +245,8 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
   const legacyPreferenceKey = boardStreamUrl === undefined ? projectSlug : null;
   const isMobileBoard = useIsMobileBoard();
   const [items, setItems] = useState<Task[]>(tasks);
-  const [activeId, setActiveId] = useState<string | null>(null);
   const [moveError, setMoveError] = useState<string | null>(null);
-  // A rejected drag an admin may force: re-submitted with the explicit
-  // operatorOverride flag only after the ConfirmPopup below is confirmed.
-  const [overridePrompt, setOverridePrompt] = useState<
-    { taskId: string; status: string; message: string } | null
-  >(null);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isPending, startTransition] = useTransition();
-  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Task | null>(null);
   const [now, setNow] = useState<number | null>(null);
   // Server-render and first client-render both start hidden so React
@@ -345,10 +282,6 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
   // stale optimistic state until the user reloads.
   useEffect(() => {
     setItems(tasks);
-    setSelectedIds((current) => {
-      const liveIds = new Set(tasks.map((task) => task.id));
-      return new Set([...current].filter((id) => liveIds.has(id)));
-    });
   }, [tasks]);
 
   // Live board updates: an SSE stream emits `board.touch` whenever a task
@@ -490,271 +423,11 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
     return () => window.clearInterval(interval);
   }, []);
 
-  const sensors = useSensors(
-    useSensor(PointerSensor, {
-      activationConstraint: isMobileBoard
-        ? { delay: 180, tolerance: 8 }
-        : { distance: 4 },
-    }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
-  );
-
-  function handleDragStart(e: DragStartEvent) {
-    setActiveId(String(e.active.id));
-  }
-
-  function handleDragEnd(e: DragEndEvent) {
-    setActiveId(null);
-    const taskId = String(e.active.id);
-    const overId = e.over?.id ? String(e.over.id) : null;
-    if (!overId || overId === taskId) return;
-
-    const task = items.find((t) => t.id === taskId);
-    if (!task) return;
-
-    // Drop target is a column (header / empty space) — cross-column move
-    // with append-to-end. The existing moveTask handler enforces workflow
-    // rules and computes rank.
-    if (columns.some((c) => c.id === overId)) {
-      if (task.status === overId) return;
-      crossColumnMove(task, overId);
-      return;
-    }
-
-    // Drop target is another card. If same status → reorder within
-    // column. If different status → move into that card's column
-    // (workflow check, append). Insert-at-position across columns is
-    // intentionally out of scope here — once moved, the user can
-    // reorder within the destination column.
-    const over = items.find((t) => t.id === overId);
-    if (!over) return;
-    if (task.status === over.status) {
-      // Done is intentionally newest-first rather than rank-sorted, so a
-      // same-lane reorder would persist a rank change that cannot be seen.
-      if (task.status === "Done") return;
-      reorderWithinColumn(task, over);
-    } else {
-      crossColumnMove(task, over.status);
-    }
-  }
-
-  function crossColumnMove(task: Task, newStatus: string, options?: MoveTaskOptions) {
-    const previousStatus = task.status;
-    const previousStatusChangedAt = task.statusChangedAt;
-    const previousRank = task.rank;
-    const destinationRank = items
-      .filter((item) => item.status === newStatus && item.id !== task.id)
-      .reduce((max, item) => Math.max(max, item.rank), -1) + 1;
-    setItems((prev) =>
-      prev.map((t) => (
-        t.id === task.id
-          ? { ...t, status: newStatus, rank: destinationRank, statusChangedAt: new Date().toISOString() }
-          : t
-      )),
-    );
-    setMoveError(null);
-    startTransition(async () => {
-      try {
-        const result = await moveTaskAction(task.id, newStatus, projectSlug, options);
-        if (result.ok) return;
-        setItems((prev) =>
-          prev.map((t) =>
-            t.id === task.id
-              ? { ...t, status: previousStatus, rank: previousRank, statusChangedAt: previousStatusChangedAt }
-              : t,
-          ),
-        );
-        // A workflow rejection an admin can force: offer the explicit
-        // operator-override confirm instead of the plain error banner.
-        // Never re-prompt when the override itself was rejected.
-        if (canOperatorOverride && !options?.operatorOverride && result.code !== "UNKNOWN_COLUMN") {
-          setOverridePrompt({ taskId: task.id, status: newStatus, message: result.message });
-          return;
-        }
-        setMoveError(result.message);
-      } catch (error) {
-        setItems((prev) =>
-          prev.map((t) =>
-            t.id === task.id
-              ? { ...t, status: previousStatus, rank: previousRank, statusChangedAt: previousStatusChangedAt }
-              : t,
-          ),
-        );
-        setMoveError(error instanceof Error ? error.message : "Task could not be moved.");
-      }
-    });
-  }
-
-  function performOperatorOverride() {
-    const prompt = overridePrompt;
-    setOverridePrompt(null);
-    if (!prompt) return;
-    const task = items.find((t) => t.id === prompt.taskId);
-    if (!task || task.status === prompt.status) return;
-    crossColumnMove(task, prompt.status, { operatorOverride: true });
-  }
-
-  const [lastCheckedId, setLastCheckedId] = useState<string | null>(null);
-
-  function toggleTaskSelection(taskId: string, selected: boolean, shiftKey?: boolean) {
-    const task = items.find((t) => t.id === taskId);
-    if (!task) return;
-
-    setSelectedIds((current) => {
-      const next = new Set(current);
-
-      if (shiftKey && lastCheckedId) {
-        const list = task.status === "Backlog"
-          ? visibleItems.filter((t) => t.status === "Backlog")
-          : visibleItems.filter((t) => t.status === task.status).sort((a, b) => a.rank - b.rank);
-
-        const lastIdx = list.findIndex((t) => t.id === lastCheckedId);
-        const currIdx = list.findIndex((t) => t.id === taskId);
-
-        if (lastIdx !== -1 && currIdx !== -1) {
-          const start = Math.min(lastIdx, currIdx);
-          const end = Math.max(lastIdx, currIdx);
-          for (let i = start; i <= end; i++) {
-            if (selected) {
-              next.add(list[i].id);
-            } else {
-              next.delete(list[i].id);
-            }
-          }
-        } else {
-          if (selected) next.add(taskId);
-          else next.delete(taskId);
-        }
-      } else {
-        if (selected) next.add(taskId);
-        else next.delete(taskId);
-      }
-
-      setLastCheckedId(taskId);
-      return next;
-    });
-  }
-
-  function bulkMoveSelected(bulkTarget: string) {
-    const movingTasks = items.filter((task) => selectedIds.has(task.id) && task.status !== bulkTarget);
-    if (movingTasks.length === 0) return;
-
-    const previousItems = items;
-    let nextRank = items
-      .filter((task) => task.status === bulkTarget && !selectedIds.has(task.id))
-      .reduce((max, task) => Math.max(max, task.rank), -1) + 1;
-    const optimisticRankById = new Map<string, number>();
-    for (const task of movingTasks) {
-      optimisticRankById.set(task.id, nextRank);
-      nextRank += 1;
-    }
-    setItems((prev) =>
-      prev.map((task) =>
-        optimisticRankById.has(task.id)
-          ? { ...task, status: bulkTarget, rank: optimisticRankById.get(task.id)!, statusChangedAt: new Date().toISOString() }
-          : task,
-      ),
-    );
-    setMoveError(null);
-    startTransition(async () => {
-      const succeededIds = new Set<string>();
-      const restoreUnmoved = () => {
-        const previousById = new Map(previousItems.map((task) => [task.id, task]));
-        setItems((current) => current.map((task) => (
-          succeededIds.has(task.id) ? task : previousById.get(task.id) ?? task
-        )));
-      };
-      try {
-        for (const task of movingTasks) {
-          const result = await moveTaskAction(task.id, bulkTarget, projectSlug);
-          if (!result.ok) {
-            restoreUnmoved();
-            setSelectedIds(new Set(movingTasks.filter((item) => !succeededIds.has(item.id)).map((item) => item.id)));
-            // Bulk moves intentionally never offer the operator override —
-            // forcing the state machine is a one-task-at-a-time decision.
-            setMoveError(result.message);
-            return;
-          }
-          succeededIds.add(task.id);
-        }
-        setSelectedIds(new Set());
-      } catch (error) {
-        restoreUnmoved();
-        setSelectedIds(new Set(movingTasks.filter((item) => !succeededIds.has(item.id)).map((item) => item.id)));
-        setMoveError(error instanceof Error ? error.message : "Selected tasks could not be moved.");
-      }
-    });
-  }
-
-  function applyBulkEdit(field: BulkTaskEditField, value: string | null) {
-    if (field === "status") {
-      if (value) bulkMoveSelected(value);
-      return;
-    }
-    const ids = Array.from(selectedIds);
-    if (ids.length === 0) return;
-    setMoveError(null);
-    startTransition(async () => {
-      try {
-        await bulkUpdateTaskRole(ids, projectSlug, field as BulkTaskRoleField, value);
-        setSelectedIds(new Set());
-        router.refresh();
-      } catch (error) {
-        setMoveError(error instanceof Error ? error.message : "Selected tasks could not be updated.");
-        router.refresh();
-      }
-    });
-  }
-
-  function bulkDeleteSelected() {
-    if (selectedIds.size === 0) return;
-    setConfirmDeleteOpen(true);
-  }
-
-  function performBulkDelete() {
-    const selectedTasks = items.filter((task) => selectedIds.has(task.id));
-    if (selectedTasks.length === 0) {
-      setConfirmDeleteOpen(false);
-      return;
-    }
-    const previousItems = items;
-    setItems((prev) => prev.filter((task) => !selectedIds.has(task.id)));
-    setMoveError(null);
-
-    startTransition(async () => {
-      const succeededIds = new Set<string>();
-      try {
-        const idsByProject = new Map<string, string[]>();
-        for (const task of selectedTasks) {
-          const slug = taskProjectSlug(task, projectSlug);
-          idsByProject.set(slug, [...(idsByProject.get(slug) ?? []), task.id]);
-        }
-        for (const [slug, ids] of idsByProject) {
-          await bulkBinTasks(ids, slug);
-          ids.forEach((id) => succeededIds.add(id));
-        }
-        setSelectedIds(new Set());
-        setConfirmDeleteOpen(false);
-      } catch (err) {
-        setItems(previousItems.filter((task) => !succeededIds.has(task.id)));
-        setSelectedIds((current) => new Set([...current].filter((id) => !succeededIds.has(id))));
-        setMoveError((err as Error).message);
-        setConfirmDeleteOpen(false);
-      }
-    });
-  }
-
   function performSingleDelete() {
     const target = deleteTarget;
     if (!target) return;
     const previousItems = items;
-    const wasSelected = selectedIds.has(target.id);
     setItems((current) => current.filter((task) => task.id !== target.id));
-    setSelectedIds((current) => {
-      const next = new Set(current);
-      next.delete(target.id);
-      return next;
-    });
     setDeleteTarget(null);
     setMoveError(null);
     startTransition(async () => {
@@ -765,69 +438,10 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
         await deleteTaskAction(formData);
       } catch (error) {
         setItems(previousItems);
-        if (wasSelected) {
-          setSelectedIds((current) => new Set(current).add(target.id));
-        }
         setMoveError(error instanceof Error ? error.message : "Task could not be moved to the bin.");
       }
     });
   }
-
-  function toggleSelectAllBacklog(checked: boolean) {
-    setSelectedIds((current) => {
-      const next = new Set(current);
-      backlogTasks.forEach((t) => {
-        if (checked) next.add(t.id);
-        else next.delete(t.id);
-      });
-      return next;
-    });
-  }
-
-  function toggleSelectAllColumn(columnId: string, checked: boolean) {
-    const colTasks = visibleItems.filter((t) => t.status === columnId);
-    setSelectedIds((current) => {
-      const next = new Set(current);
-      colTasks.forEach((t) => {
-        if (checked) next.add(t.id);
-        else next.delete(t.id);
-      });
-      return next;
-    });
-  }
-
-  function reorderWithinColumn(active: Task, over: Task) {
-    const colTasks = items
-      .filter((t) => t.status === active.status)
-      .sort((a, b) => a.rank - b.rank);
-    const oldIdx = colTasks.findIndex((t) => t.id === active.id);
-    const newIdx = colTasks.findIndex((t) => t.id === over.id);
-    if (oldIdx === -1 || newIdx === -1 || oldIdx === newIdx) return;
-    const reordered = arrayMove(colTasks, oldIdx, newIdx);
-    // Rewrite optimistic ranks 0..N within this column; other columns
-    // are untouched. Server-side reorderTasks does the same write.
-    const rankByTask = new Map(reordered.map((t, i) => [t.id, i]));
-    const previousRankByTask = new Map(colTasks.map((task) => [task.id, task.rank]));
-    setItems((prev) =>
-      prev.map((t) =>
-        rankByTask.has(t.id) ? { ...t, rank: rankByTask.get(t.id)! } : t,
-      ),
-    );
-    startTransition(async () => {
-      try {
-        await reorderTasksAction(reordered.map((t) => t.id));
-      } catch (error) {
-        setItems((current) => current.map((task) => (
-          previousRankByTask.has(task.id)
-            ? { ...task, rank: previousRankByTask.get(task.id)! }
-            : task
-        )));
-        setMoveError(error instanceof Error ? error.message : "Task order could not be saved.");
-      }
-    });
-  }
-
-  const active = items.find((t) => t.id === activeId);
 
   const normalizedQuery = searchQuery.trim().toLocaleLowerCase();
   const visibleItems = useMemo(
@@ -875,9 +489,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
   const filtersActive = Boolean(normalizedQuery || attentionOnly || !doneVisible);
 
   // Backlog is no longer a board column: it renders immediately before the
-  // four workflow columns as its own task grid
-  // (HOMELAB-41). Drag-and-drop still works across both because the move
-  // logic keys off task status / droppable id, not layout.
+  // four workflow columns as its own task grid (HOMELAB-41).
   const workflowColumns = useMemo(
     () => columns.filter((c) => c.id !== "Backlog"),
     [columns],
@@ -890,8 +502,6 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
     [visibleItems],
   );
   const backlogCount = backlogTasks.length;
-  const selectedCount = selectedIds.size;
-  const hiddenSelectedCount = selectedCount - visibleItems.filter((task) => selectedIds.has(task.id)).length;
 
   const columnLanes = useMemo(
     () =>
@@ -948,7 +558,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
 
   // Keep the desktop board surface inside the currently visible viewport. Its
   // starting position changes as the title/summary scroll away, the tabs
-  // become sticky, or transient filter/selection/focus rows appear. Measuring
+  // become sticky, or transient filter/focus rows appear. Measuring
   // that real position avoids a brittle fixed header-height subtraction while
   // writing the result to shared layout variables keeps scroll updates out of
   // React and aligns an open task pane to the same sticky floor.
@@ -964,7 +574,6 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
       : null;
     const toolbar = (controlsTarget?.closest("[data-board-toolbar]") ??
       boardLayout?.querySelector("[data-board-toolbar]")) as HTMLElement | null;
-    const selectionToolbar = boardLayout?.querySelector("[data-board-selection-toolbar]") as HTMLElement | null;
 
     const measure = () => {
       window.cancelAnimationFrame(frame);
@@ -976,23 +585,12 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
         const toolbarMargin = toolbar
           ? Number.parseFloat(window.getComputedStyle(toolbar).marginBottom) || 0
           : 0;
-        const selectionRect = selectionToolbar?.getBoundingClientRect();
-        const selectionStyles = selectionToolbar
-          ? window.getComputedStyle(selectionToolbar)
-          : null;
-        const obstructionStickyTop = selectionStyles
-          ? Number.parseFloat(selectionStyles.top) || 0
-          : 0;
-        const obstructionHeight = selectionRect?.height ?? 0;
-        const obstructionMargin = selectionStyles
-          ? Number.parseFloat(selectionStyles.marginBottom) || 0
-          : 0;
         const stickyTop = boardStickyTop({
           toolbarHeight: toolbarRect?.height ?? 0,
           toolbarMargin,
-          obstructionStickyTop,
-          obstructionHeight,
-          obstructionMargin,
+          obstructionStickyTop: 0,
+          obstructionHeight: 0,
+          obstructionMargin: 0,
         });
         const available = boardAvailableHeight({
           viewportHeight,
@@ -1000,10 +598,10 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
           toolbarHeight: toolbarRect?.height ?? 0,
           toolbarBottom: toolbarRect?.bottom ?? 0,
           toolbarMargin,
-          obstructionStickyTop,
-          obstructionHeight,
-          obstructionBottom: selectionRect?.bottom ?? 0,
-          obstructionMargin,
+          obstructionStickyTop: 0,
+          obstructionHeight: 0,
+          obstructionBottom: 0,
+          obstructionMargin: 0,
           bottomGap,
         });
         const nextHeight = `${available}px`;
@@ -1026,7 +624,6 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
       ? new ResizeObserver(measure)
       : null;
     if (toolbar && sizeObserver) sizeObserver.observe(toolbar);
-    if (selectionToolbar && sizeObserver) sizeObserver.observe(selectionToolbar);
     void document.fonts?.ready.then(() => {
       if (active) measure();
     });
@@ -1046,39 +643,15 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
     chromeSlotScope,
     filtersActive,
     focusActive,
-    hiddenSelectedCount,
     isMobileBoard,
     items,
     moveError,
     searchQuery,
-    selectedCount,
     workflowFocus,
   ]);
 
   return (
-    <DndContext
-      // Stable id keeps dnd-kit's generated aria ids deterministic across
-      // SSR and hydration. Without it, dnd-kit falls back to a module-global
-      // counter that drifts on the long-lived server (incrementing per
-      // request) while the client starts from zero, producing a hydration
-      // mismatch on the draggables' aria-describedby.
-      id={`board-${projectSlug}`}
-      sensors={sensors}
-      collisionDetection={boardCollisionDetection}
-      onDragStart={handleDragStart}
-      onDragEnd={handleDragEnd}
-      onDragCancel={() => setActiveId(null)}
-    >
-      <ConfirmPopup
-        open={confirmDeleteOpen}
-        title="Delete selected tasks"
-        description={`Move ${selectedIds.size} task${selectedIds.size === 1 ? "" : "s"} to the bin? They'll be permanently deleted after the bin TTL elapses.`}
-        confirmLabel="Move to bin"
-        danger
-        busy={isPending}
-        onConfirm={performBulkDelete}
-        onCancel={() => setConfirmDeleteOpen(false)}
-      />
+    <>
       <ConfirmPopup
         open={Boolean(deleteTarget)}
         title="Move task to bin"
@@ -1088,18 +661,6 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
         busy={isPending}
         onConfirm={performSingleDelete}
         onCancel={() => setDeleteTarget(null)}
-      />
-      <ConfirmPopup
-        open={Boolean(overridePrompt)}
-        title="Move blocked"
-        description={overridePrompt
-          ? `Move blocked: ${overridePrompt.message} Force as operator override? The forced move skips workflow gates and automation and is recorded in the workflow history.`
-          : ""}
-        confirmLabel="Force move"
-        danger
-        busy={isPending}
-        onConfirm={performOperatorOverride}
-        onCancel={() => setOverridePrompt(null)}
       />
       {chromeTargets.controls
         ? createPortal(
@@ -1194,44 +755,6 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
         </div>
       ) : null}
 
-      {selectedCount > 0 ? (
-        <div
-          data-board-selection-toolbar
-          className="sticky top-16 z-20 mb-4 flex flex-wrap items-center justify-between gap-3 rounded-panel border border-accent/30 bg-panel/95 px-4 py-3 text-body shadow-[var(--shadow-md)] backdrop-blur"
-        >
-          <span className="font-semibold text-text">
-            {selectedCount} selected
-            {hiddenSelectedCount > 0 ? (
-              <span className="ml-2 text-caption font-medium text-text-muted">({hiddenSelectedCount} hidden by filters)</span>
-            ) : null}
-          </span>
-          <div className="flex flex-wrap items-center gap-2">
-            <TaskBulkEditControls
-              statusOptions={columns.map((column) => ({ value: column.id, label: column.label }))}
-              roleOptions={roleOptions}
-              canManageRoles={canManageTaskRoles}
-              disabled={isPending}
-              onApply={applyBulkEdit}
-            />
-            <button
-              type="button"
-              onClick={bulkDeleteSelected}
-              disabled={isPending}
-              className="rounded-lg border border-crit bg-transparent px-control-x py-control-y text-caption font-semibold text-crit transition hover:bg-crit hover:text-on-crit disabled:cursor-wait disabled:opacity-50"
-            >
-              Delete selected
-            </button>
-            <button
-              type="button"
-              onClick={() => setSelectedIds(new Set())}
-              className="rounded-lg border border-line bg-panel px-control-x py-control-y text-caption font-semibold text-text-muted transition hover:border-accent hover:text-accent"
-            >
-              Clear
-            </button>
-          </div>
-        </div>
-      ) : null}
-
       {focusActive ? (
         <section className="mb-5 rounded-2xl border border-accent/20 bg-accent/[0.045] p-3 shadow-[var(--shadow-xs)]">
           <div className="mb-3 flex items-center justify-between gap-3 px-1">
@@ -1274,13 +797,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
       <div className="contents md:flex md:flex-col">
       {isMobileBoard ? (
         <div className="space-y-3 md:hidden">
-          <div className="rounded-card border border-line bg-panel-soft px-3 py-2 text-caption text-text-muted">
-            Drag with the grip to reorder. Swipe a card left for quick Move/Edit actions.
-          </div>
-          {mobileLanes.map(({ col, tasks: colTasks }) => {
-            const colTaskIds = colTasks.map((t) => t.id);
-            const allSelected = colTaskIds.length > 0 && colTaskIds.every((id) => selectedIds.has(id));
-            return (
+          {mobileLanes.map(({ col, tasks: colTasks }) => (
               <MobileStatusGroup
                 key={col.id}
                 id={col.id}
@@ -1289,31 +806,19 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
                 count={colTasks.length}
                 totalCount={boardStats.byStatus[col.id] ?? 0}
                 filtered={filtersActive}
-                allSelected={allSelected}
-                onSelectAll={(checked) => toggleSelectAllColumn(col.id, checked)}
               >
-                <SortableContext
-                  items={colTasks.map((t) => t.id)}
-                  strategy={verticalListSortingStrategy}
-                >
-                  {colTasks.map((t) => (
-                    <MobileTaskCard
-                      key={t.id}
-                      task={t}
-                      projectSlug={projectSlug}
-                      onDeleteRequest={() => setDeleteTarget(t)}
-                      now={now}
-                      selected={selectedIds.has(t.id)}
-                      onSelectionChange={toggleTaskSelection}
-                      onMove={(task, status) => crossColumnMove(task, status)}
-                      nextStatus={nextMobileStatus(t.status, columns)}
-                      cardScope={cardScope}
-                    />
-                  ))}
-                </SortableContext>
+                {colTasks.map((t) => (
+                  <MobileTaskCard
+                    key={t.id}
+                    task={t}
+                    projectSlug={projectSlug}
+                    onDeleteRequest={() => setDeleteTarget(t)}
+                    now={now}
+                    cardScope={cardScope}
+                  />
+                ))}
               </MobileStatusGroup>
-            );
-          })}
+          ))}
         </div>
       ) : (
         <div
@@ -1340,18 +845,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
               </div>
               <div className="overflow-x-auto">
                 <div className="sticky top-0 z-10 grid min-w-[68rem] grid-cols-[minmax(14rem,1fr)_10rem_10rem_10rem_7rem_6rem_6rem_2rem] items-center gap-3 border-b border-line bg-panel-soft px-3 py-2.5 text-caption font-semibold text-text-muted">
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={backlogCount > 0 && backlogTasks.every((task) => selectedIds.has(task.id))}
-                      onChange={(event) => toggleSelectAllBacklog(event.target.checked)}
-                      onClick={(event) => event.stopPropagation()}
-                      onPointerDown={(event) => event.stopPropagation()}
-                      className="h-6 w-6 accent-accent md:h-4 md:w-4"
-                      aria-label="Select all backlog tasks"
-                    />
-                    <span>Task</span>
-                  </div>
+                  <span>Task</span>
                   <span>Epic</span>
                   <span>Assignee</span>
                   <span>Reviewer</span>
@@ -1361,20 +855,16 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
                   <span className="sr-only">Actions</span>
                 </div>
                 <div className="max-h-[320px] overflow-y-auto">
-                  <SortableContext items={backlogTasks.map((task) => task.id)} strategy={verticalListSortingStrategy}>
-                    {backlogTasks.map((task) => (
-                      <BacklogRow
-                        key={task.id}
-                        task={task}
-                        projectSlug={projectSlug}
-                        onDeleteRequest={() => setDeleteTarget(task)}
-                        selected={selectedIds.has(task.id)}
-                        onSelectionChange={toggleTaskSelection}
-                        now={now}
-                        cardScope={cardScope}
-                      />
-                    ))}
-                  </SortableContext>
+                  {backlogTasks.map((task) => (
+                    <BacklogRow
+                      key={task.id}
+                      task={task}
+                      projectSlug={projectSlug}
+                      onDeleteRequest={() => setDeleteTarget(task)}
+                      now={now}
+                      cardScope={cardScope}
+                    />
+                  ))}
                 </div>
               </div>
             </section>
@@ -1388,11 +878,8 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
               data-board-columns
               className={`grid gap-3 4xl:h-full 4xl:min-h-0 ${focusActive ? "min-w-[34rem] grid-cols-2" : doneVisible ? "min-w-[68rem] grid-cols-4" : "min-w-[51rem] grid-cols-3"}`}
             >
-              {visibleColumnLanes.map(({ col, tasks: colTasks }) => {
-                const colTaskIds = colTasks.map((t) => t.id);
-                const allSelected = colTaskIds.length > 0 && colTaskIds.every((id) => selectedIds.has(id));
-                return (
-                  <ColumnDroppable
+              {visibleColumnLanes.map(({ col, tasks: colTasks }) => (
+                  <BoardColumn
                     key={col.id}
                     id={col.id}
                     label={col.label}
@@ -1400,29 +887,19 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
                     count={colTasks.length}
                     totalCount={boardStats.byStatus[col.id] ?? 0}
                     filtered={filtersActive}
-                    allSelected={allSelected}
-                    onSelectAll={(checked) => toggleSelectAllColumn(col.id, checked)}
                   >
-                    <SortableContext
-                      items={colTasks.map((t) => t.id)}
-                      strategy={verticalListSortingStrategy}
-                    >
-                      {colTasks.map((t) => (
-                        <TaskCard
-                          key={t.id}
-                          task={t}
-                          projectSlug={projectSlug}
-                          onDeleteRequest={() => setDeleteTarget(t)}
-                          now={now}
-                          selected={selectedIds.has(t.id)}
-                          onSelectionChange={toggleTaskSelection}
-                          cardScope={cardScope}
-                        />
-                      ))}
-                    </SortableContext>
-                  </ColumnDroppable>
-                );
-              })}
+                    {colTasks.map((t) => (
+                      <TaskCard
+                        key={t.id}
+                        task={t}
+                        projectSlug={projectSlug}
+                        onDeleteRequest={() => setDeleteTarget(t)}
+                        now={now}
+                        cardScope={cardScope}
+                      />
+                    ))}
+                  </BoardColumn>
+              ))}
             </div>
           </div>
         </div>
@@ -1449,24 +926,13 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
               Collapse backlog
             </button>
           </div>
-          <BacklogDroppable>
+          <section className="board-lane relative overflow-hidden rounded-2xl border border-line bg-panel">
             {backlogTasks.length === 0 ? (
               <BoardEmptyState title={filtersActive ? "No backlog tasks match" : "Backlog is empty"} detail={filtersActive ? "Try clearing a filter or changing your search." : "New tasks will appear here until they are approved."} />
             ) : (
               <div className="overflow-x-auto">
                 <div className="sticky top-0 z-10 grid min-w-[68rem] grid-cols-[minmax(14rem,1fr)_10rem_10rem_10rem_7rem_6rem_6rem_2rem] items-center gap-3 border-b border-line bg-panel-soft px-3 py-2.5 text-caption font-semibold text-text-muted">
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={backlogCount > 0 && backlogTasks.every((task) => selectedIds.has(task.id))}
-                      onChange={(event) => toggleSelectAllBacklog(event.target.checked)}
-                      onClick={(event) => event.stopPropagation()}
-                      onPointerDown={(event) => event.stopPropagation()}
-                      className="h-6 w-6 accent-accent md:h-4 md:w-4"
-                      aria-label="Select all backlog tasks"
-                    />
-                    <span>Task</span>
-                  </div>
+                  <span>Task</span>
                   <span>Epic</span>
                   <span>Assignee</span>
                   <span>Reviewer</span>
@@ -1476,36 +942,25 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
                   <span className="sr-only">Actions</span>
                 </div>
                 <div className="max-h-[780px] overflow-y-auto">
-                  <SortableContext items={backlogTasks.map((task) => task.id)} strategy={verticalListSortingStrategy}>
-                    {backlogTasks.map((task) => (
-                      <BacklogRow
-                        key={task.id}
-                        task={task}
-                        projectSlug={projectSlug}
-                        onDeleteRequest={() => setDeleteTarget(task)}
-                        selected={selectedIds.has(task.id)}
-                        onSelectionChange={toggleTaskSelection}
-                        now={now}
-                        cardScope={cardScope}
-                      />
-                    ))}
-                  </SortableContext>
+                  {backlogTasks.map((task) => (
+                    <BacklogRow
+                      key={task.id}
+                      task={task}
+                      projectSlug={projectSlug}
+                      onDeleteRequest={() => setDeleteTarget(task)}
+                      now={now}
+                      cardScope={cardScope}
+                    />
+                  ))}
                 </div>
               </div>
             )}
-          </BacklogDroppable>
+          </section>
         </section>
       ) : null}
       </div>
 
-      <DragOverlay>
-        {active ? (
-          <div className="rounded border border-accent bg-panel-soft px-3 py-2 text-body shadow-lg cursor-grabbing">
-            {active.title}
-          </div>
-        ) : null}
-      </DragOverlay>
-    </DndContext>
+    </>
   );
 }
 
@@ -1843,16 +1298,6 @@ function BacklogIcon() {
   );
 }
 
-function DragHandleIcon() {
-  return (
-    <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-      <circle cx="9" cy="6" r="1.4" /><circle cx="15" cy="6" r="1.4" />
-      <circle cx="9" cy="12" r="1.4" /><circle cx="15" cy="12" r="1.4" />
-      <circle cx="9" cy="18" r="1.4" /><circle cx="15" cy="18" r="1.4" />
-    </svg>
-  );
-}
-
 function useIsMobileBoard() {
   const [isMobile, setIsMobile] = useState(false);
   useEffect(() => {
@@ -1865,13 +1310,6 @@ function useIsMobileBoard() {
   return isMobile;
 }
 
-function nextMobileStatus(status: string, columns: ReadonlyArray<Column>) {
-  const visible = columns.filter((column) => column.id !== "Backlog");
-  const index = visible.findIndex((column) => column.id === status);
-  const next = visible[index + 1] ?? visible[0] ?? columns[0];
-  return next?.id ?? status;
-}
-
 function MobileStatusGroup({
   id,
   label,
@@ -1879,8 +1317,6 @@ function MobileStatusGroup({
   count,
   totalCount,
   filtered,
-  allSelected,
-  onSelectAll,
   children,
 }: {
   id: string;
@@ -1889,30 +1325,16 @@ function MobileStatusGroup({
   count: number;
   totalCount: number;
   filtered: boolean;
-  allSelected: boolean;
-  onSelectAll: (checked: boolean) => void;
   children: React.ReactNode;
 }) {
-  const { isOver, setNodeRef } = useDroppable({ id });
   return (
     <details
-      ref={setNodeRef}
       open
-      data-over={isOver ? "true" : "false"}
       style={{ "--board-status": boardStatusColor(id) } as React.CSSProperties}
       className="board-lane relative overflow-hidden rounded-xl border pt-1 transition-[background-color,border-color,box-shadow]"
     >
       <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-3 [&::-webkit-details-marker]:hidden">
         <div className="flex min-w-0 items-center gap-2">
-          <input
-            type="checkbox"
-            checked={allSelected}
-            onChange={(event) => onSelectAll(event.target.checked)}
-            onClick={(event) => event.stopPropagation()}
-            onPointerDown={(event) => event.stopPropagation()}
-            className="h-6 w-6 shrink-0 accent-accent md:h-4 md:w-4"
-            aria-label={`Select all in ${label}`}
-          />
           <span
             style={{ "--board-status": boardStatusColor(id) } as React.CSSProperties}
             className="board-status-pill rounded-md border px-2 py-1 text-caption font-semibold"
@@ -1932,7 +1354,7 @@ function MobileStatusGroup({
         {count === 0 ? (
           <BoardEmptyState
             title={filtered && totalCount > 0 ? `${totalCount} ${totalCount === 1 ? "card" : "cards"} hidden` : filtered ? "No matching tasks" : "No tasks here"}
-            detail={filtered ? "Change or reset the board filters to see more." : "Drop a task into this lane."}
+            detail={filtered ? "Change or reset the board filters to see more." : "Tasks in this status will appear here."}
             compact
           />
         ) : null}
@@ -1946,92 +1368,45 @@ function MobileTaskCard({
   projectSlug,
   onDeleteRequest,
   now,
-  selected,
-  onSelectionChange,
-  onMove,
-  nextStatus,
   cardScope,
 }: {
   task: Task;
   projectSlug: string;
   onDeleteRequest: () => void;
   now: number | null;
-  selected: boolean;
-  onSelectionChange: (taskId: string, selected: boolean, shiftKey?: boolean) => void;
-  onMove: (task: Task, status: string) => void;
-  nextStatus: string;
   cardScope: CardScope;
 }) {
-  const router = useRouter();
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id: task.id });
-  const nextLabel = nextStatus === task.status ? "Move" : `Move → ${nextStatus}`;
-
   return (
     <div
-      ref={setNodeRef}
       style={{
-        transform: CSS.Transform.toString(transform),
-        transition,
         "--board-status": boardStatusColor(task.status),
       } as React.CSSProperties}
-      className={`scrollbar-none overflow-x-auto rounded-lg ${isDragging ? "opacity-30" : ""}`}
+      className="rounded-lg"
     >
-      <div className="flex min-w-[calc(100%+9rem)] items-stretch">
-        <div
-          data-board-card-mobile
-          data-selected={selected ? "true" : "false"}
-          className={`${taskCardClass(task, false, false, cardScope)} min-w-[calc(100%-9rem)] touch-auto`}
-          style={taskCardStyle(task, cardScope)}
-          title={waitingOnHumanReview(task) ? HUMAN_REVIEW_LABEL : undefined}
-        >
-          <BoardCardBody
-            task={task}
-            projectSlug={projectSlug}
-            now={now}
-            selected={selected}
-            onSelectionChange={onSelectionChange}
-            onDeleteRequest={onDeleteRequest}
-            dragAttributes={attributes}
-            dragListeners={listeners}
-          />
-        </div>
-        <div className="ml-2 flex w-36 shrink-0 flex-col gap-2 py-1 pr-1">
-          <button
-            type="button"
-            onClick={() => onMove(task, nextStatus)}
-            className="min-h-11 flex-1 rounded-lg bg-accent px-2 text-caption font-semibold text-bg shadow-sm"
-          >
-            {nextLabel}
-          </button>
-          <button
-            type="button"
-            onClick={() => router.push(taskHref(task, projectSlug))}
-            className="min-h-11 flex-1 rounded-lg border border-line bg-panel px-2 text-caption font-semibold text-text"
-          >
-            Edit
-          </button>
-        </div>
+      <div
+        data-board-card-mobile
+        className={taskCardClass(task, false, false, cardScope)}
+        style={taskCardStyle(task, cardScope)}
+        title={waitingOnHumanReview(task) ? HUMAN_REVIEW_LABEL : undefined}
+      >
+        <BoardCardBody
+          task={task}
+          projectSlug={projectSlug}
+          now={now}
+          onDeleteRequest={onDeleteRequest}
+        />
       </div>
     </div>
   );
 }
 
-function ColumnDroppable({
+function BoardColumn({
   id,
   label,
   description,
   count,
   totalCount,
   filtered,
-  allSelected = false,
-  onSelectAll,
   children,
 }: {
   id: string;
@@ -2040,32 +1415,16 @@ function ColumnDroppable({
   count: number;
   totalCount: number;
   filtered: boolean;
-  allSelected?: boolean;
-  onSelectAll?: (checked: boolean) => void;
   children: React.ReactNode;
 }) {
-  const { isOver, setNodeRef } = useDroppable({ id });
   return (
     <div
-      ref={setNodeRef}
       data-board-lane
-      data-over={isOver ? "true" : "false"}
       style={{ "--board-status": boardStatusColor(id) } as React.CSSProperties}
       className="board-lane relative flex min-h-[30rem] flex-col rounded-xl border p-2 pt-3 transition-[background-color,border-color,box-shadow] 4xl:h-full 4xl:min-h-0 4xl:overflow-hidden"
     >
       <div className="mb-2 flex shrink-0 items-center justify-between gap-2 rounded-lg bg-panel/75 px-2 py-2 shadow-[var(--shadow-xs)] backdrop-blur">
         <div className="flex min-w-0 items-center gap-2">
-          {onSelectAll && (
-            <input
-              type="checkbox"
-              checked={allSelected}
-              onChange={(e) => onSelectAll(e.target.checked)}
-              onClick={(e) => e.stopPropagation()}
-              onPointerDown={(e) => e.stopPropagation()}
-              className="h-4 w-4 shrink-0 accent-accent"
-              aria-label={`Select all in ${label}`}
-            />
-          )}
           <span
             style={{ "--board-status": boardStatusColor(id) } as React.CSSProperties}
             className="board-status-pill w-fit rounded-md border px-2 py-1 text-caption font-semibold"
@@ -2090,7 +1449,7 @@ function ColumnDroppable({
         {count === 0 ? (
           <BoardEmptyState
             title={filtered && totalCount > 0 ? `${totalCount} ${totalCount === 1 ? "card" : "cards"} hidden` : filtered ? "No matching tasks" : "No tasks here"}
-            detail={filtered ? "Change or reset the board filters to see more." : "Drop a task into this lane."}
+            detail={filtered ? "Change or reset the board filters to see more." : "Tasks in this status will appear here."}
             compact
           />
         ) : null}
@@ -2118,20 +1477,12 @@ function BoardCardBody({
   task,
   projectSlug,
   now,
-  selected,
-  onSelectionChange,
   onDeleteRequest,
-  dragAttributes,
-  dragListeners,
 }: {
   task: Task;
   projectSlug: string;
   now: number | null;
-  selected: boolean;
-  onSelectionChange: (taskId: string, selected: boolean, shiftKey?: boolean) => void;
   onDeleteRequest: () => void;
-  dragAttributes: React.HTMLAttributes<HTMLButtonElement>;
-  dragListeners: Record<string, unknown> | undefined;
 }) {
   const actor = boardActorForTask(task);
   const presence = useAgentPresenceMap();
@@ -2151,14 +1502,6 @@ function BoardCardBody({
   // also carries the workspace slug) and on a project board (no scope at all)
   // the epic keeps its own row.
   const epicInline = Boolean(scopeProjectSlug && !workspaceSlug);
-  // Selection and dragging are card affordances, not always-on chrome: on a
-  // pointer device they fade in with the card (like the bin button), while
-  // touch screens — which have no hover — always show them. A selected card
-  // keeps its box visible so the selection stays legible.
-  const hoverOnly = selected
-    ? "opacity-100"
-    : "opacity-100 md:opacity-0 md:group-hover/card:opacity-100 md:focus-visible:opacity-100";
-
   // The epic rides along on the scope line when there is one (a workspace
   // board reads "project · epic" on a single row) and only claims its own row
   // on a project board, where no scope line is rendered at all.
@@ -2184,18 +1527,7 @@ function BoardCardBody({
       <HumanReviewSrLabel task={task} />
       <div data-board-card-grid className="grid grid-cols-[2.625rem_minmax(0,1fr)] gap-x-2.5">
         <div className="col-start-1 row-start-1 flex min-h-7 items-center justify-center">
-          <input
-            type="checkbox"
-            checked={selected}
-            onClick={(event) => {
-              event.stopPropagation();
-              onSelectionChange(task.id, !selected, event.shiftKey);
-            }}
-            onChange={() => {}}
-            onPointerDown={(event) => event.stopPropagation()}
-            aria-label={`Select ${task.title}`}
-            className={`h-6 w-6 shrink-0 accent-accent transition-opacity md:h-4 md:w-4 ${hoverOnly}`}
-          />
+          <BoardReporterMarker task={task} />
         </div>
 
         <div className="col-start-2 row-start-1 flex min-h-7 min-w-0 items-center gap-1.5 overflow-hidden text-micro text-text-muted">
@@ -2219,17 +1551,6 @@ function BoardCardBody({
           {canShowTaskDeploymentIndicator(task) ? (
             <DeploymentIndicator status={task.deploymentStatus} />
           ) : null}
-          <button
-            type="button"
-            {...dragAttributes}
-            {...dragListeners}
-            onClick={(event) => event.stopPropagation()}
-            className={`ml-auto grid h-9 w-9 shrink-0 cursor-grab touch-none place-items-center rounded-md text-text-dim transition hover:bg-bg-elev hover:text-text active:cursor-grabbing md:h-7 md:w-7 ${hoverOnly}`}
-            aria-label={`Drag ${task.title}`}
-            title="Drag to reorder or move"
-          >
-            <DragHandleIcon />
-          </button>
         </div>
 
         {/* Both identities share the rail cell: the builder at full size with
@@ -2384,53 +1705,33 @@ function TaskCard({
   projectSlug,
   onDeleteRequest,
   now,
-  selected,
-  onSelectionChange,
   cardScope,
 }: {
   task: Task;
   projectSlug: string;
   onDeleteRequest: () => void;
   now: number | null;
-  selected: boolean;
-  onSelectionChange: (taskId: string, selected: boolean, shiftKey?: boolean) => void;
   cardScope: CardScope;
 }) {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id: task.id });
   return (
     <div
-      ref={setNodeRef}
       data-board-card
       // Scope tags let the sidebar dim non-matching cards on hover (landing
       // board only; harmless elsewhere).
       data-scope-ws={task.project?.workspace?.slug ?? undefined}
       data-scope-proj={taskProjectSlug(task, projectSlug)}
-      data-selected={selected ? "true" : "false"}
       style={{
-        transform: CSS.Transform.toString(transform),
-        transition,
         "--board-status": boardStatusColor(task.status),
         ...taskCardStyle(task, cardScope),
       } as React.CSSProperties}
-      className={taskCardClass(task, isDragging, false, cardScope)}
+      className={taskCardClass(task, false, false, cardScope)}
       title={waitingOnHumanReview(task) ? HUMAN_REVIEW_LABEL : undefined}
     >
       <BoardCardBody
         task={task}
         projectSlug={projectSlug}
         now={now}
-        selected={selected}
-        onSelectionChange={onSelectionChange}
         onDeleteRequest={onDeleteRequest}
-        dragAttributes={attributes}
-        dragListeners={listeners}
       />
     </div>
   );
@@ -2516,89 +1817,32 @@ function WorkflowFocusCard({
   );
 }
 
-// Droppable wrapper for the Backlog grid. Shares the "Backlog" id with
-// the status column, so dragging a card onto this region routes through
-// the same crossColumnMove path (status → "Backlog").
-function BacklogDroppable({ children }: { children: React.ReactNode }) {
-  const { isOver, setNodeRef } = useDroppable({ id: "Backlog" });
-  return (
-    <div
-      ref={setNodeRef}
-      data-over={isOver ? "true" : "false"}
-      style={{ "--board-status": boardStatusColor("Backlog") } as React.CSSProperties}
-      className="board-lane relative overflow-hidden rounded-2xl border pt-1 transition-[background-color,border-color,box-shadow]"
-    >
-      {children}
-    </div>
-  );
-}
-
-// One backlog row in the table-style grid. The drag activator is the
-// handle only (not the whole row), so the open-detail link and text stay
-// clickable/selectable.
+// One backlog row in the table-style grid.
 function BacklogRow({
   task,
   projectSlug,
   onDeleteRequest,
-  selected,
-  onSelectionChange,
   now,
   cardScope,
 }: {
   task: Task;
   projectSlug: string;
   onDeleteRequest: () => void;
-  selected: boolean;
-  onSelectionChange: (taskId: string, selected: boolean, shiftKey?: boolean) => void;
   now: number | null;
   cardScope: CardScope;
 }) {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id: task.id });
   return (
     <div
-      ref={setNodeRef}
       style={{
-        transform: CSS.Transform.toString(transform),
-        transition,
         ...(cardScope === "home" && task.workspaceColor
           ? { borderLeftWidth: "3px", borderLeftColor: task.workspaceColor }
           : {}),
       }}
       className={`grid min-h-11 min-w-[68rem] grid-cols-[minmax(14rem,1fr)_10rem_10rem_10rem_7rem_6rem_6rem_2rem] items-center gap-3 border-b border-line px-3 py-2.5 text-body transition last:border-b-0 hover:bg-panel-soft ${
         isPlanningAssigned(task) ? "bg-yellow-300/[0.08]" : statusRowClass(task.status)
-      } ${selected ? "bg-accent-soft shadow-[inset_3px_0_0_var(--color-accent)]" : ""} ${isDragging ? "bg-panel-soft opacity-40" : ""}`}
+      }`}
     >
       <div className="flex min-w-0 items-center gap-2">
-        <input
-          type="checkbox"
-          checked={selected}
-          onClick={(event) => {
-            event.stopPropagation();
-            onSelectionChange(task.id, !selected, event.shiftKey);
-          }}
-          onChange={() => {}}
-          onPointerDown={(event) => event.stopPropagation()}
-          aria-label={`Select ${task.title}`}
-          className="h-6 w-6 shrink-0 accent-accent md:h-4 md:w-4"
-        />
-        <button
-          type="button"
-          {...attributes}
-          {...listeners}
-          onClick={(event) => event.stopPropagation()}
-          aria-label="Drag to reorder or move"
-          className="grid h-11 w-11 shrink-0 cursor-grab touch-none select-none place-items-center text-text-muted hover:text-text md:h-auto md:w-auto md:px-0.5"
-          title="Drag"
-        >
-          ⠿
-        </button>
         <BoardReporterMarker task={task} />
         {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
         <Link href={taskHref(task, projectSlug)} className="min-w-0 truncate rounded-sm font-medium text-text hover:text-accent hover:underline">

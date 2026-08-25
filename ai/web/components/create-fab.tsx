@@ -6,6 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 import AvatarCombobox, { type AvatarComboboxOption } from "@/components/avatar-combobox";
 import AsyncCombobox, { type AsyncOption } from "@/components/async-combobox";
 import PrivateToggle from "@/components/private-toggle";
+import ConfirmPopup from "@/components/confirm-popup";
 import { useToast } from "@/components/toast";
 import { useRouteContext } from "@/components/use-route-context";
 import type { CreateResult } from "@/lib/create/result";
@@ -14,6 +15,8 @@ import {
   createProjectFromFab,
   createTaskFromFab,
   createWorkspaceFromFab,
+  loadTaskCommentWorkflowActions,
+  performTaskCommentWorkflowAction,
   postCommentFromFab,
   uploadAttachmentFromFab,
 } from "@/lib/create/actions";
@@ -23,6 +26,7 @@ import {
   searchProjectAttachTargets,
   searchProjectEpics,
 } from "@/lib/create/pickers";
+import type { BrowserTaskWorkflowActions } from "@/lib/tasks/orchestrator/browser-review-adapter";
 
 export type CreateFabWorkspace = { id: string; slug: string; name: string };
 export type CreateFabProject = {
@@ -407,6 +411,7 @@ export default function CreateFab({
     if (!form) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
+        if (document.querySelector('[data-comment-workflow-confirm="open"]')) return;
         event.stopPropagation();
         attemptClose();
       }
@@ -642,6 +647,9 @@ function FabForm(props: {
   } = props;
 
   const formRef = useRef<HTMLFormElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [taskActions, setTaskActions] = useState<BrowserTaskWorkflowActions | null>(null);
+  const [workflowAction, setWorkflowAction] = useState<"cancel" | "feedback" | "accept" | null>(null);
   const formId = `create-fab-${form}`;
   const actionFor: Record<FormKind, (fd: FormData) => Promise<CreateResult>> = {
     workspace: createWorkspaceFromFab,
@@ -662,15 +670,77 @@ function FabForm(props: {
   const needsTarget = form === "comment";
   const targetMissing = needsTarget && !attachTarget.taskId && !attachTarget.epicId;
 
+  useEffect(() => {
+    let cancelled = false;
+    setTaskActions(null);
+    setWorkflowAction(null);
+    if (form !== "comment" || !attachTarget.taskId) return;
+    void loadTaskCommentWorkflowActions(attachTarget.taskId)
+      .then((actions) => {
+        if (!cancelled) setTaskActions(actions);
+      })
+      .catch(() => {
+        if (!cancelled) setTaskActions(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [attachTarget.taskId, form]);
+
+  const requestWorkflowAction = (action: "cancel" | "feedback" | "accept") => {
+    if (!formRef.current?.reportValidity()) return;
+    setWorkflowAction(action);
+  };
+
+  const cancelWorkflowConfirmation = () => {
+    setWorkflowAction(null);
+    window.requestAnimationFrame(() => textareaRef.current?.focus());
+  };
+
+  const confirmWorkflowAction = async () => {
+    const formEl = formRef.current;
+    const action = workflowAction;
+    if (!formEl || !action) return;
+    setWorkflowAction(null);
+    await submit(async (formData) => {
+      formData.set("workflowAction", action);
+      return performTaskCommentWorkflowAction(formData);
+    }, formEl);
+  };
+
+  const confirmation = workflowAction === "cancel"
+    ? {
+        title: "Suspend work?",
+        description: "This will stop the active workflow, preserve the assignee and worktree, and move the task to Backlog.",
+        label: "Yes, suspend work",
+        danger: true,
+      }
+    : workflowAction === "feedback"
+      ? {
+          title: "Return for changes?",
+          description: "Your comment will become reviewer feedback and the task will move to To Do for another implementation pass.",
+          label: "Yes, return to To Do",
+          danger: false,
+        }
+      : workflowAction === "accept"
+        ? {
+            title: "Accept this review?",
+            description: "Your comment will record the decision and repository finalization will begin. The task reaches Done only after finalization succeeds.",
+            label: "Yes, accept review",
+            danger: false,
+          }
+        : null;
+
   return (
-    <form
-      id={formId}
-      ref={formRef}
-      onSubmit={onSubmit}
-      onInput={onDirty}
-      onChange={onDirty}
-      className="space-y-3"
-    >
+    <>
+      <form
+        id={formId}
+        ref={formRef}
+        onSubmit={onSubmit}
+        onInput={onDirty}
+        onChange={onDirty}
+        className="space-y-3"
+      >
       {/* --- Context cascade --------------------------------------------- */}
       {showWorkspace ? (
         <Field label={form === "project" ? "Workspace" : "Workspace (context)"}>
@@ -925,6 +995,7 @@ function FabForm(props: {
       {form === "comment" ? (
         <Field label="Comment">
           <textarea
+            ref={textareaRef}
             name="body"
             form={formId}
             rows={5}
@@ -936,16 +1007,60 @@ function FabForm(props: {
         </Field>
       ) : null}
 
-      <div className="flex justify-end gap-2 pt-1">
-        <button
-          type="submit"
-          disabled={submitting || (needsProject && !projectSlug) || targetMissing}
-          className="rounded-lg bg-accent px-control-x py-control-y text-body font-medium text-bg transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45"
-        >
-          {submitting ? "Saving…" : form === "comment" ? "Post comment" : "Create"}
-        </button>
+        <div className="flex flex-nowrap justify-end gap-2 overflow-x-auto pt-1">
+          <button
+            type="submit"
+            disabled={submitting || (needsProject && !projectSlug) || targetMissing}
+            className="shrink-0 rounded-lg bg-accent px-3 py-control-y text-caption font-semibold text-bg transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            {submitting ? "Saving…" : form === "comment" ? "Just Comment" : "Create"}
+          </button>
+          {form === "comment" && taskActions?.canCancel ? (
+            <button
+              type="button"
+              disabled={submitting}
+              onClick={() => requestWorkflowAction("cancel")}
+              className="shrink-0 rounded-lg border border-warn/50 px-3 py-control-y text-caption font-semibold text-warn transition hover:bg-warn/10 disabled:opacity-45"
+            >
+              Suspend Work
+            </button>
+          ) : null}
+          {form === "comment" && taskActions?.canRequestChanges ? (
+            <button
+              type="button"
+              disabled={submitting}
+              onClick={() => requestWorkflowAction("feedback")}
+              className="shrink-0 rounded-lg border border-line-strong px-3 py-control-y text-caption font-semibold text-text transition hover:border-accent hover:text-accent disabled:opacity-45"
+            >
+              {"Isn't Ready Yet"}
+            </button>
+          ) : null}
+          {form === "comment" && taskActions?.canAccept ? (
+            <button
+              type="button"
+              disabled={submitting}
+              onClick={() => requestWorkflowAction("accept")}
+              className="shrink-0 rounded-lg border border-ok/50 px-3 py-control-y text-caption font-semibold text-ok transition hover:bg-ok/10 disabled:opacity-45"
+            >
+              Task is Complete
+            </button>
+          ) : null}
+        </div>
+      </form>
+      <div data-comment-workflow-confirm={confirmation ? "open" : undefined} className="contents">
+        <ConfirmPopup
+          open={Boolean(confirmation)}
+          title={confirmation?.title ?? "Confirm task action"}
+          description={confirmation?.description}
+          confirmLabel={confirmation?.label}
+          cancelLabel="No, keep editing"
+          danger={confirmation?.danger}
+          busy={submitting}
+          onConfirm={() => void confirmWorkflowAction()}
+          onCancel={cancelWorkflowConfirmation}
+        />
       </div>
-    </form>
+    </>
   );
 }
 

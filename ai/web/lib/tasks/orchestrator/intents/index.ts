@@ -22,6 +22,7 @@ import { isProtectedBranch } from "@/lib/projects/protected-branches";
 import { effectiveEpicBranchName, effectiveTaskBranchName } from "@/lib/work-items/branches";
 import { enqueueWorkflowEffects } from "@/lib/tasks/transition-kernel";
 import { assignOpenEpicTasks } from "@/lib/epics/assignment";
+import type { Prisma } from "@prisma/client";
 
 async function executeRegisteredIntent<I extends TaskWorkflowIntent>(
   context: IntentExecutorContext<I>,
@@ -171,61 +172,109 @@ const submitForReviewExecutor: IntentExecutor<"submit_for_review"> = async (cont
   return context.helpers.executeDecisionWrites();
 };
 
+async function supersedeCycleMechanicalWork(
+  tx: Prisma.TransactionClient,
+  args: {
+    taskId: string;
+    workflowCycleId: string;
+    reason: string;
+    procedureTypes?: string[];
+    effectTypes?: string[];
+    invalidateReview?: boolean;
+    markRepositoryActionRequired?: boolean;
+  },
+) {
+  const now = new Date();
+  const runs = await tx.taskProcedureRun.findMany({
+    where: {
+      taskId: args.taskId,
+      workflowCycleId: args.workflowCycleId,
+      status: { in: ["queued", "running", "operational_error"] },
+      ...(args.procedureTypes ? { type: { in: args.procedureTypes } } : {}),
+    },
+    select: { id: true },
+  });
+  const runIds = runs.map((run) => run.id);
+  const output = JSON.stringify({ superseded: true, reason: args.reason });
+  if (runIds.length > 0) {
+    await tx.taskProcedureStep.updateMany({
+      where: {
+        procedureRunId: { in: runIds },
+        status: { in: ["pending", "running", "failed", "waiting_callback"] },
+      },
+      data: {
+        status: "superseded",
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        output,
+        lastError: args.reason,
+        completedAt: now,
+      },
+    });
+    await tx.taskProcedureRun.updateMany({
+      where: { id: { in: runIds } },
+      data: {
+        status: "superseded",
+        currentStep: null,
+        output,
+        lastError: args.reason,
+        completedAt: now,
+      },
+    });
+  }
+  await tx.workflowOutbox.updateMany({
+    where: {
+      taskId: args.taskId,
+      workflowCycleId: args.workflowCycleId,
+      status: { in: ["queued", "dispatching"] },
+      ...(args.effectTypes ? { effectType: { in: args.effectTypes } } : {}),
+    },
+    data: {
+      status: "completed",
+      leaseOwner: null,
+      leaseExpiresAt: null,
+      completedAt: now,
+      lastError: args.reason,
+    },
+  });
+  if (args.invalidateReview) {
+    await tx.reviewRun.updateMany({
+      where: {
+        taskId: args.taskId,
+        workflowCycleId: args.workflowCycleId,
+        status: { in: ["awaiting_review", "accepted"] },
+      },
+      data: {
+        status: "invalidated",
+        invalidatedAt: now,
+        invalidatedReason: args.reason,
+      },
+    });
+  }
+  if (args.markRepositoryActionRequired) {
+    await tx.taskRepositoryRun.updateMany({
+      where: { taskId: args.taskId, workflowCycleId: args.workflowCycleId },
+      data: {
+        phase: "action_required",
+        lastError: args.reason,
+        version: { increment: 1 },
+      },
+    });
+  }
+}
+
 const requestReviewChangesExecutor: IntentExecutor<"request_review_changes"> = async (context) => {
   if (
     context.state.activeReviewRun?.status === "accepted" &&
     context.state.activeWorkflowCycleId
   ) {
-    const now = new Date();
     const reason = "Superseded by a later human reviewer request for changes.";
-    const finalizationRuns = await context.tx.taskProcedureRun.findMany({
-      where: {
-        taskId: context.command.taskId,
-        workflowCycleId: context.state.activeWorkflowCycleId,
-        type: "finalize_accepted_review",
-        status: { in: ["queued", "running", "operational_error"] },
-      },
-      select: { id: true },
-    });
-    const finalizationRunIds = finalizationRuns.map((run) => run.id);
-    if (finalizationRunIds.length > 0) {
-      const output = JSON.stringify({
-        superseded: true,
-        reason: "review_changes_requested",
-      });
-      await context.tx.taskProcedureStep.updateMany({
-        where: {
-          procedureRunId: { in: finalizationRunIds },
-          status: { in: ["pending", "running", "failed", "waiting_callback"] },
-        },
-        data: {
-          status: "superseded",
-          leaseOwner: null,
-          leaseExpiresAt: null,
-          output,
-          lastError: reason,
-          completedAt: now,
-        },
-      });
-      await context.tx.taskProcedureRun.updateMany({
-        where: { id: { in: finalizationRunIds } },
-        data: {
-          status: "superseded",
-          currentStep: null,
-          output,
-          lastError: reason,
-          completedAt: now,
-        },
-      });
-    }
-    await context.tx.workflowOutbox.updateMany({
-      where: {
-        taskId: context.command.taskId,
-        workflowCycleId: context.state.activeWorkflowCycleId,
-        effectType: "review_finalize",
-        status: { in: ["queued", "dispatching"] },
-      },
-      data: { status: "completed", completedAt: now, lastError: reason },
+    await supersedeCycleMechanicalWork(context.tx, {
+      taskId: context.command.taskId,
+      workflowCycleId: context.state.activeWorkflowCycleId,
+      reason,
+      procedureTypes: ["finalize_accepted_review"],
+      effectTypes: ["review_finalize"],
     });
   }
   await createWorkflowComment(context, context.command.payload.reviewerComment);
@@ -261,8 +310,13 @@ const startImplementationExecutor: IntentExecutor<"start_implementation"> = asyn
 const checkpointExecutor: IntentExecutor<"checkpoint"> = (context) =>
   context.helpers.executeDecisionWrites();
 
-const acceptReviewExecutor: IntentExecutor<"accept_review"> = (context) =>
-  context.helpers.executeDecisionWrites();
+const acceptReviewExecutor: IntentExecutor<"accept_review"> = async (context) => {
+  const reviewerComment = typeof context.command.evidence?.reviewerComment === "string"
+    ? context.command.evidence.reviewerComment.trim()
+    : "";
+  if (reviewerComment) await createWorkflowComment(context, reviewerComment);
+  return context.helpers.executeDecisionWrites();
+};
 
 const worktreeRevalidationFailedExecutor: IntentExecutor<"worktree_revalidation_failed"> = (context) =>
   context.helpers.executeDecisionWrites();
@@ -552,51 +606,10 @@ const clearBlockerExecutor: IntentExecutor<"clear_blocker"> = async (context) =>
   return context.helpers.executeDecisionWrites();
 };
 
-const overrideStatusExecutor: IntentExecutor<"override_status"> = async (context) => {
-  // Human-authorized status override. The kernel transition (status,
-  // workflow version, receipt, activity) is committed by
-  // executeDecisionWrites below through the operator-override path.
-  // Because this executor runs inside the same Prisma transaction as that
-  // transition, the wait-for-human blocker created here commits atomically
-  // with the status move.
-  const targetStatus = context.command.payload.targetStatus;
-
-  // Every target other than Done raises a deterministic wait-for-human
-  // blocker so guardNoUnresolvedBlocker refuses later agent commands until
-  // an authorized human clear_blocker resolves it. Done creates no blocker.
-  if (targetStatus !== "Done") {
-    const comment = await createWorkflowComment(
-      context,
-      `Human status override: this task was moved to **${targetStatus}** by an authorized human. The assigned agent must **stop all further work** on this task and await explicit human instructions. Do not perform any agent workflow action (start, checkpoint, submit_for_review, raise/clear blockers, etc.) until an authorized human clears this blocker.`,
-      "blocker_notice",
-    );
-    await createDomainActivity(context, "task.blocker", {
-      commentId: comment.id,
-      permissionRequest: null,
-      blockerReport: {
-        blockedOn: "decision",
-        requestedActor: "human owner",
-        requestedAction: "Provide explicit instructions and clear the wait-for-human blocker with clear_blocker.",
-        evidence: `Human status override to ${targetStatus} recorded as an authoritative decision.`,
-        diagnosticsAttempted: [
-          "Confirmed this blocker was created by an authoritative human status override, not an agent-diagnosable technical failure.",
-        ],
-        resumeCondition: "An authorized human clears the wait-for-human blocker.",
-        reporterCanResolve: true,
-      },
-      override: {
-        kind: "wait_for_human",
-        targetStatus,
-        reason: context.command.payload.reason ?? null,
-      },
-    });
-    await context.tx.task.update({
-      where: { id: context.command.taskId },
-      data: { alertReporter: true },
-    });
-  }
-
-  // Commit the authoritative status transition with receipt/activity atomically.
+const overrideStatusExecutor: IntentExecutor<"override_status"> = (context) => {
+  // A successful human status decision is audited by the transition kernel,
+  // but it is not itself a blocker. Unsafe exits are rejected before this
+  // executor by the canonical lifecycle guards.
   return context.helpers.executeDecisionWrites();
 };
 
@@ -647,8 +660,20 @@ const epicChildUpdateExecutor: IntentExecutor<"epic_child_update"> = async (cont
   return context.helpers.executeDecisionWrites();
 };
 
-const cancelTaskExecutor: IntentExecutor<"cancel_task"> = (context) =>
-  context.helpers.executeDecisionWrites();
+const cancelTaskExecutor: IntentExecutor<"cancel_task"> = async (context) => {
+  const reason = context.command.payload.reason?.trim() || "Work suspended by an authorized human.";
+  if (context.state.activeWorkflowCycleId) {
+    await supersedeCycleMechanicalWork(context.tx, {
+      taskId: context.command.taskId,
+      workflowCycleId: context.state.activeWorkflowCycleId,
+      reason,
+      invalidateReview: true,
+      markRepositoryActionRequired: true,
+    });
+  }
+  await createWorkflowComment(context, reason);
+  return context.helpers.executeDecisionWrites();
+};
 
 const archiveTaskExecutor: IntentExecutor<"archive_task"> = async (context) => {
   await context.tx.task.update({

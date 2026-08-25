@@ -18,11 +18,18 @@ import {
   sendTaskWorkflowNotification,
 } from "@/lib/agents/workflow/notifications/task";
 import { extractMentions } from "@/lib/markdown";
-import { revalidateTaskReplyScope } from "@/lib/tasks/cache";
+import { revalidateTaskReplyScope, revalidateTaskShell } from "@/lib/tasks/cache";
 import { createWorkspace } from "@/lib/workspaces/service";
 import { uploadAttachment } from "@/lib/attachments/actions";
 import type { CreateResult } from "@/lib/create/result";
 import { newTaskWorkflowOwnership } from "@/lib/tasks/orchestrator/ownership";
+import {
+  getBrowserTaskWorkflowActions,
+  submitBrowserAcceptReview,
+  submitBrowserCancelTask,
+  submitBrowserReviewChanges,
+  type BrowserTaskWorkflowActions,
+} from "@/lib/tasks/orchestrator/browser-review-adapter";
 
 // Unified create-FAB server actions. Each reads a FormData, does the same auth +
 // validation + persistence the old per-page flows did, then RETURNS a
@@ -318,4 +325,90 @@ export async function postCommentFromFab(formData: FormData): Promise<CreateResu
   ]);
   revalidatePath(`/projects/${slug}/epics/${epicId}`);
   return { ok: true, message: `Comment added to "${epic.title}"`, href: `/projects/${slug}/epics/${epicId}` };
+}
+
+export async function loadTaskCommentWorkflowActions(taskId: string): Promise<BrowserTaskWorkflowActions> {
+  const actor = await requireViewer();
+  await requireTaskAccess(actor, taskId);
+  return getBrowserTaskWorkflowActions({ actor, taskId });
+}
+
+export async function performTaskCommentWorkflowAction(formData: FormData): Promise<CreateResult> {
+  try {
+    const actor = await requireViewer();
+    const taskId = String(formData.get("taskId") ?? "");
+    const projectSlug = String(formData.get("projectSlug") ?? "");
+    const body = String(formData.get("body") ?? "").trim();
+    const action = String(formData.get("workflowAction") ?? "");
+    if (!taskId || !projectSlug) return { ok: false, error: "Choose a task first." };
+    if (!body) return { ok: false, error: "Write a comment first." };
+    if (body.length > 8000) return { ok: false, error: "Comment must be 8000 characters or fewer." };
+    if (!["cancel", "feedback", "accept"].includes(action)) {
+      return { ok: false, error: "Choose a valid task action." };
+    }
+
+    await requireTaskAccess(actor, taskId);
+    const task = await db.task.findUnique({
+      where: { id: taskId },
+      select: { id: true, title: true, projectId: true, project: { select: { slug: true } } },
+    });
+    if (!task || task.project.slug !== projectSlug) return { ok: false, error: "Task not found." };
+    await requireProjectAccess(actor, { id: task.projectId });
+
+    const available = await getBrowserTaskWorkflowActions({ actor, taskId });
+    let result;
+    if (action === "cancel") {
+      if (!available.canCancel) return { ok: false, error: "This task can no longer be suspended." };
+      result = await submitBrowserCancelTask({
+        actor,
+        taskId,
+        expectedWorkflowVersion: available.workflowVersion,
+        workflowCycleId: available.workflowCycleId,
+        reason: body,
+      });
+    } else {
+      if (!available.workflowCycleId || !available.reviewRunId || !available.candidateSha) {
+        return { ok: false, error: "The active review changed. Refresh and try again." };
+      }
+      if (action === "feedback") {
+        if (!available.canRequestChanges) return { ok: false, error: "This review can no longer be returned for changes." };
+        result = await submitBrowserReviewChanges({
+          actor,
+          taskId,
+          expectedWorkflowVersion: available.workflowVersion,
+          workflowCycleId: available.workflowCycleId,
+          reviewRunId: available.reviewRunId,
+          candidateSha: available.candidateSha,
+          reviewerComment: body,
+        });
+      } else {
+        if (!available.canAccept) return { ok: false, error: "This review can no longer be accepted." };
+        result = await submitBrowserAcceptReview({
+          actor,
+          taskId,
+          expectedWorkflowVersion: available.workflowVersion,
+          workflowCycleId: available.workflowCycleId,
+          reviewRunId: available.reviewRunId,
+          candidateSha: available.candidateSha,
+          reviewerComment: body,
+        });
+      }
+    }
+    if (!result.ok) return { ok: false, error: result.message };
+
+    revalidateTaskShell(taskId);
+    revalidateTaskReplyScope(taskId, "comment");
+    revalidatePath(`/projects/${projectSlug}`);
+    return {
+      ok: true,
+      message: action === "cancel"
+        ? `Work suspended on "${task.title}"`
+        : action === "feedback"
+          ? `"${task.title}" returned to To Do`
+          : `Review accepted for "${task.title}"`,
+      href: `/projects/${projectSlug}/tasks/${taskId}`,
+    };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : "Task action could not be completed." };
+  }
 }
