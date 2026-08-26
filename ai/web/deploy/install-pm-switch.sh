@@ -65,6 +65,7 @@ MAINTENANCE_FILE="$SWITCH_DIR/.maintenance"
 id "$MON" >/dev/null 2>&1 || die "monitor user not found: $MON"
 getent group "$CODE_GROUP" >/dev/null || die "code group not found: $CODE_GROUP"
 command -v visudo >/dev/null || die "visudo not found"
+command -v runuser >/dev/null || die "runuser not found"
 [[ "$MON" =~ ^[a-zA-Z0-9_.-]+$ ]] || die "invalid monitor user: $MON"
 [[ "$CODE_GROUP" =~ ^[a-zA-Z0-9_.-]+$ ]] || die "invalid code group: $CODE_GROUP"
 if [[ -z "$MON_HOME" ]]; then
@@ -95,6 +96,16 @@ validate_path PM_PNPM_BIN "$PNPM_BIN"
 validate_path PM_SYSTEM_ENV_FILE "$SYSTEM_ENV_FILE"
 validate_path PM_ACTIVE_ENV_FILE "$ACTIVE_ENV_FILE"
 validate_path PM_DROP_DIR "$DROP_DIR"
+
+[[ -d "$REPO_ROOT" ]] || die "repository root does not exist: $REPO_ROOT"
+[[ -d "$WT_ROOT" ]] || die "worktree root does not exist: $WT_ROOT"
+if ! runuser -u "$MON" -- test -r "$REPO_ROOT" \
+  || ! runuser -u "$MON" -- test -x "$REPO_ROOT" \
+  || ! runuser -u "$MON" -- test -r "$WT_ROOT" \
+  || ! runuser -u "$MON" -- test -w "$WT_ROOT" \
+  || ! runuser -u "$MON" -- test -x "$WT_ROOT"; then
+  die "monitor user $MON cannot traverse the repository or write the worktree root; run code-tree-perms --tree $(dirname "$REPO_ROOT") --group $CODE_GROUP --monitor $MON, then retry"
+fi
 
 # Quiesce the browser runner before replacing any helper. The operation lock
 # lets an in-flight switch/removal finish; the marker keeps queued requests in

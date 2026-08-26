@@ -79,6 +79,7 @@ import {
 import TaskChecklist from "@/components/task-checklist";
 import { TaskExecutionStrip } from "@/components/task-execution-strip";
 import AttachmentList from "@/components/attachment-list";
+import AutoRefresh from "@/components/auto-refresh";
 import AutoScrollToLatest from "@/components/auto-scroll-to-latest";
 import FocusTaskComment from "@/components/focus-task-comment";
 import TaskCommentStreams from "@/components/task-comment-streams";
@@ -1817,6 +1818,10 @@ export default async function TaskDetailPage({
     <StickyViewportSurface kind="task-detail" contained={contained}>
     <TaskDirtyGuard>
     <div data-task-quick-add-context className="mx-auto w-full max-w-none">
+      {task.status === "Review" && (
+        taskWorkflowActions.reviewStatus === "accepted" ||
+        taskWorkflowActions.status !== task.status
+      ) ? <AutoRefresh intervalMs={2_000} /> : null}
       {/* ----- Main column ------------------------------------------- */}
       <div className="min-w-0">
         <section className={`space-y-section-gap border border-line bg-panel p-card-lg shadow-sm ${contained ? "rounded-b-panel rounded-t-none border-t-0" : "rounded-panel"}`}>

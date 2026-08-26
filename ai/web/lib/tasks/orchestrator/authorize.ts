@@ -120,6 +120,29 @@ function isPmPolicyCommand(
   return true;
 }
 
+function isBrowserHumanStartCommand(
+  state: Pick<TaskStateSnapshot, "id" | "projectId" | "workflowVersion" | "assigneeId"> & {
+    assignee?: { codingCapability?: boolean } | null;
+  },
+  command: {
+    source?: string;
+    expectedWorkflowVersion?: number;
+    evidence?: Record<string, unknown>;
+  },
+): boolean {
+  const evidence = command.evidence;
+  return Boolean(
+    command.source === "browser"
+    && evidence?.policy === "human_start_request"
+    && evidence.selectedTaskId === state.id
+    && evidence.selectedAssigneeId === state.assigneeId
+    && evidence.assigneeLane === `${state.projectId}:${state.assigneeId}`
+    && evidence.expectedWorkflowVersion === command.expectedWorkflowVersion
+    && command.expectedWorkflowVersion === state.workflowVersion
+    && state.assignee?.codingCapability === true
+  );
+}
+
 // Re-export the canonical resolvers so callers can reach them through the
 // orchestrator boundary without importing workflow-actors directly.
 export {
@@ -333,6 +356,21 @@ export function authorizeCommand(
     case "checkpoint":
     case "submit_for_review":
     case "start_implementation": {
+      if (
+        intent === "start_implementation"
+        && actor.kind === "human"
+        && isBrowserHumanStartCommand(state, command)
+      ) {
+        // Browser membership was authorized before aggregate loading. The
+        // human requests the transition, while the assigned coding agent
+        // remains the implementation executor dispatched by the procedure.
+        return {
+          allowed: true,
+          reason: "ok",
+          decisionActorId: actor.id,
+          executorActorId: null,
+        };
+      }
       if (
         intent === "start_implementation"
         && isPmPolicyCommand(state, command, ["auto_start"])

@@ -40,6 +40,10 @@ async function assertSourceContracts() {
   assert.match(taskDetail, /TaskHeaderWorkflowActions/);
   assert.doesNotMatch(taskDetail, /moveTaskStatus|applyTaskTransition\(|recordLegacyWorkflowBoundaryInvocation/);
 
+  const statusAdapter = await readFile("lib/tasks/orchestrator/browser-status-adapter.ts", "utf8");
+  assert.match(statusAdapter, /intent: "start_implementation"/, "browser start requests use the canonical start command");
+  assert.match(statusAdapter, /intent: "accept_review"/, "browser completion requests use immutable review acceptance");
+
   const createFab = await readFile("components/create-fab.tsx", "utf8");
   for (const label of ["Just Comment", "Suspend Work", "Isn't Ready Yet", "Task is Complete"]) {
     assert.match(createFab, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `comment composer exposes ${label}`);
@@ -71,8 +75,11 @@ async function main() {
     const human = await db.user.create({
       data: { username: "owner", email: "owner@example.test", kind: "human", isOwner: true },
     });
+    const agentProfile = await db.agent.create({
+      data: { slug: "browser-agent", name: "Browser Agent", role: "coding" },
+    });
     const agent = await db.user.create({
-      data: { username: "agent", email: "agent@example.test", kind: "agent" },
+      data: { username: "agent", email: "agent@example.test", kind: "agent", agentId: agentProfile.id },
     });
     const project = await db.project.create({
       data: { slug: "phasee-09-browser", name: "Phase E browser adapters" },
@@ -150,6 +157,87 @@ async function main() {
       await db.activityLog.count({ where: { taskId: overrideTask.id, kind: "task.blocker" } }),
       0,
       "human status updates never create wait-for-human blockers",
+    );
+
+    const repositoryProject = await db.project.create({
+      data: {
+        slug: "phasee-09-browser-repository",
+        name: "Phase E browser repository workflow",
+        repositoryPath: "/srv/Code/test-repository",
+      },
+    });
+    const repositoryStartTask = await db.task.create({
+      data: {
+        projectId: repositoryProject.id,
+        title: "Protected browser start",
+        status: "To Do",
+        workflowEngine: "orchestrator_v2",
+        workflowEnginePinnedAt: new Date(),
+        assigneeId: agent.id,
+        actingManagerId: human.id,
+        reporterId: human.id,
+        approvedOn: new Date(),
+        approvedById: human.id,
+      },
+    });
+    const repositoryPlan = await db.actionPlan.create({
+      data: {
+        taskId: repositoryStartTask.id,
+        summary: "Start through the protected browser edge",
+        version: 1,
+        status: "approved",
+        authorId: agent.id,
+        contentHash: "phasee-09-protected-start",
+        approvedOn: new Date(),
+        approvedById: human.id,
+      },
+    });
+    await db.actionPlanStep.create({
+      data: {
+        actionPlanId: repositoryPlan.id,
+        stepId: "protected-start",
+        title: "Revalidate the worktree before dispatch",
+        acceptanceCriteria: JSON.stringify(["The canonical start procedure is scheduled"]),
+        kind: "sequential",
+        rank: 0,
+      },
+    });
+
+    const protectedStart = await submitBrowserStatusOverride({
+      actor,
+      taskId: repositoryStartTask.id,
+      currentStatus: "To Do",
+      targetStatus: "In Progress",
+      expectedWorkflowVersion: 0,
+      activeWorkflowCycleId: null,
+      surface: "task-detail",
+    });
+    assert.equal(protectedStart.ok, true, "repository-backed browser start uses the canonical command");
+    const afterProtectedStart = await db.task.findUniqueOrThrow({ where: { id: repositoryStartTask.id } });
+    assert.equal(afterProtectedStart.status, "In Progress");
+    assert.ok(afterProtectedStart.activeWorkflowCycleId, "canonical browser start opens an implementation cycle");
+    assert.equal(
+      await db.taskProcedureRun.count({
+        where: { taskId: repositoryStartTask.id, type: "start_implementation_cycle" },
+      }),
+      1,
+      "canonical browser start schedules worktree revalidation before dispatch",
+    );
+
+    const bypassDone = await submitBrowserStatusOverride({
+      actor,
+      taskId: repositoryStartTask.id,
+      currentStatus: "In Progress",
+      targetStatus: "Done",
+      expectedWorkflowVersion: afterProtectedStart.workflowVersion,
+      activeWorkflowCycleId: afterProtectedStart.activeWorkflowCycleId,
+      surface: "task-detail",
+    });
+    assert.equal(bypassDone.ok, false, "repository work cannot bypass Review and finalization");
+    assert.match(bypassDone.ok ? "" : bypassDone.message, /only be completed from Review/);
+    assert.equal(
+      (await db.task.findUniqueOrThrow({ where: { id: repositoryStartTask.id } })).status,
+      "In Progress",
     );
 
     const planTask = await db.task.create({
@@ -270,6 +358,78 @@ async function main() {
     assert.equal(approvalReplay.ok, true);
     assert.equal(await db.taskProcedureRun.count({ where: { taskId: planTask.id, type: "prepare_todo_task" } }), 1);
 
+    const repositoryReviewTask = await db.task.create({
+      data: {
+        projectId: repositoryProject.id,
+        title: "Protected browser completion",
+        status: "Review",
+        workflowVersion: 1,
+        workflowEngine: "orchestrator_v2",
+        workflowEnginePinnedAt: new Date(),
+        assigneeId: agent.id,
+        actingManagerId: human.id,
+        reporterId: human.id,
+        approvedOn: new Date(),
+        approvedById: human.id,
+      },
+    });
+    await db.$transaction(async (tx) => {
+      await openTaskWorkflowCycle(tx, { taskId: repositoryReviewTask.id, openedWorkflowVersion: 1 });
+      const cycle = await tx.taskWorkflowCycle.findFirstOrThrow({
+        where: { taskId: repositoryReviewTask.id, status: "open" },
+      });
+      await tx.reviewRun.create({
+        data: {
+          taskId: repositoryReviewTask.id,
+          workflowCycleId: cycle.id,
+          candidateSha: "protected-review-candidate",
+          baseSha: "protected-review-base",
+          repoTouched: true,
+          validationOutcome: "valid",
+          status: "awaiting_review",
+        },
+      });
+      await tx.taskRepositoryRun.create({
+        data: {
+          taskId: repositoryReviewTask.id,
+          workflowCycleId: cycle.id,
+          repositoryPath: "/srv/Code/test-repository",
+          branchName: "protected-review",
+          worktreePath: "/srv/Code/test-repository.worktrees/protected-review",
+          baseSha: "protected-review-base",
+          candidateSha: "protected-review-candidate",
+          phase: "review_ready",
+          validationOutcome: "valid",
+          repoTouched: true,
+        },
+      });
+    });
+    const repositoryReviewState = await db.task.findUniqueOrThrow({
+      where: { id: repositoryReviewTask.id },
+    });
+    const protectedCompletion = await submitBrowserStatusOverride({
+      actor,
+      taskId: repositoryReviewTask.id,
+      currentStatus: "Review",
+      targetStatus: "Done",
+      expectedWorkflowVersion: repositoryReviewState.workflowVersion,
+      activeWorkflowCycleId: repositoryReviewState.activeWorkflowCycleId,
+      surface: "task-detail",
+    });
+    assert.equal(protectedCompletion.ok, true, "repository completion routes through accept_review");
+    assert.equal(
+      (await db.task.findUniqueOrThrow({ where: { id: repositoryReviewTask.id } })).status,
+      "Review",
+      "accepted repository work stays in Review until finalization and cleanup finish",
+    );
+    assert.equal(
+      await db.taskProcedureRun.count({
+        where: { taskId: repositoryReviewTask.id, type: "finalize_accepted_review", status: "queued" },
+      }),
+      1,
+      "browser completion schedules the canonical finalizer",
+    );
+
     const reviewTask = await db.task.create({
       data: {
         projectId: project.id,
@@ -321,6 +481,7 @@ async function main() {
     assert.equal(available.canCancel, true, "authorized reviewer can suspend work");
     assert.equal(available.canRequestChanges, true, "authorized reviewer can request another implementation pass");
     assert.equal(available.canAccept, true, "authorized reviewer can accept the immutable candidate");
+    assert.equal(available.reviewStatus, "awaiting_review", "the browser receives the live review lease state");
     assert.ok(available.reviewRunId && available.candidateSha && available.workflowCycleId);
 
     const accepted = await submitBrowserAcceptReview({
@@ -350,6 +511,7 @@ async function main() {
 
     const acceptedActions = await getBrowserTaskWorkflowActions({ actor, taskId: reviewTask.id });
     assert.equal(acceptedActions.canAccept, false, "an accepted lease cannot be accepted twice");
+    assert.equal(acceptedActions.reviewStatus, "accepted", "the task page can keep refreshing during finalization");
     assert.equal(acceptedActions.canRequestChanges, true, "the reviewer may still revoke stuck finalization");
     assert.equal(acceptedActions.canCancel, true, "the reviewer may suspend stuck finalization");
 

@@ -459,6 +459,25 @@ export function runGuards(
       // again inside the transaction. Leaving an implementation lifecycle is
       // allowed only when the open cycle is the sole stale residue; active
       // mechanical work must finish or be explicitly cancelled first.
+      // Repository-backed implementation and completion edges are never
+      // generic overrides: start_implementation owns worktree admission and
+      // accept_review owns finalization/cleanup before Done.
+      if (state.project.repositoryPath || state.repositoryRun) {
+        if (command.payload?.targetStatus === "In Progress") {
+          return {
+            ok: false,
+            status: "invalid",
+            reason: "[invalid_transition] Repository work must enter In Progress through start_implementation so its worktree is revalidated before dispatch.",
+          };
+        }
+        if (command.payload?.targetStatus === "Done") {
+          return {
+            ok: false,
+            status: "invalid",
+            reason: "[invalid_transition] Repository work must enter Done through accept_review so finalization and local cleanup complete first.",
+          };
+        }
+      }
       if (
         command.payload?.targetStatus === "Backlog" ||
         command.payload?.targetStatus === "To Do" ||

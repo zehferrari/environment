@@ -317,8 +317,8 @@ async function main(): Promise<void> {
     assert.equal(fresh.ok, true, "matching expected version should pass");
 
     // Deliberate bypass: override_status passes ordinary edge/plan/blocker/WIP
-    // preconditions. It may remain inside the active lifecycle while
-    // repository work runs, but it may not abandon that lifecycle to Done.
+    // preconditions for unprotected edges. Repository start and completion
+    // remain owned by start_implementation and accept_review respectively.
     const blockedState = makeState({
       status: "In Progress",
       approvedOn: null, // no approved plan
@@ -349,8 +349,16 @@ async function main(): Promise<void> {
       expectedWorkflowVersion: 7,
       payload: { targetStatus: "Done" },
     });
-    assert.equal(unsafeDone.ok, false, "override_status cannot abandon active repository work");
-    assert.ok((unsafeDone as any).reason.includes("repository lifecycle"), "rejection names the active lifecycle");
+    assert.equal(unsafeDone.ok, false, "override_status cannot bypass repository finalization");
+    assert.ok((unsafeDone as any).reason.includes("accept_review"), "rejection names the canonical completion path");
+
+    const unsafeStart = runGuards(makeState({ status: "To Do", activeWorkflowCycleId: null }) as any, {
+      intent: "override_status",
+      expectedWorkflowVersion: 7,
+      payload: { targetStatus: "In Progress" },
+    });
+    assert.equal(unsafeStart.ok, false, "override_status cannot bypass repository worktree admission");
+    assert.ok((unsafeStart as any).reason.includes("start_implementation"), "rejection names the canonical start path");
 
     // The version guard is still authoritative even under the bypass.
     const blockedStale = runGuards(blockedState as any, {
@@ -468,7 +476,7 @@ async function main(): Promise<void> {
     });
     assert.equal(backlogClear.ok, true, "Backlog override blocker is human-clearable without an agent cycle");
 
-    console.log("  Guards: version CAS enforced, edge/plan/blocker/WIP/repository deliberately bypassed ✓");
+    console.log("  Guards: version CAS enforced; repository start/completion retain canonical ownership ✓");
     console.log("  Guards: override blockers fully fence; ordinary/granted blocker paths retain parity ✓");
     passed += 13;
   } catch (e) {

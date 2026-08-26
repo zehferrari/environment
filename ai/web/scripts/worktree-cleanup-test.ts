@@ -140,7 +140,10 @@ function main() {
     mkdirSync(privateRuntime);
     writeFileSync(path.join(privateRuntime, "session.json"), "{}\n");
     chmodSync(privateRuntime, 0o000);
-    expectRejected(repo, worktreesRoot, "inaccessible-runtime", "permission denied while preflighting");
+    const inaccessibleResult = runCleanup(repo, worktreesRoot, "inaccessible-runtime");
+    assert.equal(inaccessibleResult.ok, false, "inaccessible-runtime should be rejected");
+    assert.match(inaccessibleResult.output, /permission denied while preflighting/);
+    assert.match(inaccessibleResult.output, /code-tree-perms/);
     assert.equal(
       existsSync(path.join(inaccessibleRuntime, ".git")),
       true,

@@ -68,6 +68,10 @@ and per-branch preview databases remain. Install with
 `sudo PM_MONITOR_USER=<monitor-user> ai/web/deploy/install-pm-switch.sh` (after
 `code-tree-perms` has made `/srv/Code` group-collaborative). Full design,
 mechanism, and caveats: [`MULTI_AGENT_WORKTREES.md`](./MULTI_AGENT_WORKTREES.md).
+The installer now verifies the monitor can traverse the repository and write the
+worktree root. If local removal reports a permission-denied preflight, do not
+bypass it or run Git removal as root: rerun `code-tree-perms` for `/srv/Code` so
+a stale named-user ACL cannot override the monitor's `code-agents` membership.
 The installer writes a root-owned, non-secret `/etc/default/pm-deploy` contract
 from its repository/worktree, code-group, database, pnpm, lock, spool, and env
 file options. That contract preserves custom paths across the monitor runner

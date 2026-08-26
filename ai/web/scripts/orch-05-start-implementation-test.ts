@@ -132,6 +132,18 @@ async function main() {
     await db.$transaction(async (tx) => {
       await tx.task.update({ where: { id: task.id }, data: { status: "To Do", activeWorkflowCycleId: null } });
       await tx.taskWorkflowCycle.update({ where: { id: cycles[0].id }, data: { status: "closed", outcome: "changes_requested", closedAt: new Date() } });
+      await tx.taskRepositoryRun.create({
+        data: {
+          taskId: task.id,
+          workflowCycleId: cycles[0].id,
+          candidateSha: "candidate-from-cycle-1",
+          reviewedSha: "candidate-from-cycle-1",
+          validationOutcome: "succeeded",
+          phase: "action_required",
+          repoTouched: true,
+          lastError: "Review feedback — worktree requires revalidation before next cycle.",
+        },
+      });
     });
     // Start again — opens cycle 2.
     const start3 = await submitWorkflowCommand({
@@ -145,6 +157,12 @@ async function main() {
     } as unknown as TaskWorkflowCommand);
     // The version might have moved from the first start; accept either accepted or stale.
     if (start3.status === "accepted") {
+      const resetRepository = await db.taskRepositoryRun.findUniqueOrThrow({ where: { taskId: task.id } });
+      assert.equal(resetRepository.candidateSha, null, "a new cycle cannot reuse the previous candidate");
+      assert.equal(resetRepository.reviewedSha, null, "a new cycle cannot reuse the previous review decision");
+      assert.equal(resetRepository.validationOutcome, null, "a new cycle requires fresh validation");
+      assert.equal(resetRepository.phase, "active", "the repository projection enters the active implementation phase");
+      assert.equal(resetRepository.lastError, null, "resolved review feedback does not remain as an active repository error");
       for (let i = 0; i < 10; i += 1) {
         const r = await runProcedureRunner({ limit: 5 });
         if (r.claimed === 0) break;

@@ -282,6 +282,22 @@ const requestReviewChangesExecutor: IntentExecutor<"request_review_changes"> = a
 };
 
 const startImplementationExecutor: IntentExecutor<"start_implementation"> = async (context) => {
+  // TaskRepositoryRun is the mutable projection for the active cycle. The
+  // immutable candidate/review evidence remains on the closed workflow cycle
+  // and ReviewRun, so never carry those pointers into a new implementation
+  // pass. Otherwise a resubmission with no client-provided SHA can validate
+  // the previous cycle's candidate while the verifier creates a newer commit.
+  await context.tx.taskRepositoryRun.updateMany({
+    where: { taskId: context.command.taskId },
+    data: {
+      candidateSha: null,
+      reviewedSha: null,
+      validationOutcome: null,
+      phase: "active",
+      lastError: null,
+      version: { increment: 1 },
+    },
+  });
   if (context.state.epicId && context.state.epic?.status === "To Do") {
     const promoted = await context.tx.epic.updateMany({
       where: { id: context.state.epicId, status: "To Do" },

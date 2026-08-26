@@ -52,7 +52,7 @@ async function main() {
     const human = await db.user.create({ data: { username: "zeh", email: "zeh@x.example", kind: "human" } });
     const agent = await db.user.create({ data: { username: "agent", email: "agent@x.example", kind: "agent" } });
     const project = await db.project.create({
-      data: { slug: "orch-override", name: "ORCH-Override", repositoryPath: "/srv/Code/test-repo" },
+      data: { slug: "orch-override", name: "ORCH-Override" },
     });
     const task = await db.task.create({
       data: {
