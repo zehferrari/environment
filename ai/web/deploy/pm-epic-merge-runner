@@ -24,6 +24,8 @@ deployment-watcher poll (lib/deploy/epic-merge.ts):
     acceptance reviewer;
   * kind "review-approval" — re-verify the immutable accepted candidate, move
     the Epic to Done, and project its durable cleanup effect.
+  * kind "reset" — after the web tier has fenced and aborted every task run,
+    explicitly discard its local worktree/branch and purge execution history.
 
 For each job it finds the active PM web worktree by reading pm.service's
 WorkingDirectory and runs the TS executor (scripts/pm-epic-merge-job.ts)

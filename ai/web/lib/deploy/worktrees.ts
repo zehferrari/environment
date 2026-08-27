@@ -36,6 +36,7 @@ export type SwitchJobState = "idle" | "queued" | "building" | "working" | "done"
 export type SwitchJob = {
   id: string | null;
   state: SwitchJobState;
+  action?: string;
   target: string | null;
   message: string;
   startedAt: string | null;

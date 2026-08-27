@@ -1864,6 +1864,7 @@ export default async function TaskDetailPage({
                 <TaskHeaderWorkflowActions
                   taskId={task.id}
                   projectSlug={slug}
+                  canReset={taskWorkflowActions.canReset}
                   canCancel={taskWorkflowActions.canCancel}
                   canAccept={taskWorkflowActions.canAccept}
                 />

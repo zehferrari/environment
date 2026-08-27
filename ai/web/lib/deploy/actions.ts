@@ -129,6 +129,7 @@ function isSwitchJobInProgress(state: Awaited<ReturnType<typeof readSwitchState>
 export async function requestLocalWorktreeRemoval(
   projectSlug: string,
   target: string,
+  options: { discardChanges?: boolean; failedJobId?: string } = {},
 ): Promise<{ id: string }> {
   const owner = await requireOwner();
 
@@ -164,12 +165,23 @@ export async function requestLocalWorktreeRemoval(
   if (isLocalWorktreeProtected(worktree.branch, protectedBranches)) {
     throw new Error("This local branch is protected and cannot be removed.");
   }
+  if (options.discardChanges === true && (
+    !options.failedJobId
+    || state.job.id !== options.failedJobId
+    || state.job.state !== "error"
+    || state.job.action !== "remove"
+    || state.job.target !== worktree.name
+    || !/worktree has local changes/i.test(state.job.log)
+  )) {
+    throw new Error("Discarding local changes requires a matching failed safe-removal attempt.");
+  }
 
   const id = `${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
   await publishRequest(project.spoolDir, {
     id,
     action: "remove",
     target: worktree.name,
+    discardChanges: options.discardChanges === true,
     protectedBranches,
     requestedBy: owner.username,
     requestedAt: new Date().toISOString(),
@@ -179,7 +191,12 @@ export async function requestLocalWorktreeRemoval(
       projectId: projectRecord.id,
       userId: owner.id,
       kind: "project.worktree_remove_requested",
-      payload: JSON.stringify({ worktree: worktree.name, branch: worktree.branch, remote: false }),
+      payload: JSON.stringify({
+        worktree: worktree.name,
+        branch: worktree.branch,
+        discardChanges: options.discardChanges === true,
+        remote: false,
+      }),
     },
   }).catch(() => null);
   revalidatePath(`/projects/${projectSlug}/settings`);

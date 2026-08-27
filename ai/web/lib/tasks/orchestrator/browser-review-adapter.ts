@@ -18,6 +18,7 @@ export type BrowserTaskWorkflowActions = {
   reviewRunId: string | null;
   reviewStatus: string | null;
   candidateSha: string | null;
+  canReset: boolean;
   canCancel: boolean;
   canRequestChanges: boolean;
   canAccept: boolean;
@@ -57,6 +58,7 @@ export async function getBrowserTaskWorkflowActions(args: {
     reviewRunId: state.activeReviewRun?.id ?? null,
     reviewStatus: state.activeReviewRun?.status ?? null,
     candidateSha: state.activeReviewRun?.candidateSha ?? null,
+    canReset: args.actor.kind === "human" && args.actor.isOwner,
     canCancel: state.status !== "Backlog" && available("cancel_task"),
     canRequestChanges: available("request_review_changes"),
     canAccept: available("accept_review"),

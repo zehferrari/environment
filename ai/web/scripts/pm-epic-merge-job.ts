@@ -14,6 +14,8 @@
 //                    the whole-Epic reviewer.
 //   kind "review-approval" — re-verify the immutable candidate after reviewer
 //                    approval, move the Epic to Done, and enqueue cleanup.
+//   kind "reset"   — discard one explicitly confirmed task worktree/local
+//                    branch, then purge its workflow/execution state.
 //   kind "claim"   — provision and validate a task's linked worktree at the
 //                    In Progress boundary.
 //
@@ -43,7 +45,7 @@ async function main() {
   const job = JSON.parse(readFileSync(jobFile, "utf8")) as
     | EpicMergeJob
     | WorktreeClaimJob;
-  if (job.kind !== "merge" && job.kind !== "cleanup" && job.kind !== "finalize" && job.kind !== "checkpoint" && job.kind !== "review" && job.kind !== "review-approval" && job.kind !== "claim") {
+  if (job.kind !== "merge" && job.kind !== "cleanup" && job.kind !== "finalize" && job.kind !== "checkpoint" && job.kind !== "review" && job.kind !== "review-approval" && job.kind !== "reset" && job.kind !== "claim") {
     throw new Error(`Unknown repository job kind: ${(job as { kind?: string }).kind}`);
   }
 

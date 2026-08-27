@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync } from "node:fs";
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { db } from "@/lib/db";
@@ -41,6 +41,8 @@ import {
   enqueueWorkflowEffects,
 } from "@/lib/tasks/transition-kernel";
 import { drainWorkflowOutbox } from "@/lib/tasks/workflow-outbox-drain";
+import { purgeTaskHardResetState } from "@/lib/tasks/hard-reset";
+import { localWorktreeProtectedBranches } from "@/lib/deploy/local-worktree";
 
 // Auto-merge a Done Epic-child task's branch into the Epic integration branch.
 //
@@ -133,6 +135,19 @@ export type EpicMergeJob =
       requestedByUsername: string;
       expectedCandidateSha: string | null;
       enqueuedAt: string;
+    }
+  | {
+      kind: "reset";
+      jobId: string;
+      taskId: string;
+      projectId: string;
+      requestedByUserId: string;
+      requestedByUsername: string;
+      resetToken: string;
+      repositoryPath: string | null;
+      branchName: string | null;
+      stoppedAgents: string[];
+      enqueuedAt: string;
     };
 
 // One deterministic spool filename per subject so a 60s poll tick can never
@@ -142,9 +157,47 @@ function jobFileName(job: EpicMergeJob) {
   if (job.kind === "merge") return `merge-${job.taskId}.json`;
   if (job.kind === "finalize") return `finalize-${job.taskId}-${job.candidateSha.slice(0, 16)}.json`;
   if (job.kind === "checkpoint") return `checkpoint-${job.taskId}.json`;
+  if (job.kind === "reset") return `reset-${job.taskId}.json`;
   if (job.kind === "review") return `review-${job.epicId}.json`;
   if (job.kind === "review-approval") return `review-approval-${job.epicId}.json`;
   return `cleanup-${job.epicId}.json`;
+}
+
+export function taskHardResetJobState(taskId: string) {
+  const target = path.join(EPIC_MERGE_DIR, `reset-${taskId}.json`);
+  if (existsSync(`${target}.running`)) return "running" as const;
+  if (existsSync(target)) return "queued" as const;
+  if (existsSync(`${target}.failed`)) return "failed" as const;
+  return "absent" as const;
+}
+
+export async function enqueueTaskHardReset(args: {
+  taskId: string;
+  projectId: string;
+  requestedByUserId: string;
+  requestedByUsername: string;
+  resetToken: string;
+  repositoryPath: string | null;
+  branchName: string | null;
+  stoppedAgents: string[];
+}) {
+  const job: Extract<EpicMergeJob, { kind: "reset" }> = {
+    kind: "reset",
+    jobId: `reset-${args.taskId}-${args.resetToken}`,
+    taskId: args.taskId,
+    projectId: args.projectId,
+    requestedByUserId: args.requestedByUserId,
+    requestedByUsername: args.requestedByUsername,
+    resetToken: args.resetToken,
+    repositoryPath: args.repositoryPath,
+    branchName: args.branchName,
+    stoppedAgents: args.stoppedAgents,
+    enqueuedAt: new Date().toISOString(),
+  };
+  const target = path.join(EPIC_MERGE_DIR, jobFileName(job));
+  if (existsSync(`${target}.failed`)) await unlink(`${target}.failed`);
+  const spooledPath = await enqueueEpicMergeJob(job);
+  return { enqueued: Boolean(spooledPath), jobId: job.jobId };
 }
 
 async function enqueueEpicMergeJob(
@@ -638,6 +691,22 @@ async function runGitOk(repo: string, args: string[], opts: { timeout?: number }
     return true;
   } catch {
     return false;
+  }
+}
+
+async function activeRunnerBranchForRepository(repositoryPath: string): Promise<string | null> {
+  try {
+    const activeRoot = process.env.PM_APP_ROOT ?? process.cwd();
+    const [repositoryCommon, activeCommon] = await Promise.all([
+      runGit(repositoryPath, ["rev-parse", "--git-common-dir"]),
+      runGit(activeRoot, ["rev-parse", "--git-common-dir"]),
+    ]);
+    const resolvedRepositoryCommon = path.resolve(repositoryPath, repositoryCommon);
+    const resolvedActiveCommon = path.resolve(activeRoot, activeCommon);
+    if (resolvedRepositoryCommon !== resolvedActiveCommon) return null;
+    return (await runGit(activeRoot, ["symbolic-ref", "--quiet", "--short", "HEAD"])) || null;
+  } catch {
+    return null;
   }
 }
 
@@ -2167,10 +2236,121 @@ async function executeCleanupJob(job: Extract<EpicMergeJob, { kind: "cleanup" }>
   return { epicId: job.epicId, outcome: "done" as const, items };
 }
 
+async function executeHardResetJob(job: Extract<EpicMergeJob, { kind: "reset" }>) {
+  const task = await db.task.findUnique({
+    where: { id: job.taskId, deletedAt: null },
+    select: {
+      id: true,
+      projectId: true,
+      workItemKey: true,
+      branchName: true,
+      status: true,
+      assigneeId: true,
+      actingManagerId: true,
+      project: {
+        select: {
+          repositoryPath: true,
+          deploymentProductionBranch: true,
+          deploymentPrTargetBranch: true,
+          agentChangeBlockedBranches: true,
+        },
+      },
+      epic: { select: { workItemKey: true, branchName: true } },
+      repositoryRun: { select: { repositoryPath: true, branchName: true } },
+      activity: {
+        where: { kind: "task.reset.requested" },
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        select: { payload: true },
+      },
+    },
+  });
+  if (!task || task.projectId !== job.projectId) {
+    throw new Error("Task hard reset target no longer exists in the expected project.");
+  }
+  let requestedToken = "";
+  try {
+    requestedToken = String((JSON.parse(task.activity[0]?.payload ?? "{}") as { resetToken?: unknown }).resetToken ?? "");
+  } catch {
+    requestedToken = "";
+  }
+  if (requestedToken !== job.resetToken) {
+    throw new Error("Task hard reset request was superseded before repository cleanup.");
+  }
+  if (task.status !== "Backlog" || task.assigneeId || task.actingManagerId) {
+    throw new Error("Task hard reset lost its quiesced Backlog fence.");
+  }
+
+  const repositoryPath = task.repositoryRun?.repositoryPath ?? task.project.repositoryPath;
+  const branchName = task.repositoryRun?.branchName ?? effectiveTaskBranchName(task);
+  if (repositoryPath !== job.repositoryPath || branchName !== job.branchName) {
+    throw new Error("Task repository identity changed while hard reset was pending.");
+  }
+
+  if (repositoryPath && branchName) {
+    const peers = await db.task.findMany({
+      where: {
+        id: { not: task.id },
+        projectId: task.projectId,
+        deletedAt: null,
+        archivedAt: null,
+        status: { not: "Done" },
+      },
+      select: {
+        workItemKey: true,
+        branchName: true,
+        epic: { select: { workItemKey: true, branchName: true } },
+        repositoryRun: { select: { branchName: true } },
+      },
+    });
+    const shared = peers.some((peer) => (
+      (peer.repositoryRun?.branchName ?? effectiveTaskBranchName(peer)) === branchName
+    ));
+    if (shared) {
+      throw new Error(`Refused to discard shared task branch ${branchName}.`);
+    }
+    const protectedBranches = localWorktreeProtectedBranches(task.project);
+    const epicBranch = task.epic ? effectiveEpicBranchName(task.epic) : null;
+    if (epicBranch) protectedBranches.push(epicBranch);
+    const activeBranch = await activeRunnerBranchForRepository(repositoryPath);
+    if (activeBranch) protectedBranches.push(activeBranch);
+    try {
+      await exec(
+        "python3",
+        [
+          worktreeRemoveScript(),
+          "--discard-branch",
+          repositoryPath,
+          `${repositoryPath}.worktrees`,
+          branchName,
+          JSON.stringify(protectedBranches),
+        ],
+        { timeout: 60_000, maxBuffer: 1024 * 1024 },
+      );
+    } catch (err) {
+      const anyErr = err as { stderr?: string; stdout?: string; message?: string };
+      const detail = String(anyErr.stderr || anyErr.stdout || anyErr.message || err).trim().slice(0, 800);
+      throw new Error(`Task hard reset could not discard the local worktree/branch: ${detail}`);
+    }
+  }
+
+  const result = await purgeTaskHardResetState({
+    taskId: task.id,
+    resetToken: job.resetToken,
+    actorUserId: job.requestedByUserId,
+    stoppedAgents: job.stoppedAgents,
+    repositoryPath,
+    branchName,
+  });
+  publishBoardTouch(task.projectId);
+  return result;
+}
+
 export async function runEpicMergeSpoolJob(job: EpicMergeJob) {
   if (job.kind === "merge") return executeMergeJob(job);
   if (job.kind === "finalize") return executeFinalizeJob(job);
   if (job.kind === "checkpoint") return executeCheckpointJob(job);
+  if (job.kind === "reset") return executeHardResetJob(job);
   if (job.kind === "review") return executeCompletionReviewJob(job);
   if (job.kind === "review-approval") return executeCompletionReviewApprovalJob(job);
   return executeCleanupJob(job);

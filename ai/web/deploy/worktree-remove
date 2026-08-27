@@ -4,7 +4,10 @@
 This helper is run by the monitor-owned worktree runners and the
 pm-epic-merge-runner, never by the web process. It refuses dirty, live,
 protected, or unsafe worktrees, but an unmerged local branch may be discarded
-explicitly. It never contacts a remote; callers supply only a worktree name
+explicitly. The --discard-branch mode is reserved for a confirmed Task hard
+reset; --discard-worktree is used only after the owner confirms the UI's dirty
+worktree warning. Both may discard local changes. It never contacts a remote;
+callers supply only a worktree name
 from the runner inventory (default mode) or a local branch name (--branch
 mode, used by the Epic-Done cleanup for P6 local-only child branches — the
 caller verifies each branch is merged into the pushed Epic branch first).
@@ -146,10 +149,14 @@ def assert_tree_removable(worktree_path):
             )
 
 
-def remove_registered_worktree(repo, worktree_path):
+def remove_registered_worktree(repo, worktree_path, *, discard=False):
     assert_tree_removable(worktree_path)
     try:
-        git(repo, ["worktree", "remove", worktree_path])
+        args = ["worktree", "remove"]
+        if discard:
+            args.append("--force")
+        args.append(worktree_path)
+        git(repo, args)
     except RemovalError as exc:
         marker = os.path.join(worktree_path, ".git")
         if os.path.lexists(worktree_path) and not os.path.isfile(marker):
@@ -204,7 +211,7 @@ def active_served_root(driver, reference, app_subdir):
     raise RemovalError(f"unknown serve driver: {driver}")
 
 
-def remove_local_worktree(repo, worktrees_root, target, driver, served_reference, app_subdir, lock_path, protected_branches):
+def remove_local_worktree(repo, worktrees_root, target, driver, served_reference, app_subdir, lock_path, protected_branches, *, discard=False):
     repo_real = os.path.realpath(repo)
     root_real = os.path.realpath(worktrees_root)
     if not os.path.isdir(repo_real):
@@ -235,7 +242,8 @@ def remove_local_worktree(repo, worktrees_root, target, driver, served_reference
         if selected.get("locked"):
             raise RemovalError("worktree is locked")
 
-        clean_or_discard_generated_changes(selected_path)
+        if not discard:
+            clean_or_discard_generated_changes(selected_path)
 
         branch = branch_name(selected)
         if branch:
@@ -255,7 +263,7 @@ def remove_local_worktree(repo, worktrees_root, target, driver, served_reference
 
         if os.path.realpath(selected_path) != selected_path:
             raise RemovalError("worktree path changed while removal was pending")
-        remove_registered_worktree(repo_real, selected_path)
+        remove_registered_worktree(repo_real, selected_path, discard=discard)
         if branch:
             try:
                 # Removal is explicitly requested by the admin. Delete the
@@ -274,7 +282,7 @@ def remove_local_worktree(repo, worktrees_root, target, driver, served_reference
         os.close(lock_fd)
 
 
-def remove_local_branch(repo, worktrees_root, branch, protected_branches):
+def remove_local_branch(repo, worktrees_root, branch, protected_branches, *, discard=False):
     """Branch-first removal (Epic-Done cleanup): delete refs/heads/<branch>
     and, when one exists, the linked worktree checked out on it. Unlike the
     name-based mode there is no operation lock and no served-worktree driver —
@@ -286,6 +294,9 @@ def remove_local_branch(repo, worktrees_root, branch, protected_branches):
     root_real = os.path.realpath(worktrees_root)
     if not os.path.isdir(repo_real):
         raise RemovalError(f"repository does not exist: {repo}")
+    # A task may be reset before its first worktree claim. A missing managed
+    # root is safe only when Git reports no linked holder below; any holder is
+    # rejected by the descendant check just like an out-of-root worktree.
     if not branch or branch.startswith("-"):
         raise RemovalError("invalid branch name")
     if git(repo_real, ["check-ref-format", "--branch", branch], check=False).returncode:
@@ -313,8 +324,9 @@ def remove_local_branch(repo, worktrees_root, branch, protected_branches):
         if not os.path.isdir(holder_path):
             git(repo_real, ["worktree", "prune"])
             continue
-        clean_or_discard_generated_changes(holder_path)
-        remove_registered_worktree(repo_real, holder_path)
+        if not discard:
+            clean_or_discard_generated_changes(holder_path)
+        remove_registered_worktree(repo_real, holder_path, discard=discard)
         removed_worktree = holder_path
 
     if branch_exists:
@@ -345,13 +357,27 @@ def main(argv):
     if len(argv) == 6 and argv[1] == "--branch":
         print(remove_local_branch(argv[2], argv[3], argv[4], parse_protected_branches(argv[5])))
         return
+    if len(argv) == 6 and argv[1] == "--discard-branch":
+        print(remove_local_branch(
+            argv[2], argv[3], argv[4], parse_protected_branches(argv[5]), discard=True
+        ))
+        return
+    if len(argv) == 10 and argv[1] == "--discard-worktree":
+        protected_branches = parse_protected_branches(argv[9])
+        print(remove_local_worktree(
+            argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8],
+            protected_branches, discard=True
+        ))
+        return
     if len(argv) == 9:
         protected_branches = parse_protected_branches(argv[8])
         print(remove_local_worktree(argv[1], argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], protected_branches))
         return
     raise RemovalError(
         "usage: worktree-remove <repo> <worktrees-root> <worktree-name> <driver> <served-reference> <app-subdir> <lock-file> <protected-branches-json>\n"
-        "       worktree-remove --branch <repo> <worktrees-root> <branch> <protected-branches-json>"
+        "       worktree-remove --branch <repo> <worktrees-root> <branch> <protected-branches-json>\n"
+        "       worktree-remove --discard-branch <repo> <worktrees-root> <branch> <protected-branches-json>\n"
+        "       worktree-remove --discard-worktree <repo> <worktrees-root> <worktree-name> <driver> <served-reference> <app-subdir> <lock-file> <protected-branches-json>"
     )
 
 

@@ -649,7 +649,7 @@ function FabForm(props: {
   const formRef = useRef<HTMLFormElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [taskActions, setTaskActions] = useState<BrowserTaskWorkflowActions | null>(null);
-  const [workflowAction, setWorkflowAction] = useState<"cancel" | "feedback" | "accept" | null>(null);
+  const [workflowAction, setWorkflowAction] = useState<"reset" | "cancel" | "feedback" | "accept" | null>(null);
   const formId = `create-fab-${form}`;
   const actionFor: Record<FormKind, (fd: FormData) => Promise<CreateResult>> = {
     workspace: createWorkspaceFromFab,
@@ -687,8 +687,8 @@ function FabForm(props: {
     };
   }, [attachTarget.taskId, form]);
 
-  const requestWorkflowAction = (action: "cancel" | "feedback" | "accept") => {
-    if (!formRef.current?.reportValidity()) return;
+  const requestWorkflowAction = (action: "reset" | "cancel" | "feedback" | "accept") => {
+    if (action !== "reset" && !formRef.current?.reportValidity()) return;
     setWorkflowAction(action);
   };
 
@@ -708,14 +708,21 @@ function FabForm(props: {
     }, formEl);
   };
 
-  const confirmation = workflowAction === "cancel"
+  const confirmation = workflowAction === "reset"
     ? {
+        title: "Hard reset this task?",
+        description: "This cannot be undone. PM will stop every agent session, discard the local worktree and local task branch (including uncommitted changes), and permanently purge assignee, reviewer, plans, approvals, comments, checklist, workflow history, and agent activity. The task itself returns to a clean Backlog state.",
+        label: "Yes, hard reset task",
+        danger: true,
+      }
+    : workflowAction === "cancel"
+      ? {
         title: "Suspend work?",
         description: "This will stop the active workflow, preserve the assignee and worktree, and move the task to Backlog.",
         label: "Yes, suspend work",
         danger: true,
-      }
-    : workflowAction === "feedback"
+        }
+      : workflowAction === "feedback"
       ? {
           title: "Return for changes?",
           description: "Your comment will become reviewer feedback and the task will move to To Do for another implementation pass.",
@@ -1015,6 +1022,16 @@ function FabForm(props: {
           >
             {submitting ? "Saving…" : form === "comment" ? "Just Comment" : "Create"}
           </button>
+          {form === "comment" && taskActions?.canReset ? (
+            <button
+              type="button"
+              disabled={submitting}
+              onClick={() => requestWorkflowAction("reset")}
+              className="shrink-0 rounded-lg border border-crit/60 bg-crit/15 px-3 py-control-y text-caption font-semibold text-crit transition hover:bg-crit/25 disabled:opacity-45"
+            >
+              Reset Task
+            </button>
+          ) : null}
           {form === "comment" && taskActions?.canCancel ? (
             <button
               type="button"

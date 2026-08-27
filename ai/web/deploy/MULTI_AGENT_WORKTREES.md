@@ -270,7 +270,7 @@ Versioned under `ai/web/deploy/` (PM-specific) and `ai/openclaw/` (generic):
 | `ai/web/lib/deploy/{worktrees.ts,actions.ts,switch-registry.ts,repo-key.ts}` · `app/api/system/worktree-switch/status` · `components/worktree-switcher.tsx` | the browser UI + project registry |
 | `ai/web/deploy/worktree-switch.sh` | generic build-and-flip driver for registered non-PM projects |
 | `ai/web/deploy/worktree-switch-runner` · `systemd/worktree-switch-runner@.service` | generic per-project spool runner (`switch`/`on`/`off`/`remove`) |
-| `ai/web/deploy/worktree-remove` | monitor-run clean local worktree/branch cleanup helper (`--branch` mode serves the Epic-Done cleanup); never deletes remote refs |
+| `ai/web/deploy/worktree-remove` | monitor-run local worktree/branch cleanup helper; dirty state requires the UI's second explicit discard confirmation (`--branch` serves Epic-Done cleanup); never deletes remote refs |
 | `ai/web/deploy/pm-epic-merge-runner` · `systemd/pm-epic-merge-runner.service` | repo-push-user spool runner for Epic merges + Epic-Done cleanup (`/var/lib/pm/epic-merge`); installed by `install-pm-verify.sh` |
 | `ai/web/scripts/pm-epic-merge-job.ts` · `lib/deploy/epic-merge{,-git}.ts` | the claim/merge/checkpoint/whole-Epic candidate-review/cleanup executor + poll/enqueue/bookkeeping library |
 | `ai/web/deploy/worktree-preview-apply` · `worktree-docroot-apply` | **root** apply helpers for the `node-service` / `nginx-docroot` drivers |

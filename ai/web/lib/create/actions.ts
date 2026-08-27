@@ -30,6 +30,11 @@ import {
   submitBrowserReviewChanges,
   type BrowserTaskWorkflowActions,
 } from "@/lib/tasks/orchestrator/browser-review-adapter";
+import { quiesceTaskForHardReset } from "@/lib/tasks/hard-reset";
+import {
+  enqueueTaskHardReset,
+  taskHardResetJobState,
+} from "@/lib/deploy/epic-merge";
 
 // Unified create-FAB server actions. Each reads a FormData, does the same auth +
 // validation + persistence the old per-page flows did, then RETURNS a
@@ -341,9 +346,9 @@ export async function performTaskCommentWorkflowAction(formData: FormData): Prom
     const body = String(formData.get("body") ?? "").trim();
     const action = String(formData.get("workflowAction") ?? "");
     if (!taskId || !projectSlug) return { ok: false, error: "Choose a task first." };
-    if (!body) return { ok: false, error: "Write a comment first." };
+    if (action !== "reset" && !body) return { ok: false, error: "Write a comment first." };
     if (body.length > 8000) return { ok: false, error: "Comment must be 8000 characters or fewer." };
-    if (!["cancel", "feedback", "accept"].includes(action)) {
+    if (!["reset", "cancel", "feedback", "accept"].includes(action)) {
       return { ok: false, error: "Choose a valid task action." };
     }
 
@@ -354,6 +359,42 @@ export async function performTaskCommentWorkflowAction(formData: FormData): Prom
     });
     if (!task || task.project.slug !== projectSlug) return { ok: false, error: "Task not found." };
     await requireProjectAccess(actor, { id: task.projectId });
+
+    if (action === "reset") {
+      const owner = await requireOwner();
+      if (owner.id !== actor.id) return { ok: false, error: "Only the Mission Control owner can hard reset a task." };
+      const existing = taskHardResetJobState(taskId);
+      if (existing === "queued" || existing === "running") {
+        return {
+          ok: true,
+          message: `Hard reset is already ${existing} for "${task.title}".`,
+          href: `/projects/${projectSlug}/tasks/${taskId}`,
+        };
+      }
+      const prepared = await quiesceTaskForHardReset({
+        taskId,
+        actorUserId: actor.id,
+        actorUsername: actor.username,
+      });
+      if (!prepared.ok) return { ok: false, error: prepared.error };
+      const queued = await enqueueTaskHardReset({
+        ...prepared.preparation,
+        requestedByUserId: actor.id,
+        requestedByUsername: actor.username,
+      });
+      if (!queued.enqueued) {
+        return { ok: false, error: "The task was safely stopped, but its repository reset could not be queued. Retry Reset Task." };
+      }
+      revalidateTaskShell(taskId);
+      revalidateTaskReplyScope(taskId, "comment");
+      revalidatePath(`/projects/${projectSlug}/tasks/${taskId}`);
+      revalidatePath(`/projects/${projectSlug}`);
+      return {
+        ok: true,
+        message: `Hard reset started for "${task.title}". Agent work is stopped; local Git cleanup and database purge are queued.`,
+        href: `/projects/${projectSlug}/tasks/${taskId}`,
+      };
+    }
 
     const available = await getBrowserTaskWorkflowActions({ actor, taskId });
     let result;

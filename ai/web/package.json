@@ -94,6 +94,7 @@
     "test:claim-branch-base": "bash ../openclaw/tests/claim-branch-base-test.sh",
     "test:protected-branches": "tsx scripts/protected-branches-test.ts",
     "test:worktree-cleanup": "tsx scripts/worktree-cleanup-test.ts",
+    "test:task-hard-reset": "tsx scripts/task-hard-reset-test.ts",
     "test:repository-workflow": "tsx scripts/repository-workflow-test.ts",
     "test:workflow-action-effect": "tsx scripts/workflow-action-effect-test.ts",
     "test:workflow-transition-kernel": "tsx scripts/workflow-transition-kernel-test.ts",

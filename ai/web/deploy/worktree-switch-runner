@@ -228,18 +228,26 @@ def run_remove(req):
         protected = req.get("protectedBranches", [])
         if not isinstance(protected, list) or not all(isinstance(branch, str) for branch in protected):
             protected = []
+        discard_changes = req.get("discardChanges", False)
+        if not isinstance(discard_changes, bool):
+            return {"id": req["id"], "state": "error", "action": "remove", "target": target,
+                    "message": "Invalid local removal request.", "startedAt": started,
+                    "updatedAt": now(), "log": "discardChanges must be a boolean"}
+        command = [REMOVE_SCRIPT]
+        if discard_changes:
+            command.append("--discard-worktree")
+        command.extend([
+            REPO,
+            WT_ROOT,
+            target,
+            DRIVER,
+            SERVED_UNIT if DRIVER == "node-service" else CURRENT_SYMLINK,
+            APP_SUBDIR,
+            LOCK_FILE,
+            json.dumps(protected),
+        ])
         proc = subprocess.run(
-            [
-                REMOVE_SCRIPT,
-                REPO,
-                WT_ROOT,
-                target,
-                DRIVER,
-                SERVED_UNIT if DRIVER == "node-service" else CURRENT_SYMLINK,
-                APP_SUBDIR,
-                LOCK_FILE,
-                json.dumps(protected),
-            ],
+            command,
             capture_output=True,
             text=True,
         )

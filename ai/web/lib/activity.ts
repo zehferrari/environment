@@ -16,6 +16,8 @@ export type ActivityKind =
   | "task.assign"
   | "task.acting_manager"
   | "task.create"
+  | "task.reset.requested"
+  | "task.reset"
   | "task.update"
   | "task.epic"
   | "task.attachment.add"
@@ -277,6 +279,10 @@ export function describeActivity(row: ActivityRow): string {
       }
       return `${actor(row.actorName)} created task ${task(title)}`;
     }
+    case "task.reset.requested":
+      return `${actor(row.actorName)} requested a hard reset of ${task(row.taskTitle)}`;
+    case "task.reset":
+      return `${actor(row.actorName)} hard-reset ${task(row.taskTitle)}`;
     case "task.update":
       return `${actor(row.actorName)} updated ${task(row.taskTitle)}`;
     case "task.epic": {

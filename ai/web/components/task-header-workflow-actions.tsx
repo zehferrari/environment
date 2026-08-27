@@ -6,16 +6,18 @@ import ConfirmPopup from "@/components/confirm-popup";
 import { useToast } from "@/components/toast";
 import { performTaskCommentWorkflowAction } from "@/lib/create/actions";
 
-type HeaderAction = "cancel" | "accept";
+type HeaderAction = "reset" | "cancel" | "accept";
 
 export default function TaskHeaderWorkflowActions({
   taskId,
   projectSlug,
+  canReset,
   canCancel,
   canAccept,
 }: {
   taskId: string;
   projectSlug: string;
+  canReset: boolean;
   canCancel: boolean;
   canAccept: boolean;
 }) {
@@ -23,17 +25,25 @@ export default function TaskHeaderWorkflowActions({
   const toast = useToast();
   const [pending, startTransition] = useTransition();
   const [action, setAction] = useState<HeaderAction | null>(null);
-  if (!canCancel && !canAccept) return null;
+  if (!canReset && !canCancel && !canAccept) return null;
 
-  const confirmation = action === "cancel"
+  const confirmation = action === "reset"
     ? {
+        title: "Hard reset this task?",
+        description: "This cannot be undone. PM will stop every agent session, discard the local worktree and local task branch (including uncommitted changes), and permanently purge assignee, reviewer, plans, approvals, comments, checklist, workflow history, and agent activity. The task itself returns to a clean Backlog state.",
+        label: "Yes, hard reset task",
+        body: "",
+        danger: true,
+      }
+    : action === "cancel"
+      ? {
         title: "Suspend work?",
         description: "This will stop the active workflow, preserve the assignee and worktree, and move the task to Backlog.",
         label: "Yes, suspend work",
         body: "Work was suspended from the task header.",
         danger: true,
       }
-    : {
+      : {
         title: "Accept this review?",
         description: "Repository finalization will begin. The task reaches Done only after finalization succeeds.",
         label: "Yes, accept review",
@@ -63,6 +73,16 @@ export default function TaskHeaderWorkflowActions({
 
   return (
     <>
+      {canReset ? (
+        <button
+          type="button"
+          disabled={pending}
+          onClick={() => setAction("reset")}
+          className="h-9 shrink-0 rounded-lg border border-crit/60 bg-crit/15 px-3 text-caption font-semibold text-crit transition hover:bg-crit/25 disabled:opacity-45"
+        >
+          Reset Task
+        </button>
+      ) : null}
       {canCancel ? (
         <button
           type="button"

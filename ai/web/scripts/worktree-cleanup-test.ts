@@ -43,6 +43,65 @@ function runCleanup(repo: string, worktreesRoot: string, target: string, servedR
   }
 }
 
+function runDiscardBranch(repo: string, worktreesRoot: string, branch: string, protectedBranches: string[] = []) {
+  try {
+    return {
+      ok: true,
+      output: execFileSync("python3", [
+        helper,
+        "--discard-branch",
+        repo,
+        worktreesRoot,
+        branch,
+        JSON.stringify(protectedBranches),
+      ], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, GIT_TEST_ASSUME_DIFFERENT_OWNER: "1" },
+      }).trim(),
+    };
+  } catch (error) {
+    const failed = error as { stdout?: string | Buffer; stderr?: string | Buffer; status?: number };
+    const output = [failed.stdout, failed.stderr]
+      .map((value) => typeof value === "string" ? value : value?.toString("utf8") ?? "")
+      .join("")
+      .trim();
+    return { ok: false, output, status: failed.status };
+  }
+}
+
+function runDiscardWorktree(repo: string, worktreesRoot: string, target: string, servedRoot = "", protectedBranches: string[] = []) {
+  const lockFile = path.join(path.dirname(worktreesRoot), "worktree-operation.lock");
+  try {
+    return {
+      ok: true,
+      output: execFileSync("python3", [
+        helper,
+        "--discard-worktree",
+        repo,
+        worktreesRoot,
+        target,
+        servedRoot ? "path" : "none",
+        servedRoot,
+        "",
+        lockFile,
+        JSON.stringify(protectedBranches),
+      ], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, GIT_TEST_ASSUME_DIFFERENT_OWNER: "1" },
+      }).trim(),
+    };
+  } catch (error) {
+    const failed = error as { stdout?: string | Buffer; stderr?: string | Buffer; status?: number };
+    const output = [failed.stdout, failed.stderr]
+      .map((value) => typeof value === "string" ? value : value?.toString("utf8") ?? "")
+      .join("")
+      .trim();
+    return { ok: false, output, status: failed.status };
+  }
+}
+
 function expectRejected(repo: string, worktreesRoot: string, target: string, reason: string, servedRoot = "", protectedBranches: string[] = []) {
   const result = runCleanup(repo, worktreesRoot, target, servedRoot, protectedBranches);
   assert.equal(result.ok, false, `${target} should be rejected`);
@@ -110,12 +169,25 @@ function main() {
     const live = addWorktree(repo, worktreesRoot, "feature/live", "live");
     expectRejected(repo, worktreesRoot, "live", "currently served", live);
     assert.equal(existsSync(live), true, "served worktree must remain");
+    const forcedLive = runDiscardWorktree(repo, worktreesRoot, "live", live);
+    assert.equal(forcedLive.ok, false, "discard confirmation must not override the live-worktree guard");
+    assert.match(forcedLive.output, /currently served/);
 
     createBranch(repo, "feature/dirty", true);
     const dirty = addWorktree(repo, worktreesRoot, "feature/dirty", "dirty");
     writeFileSync(path.join(dirty, "uncommitted.txt"), "dirty\n");
     expectRejected(repo, worktreesRoot, "dirty", "local changes");
     assert.equal(existsSync(dirty), true, "dirty worktree must remain");
+
+    const discardedDirty = runDiscardWorktree(repo, worktreesRoot, "dirty");
+    assert.equal(discardedDirty.ok, true, discardedDirty.output);
+    assert.match(discardedDirty.output, /Remote branches were not changed/);
+    assert.equal(existsSync(dirty), false, "confirmed removal should discard a dirty linked worktree");
+    assert.equal(hasLocalBranch(repo, "feature/dirty"), false, "confirmed removal should delete its local branch");
+
+    const absentBeforeClaim = runDiscardBranch(repo, path.join(root, "never-created.worktrees"), "feature/not-claimed");
+    assert.equal(absentBeforeClaim.ok, true, absentBeforeClaim.output);
+    assert.match(absentBeforeClaim.output, /already absent/);
 
     git(repo, ["checkout", "-b", "feature/generated-version"]);
     mkdirSync(path.join(repo, "public"), { recursive: true });
@@ -224,15 +296,18 @@ function main() {
     const helperSource = readFileSync(helper, "utf8");
     assert.match(helperSource, /def assert_tree_removable\(worktree_path\):/);
     assert.match(helperSource, /os\.walk\([\s\S]*?onerror=inspection_error/);
-    assert.match(helperSource, /assert_tree_removable\(worktree_path\)[\s\S]*?\["worktree", "remove", worktree_path\]/);
+    assert.match(helperSource, /assert_tree_removable\(worktree_path\)[\s\S]*?args = \["worktree", "remove"\]/);
     assert.match(helperSource, /Git partially removed worktree metadata/);
-    assert.match(helperSource, /remove_registered_worktree\(repo_real, selected_path\)/);
-    assert.match(helperSource, /remove_registered_worktree\(repo_real, holder_path\)/);
+    assert.match(helperSource, /remove_registered_worktree\(repo_real, selected_path, discard=discard\)/);
+    assert.match(helperSource, /remove_registered_worktree\(repo_real, holder_path, discard=discard\)/);
     assert.match(helperSource, /\["branch", "-D", "--", branch\]/);
     assert.match(helperSource, /public\/version\.json/);
     assert.match(helperSource, /O_NOFOLLOW/);
     assert.match(helperSource, /safe\.directory=/);
-    assert.doesNotMatch(helperSource, /--force|\["push"/);
+    assert.match(helperSource, /argv\[1\] == "--discard-branch"/);
+    assert.match(helperSource, /argv\[1\] == "--discard-worktree"/);
+    assert.match(helperSource, /if discard:\s+args\.append\("--force"\)/);
+    assert.doesNotMatch(helperSource, /\["push"/);
 
     // Every monitor-owned Git path must use an exact, invocation-scoped
     // safe.directory override. Persistent or wildcard trust would weaken the
@@ -252,10 +327,18 @@ function main() {
     assert.match(actionSource, /requestLocalWorktreeRemoval[\s\S]*?const owner = await requireOwner\(\)/);
     assert.match(actionSource, /protectedBranches/);
     assert.match(actionSource, /REQUEST_LOCK_STALE_MS/);
+    assert.match(actionSource, /Discarding local changes requires a matching failed safe-removal attempt/);
+    assert.match(actionSource, /discardChanges: options\.discardChanges === true/);
+    const switcherSource = readFileSync(path.resolve(process.cwd(), "components/worktree-switcher.tsx"), "utf8");
+    assert.match(switcherSource, /worktree has local changes/i);
+    assert.match(switcherSource, /Discard local changes and remove\?/);
+    assert.match(switcherSource, /requestLocalWorktreeRemoval\(projectSlug, target\.name, \{ discardChanges, failedJobId \}\)/);
     for (const runner of ["deploy/pm-switch-runner", "deploy/worktree-switch-runner"]) {
       const source = readFileSync(path.resolve(process.cwd(), runner), "utf8");
       assert.match(source, /action == "remove"/);
       assert.match(source, /worktree-remove/);
+      assert.match(source, /discard_changes = req\.get\("discardChanges", False\)/);
+      assert.match(source, /command\.append\("--discard-worktree"\)/);
     }
 
     // A generic switcher upgraded from before local cleanup existed may have

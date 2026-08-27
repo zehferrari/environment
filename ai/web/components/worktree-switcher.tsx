@@ -43,6 +43,7 @@ export default function WorktreeSwitcher({
   const [state, setState] = useState<SwitchState>(initial);
   const [error, setError] = useState<string | null>(null);
   const [removeTarget, setRemoveTarget] = useState<SwitchWorktree | null>(null);
+  const [dismissedDirtyJobId, setDismissedDirtyJobId] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
 
   const job = state.job;
@@ -50,6 +51,13 @@ export default function WorktreeSwitcher({
   const worktrees = displayWorktreesForRepo(state.worktrees, repoKey);
   const protectedBranchNames = new Set(protectedBranches.map((branch) => branch.toLowerCase()));
   const busy = inProgress || pending;
+  const dirtyRemovalTarget = job.state === "error"
+    && job.action === "remove"
+    && Boolean(job.id)
+    && job.id !== dismissedDirtyJobId
+    && /worktree has local changes/i.test(job.log)
+    ? worktrees.find((worktree) => worktree.name === job.target) ?? null
+    : null;
 
   // Poll the runner-maintained state for THIS project. Tolerant of network
   // errors — the service restart at the end of a switch will drop a few polls,
@@ -113,14 +121,22 @@ export default function WorktreeSwitcher({
     });
   }
 
-  function removeLocalWorktree() {
-    if (!removeTarget) return;
-    const target = removeTarget;
+  function removeLocalWorktree(
+    target: SwitchWorktree | null,
+    discardChanges = false,
+    failedJobId?: string,
+  ) {
+    if (!target) return;
     setError(null);
     startTransition(async () => {
       try {
-        await requestLocalWorktreeRemoval(projectSlug, target.name);
-        optimisticJob(target.name, `Queued removal of local worktree ${target.name}…`);
+        await requestLocalWorktreeRemoval(projectSlug, target.name, { discardChanges, failedJobId });
+        optimisticJob(
+          target.name,
+          discardChanges
+            ? `Queued removal of dirty local worktree ${target.name}…`
+            : `Queued removal of local worktree ${target.name}…`,
+        );
         setRemoveTarget(null);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Failed to request local worktree removal");
@@ -260,15 +276,38 @@ export default function WorktreeSwitcher({
             This removes the local worktree <span className="font-mono text-text">{removeTarget.name}</span>
             {removeTarget.branch === "(detached)" ? ". It has no attached local branch." : (
               <> and local branch <span className="font-mono text-text">{removeTarget.branch}</span>.</>
-            )} It never deletes the remote branch. Removal is refused when the worktree has local changes
-            beyond generated build stamps, or when the target is protected or live; an unmerged local branch is discarded explicitly.
+            )} It never deletes the remote branch. A dirty worktree requires a second explicit discard confirmation.
+            Protected and live targets are always refused; an unmerged local branch is discarded explicitly.
           </>
         ) : undefined}
         confirmLabel="Remove local"
         danger
         busy={pending}
-        onConfirm={removeLocalWorktree}
+        onConfirm={() => removeLocalWorktree(removeTarget)}
         onCancel={() => setRemoveTarget(null)}
+      />
+      <ConfirmPopup
+        open={Boolean(dirtyRemovalTarget)}
+        title="Discard local changes and remove?"
+        description={dirtyRemovalTarget ? (
+          <>
+            The worktree <span className="font-mono text-text">{dirtyRemovalTarget.name}</span> contains local changes.
+            Confirming permanently discards those changes, removes the worktree
+            {dirtyRemovalTarget.branch === "(detached)" ? "." : (
+              <> and local branch <span className="font-mono text-text">{dirtyRemovalTarget.branch}</span>.</>
+            )} The remote branch is never deleted.
+          </>
+        ) : undefined}
+        confirmLabel="Discard changes and remove"
+        danger
+        busy={pending}
+        onConfirm={() => {
+          if (job.id) setDismissedDirtyJobId(job.id);
+          removeLocalWorktree(dirtyRemovalTarget, true, job.id ?? undefined);
+        }}
+        onCancel={() => {
+          if (job.id) setDismissedDirtyJobId(job.id);
+        }}
       />
     </div>
   );

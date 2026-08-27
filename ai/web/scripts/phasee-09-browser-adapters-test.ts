@@ -45,10 +45,14 @@ async function assertSourceContracts() {
   assert.match(statusAdapter, /intent: "accept_review"/, "browser completion requests use immutable review acceptance");
 
   const createFab = await readFile("components/create-fab.tsx", "utf8");
-  for (const label of ["Just Comment", "Suspend Work", "Isn't Ready Yet", "Task is Complete"]) {
+  for (const label of ["Just Comment", "Reset Task", "Suspend Work", "Isn't Ready Yet", "Task is Complete"]) {
     assert.match(createFab, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `comment composer exposes ${label}`);
   }
   assert.match(createFab, /ConfirmPopup/, "status-changing composer actions require confirmation");
+  assert.ok(
+    createFab.indexOf("Reset Task") < createFab.indexOf("Suspend Work"),
+    "hard reset appears immediately before suspend",
+  );
   assert.match(createFab, /textareaRef\.current\?\.focus/, "cancelled confirmation returns focus to the preserved draft");
 
   const board = await readFile("app/(app)/projects/[slug]/board-client.tsx", "utf8");
