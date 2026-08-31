@@ -1340,6 +1340,7 @@ export default async function TaskDetailPage({
 
   const viewer = await requireActor();
   if (!(await canAccessTask(viewer, taskId))) notFound();
+  const canSeeAgentContent = viewer.agentVisibility !== "hidden";
 
   const [taskShell, comments, attachments] = await Promise.all([
     getCachedTaskDetailShell(taskId, viewer),
@@ -1375,11 +1376,11 @@ export default async function TaskDetailPage({
     viewer.canAccessOwnerFeatures ? listAssignablePrincipals(viewer) : Promise.resolve([]),
     getCachedProjectEpics(task.project.id, viewer),
     db.user.findMany({ where: accessibleUserWhere(viewer), select: { username: true, kind: true } }),
-    viewer.canAccessOwnerFeatures ? getCachedRecentTaskChatMessages(task.id) : Promise.resolve([]),
-    viewer.canAccessOwnerFeatures ? getCachedTaskActivity(task.id) : Promise.resolve([]),
+    canSeeAgentContent ? getCachedRecentTaskChatMessages(task.id) : Promise.resolve([]),
+    canSeeAgentContent ? getCachedTaskActivity(task.id) : Promise.resolve([]),
     // Latest monitor-verifier branch row, if any. Used by the Review-state
     // Repo verification panel below.
-    viewer.canAccessOwnerFeatures ? getCachedLatestRepoVerifyActivity(task.id) : Promise.resolve(null),
+    canSeeAgentContent ? getCachedLatestRepoVerifyActivity(task.id) : Promise.resolve(null),
     db.activityLog.findMany({
       where: { AND: [taskActivityWhere, visibleActivityWhere(viewer)] },
       orderBy: { createdAt: "desc" },
@@ -1479,7 +1480,7 @@ export default async function TaskDetailPage({
         include: { task: { select: { workItemKey: true, title: true } } },
       })
     : [];
-  const chatMessages = viewer.canAccessOwnerFeatures ? await getCachedTaskRoomMessages(task.id) : [];
+  const chatMessages = canSeeAgentContent ? await getCachedTaskRoomMessages(task.id) : [];
   const taskChatCursorKey = `task:${task.id}`;
   const taskChatReadCursor = await db.chatReadCursor.findUnique({
     where: { userId_agentSlug: { userId: viewer.id, agentSlug: taskChatCursorKey } },

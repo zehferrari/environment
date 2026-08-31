@@ -148,10 +148,10 @@ export function accessibleProjectWhere(
 }
 
 /**
- * Human identities are project data too. Non-owners may resolve their own
- * identity, the Owner identity used by the role-aware projector, and humans
- * who share at least one accessible project. This prevents global user/avatar
- * enumeration from becoming a side channel for out-of-scope projects.
+ * User identities are project data too. Customers may resolve only humans in
+ * their scope. Admins additionally retain agent identities that participate in
+ * an accessible project, while agents that exist only outside that scope stay
+ * undiscoverable through user and avatar reads.
  */
 export function accessibleUserWhere(
   viewer: Viewer,
@@ -161,19 +161,60 @@ export function accessibleUserWhere(
   if (viewer.kind === "agent") {
     return { AND: [where, { id: { equals: "__no-browser-agent-user-access__" } }] };
   }
-  return {
-    AND: [
-      where,
+  const projectWhere = projectAccessWhere(viewer);
+  const humanWhere: Prisma.UserWhereInput = {
+    kind: "human",
+    OR: [
+      { id: viewer.id },
+      { isOwner: true },
+      { projectMembers: { some: { project: projectWhere } } },
+    ],
+  };
+  if (viewer.agentVisibility === "hidden") {
+    return { AND: [where, humanWhere] };
+  }
+
+  const taskWhere = accessibleTaskWhere(viewer);
+  const epicWhere = accessibleEpicWhere(viewer);
+  const agentWhere: Prisma.UserWhereInput = {
+    kind: "agent",
+    OR: [
+      { assignedTasks: { some: taskWhere } },
+      { actingManagerOf: { some: taskWhere } },
+      { reportedTasks: { some: taskWhere } },
+      { actingManagerOfEpic: { some: epicWhere } },
+      { reportedEpics: { some: epicWhere } },
+      { epicWorkerAssignments: { some: { epic: epicWhere } } },
+      { defaultAssigneeForProjects: { some: projectWhere } },
+      { defaultReviewerForProjects: { some: projectWhere } },
+      { managerAssignableProjects: { some: { project: projectWhere } } },
       {
-        kind: "human",
-        OR: [
-          { id: viewer.id },
-          { isOwner: true },
-          { projectMembers: { some: { project: projectAccessWhere(viewer) } } },
-        ],
+        comments: {
+          some: {
+            OR: [
+              { task: taskWhere },
+              { epic: epicWhere },
+            ],
+          },
+        },
+      },
+      { uploadedAttachments: { some: { project: projectWhere } } },
+      { activity: { some: { project: projectWhere } } },
+      { agentChatMessages: { some: { project: projectWhere } } },
+      {
+        agent: {
+          workspacePools: {
+            some: {
+              workspace: {
+                projects: { some: { project: projectWhere } },
+              },
+            },
+          },
+        },
       },
     ],
   };
+  return { AND: [where, { OR: [humanWhere, agentWhere] }] };
 }
 
 /**

@@ -580,6 +580,7 @@ export default async function EpicDetailPage({
     },
   });
   if (!epic || epic.project.slug !== slug || epic.deletedAt) notFound();
+  const canSeeAgentContent = viewer.agentVisibility !== "hidden";
 
   const canDeleteComments = viewer.canAccessOwnerFeatures;
   // Deployment is an optional post-Done step, only for repo-backed projects.
@@ -592,7 +593,7 @@ export default async function EpicDetailPage({
   const epicActivityWhere = await accessibleActivityWhere(viewer, { projectId: epic.project.id });
   const [principals, recentReplyActivity, allActivity, taskActivityRows, deploymentPullRequests, busyAgentSlugs, actorVisibility] = await Promise.all([
     viewer.canAccessOwnerFeatures ? listAssignablePrincipals(viewer) : Promise.resolve([]),
-    viewer.canAccessOwnerFeatures ? db.activityLog.findMany({
+    canSeeAgentContent ? db.activityLog.findMany({
       where: {
         projectId: epic.project.id,
         kind: {
@@ -676,7 +677,7 @@ export default async function EpicDetailPage({
         );
       });
 
-  const chatMessages = viewer.canAccessOwnerFeatures ? await db.agentChatMessage.findMany({
+  const chatMessages = canSeeAgentContent ? await db.agentChatMessage.findMany({
     where: {
       epicId: epic.id,
       agentSlug: "room",

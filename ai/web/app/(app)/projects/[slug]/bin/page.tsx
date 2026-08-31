@@ -114,7 +114,7 @@ export default async function BinPage({
                         >
                           {e.deletedAt ? timeAgo(e.deletedAt) : ""}
                         </time>
-                        {viewer.canAccessOwnerFeatures && e.deletedBy ? (
+                        {viewer.agentVisibility !== "hidden" && e.deletedBy ? (
                           <>
                             {" "}by @{e.deletedBy.username}
                             {e.deletedBy.kind === "agent" ? " (agent)" : ""}
@@ -193,7 +193,7 @@ export default async function BinPage({
                         >
                           {t.deletedAt ? timeAgo(t.deletedAt) : ""}
                         </time>
-                        {viewer.canAccessOwnerFeatures && t.deletedBy ? (
+                        {viewer.agentVisibility !== "hidden" && t.deletedBy ? (
                           <>
                             {" "}by @{t.deletedBy.username}
                             {t.deletedBy.kind === "agent" ? " (agent)" : ""}

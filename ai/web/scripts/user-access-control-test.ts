@@ -76,6 +76,18 @@ async function main() {
         agentId: agent.id,
       },
     });
+    const hiddenAgent = await prisma.agent.create({
+      data: { slug: "hidden-agent-test", name: "Hidden Agent Test", role: "coding", avatar: "HA" },
+    });
+    const hiddenAgentUser = await prisma.user.create({
+      data: {
+        username: "hidden-agent-test",
+        email: "hidden-agent-test@example.test",
+        kind: "agent",
+        mustRotatePassword: false,
+        agentId: hiddenAgent.id,
+      },
+    });
 
     const visibleProject = await prisma.project.create({
       data: {
@@ -220,6 +232,7 @@ async function main() {
         slug: "hidden-workspace",
         name: "Hidden Workspace",
         projects: { create: { projectId: hiddenProject.id } },
+        agentPool: { create: { agentId: hiddenAgent.id } },
       },
     });
 
@@ -279,6 +292,20 @@ async function main() {
       new Set(memberUsers.map(({ id }) => id)),
       new Set([ownerUser.id, memberUser.id]),
       "project-scoped viewers cannot enumerate unrelated humans or agent identities",
+    );
+    const adminUsers = await prisma.user.findMany({
+      where: permissions.accessibleUserWhere(admin),
+      select: { id: true },
+    });
+    assert.deepEqual(
+      new Set(adminUsers.map(({ id }) => id)),
+      new Set([ownerUser.id, memberUser.id, agentUser.id]),
+      "Admin retains in-scope agent identities without discovering out-of-scope humans or agents",
+    );
+    assert.equal(
+      adminUsers.some(({ id }) => id === hiddenAgentUser.id),
+      false,
+      "Admin cannot resolve an agent that exists only in an out-of-scope workspace",
     );
 
     const customerComments = await prisma.comment.findMany({
@@ -431,7 +458,7 @@ async function main() {
 
     const activity = await Promise.all([
       prisma.activityLog.create({
-        data: { projectId: visibleProject.id, taskId: publicTask.id, kind: "task.public-test" },
+        data: { projectId: visibleProject.id, taskId: publicTask.id, userId: agentUser.id, kind: "task.public-test" },
       }),
       prisma.activityLog.create({
         data: { projectId: visibleProject.id, taskId: privateTask.id, kind: "task.private-test" },
@@ -465,6 +492,15 @@ async function main() {
     ]);
     assert.notEqual(pagedAdminActivity[0]?.id, activity[5].id, "out-of-scope activity cannot consume a pagination slot");
     assert.equal(adminActivityCount, 3, "activity totals are computed from the post-scope set");
+    const adminActivity = await prisma.activityLog.findMany({
+      where: adminActivityWhere,
+      select: { id: true },
+    });
+    assert.deepEqual(
+      new Set(adminActivity.map(({ id }) => id)),
+      new Set([activity[0].id, activity[2].id, activity[4].id]),
+      "Admin retains in-scope agent activity while out-of-scope activity stays hidden",
+    );
     const agentActivity = await prisma.activityLog.findMany({
       where: await permissions.accessibleActivityWhere(agentViewer, { projectId: visibleProject.id }),
       select: { id: true },

@@ -79,7 +79,7 @@ export default async function ProjectBinPage() {
                   {p._count.tasks === 1 ? "" : "s"} · {p._count.attachments} file
                   {p._count.attachments === 1 ? "" : "s"} · deleted{" "}
                   {p.deletedAt ? timeAgo(p.deletedAt) : "?"}
-                  {viewer.canAccessOwnerFeatures && p.deletedBy ? ` by @${p.deletedBy.username}` : ""} ·{" "}
+                  {viewer.agentVisibility !== "hidden" && p.deletedBy ? ` by @${p.deletedBy.username}` : ""} ·{" "}
                   {p.deletedAt ? `${daysLeft(p.deletedAt)}d left` : ""}
                 </div>
               </div>
