@@ -22,7 +22,7 @@ export default async function AppLayout({
   return (
     <PersistentPmStreamProvider>
       <ToastProvider>
-        {viewer.isOwner ? <AgentPresenceProvider /> : null}
+        {viewer.canAccessOwnerFeatures ? <AgentPresenceProvider /> : null}
         <div className="relative flex min-h-screen text-text">
           <Sidebar />
           <main className="relative min-w-0 flex-1 px-4 pt-4 pb-[calc(env(safe-area-inset-bottom)+6.5rem)] sm:px-page-x md:pt-page-y md:pb-24 lg:px-page-x-lg">

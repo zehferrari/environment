@@ -76,7 +76,7 @@ export default async function ProjectLibraryPage({
                 : `/projects/${slug}`;
             return {
               ...a,
-              uploader: !viewer.isOwner && a.uploader?.kind === "agent"
+              uploader: !viewer.canAccessOwnerFeatures && a.uploader?.kind === "agent"
                 ? (actorVisibility.owner ? { username: actorVisibility.owner.username } : null)
                 : a.uploader,
               contextLabel,

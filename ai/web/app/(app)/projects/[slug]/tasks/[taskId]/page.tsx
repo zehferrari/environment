@@ -196,10 +196,10 @@ async function updateTask(formData: FormData) {
   const newBlockedById = blockedRaw === "" ? null : blockedRaw;
   const deploymentRaw = String(formData.get("deploymentStatus") ?? "");
   const hasPrivateField = formData.has("privateSubmitted");
-  if (!actor.isOwner && (hasAssigneeField || hasReviewerField || hasReporterField)) {
+  if (!actor.canAccessOwnerFeatures && (hasAssigneeField || hasReviewerField || hasReporterField)) {
     throw new Error("Only the Mission Control owner can change task roles.");
   }
-  if ((hasPrivateField || formData.has("private")) && !actor.isOwner) throw new Error("Not authorized");
+  if ((hasPrivateField || formData.has("private")) && !actor.canAccessOwnerFeatures) throw new Error("Not authorized");
   const newPrivate = formData.get("private") === "on";
 
   if (newStatus !== "" && !COLUMN_IDS.includes(newStatus)) return;
@@ -249,7 +249,7 @@ async function updateTask(formData: FormData) {
 
   const data: Prisma.TaskUpdateInput = {};
   const activity: { kind: string; payload: string }[] = [];
-  const canTriggerAgents = actor.isOwner;
+  const canTriggerAgents = actor.canAccessOwnerFeatures;
   let assignmentTarget: { id: string; kind: string; username: string } | null =
     null;
   let assignmentChanged = false;
@@ -662,7 +662,7 @@ async function approveTaskActionPlan(formData: FormData) {
   });
   if (!task || task.deletedAt || task.project.slug !== slug) return;
   await requireProjectAccess(actor, { id: task.projectId });
-  if (!actor.isOwner || actor.kind !== "human") throw new Error("Not authorized");
+  if (!actor.canAccessOwnerFeatures || actor.kind !== "human") throw new Error("Not authorized");
 
   if (task.approvedOn) return;
   if (task.status !== "Backlog" && task.status !== "To Do") {
@@ -697,7 +697,7 @@ async function approveTaskActionPlan(formData: FormData) {
 async function deleteComment(formData: FormData) {
   "use server";
   const actor = await requireActor();
-  if (!actor.isOwner) return;
+  if (!actor.canAccessOwnerFeatures) return;
   const commentId = String(formData.get("commentId") ?? "");
   const slug = String(formData.get("projectSlug") ?? "");
   const taskId = String(formData.get("taskId") ?? "");
@@ -757,7 +757,7 @@ async function deleteComment(formData: FormData) {
 async function restoreComment(formData: FormData) {
   "use server";
   const actor = await requireActor();
-  if (!actor.isOwner) return;
+  if (!actor.canAccessOwnerFeatures) return;
   const commentId = String(formData.get("commentId") ?? "");
   const slug = String(formData.get("projectSlug") ?? "");
   const taskId = String(formData.get("taskId") ?? "");
@@ -876,7 +876,7 @@ async function grantBlockerPermission(formData: FormData) {
   const request = activeBlocker.permissionRequest;
   let body: string;
   if (request.kind === "publish_checkpoint") {
-    if (!actor.isOwner) {
+    if (!actor.canAccessOwnerFeatures) {
       throw new Error("Checkpoint publication still requires the active Mission Control owner.");
     }
     const taskBranch = effectiveTaskBranchName(task);
@@ -938,7 +938,7 @@ async function grantBlockerPermission(formData: FormData) {
   // reporter's generic approval is delivered as a PM-validated workflow
   // capability, so it can wake the assignee without weakening the global rule
   // that arbitrary member comments are informational only.
-  if (actor.isOwner) {
+  if (actor.canAccessOwnerFeatures) {
     await sendTaskCommentNotifications({
       taskId: task.id,
       commentId: authorization.id,
@@ -1348,7 +1348,7 @@ export default async function TaskDetailPage({
   const actorVisibility = await getActorVisibility(viewer);
   const visibleAttachments = task.attachments.map((attachment) => ({
     ...attachment,
-    uploader: !viewer.isOwner && attachment.uploader?.kind === "agent"
+    uploader: !viewer.canAccessOwnerFeatures && attachment.uploader?.kind === "agent"
       ? (actorVisibility.owner ? { username: actorVisibility.owner.username } : null)
       : attachment.uploader,
   }));
@@ -1356,19 +1356,19 @@ export default async function TaskDetailPage({
   // for standalone tasks (no epic parent — an epic owns its tasks' deploy gate).
   const hasDeploymentTab =
     canShowDeploymentTab(task) && Boolean(task.project.repositoryPath) && task.status === "Done";
-  const showDeploymentTab = viewer.isOwner && hasDeploymentTab;
+  const showDeploymentTab = viewer.canAccessOwnerFeatures && hasDeploymentTab;
   const taskTabs = (hasDeploymentTab ? [...TASK_TABS] : TASK_TABS.filter((name) => name !== DEVELOPMENT_TAB))
-    .filter((name) => viewer.isOwner || !OWNER_ONLY_TASK_TABS.has(name));
+    .filter((name) => viewer.canAccessOwnerFeatures || !OWNER_ONLY_TASK_TABS.has(name));
   if (!taskTabs.some((name) => name === selectedTab)) selectedTab = "Description";
 
   // Comment moderation is exclusive to the Mission Control owner.
-  const canDeleteComments = viewer.isOwner;
+  const canDeleteComments = viewer.canAccessOwnerFeatures;
   // Recompute blocked-by edit permission in the page component scope;
   // the value in updateTask() lives in a different function.
   const canEditBlockedBy = !task.blockedById || await canAccessTask(viewer, task.blockedById);
 
   const [principals, cachedProjectEpics, mentionableUsers, recentTaskChatMessages, recentReplyActivity, latestRepoVerify, allActivity, targetedCommentRows, taskWorkflowActions] = await Promise.all([
-    viewer.isOwner ? listAssignablePrincipals(viewer) : Promise.resolve([]),
+    viewer.canAccessOwnerFeatures ? listAssignablePrincipals(viewer) : Promise.resolve([]),
     getCachedProjectEpics(task.project.id),
     db.user.findMany({ select: { username: true, kind: true } }),
     getCachedRecentTaskChatMessages(task.id),
@@ -1392,7 +1392,7 @@ export default async function TaskDetailPage({
         },
       },
     }) as Promise<ActivityTimelineRow[]>,
-    viewer.isOwner || task.comments.length === 0
+    viewer.canAccessOwnerFeatures || task.comments.length === 0
       ? Promise.resolve([])
       : db.agentChatMessage.findMany({
           where: { originCommentId: { in: task.comments.map((comment) => comment.id) } },
@@ -1401,7 +1401,7 @@ export default async function TaskDetailPage({
         }),
     getBrowserTaskWorkflowActions({ actor: viewer, taskId: task.id }),
   ]);
-  const projectEpics = cachedProjectEpics.filter((epic) => viewer.isOwner || !epic.private);
+  const projectEpics = cachedProjectEpics.filter((epic) => viewer.canAccessOwnerFeatures || !epic.private);
   const visibleActivity = visibleActivityRows(allActivity, actorVisibility);
   const activeFormalBlocker = activeFormalBlockersByTask(
     allActivity.map((row) => ({ taskId: task.id, kind: row.kind, payload: row.payload, createdAt: row.createdAt })),
@@ -1414,7 +1414,7 @@ export default async function TaskDetailPage({
   const agentUsernames = mentionableUsers.filter((user) => user.kind === "agent").map((user) => user.username);
   const targetedCommentIds = new Set(targetedCommentRows.map((row) => row.originCommentId).filter(Boolean));
   const mentionables = mentionableUsers
-    .filter((user) => viewer.isOwner || user.kind !== "agent")
+    .filter((user) => viewer.canAccessOwnerFeatures || user.kind !== "agent")
     .map((user) => ({ username: user.username }));
   // Resolved reviewer for role-aware comment identity: the task's acting
   // manager, or the epic's acting manager when the task has none.
@@ -1423,7 +1423,7 @@ export default async function TaskDetailPage({
   // visible comment bodies (agent comments name each other verbatim, which the
   // author-avatar mask alone does not cover). No-op for the owner.
   const redactBody = buildAgentRedactor(actorVisibility.agentIdentities, actorVisibility.maskAgents);
-  const visibleTaskComments = viewer.isOwner
+  const visibleTaskComments = viewer.canAccessOwnerFeatures
     ? task.comments
     : task.comments.filter((comment) => {
         // Deleted agent comments were fully hidden from members before this
@@ -1978,7 +1978,7 @@ export default async function TaskDetailPage({
             <TabsNav
               tabs={taskTabs}
               sticky
-              badges={viewer.isOwner ? { "Action Plan": unreadActionPlanMessages.length } : undefined}
+              badges={viewer.canAccessOwnerFeatures ? { "Action Plan": unreadActionPlanMessages.length } : undefined}
             />
             <div className="pt-4">
               <TabPanel name="Description">
@@ -1989,13 +1989,13 @@ export default async function TaskDetailPage({
                     defaultValue={task.description ?? ""}
                     projectSlug={slug}
                     taskId={task.id}
-                    aiTargets={viewer.isOwner ? aiTargetOptions : []}
-                    defaultAiTarget={viewer.isOwner ? defaultAiTarget : ""}
+                    aiTargets={viewer.canAccessOwnerFeatures ? aiTargetOptions : []}
+                    defaultAiTarget={viewer.canAccessOwnerFeatures ? defaultAiTarget : ""}
                     descriptionLabel="Task"
                     draftDescription={draftDescription}
-                    aiRunning={viewer.isOwner && isAiDescriptionRunning}
-                    runningMessageId={viewer.isOwner ? runningDescriptionRun?.messageId ?? null : null}
-                    runningAgentSlug={viewer.isOwner ? runningDescriptionRun?.agentSlug ?? null : null}
+                    aiRunning={viewer.canAccessOwnerFeatures && isAiDescriptionRunning}
+                    runningMessageId={viewer.canAccessOwnerFeatures ? runningDescriptionRun?.messageId ?? null : null}
+                    runningAgentSlug={viewer.canAccessOwnerFeatures ? runningDescriptionRun?.agentSlug ?? null : null}
                     // Sub-tasks (parentTaskId !== null) get a taller editor —
                     // they're where most of the day-to-day work detail lands,
                     // so the larger box matches actual use (HOMELAB-48).
@@ -2023,7 +2023,7 @@ export default async function TaskDetailPage({
                           ))}
                         </select>
                       </label>
-                      {viewer.isOwner ? (
+                      {viewer.canAccessOwnerFeatures ? (
                         <PrivateToggle
                           formId="taskMain"
                           defaultChecked={task.private}
@@ -2038,7 +2038,7 @@ export default async function TaskDetailPage({
                     >
                       <div data-task-role className="min-w-0">
                         <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Reported by</span>
-                        {viewer.isOwner ? (
+                        {viewer.canAccessOwnerFeatures ? (
                           <AvatarCombobox formId="taskMain" name="reporterId" defaultValue={task.reporterId ?? ""} options={reporterOptions} emptyLabel="No reporter" ariaLabel="Reported by" />
                         ) : (
                           <div className="flex min-h-9 items-center gap-2 rounded-lg border border-line bg-bg px-2 text-caption">
@@ -2049,7 +2049,7 @@ export default async function TaskDetailPage({
                       </div>
                       <div data-task-role className="min-w-0">
                         <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Assignee</span>
-                        {viewer.isOwner ? (
+                        {viewer.canAccessOwnerFeatures ? (
                           <AvatarCombobox formId="taskMain" name="assigneeId" defaultValue={task.assigneeId ?? ""} options={principalOptions} emptyLabel="Unassigned" ariaLabel="Assignee" />
                         ) : (
                           <div className="flex min-h-9 items-center gap-2 rounded-lg border border-line bg-bg px-2 text-caption">
@@ -2060,7 +2060,7 @@ export default async function TaskDetailPage({
                       </div>
                       <div data-task-role className="min-w-0">
                         <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Reviewer</span>
-                        {viewer.isOwner ? (
+                        {viewer.canAccessOwnerFeatures ? (
                           <AvatarCombobox formId="taskMain" name="actingManagerId" defaultValue={task.actingManagerId ?? ""} options={principalOptions} emptyLabel="No reviewer" ariaLabel="Reviewer" />
                         ) : (
                           <div className="flex min-h-9 items-center gap-2 rounded-lg border border-line bg-bg px-2 text-caption">
@@ -2287,7 +2287,7 @@ export default async function TaskDetailPage({
               </TabPanel>
 
 
-              {viewer.isOwner ? <TabPanel name="Action Plan">
+              {viewer.canAccessOwnerFeatures ? <TabPanel name="Action Plan">
                 <div className="space-y-3 pt-2">
                   <div
                     data-structured-action-plan-status
@@ -2564,7 +2564,7 @@ export default async function TaskDetailPage({
                           surface="task-comment"
                           options={parsedPmOptions.options}
                           resolvedOption={resolvedPmOption}
-                          interactive={viewer.isOwner && isPmOptionsTargetedAtCurrentUser({ currentUserId: viewer.id })}
+                          interactive={viewer.canAccessOwnerFeatures && isPmOptionsTargetedAtCurrentUser({ currentUserId: viewer.id })}
                         />
                       ) : null}
                       {activeFormalBlocker?.commentId === c.id && activeFormalBlocker.permissionRequest ? (
@@ -2581,7 +2581,7 @@ export default async function TaskDetailPage({
                               Permission granted — the assignee has been notified.
                             </p>
                           ) : viewer.id === task.reporterId && (
-                            activeFormalBlocker.permissionRequest.kind !== "publish_checkpoint" || viewer.isOwner
+                            activeFormalBlocker.permissionRequest.kind !== "publish_checkpoint" || viewer.canAccessOwnerFeatures
                           ) ? (
                             <form action={grantBlockerPermission} className="mt-2">
                               <input type="hidden" name="taskId" value={task.id} />
@@ -2612,18 +2612,18 @@ export default async function TaskDetailPage({
 
           <TaskCommentStreams
             taskId={task.id}
-            messages={(viewer.isOwner ? pendingCommentMessages : []).map((message) => ({
+            messages={(viewer.canAccessOwnerFeatures ? pendingCommentMessages : []).map((message) => ({
               id: message.id,
               agentSlug: message.agentSlug,
             }))}
           />
-          {!focusedCommentId && (visibleTaskComments.length > 0 || (viewer.isOwner && pendingCommentMessages.length > 0)) ? (
+          {!focusedCommentId && (visibleTaskComments.length > 0 || (viewer.canAccessOwnerFeatures && pendingCommentMessages.length > 0)) ? (
             <AutoScrollToLatest
               whenTab="Comments"
               watchKey={[
                 visibleTaskComments.length,
                 visibleTaskComments.at(-1)?.id ?? "",
-                viewer.isOwner ? pendingCommentMessages.map((message) => message.id).join(",") : "",
+                viewer.canAccessOwnerFeatures ? pendingCommentMessages.map((message) => message.id).join(",") : "",
               ].join(":")}
             />
           ) : null}
@@ -2631,7 +2631,7 @@ export default async function TaskDetailPage({
                 </div>
               </TabPanel>
 
-              {viewer.isOwner ? <TabPanel name="Activities">
+              {viewer.canAccessOwnerFeatures ? <TabPanel name="Activities">
                 <div className="pt-2">
                   <ActivityTimeline rows={visibleActivity} />
                 </div>
@@ -2661,7 +2661,7 @@ export default async function TaskDetailPage({
                 </TabPanel>
               ) : null}
 
-              {viewer.isOwner ? <TabPanel name="Changes">
+              {viewer.canAccessOwnerFeatures ? <TabPanel name="Changes">
                 <TaskChangesPanel
                   changes={taskChanges}
                   branchName={taskBranchName}

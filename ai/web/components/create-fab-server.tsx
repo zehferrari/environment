@@ -67,7 +67,7 @@ export default async function CreateFabServer() {
 
   return (
     <CreateFab
-      isOwner={viewer.isOwner}
+      isOwner={viewer.canAccessOwnerFeatures}
       workspaces={workspaces}
       projects={projects}
       principals={principalOptions}

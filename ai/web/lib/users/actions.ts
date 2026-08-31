@@ -21,7 +21,7 @@ import {
   hashPassword,
   passwordLengthError,
 } from "@/lib/auth/password";
-import { requireOwner } from "@/lib/auth/permissions";
+import { hasImmutableOwnerCapability, requireOwner } from "@/lib/auth/permissions";
 import { revokeDisabledHumanAccountAccess } from "@/lib/users/lifecycle";
 import { getHumanUserRemovalStatus } from "@/lib/users/removal";
 
@@ -183,6 +183,12 @@ export async function inviteHumanUser(formData: FormData) {
         kind: "human",
         status: "invited",
         isOwner: false,
+        rolePermission: {
+          connectOrCreate: {
+            where: { name: "customer" },
+            create: { name: "customer", description: "Customer-facing project member" },
+          },
+        },
         mustRotatePassword: false,
       },
       select: { id: true },
@@ -217,7 +223,9 @@ export async function updateHumanProjectAccess(formData: FormData) {
     select: { kind: true, isOwner: true },
   });
   if (!user || user.kind !== "human") return;
-  if (user.isOwner) throw new Error("The Mission Control owner has access to every project.");
+  if (hasImmutableOwnerCapability(user)) {
+    throw new Error("The Mission Control owner has access to every project.");
+  }
 
   await db.$transaction(async (tx) => {
     await tx.projectMember.deleteMany({ where: { userId } });
@@ -355,7 +363,7 @@ export async function setHumanUserStatus(
         select: { id: true, username: true, kind: true, isOwner: true, status: true },
       });
       if (!target || target.kind !== "human") throw new Error("Human user not found.");
-      if (target.isOwner || target.id === owner.id) {
+      if (hasImmutableOwnerCapability(target) || target.id === owner.id) {
         throw new Error("The Mission Control owner cannot be disabled.");
       }
       if (target.status === desiredStatus) return { changed: false, username: target.username };
@@ -413,7 +421,11 @@ export async function removeHumanUser(
     const username = await db.$transaction(async (tx) => {
       const status = await getHumanUserRemovalStatus(userId, tx);
       if (!status.exists || !status.isHuman) throw new Error("Human user not found.");
-      if (status.isOwner || status.id === owner.id) {
+      const { isOwner: targetHasOwnerCapability } = status;
+      if (
+        hasImmutableOwnerCapability({ kind: "human", isOwner: targetHasOwnerCapability })
+        || status.id === owner.id
+      ) {
         throw new Error("The Mission Control owner cannot be removed.");
       }
       if (!status.removable) {

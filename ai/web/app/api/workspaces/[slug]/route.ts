@@ -11,7 +11,7 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ slug: stri
   const { slug: rawSlug } = await ctx.params;
   const workspace = await getWorkspaceBySlug(normalizeWorkspaceSlug(rawSlug), viewer);
   if (!workspace) return NextResponse.json({ error: "not_found" }, { status: 404 });
-  return NextResponse.json({ workspace: serializeWorkspace(workspace, viewer.isOwner) });
+  return NextResponse.json({ workspace: serializeWorkspace(workspace, viewer.canAccessOwnerFeatures) });
 }
 
 export async function PATCH(req: NextRequest, ctx: { params: Promise<{ slug: string }> }) {

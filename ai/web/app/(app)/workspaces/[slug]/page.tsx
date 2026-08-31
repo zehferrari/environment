@@ -148,7 +148,7 @@ export default async function WorkspaceBoardPage({ params }: { params: Promise<{
           select: { taskId: true, kind: true, payload: true, createdAt: true, user: { select: actorSelect } },
         })
       : Promise.resolve([]),
-    viewer.isOwner ? readBusyAgentSlugs() : Promise.resolve(new Set<string>()),
+    viewer.canAccessOwnerFeatures ? readBusyAgentSlugs() : Promise.resolve(new Set<string>()),
     getActorVisibility(viewer),
     blockerIds.length > 0
       ? db.task.findMany({

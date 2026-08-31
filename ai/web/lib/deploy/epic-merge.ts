@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
+import { isActiveOwnerPrincipal } from "@/lib/auth/roles";
 import { db } from "@/lib/db";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import { effectiveEpicBranchName, effectiveTaskBranchName } from "@/lib/work-items/branches";
@@ -1431,9 +1432,7 @@ async function executeCheckpointJob(
     authorization.taskId !== task.id ||
     authorization.deletedAt ||
     authorization.createdAt < task.approvedOn ||
-    authorization.user.kind !== "human" ||
-    authorization.user.status !== "active" ||
-    !authorization.user.isOwner
+    !isActiveOwnerPrincipal(authorization.user)
   ) {
     return fail("The checkpoint authorization comment is missing, deleted, predates plan approval, or was not written by the active Mission Control owner.");
   }

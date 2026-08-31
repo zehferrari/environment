@@ -174,19 +174,25 @@ async function main() {
       id: ownerUser.id,
       username: ownerUser.username,
       kind: "human",
-      isOwner: true,
+      role: "owner",
+      agentVisibility: "full",
+      canAccessOwnerFeatures: true,
     };
     const member: Viewer = {
       id: memberUser.id,
       username: memberUser.username,
       kind: "human",
-      isOwner: false,
+      role: "customer",
+      agentVisibility: "hidden",
+      canAccessOwnerFeatures: false,
     };
     const agentViewer: Viewer = {
       id: agentUser.id,
       username: agentUser.username,
       kind: "agent",
-      isOwner: false,
+      role: null,
+      agentVisibility: "hidden",
+      canAccessOwnerFeatures: false,
     };
 
     const memberProjects = await prisma.project.findMany({
@@ -402,10 +408,8 @@ async function main() {
       },
     });
     const memberVisibility = await actorVisibility.getActorVisibility(member);
-    const maskedActor = actorVisibility.serializeVisibleActor(agentActor, memberVisibility);
-    assert.equal(maskedActor?.id, ownerUser.id, "members see the owner identity in place of an agent");
-    assert.equal(maskedActor?.kind, "human", "the masked identity is exposed as human");
-    assert.equal(maskedActor?.agent, null, "masked identities do not leak agent metadata");
+    const hiddenActor = actorVisibility.serializeVisibleActor(agentActor, memberVisibility);
+    assert.equal(hiddenActor, null, "Customers receive no agent identity or placeholder");
 
     const ownerVisibility = await actorVisibility.getActorVisibility(owner);
     const ownerActor = actorVisibility.serializeVisibleActor(agentActor, ownerVisibility);

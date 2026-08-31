@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 
 export default async function WorkspaceSettingsPage({ params }: { params: Promise<{ slug: string }> }) {
   const viewer = await getViewer();
-  if (!viewer?.isOwner) notFound();
+  if (!viewer?.canAccessOwnerFeatures) notFound();
   const { slug: rawSlug } = await params;
   const slug = normalizeWorkspaceSlug(rawSlug);
   const [workspaceRow, projects, agents] = await Promise.all([

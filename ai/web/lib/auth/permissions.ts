@@ -1,14 +1,40 @@
 import type { Prisma } from "@prisma/client";
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
+import {
+  agentVisibilityForRole,
+  hasAdminRole,
+  hasOwnerRole,
+  isActiveOwnerPrincipal,
+  resolveHumanRole,
+  type AgentVisibilityMode,
+  type HumanRole,
+} from "@/lib/auth/roles";
 import { SESSION_RECOVERY_PATH } from "@/lib/auth/session-recovery";
 import { db } from "@/lib/db";
+
+export {
+  AGENT_VISIBILITY_MODES,
+  HUMAN_ROLES,
+  agentVisibilityForRole,
+  hasAdminRole,
+  hasCustomerRole,
+  hasImmutableOwnerCapability,
+  hasOwnerRole,
+  hasRole,
+  isActiveOwnerPrincipal,
+  resolveHumanRole,
+} from "@/lib/auth/roles";
+export type { AgentVisibilityMode, HumanRole } from "@/lib/auth/roles";
 
 export type Viewer = {
   id: string;
   username: string;
   kind: "human" | "agent";
-  isOwner: boolean;
+  role: HumanRole | null;
+  agentVisibility: AgentVisibilityMode;
+  /** Centralized compatibility capability for existing Owner-only surfaces. */
+  canAccessOwnerFeatures: boolean;
 };
 
 export async function getViewer(): Promise<Viewer | null> {
@@ -18,15 +44,26 @@ export async function getViewer(): Promise<Viewer | null> {
 
   const user = await db.user.findUnique({
     where: { id },
-    select: { id: true, username: true, kind: true, status: true, isOwner: true },
+    select: {
+      id: true,
+      username: true,
+      kind: true,
+      status: true,
+      isOwner: true,
+      rolePermission: { select: { name: true } },
+    },
   });
   if (!user || user.status !== "active") return null;
+
+  const role = resolveHumanRole(user);
 
   return {
     id: user.id,
     username: user.username,
     kind: user.kind === "agent" ? "agent" : "human",
-    isOwner: user.kind === "human" && user.isOwner,
+    role,
+    agentVisibility: agentVisibilityForRole(role),
+    canAccessOwnerFeatures: role === "owner",
   };
 }
 
@@ -43,7 +80,7 @@ export async function requireViewer(): Promise<Viewer> {
 
 export async function requireOwner(): Promise<Viewer> {
   const viewer = await requireViewer();
-  if (!viewer.isOwner) throw new Error("Not authorized");
+  if (!hasOwnerRole(viewer)) throw new Error("Not authorized");
   return viewer;
 }
 
@@ -53,15 +90,15 @@ export async function isOwnerUserId(userId: string | null | undefined): Promise<
     where: { id: userId },
     select: { kind: true, status: true, isOwner: true },
   });
-  return Boolean(user?.kind === "human" && user.status === "active" && user.isOwner);
+  return isActiveOwnerPrincipal(user);
 }
 
 export function hasGlobalProjectAccess(viewer: Viewer): boolean {
-  return viewer.isOwner;
+  return hasOwnerRole(viewer);
 }
 
 export function projectAccessWhere(viewer: Viewer): Prisma.ProjectWhereInput {
-  if (viewer.isOwner) return {};
+  if (hasGlobalProjectAccess(viewer)) return {};
   // Browser-authenticated agent accounts are never PM viewers. Native agent
   // workflows use their scoped bearer/token APIs instead of this session path.
   if (viewer.kind === "agent") return { id: { equals: "__no-browser-agent-access__" } };
@@ -87,7 +124,7 @@ export function accessibleEpicWhere(
   const access = projectAccessWhere(viewer);
   const clauses: Prisma.EpicWhereInput[] = [where];
   if (Object.keys(access).length > 0) clauses.push({ project: access });
-  if (!viewer.isOwner) clauses.push({ private: false });
+  if (!hasOwnerRole(viewer)) clauses.push({ private: false });
   return clauses.length === 1 ? where : { AND: clauses };
 }
 
@@ -102,7 +139,7 @@ export function accessibleTaskWhere(
   const access = projectAccessWhere(viewer);
   const clauses: Prisma.TaskWhereInput[] = [where];
   if (Object.keys(access).length > 0) clauses.push({ project: access });
-  if (!viewer.isOwner) {
+  if (!hasOwnerRole(viewer)) {
     clauses.push({
       private: false,
       AND: [
@@ -123,7 +160,7 @@ export async function accessibleActivityWhere(
   viewer: Viewer,
   where: Prisma.ActivityLogWhereInput = {},
 ): Promise<Prisma.ActivityLogWhereInput> {
-  if (viewer.isOwner) return where;
+  if (hasOwnerRole(viewer)) return where;
   if (viewer.kind === "agent") {
     return { AND: [where, { id: { in: [] } }] };
   }
@@ -204,6 +241,51 @@ export async function requireProjectAccess(
   if (!(await canAccessProject(viewer, target))) throw new Error("Not authorized");
 }
 
+export type AccessManagementTarget = {
+  id: string;
+  kind: "human" | "agent";
+  role: HumanRole | null;
+};
+
+async function requestedProjectsAreWithinScope(
+  viewer: Viewer,
+  projectIds: readonly string[],
+): Promise<boolean> {
+  const uniqueIds = [...new Set(projectIds.filter(Boolean))];
+  if (uniqueIds.length === 0 || hasOwnerRole(viewer)) return true;
+  const count = await db.project.count({
+    where: accessibleProjectWhere(viewer, { id: { in: uniqueIds } }),
+  });
+  return count === uniqueIds.length;
+}
+
+/**
+ * Owner may manage any non-Owner human. Admin may manage Customers only, may
+ * never target themselves, and may grant/revoke only projects already in the
+ * Admin's membership scope. Customers and browser agent sessions cannot
+ * manage access.
+ */
+export async function canManageAccessFor(
+  viewer: Viewer,
+  target: AccessManagementTarget,
+  projectIds: readonly string[] = [],
+): Promise<boolean> {
+  if (viewer.kind !== "human" || target.kind !== "human" || target.role === "owner") return false;
+  if (hasOwnerRole(viewer)) return true;
+  if (!hasAdminRole(viewer) || target.id === viewer.id || target.role !== "customer") return false;
+  return requestedProjectsAreWithinScope(viewer, projectIds);
+}
+
+export async function requireCanManageAccessFor(
+  viewer: Viewer,
+  target: AccessManagementTarget,
+  projectIds: readonly string[] = [],
+): Promise<void> {
+  if (!(await canManageAccessFor(viewer, target, projectIds))) {
+    throw new Error("Not authorized to manage this user's access.");
+  }
+}
+
 export async function canAccessEpic(viewer: Viewer, epicId: string): Promise<boolean> {
   const epic = await db.epic.findFirst({
     where: accessibleEpicWhere(viewer, { id: epicId }),
@@ -232,7 +314,7 @@ export async function assertAgentAssignmentAllowed(
   viewer: Viewer,
   targetUserIds: Array<string | null | undefined>,
 ): Promise<void> {
-  if (viewer.isOwner) return;
+  if (hasOwnerRole(viewer)) return;
   const ids = [...new Set(targetUserIds.filter((id): id is string => Boolean(id)))];
   if (ids.length === 0) return;
   const agent = await db.user.findFirst({

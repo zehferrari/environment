@@ -160,7 +160,7 @@ async function assertEpicTaskCascadeAllowed(
   actor: Viewer,
   where: Prisma.TaskWhereInput,
 ): Promise<void> {
-  if (actor.isOwner || actor.kind === "agent") return;
+  if (actor.canAccessOwnerFeatures || actor.kind === "agent") return;
   const [allCount, visibleCount] = await Promise.all([
     db.task.count({ where }),
     db.task.count({ where: accessibleTaskWhere(actor, where) }),
@@ -424,7 +424,7 @@ async function notifyEpicActingManagerAssigned(args: {
 
 export async function createEpic(formData: FormData): Promise<CreateResult> {
   const actor = await requireActor();
-  if (!actor.isOwner && (
+  if (!actor.canAccessOwnerFeatures && (
     formData.has("reporterId") ||
     formData.has("assigneeId") ||
     formData.has("workerPoolSubmitted") ||
@@ -445,8 +445,8 @@ export async function createEpic(formData: FormData): Promise<CreateResult> {
   const branchName = branchRaw === "" ? null : branchRaw;
   const commitRaw = String(formData.get("commitPrefix") ?? "").trim();
   const commitPrefix = commitRaw === "" ? null : commitRaw;
-  if (formData.has("private") && !actor.isOwner) throw new Error("Not authorized");
-  const isPrivate = actor.isOwner && formData.get("private") === "on";
+  if (formData.has("private") && !actor.canAccessOwnerFeatures) throw new Error("Not authorized");
+  const isPrivate = actor.canAccessOwnerFeatures && formData.get("private") === "on";
   if (!slug || !title) return { ok: false, error: "An Epic title and project are required." };
   if (title.length > 200) return { ok: false, error: "Epic title must be 200 characters or fewer." };
   if (branchName !== null && branchName.length > 200) return { ok: false, error: "Branch name is too long." };
@@ -579,7 +579,7 @@ export async function renameEpic(formData: FormData) {
 
 export async function setEpicActingManager(formData: FormData) {
   const actor = await requireActor();
-  if (!actor.isOwner) throw new Error("Only the Mission Control owner can set Epic roles.");
+  if (!actor.canAccessOwnerFeatures) throw new Error("Only the Mission Control owner can set Epic roles.");
   const slug = String(formData.get("projectSlug") ?? "");
   const epicId = String(formData.get("epicId") ?? "");
   const raw = String(formData.get("actingManagerId") ?? "");
@@ -686,7 +686,7 @@ export async function updateEpic(formData: FormData) {
   const newCommitPrefix = commitRaw === "" ? null : commitRaw;
   const deploymentRaw = String(formData.get("deploymentStatus") ?? "");
   const hasPrivateField = formData.has("privateSubmitted");
-  if (!actor.isOwner && (
+  if (!actor.canAccessOwnerFeatures && (
     hasAssigneeField ||
     hasActingManagerField ||
     hasDeployReviewerField ||
@@ -694,7 +694,7 @@ export async function updateEpic(formData: FormData) {
   )) {
     throw new Error("Only the Mission Control owner can change Epic roles.");
   }
-  if ((hasPrivateField || formData.has("private")) && !actor.isOwner) throw new Error("Not authorized");
+  if ((hasPrivateField || formData.has("private")) && !actor.canAccessOwnerFeatures) throw new Error("Not authorized");
   const newPrivate = formData.get("private") === "on";
 
   if (status !== "" && !isEpicStatus(status)) return;
@@ -942,7 +942,7 @@ export async function updateEpic(formData: FormData) {
 
   // When an epic moves to Done, archive all of its live child tasks.
   const archiveChildrenOnDone = statusChanged && status === "Done";
-  const canTriggerAgents = actor.isOwner || actor.kind === "agent";
+  const canTriggerAgents = actor.canAccessOwnerFeatures || actor.kind === "agent";
   // Deploy-review now hangs off the deployment field, not the workflow status:
   // opting a (Done) epic into deploymentStatus "Ready to Deploy" dispatches the
   // whole-contribution pre-merge review to its Deploy Reviewer (else monitor).
@@ -1101,7 +1101,7 @@ export async function createTaskInEpic(
   formData: FormData,
 ): Promise<{ ok: boolean; error: string | null }> {
   const actor = await requireActor();
-  if (!actor.isOwner && (
+  if (!actor.canAccessOwnerFeatures && (
     formData.has("reporterId") ||
     formData.has("assigneeId") ||
     formData.has("actingManagerId") ||
@@ -1114,7 +1114,7 @@ export async function createTaskInEpic(
   const epicId = String(formData.get("epicId") ?? "");
   const title = String(formData.get("title") ?? "").trim();
   const description = String(formData.get("description") ?? "").trim() || null;
-  if (formData.has("private") && !actor.isOwner) {
+  if (formData.has("private") && !actor.canAccessOwnerFeatures) {
     return { ok: false, error: "Only the Mission Control owner can create private tasks." };
   }
   if (!slug || !epicId || !title) return { ok: false, error: "Task title is required." };
@@ -1163,7 +1163,7 @@ export async function createTaskInEpic(
         select: { id: true, kind: true },
       })
     : null;
-  const defaultReviewerId = defaultReviewer?.kind === "agent" && !actor.isOwner && actor.kind !== "agent"
+  const defaultReviewerId = defaultReviewer?.kind === "agent" && !actor.canAccessOwnerFeatures && actor.kind !== "agent"
     ? null
     : defaultReviewer?.id ?? null;
 
@@ -1181,7 +1181,7 @@ export async function createTaskInEpic(
         epicId: epic.id,
         title: numberedTitle,
         description,
-        private: actor.isOwner && formData.get("private") === "on",
+        private: actor.canAccessOwnerFeatures && formData.get("private") === "on",
         status: "Backlog",
         rank: (maxRank._max.rank ?? 0) + 1,
         statusChangedAt: new Date(),
@@ -1280,9 +1280,9 @@ export async function setEpicStatus(formData: FormData) {
         projectId: epic.project.id,
         target: taskCascade,
         source: "epic_status",
-        clearAssignee: epicActivated && (actor.isOwner || actor.kind === "agent"),
+        clearAssignee: epicActivated && (actor.canAccessOwnerFeatures || actor.kind === "agent"),
       });
-      if (epicActivated && (actor.isOwner || actor.kind === "agent")) {
+      if (epicActivated && (actor.canAccessOwnerFeatures || actor.kind === "agent")) {
         openAssignment = await assignOpenEpicTasks(tx, {
           epicId,
           projectId: epic.project.id,
@@ -1380,7 +1380,7 @@ export async function createEpicComment(formData: FormData) {
 export async function deleteEpicComment(formData: FormData) {
   const actor = await requireActor();
   // Moderation is owner-only so a member cannot mutate hidden agent context.
-  if (!actor.isOwner) return;
+  if (!actor.canAccessOwnerFeatures) return;
   const slug = String(formData.get("projectSlug") ?? "");
   const epicId = String(formData.get("epicId") ?? "");
   const commentId = String(formData.get("commentId") ?? "");
@@ -1426,7 +1426,7 @@ export async function deleteEpicComment(formData: FormData) {
 // Inverse of deleteEpicComment. Human-only, idempotent.
 export async function restoreEpicComment(formData: FormData) {
   const actor = await requireActor();
-  if (!actor.isOwner) return;
+  if (!actor.canAccessOwnerFeatures) return;
   const slug = String(formData.get("projectSlug") ?? "");
   const epicId = String(formData.get("epicId") ?? "");
   const commentId = String(formData.get("commentId") ?? "");

@@ -74,9 +74,9 @@ export default async function ProjectLayout({
         name={project.name}
         boardChromeScope={boardChromeScope}
         hasSummary={hasSummary}
-        hasCode={viewer.isOwner && hasCode}
+        hasCode={viewer.canAccessOwnerFeatures && hasCode}
         hasBin={hasBin}
-        canAccessSettings={viewer.isOwner}
+        canAccessSettings={viewer.canAccessOwnerFeatures}
       />
       {/* ENV-110 split workspace, sized on AVAILABLE width, not the viewport:
           the @container/ws wrapper measures the real project content width

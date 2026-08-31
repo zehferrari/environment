@@ -60,7 +60,7 @@ export default async function BoardCreateFab() {
 
   return (
     <WorkspacesCreateFab
-      isOwner={viewer.isOwner}
+      isOwner={viewer.canAccessOwnerFeatures}
       projects={projects}
       maxAttachmentLabel={formatBytes(attachmentMaxBytes())}
       uploadAttachmentAction={uploadAttachment}

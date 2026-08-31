@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
+import { hasImmutableOwnerCapability } from "@/lib/auth/roles";
 import { db } from "@/lib/db";
 
 // Deleting an account should never erase or detach work history. Project
@@ -181,7 +182,7 @@ export async function getHumanUserRemovalStatus(
     exists: true,
     isHuman: user.kind === "human",
     isOwner: user.isOwner,
-    removable: user.kind === "human" && !user.isOwner && blockers.length === 0,
+    removable: user.kind === "human" && !hasImmutableOwnerCapability(user) && blockers.length === 0,
     blockers,
   };
 }

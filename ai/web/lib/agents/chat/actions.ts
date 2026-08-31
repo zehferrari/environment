@@ -194,7 +194,7 @@ function appendAttachmentLinks(
 
 export async function prebuildAgentChatContext(formData: FormData) {
   const actor = await requireActor();
-  if (!actor.isOwner) return { scheduled: false };
+  if (!actor.canAccessOwnerFeatures) return { scheduled: false };
   const projectSlug = String(formData.get("projectSlug") ?? "");
   const taskIdRaw = String(formData.get("taskId") ?? "");
   const epicIdRaw = String(formData.get("epicId") ?? "");
@@ -228,10 +228,10 @@ export async function prebuildAgentChatContext(formData: FormData) {
 export async function sendAgentChatMessage(formData: FormData) {
   const publicOrigin = publicOriginFromHeaders(await headers());
   const actor = await requireActor();
-  if (!actor.isOwner) {
+  if (!actor.canAccessOwnerFeatures) {
     throw new Error("Only the Mission Control owner can send agent messages.");
   }
-  const canTriggerAgents = actor.isOwner;
+  const canTriggerAgents = actor.canAccessOwnerFeatures;
   const slug = String(formData.get("projectSlug") ?? "");
   const taskIdRaw = String(formData.get("taskId") ?? "");
   const epicIdRaw = String(formData.get("epicId") ?? "");

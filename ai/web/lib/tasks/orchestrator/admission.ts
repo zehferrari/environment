@@ -1,4 +1,5 @@
 import type { Prisma } from "@prisma/client";
+import { isActiveOwnerPrincipal } from "@/lib/auth/roles";
 import { db } from "@/lib/db";
 import { computeActivityDedupeKey, writeDeduplicatedActivity } from "@/lib/tasks/orchestrator/activity-dedup";
 import {
@@ -52,7 +53,7 @@ async function requireOwnerOperator(operatorUserId: string) {
     where: { id: operatorUserId },
     select: { id: true, username: true, kind: true, status: true, isOwner: true },
   });
-  if (!operator || operator.kind !== "human" || operator.status !== "active" || !operator.isOwner) {
+  if (!isActiveOwnerPrincipal(operator)) {
     throw new Error("Effectful admission requires the active Mission Control owner.");
   }
   return operator;
@@ -86,9 +87,7 @@ async function requireProductionApproval(
     authorization.deletedAt ||
     authorization.userId !== operator.id ||
     authorization.user.username !== production.approval.ownerUsername ||
-    authorization.user.kind !== "human" ||
-    authorization.user.status !== "active" ||
-    !authorization.user.isOwner ||
+    !isActiveOwnerPrincipal(authorization.user) ||
     authorization.commentKind !== "blocker_notice" ||
     !authorization.isGenerated ||
     authorization.createdAt.toISOString() !== new Date(production.approval.approvedAt).toISOString()

@@ -1,7 +1,7 @@
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
-import { getViewer } from "@/lib/auth/permissions";
+import { getViewer, hasImmutableOwnerCapability } from "@/lib/auth/permissions";
 import {
   inviteHumanUser,
   resetHumanPassword,
@@ -23,7 +23,7 @@ export default async function SystemUsersPage({
   searchParams: Promise<{ invite?: string; reset?: string; resetUser?: string }>;
 }) {
   const [viewer, { invite = "", reset = "", resetUser = "" }] = await Promise.all([getViewer(), searchParams]);
-  if (!viewer?.isOwner) notFound();
+  if (!viewer?.canAccessOwnerFeatures) notFound();
 
   const [users, projects] = await Promise.all([
     db.user.findMany({
@@ -146,7 +146,8 @@ export default async function SystemUsersPage({
         {users.map((user) => {
           const grantedIds = new Set(user.projectMembers.map((membership) => membership.projectId));
           const removalStatus = removalStatuses.get(user.id);
-          const protectedAccount = user.isOwner || user.id === viewer.id;
+          const isImmutableOwner = hasImmutableOwnerCapability(user);
+          const protectedAccount = isImmutableOwner || user.id === viewer.id;
           return (
             <article key={user.id} className="rounded-panel border border-line bg-panel p-card-lg shadow-sm">
               <div className="flex flex-wrap items-start gap-card">
@@ -161,7 +162,7 @@ export default async function SystemUsersPage({
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <h3 className="text-base font-semibold tracking-tight">{user.name ?? user.username}</h3>
-                    {user.isOwner ? <Badge tone="owner">Owner</Badge> : null}
+                    {isImmutableOwner ? <Badge tone="owner">Owner</Badge> : null}
                     <Badge tone={user.status === "active" ? "active" : user.status === "deactivated" ? "disabled" : "pending"}>{user.status}</Badge>
                   </div>
                   <p className="mt-1 truncate text-caption text-text-muted">@{user.username} · {user.email}</p>
@@ -196,7 +197,7 @@ export default async function SystemUsersPage({
                   <button type="submit" className="rounded-lg border border-line bg-bg px-control-x py-control-y text-body font-medium hover:border-accent hover:text-accent">Save profile</button>
                 </form>
 
-                {user.isOwner ? (
+                {isImmutableOwner ? (
                   <div className="rounded-lg border border-dashed border-line px-4 py-3 text-body text-text-muted">
                     The Mission Control owner automatically has access to every project and workspace.
                   </div>

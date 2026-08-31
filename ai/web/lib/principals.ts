@@ -35,7 +35,7 @@ export async function listAssignablePrincipals(viewer?: Viewer): Promise<
 > {
   // Internal agent/context callers intentionally omit a browser viewer and
   // need the complete workflow pool. Human UI callers pass their Viewer.
-  const canAssignAgents = !viewer || viewer.isOwner;
+  const canAssignAgents = !viewer || viewer.canAccessOwnerFeatures;
   const rows = await db.user.findMany({
     where: {
       status: "active",

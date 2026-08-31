@@ -84,9 +84,9 @@ export async function GET(req: Request) {
   let viewer;
   try { viewer = await requireViewer(); } catch { return new Response("Unauthorized", { status: 401 }); }
   // Live busy state is owner-only everywhere else in the app (sidebar, boards,
-  // task lists all gate on viewer.isOwner) — keep the stream to the same
+  // task lists all gate on viewer.canAccessOwnerFeatures) — keep the stream to the same
   // audience so presence never widens what a non-owner can see.
-  if (!viewer.isOwner) return new Response("Forbidden", { status: 403 });
+  if (!viewer.canAccessOwnerFeatures) return new Response("Forbidden", { status: 403 });
 
   const initial = await readPresenceMap();
   lastMap = initial;
