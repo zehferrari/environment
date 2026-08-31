@@ -33,9 +33,14 @@ export async function GET(
 
       send("hello", { projectId: project.id });
 
-      const unsub = subscribeBoardTouch(project.id, (event) => {
-        send("board.touch", event);
-      });
+      // A board touch carries the mutation time but not its author. Without
+      // provenance the stream cannot prove that a touch is Customer-visible,
+      // so hidden mode must not subscribe: otherwise internal agent workflow
+      // activity is inferable from event timing even though the refreshed row
+      // is filtered. Customers still receive policy revocation and heartbeats.
+      const unsub = viewer.agentVisibility === "hidden"
+        ? () => {}
+        : subscribeBoardTouch(project.id, (event) => send("board.touch", event));
 
       const heartbeat = setInterval(() => {
         controller.enqueue(encoder.encode(`: hb\n\n`));

@@ -12,6 +12,11 @@ import {
 } from "@/lib/auth/roles";
 import { SESSION_RECOVERY_PATH } from "@/lib/auth/session-recovery";
 import { db } from "@/lib/db";
+import {
+  hiddenAttachmentWhere,
+  hiddenCommentWhere,
+  visibleActivityRecordWhere,
+} from "@/lib/users/agent-content-policy";
 
 export {
   AGENT_VISIBILITY_MODES,
@@ -274,13 +279,8 @@ export function accessibleCommentWhere(
       ],
     },
   ];
-  if (viewer.role === "customer") {
-    clauses.push({
-      authorAgentSlug: null,
-      isGenerated: false,
-      user: { is: { kind: "human" } },
-    });
-  }
+  const hidden = hiddenCommentWhere(viewer);
+  if (Object.keys(hidden).length > 0) clauses.push(hidden);
   return { AND: clauses };
 }
 
@@ -300,9 +300,8 @@ export function accessibleAttachmentWhere(
       ],
     },
   ];
-  if (viewer.role === "customer") {
-    clauses.push({ uploader: { is: { kind: "human" } } });
-  }
+  const hidden = hiddenAttachmentWhere(viewer);
+  if (Object.keys(hidden).length > 0) clauses.push(hidden);
   return { AND: clauses };
 }
 
@@ -341,6 +340,7 @@ export async function accessibleActivityWhere(
   return {
     AND: [
       where,
+      visibleActivityRecordWhere(viewer),
       {
         OR: [
           { task: { is: accessibleTaskWhere(viewer) } },

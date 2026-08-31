@@ -305,26 +305,107 @@ async function getRawCachedTaskDetailShell(taskId: string) {
   )();
 }
 
+type CustomerProjectableTaskShell = {
+  createdAt: Date;
+  project: Record<string, unknown> & {
+    repositoryPath: string | null;
+    deploymentProductionBranch: string | null;
+  };
+  epic: (Record<string, unknown> & {
+    actingManagerId: string | null;
+    actingManager: unknown;
+    branchName: string | null;
+    commitPrefix: string | null;
+  }) | null;
+  assigneeId: string | null;
+  assignee: unknown;
+  actingManagerId: string | null;
+  actingManager: unknown;
+  approvedById: string | null;
+  approvedBy: unknown;
+  approvedOn: Date | null;
+  archivedById: string | null;
+  archivedBy: unknown;
+  actionPlan: unknown;
+  checklist: unknown[];
+  executionState: unknown;
+  repositoryRun: unknown;
+  branchName: string | null;
+  commitPrefix: string | null;
+  alertReporter: boolean;
+  statusChangedAt: Date | null;
+  updatedAt: Date;
+};
+
+export function projectTaskDetailShellForViewer<T extends CustomerProjectableTaskShell>(
+  task: T,
+  viewer: Pick<Viewer, "agentVisibility">,
+) {
+  // The raw shell is deliberately shared for cache efficiency, but Customer
+  // requests must never receive internal workflow/source-control state from
+  // an Owner/Admin cache fill. Project the cached value before it reaches a
+  // page/RSC payload; Admin masked-mode keeps the established shell intact.
+  return viewer.agentVisibility === "hidden"
+    ? {
+        ...task,
+        assigneeId: null,
+        assignee: null,
+        actingManagerId: null,
+        actingManager: null,
+        approvedById: null,
+        approvedBy: null,
+        approvedOn: null,
+        archivedById: null,
+        archivedBy: null,
+        actionPlan: null,
+        checklist: [],
+        executionState: null,
+        repositoryRun: null,
+        branchName: null,
+        commitPrefix: null,
+        alertReporter: false,
+        statusChangedAt: null,
+        updatedAt: task.createdAt,
+        project: {
+          ...task.project,
+          repositoryPath: null,
+          deploymentProductionBranch: null,
+        },
+        epic: task.epic
+          ? {
+              ...task.epic,
+              actingManagerId: null,
+              actingManager: null,
+              branchName: null,
+              commitPrefix: null,
+            }
+          : null,
+      }
+    : task;
+}
+
 export async function getCachedTaskDetailShell(taskId: string, viewer?: Viewer) {
   const task = await getRawCachedTaskDetailShell(taskId);
   if (!task || !viewer) return task;
 
+  const projectedTask = projectTaskDetailShellForViewer(task, viewer);
+
   const relatedIds = [...new Set([
-    ...(task.blockedById ? [task.blockedById] : []),
-    ...task.dependencies.map(({ prerequisite }) => prerequisite.id),
+    ...(projectedTask.blockedById ? [projectedTask.blockedById] : []),
+    ...projectedTask.dependencies.map(({ prerequisite }) => prerequisite.id),
   ])];
-  if (relatedIds.length === 0) return task;
+  if (relatedIds.length === 0) return projectedTask;
 
   const visible = new Set((await db.task.findMany({
     where: accessibleTaskWhere(viewer, { id: { in: relatedIds } }),
     select: { id: true },
   })).map(({ id }) => id));
-  const blockedByVisible = task.blockedById ? visible.has(task.blockedById) : true;
+  const blockedByVisible = projectedTask.blockedById ? visible.has(projectedTask.blockedById) : true;
   return {
-    ...task,
-    blockedById: blockedByVisible ? task.blockedById : null,
-    blockedBy: blockedByVisible ? task.blockedBy : null,
-    dependencies: task.dependencies.filter(({ prerequisite }) => visible.has(prerequisite.id)),
+    ...projectedTask,
+    blockedById: blockedByVisible ? projectedTask.blockedById : null,
+    blockedBy: blockedByVisible ? projectedTask.blockedBy : null,
+    dependencies: projectedTask.dependencies.filter(({ prerequisite }) => visible.has(prerequisite.id)),
   };
 }
 
@@ -365,7 +446,11 @@ export function getCachedTaskComments(taskId: string, viewer?: Viewer) {
         },
       },
     },
-  }).then(sortByCreatedAtAsc);
+  }).then((rows) => sortByCreatedAtAsc(rows).map((row) => (
+    viewer?.agentVisibility === "hidden" && row.deletedBy?.kind === "agent"
+      ? { ...row, deletedById: null, deletedBy: null }
+      : row
+  )));
 }
 
 export function getCachedTaskAttachments(taskId: string, viewer?: Viewer) {

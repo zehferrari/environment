@@ -30,6 +30,8 @@ async function main() {
     const dbMod = await import("../lib/db");
     const permissions = await import("../lib/auth/permissions");
     const actorVisibility = await import("../lib/users/actor-visibility");
+    const agentContentPolicy = await import("../lib/users/agent-content-policy");
+    const { buildAgentRedactor } = await import("../lib/users/redact-agents");
     const workspaceService = await import("../lib/workspaces/service");
     const taskCache = await import("../lib/tasks/cache");
     const contextApi = await import("../lib/agents/context/api/serialize");
@@ -167,7 +169,21 @@ async function main() {
       },
     });
     const publicAgentComment = await prisma.comment.create({
-      data: { taskId: publicTask.id, userId: agentUser.id, authorAgentSlug: agent.slug, body: "internal agent note" },
+      data: {
+        taskId: publicTask.id,
+        userId: agentUser.id,
+        authorAgentSlug: agent.slug,
+        body: "@member-test this is still an internal agent note",
+      },
+    });
+    const generatedComment = await prisma.comment.create({
+      data: {
+        taskId: publicTask.id,
+        userId: ownerUser.id,
+        body: "system workflow trace",
+        commentKind: "workflow_action",
+        isGenerated: true,
+      },
     });
     const publicHumanComment = await prisma.comment.create({
       data: { taskId: publicTask.id, userId: memberUser.id, body: "customer-safe note" },
@@ -312,12 +328,20 @@ async function main() {
       where: permissions.accessibleCommentWhere(member, { taskId: publicTask.id }),
       select: { id: true },
     });
-    assert.deepEqual(customerComments.map(({ id }) => id), [publicHumanComment.id], "Customer comment rows exclude agent-authored content before serialization");
+    assert.deepEqual(
+      customerComments.map(({ id }) => id),
+      [publicHumanComment.id],
+      "Customer comment rows exclude Customer-addressed agent content and generated workflow traces before serialization",
+    );
     const adminComments = await prisma.comment.findMany({
       where: permissions.accessibleCommentWhere(admin, { taskId: publicTask.id }),
       select: { id: true },
     });
-    assert.deepEqual(new Set(adminComments.map(({ id }) => id)), new Set([publicAgentComment.id, publicHumanComment.id]), "Admin retains scoped agent comments");
+    assert.deepEqual(
+      new Set(adminComments.map(({ id }) => id)),
+      new Set([publicAgentComment.id, publicHumanComment.id, generatedComment.id]),
+      "Admin retains scoped agent and generated comments for masked presentation",
+    );
     const allAdminComments = await prisma.comment.findMany({
       where: permissions.accessibleCommentWhere(admin),
       select: { id: true },
@@ -350,6 +374,43 @@ async function main() {
       [publicHumanAttachment.id],
       "the Task detail reader filters Customer attachments at its query boundary",
     );
+    const rawTaskShell = {
+      createdAt: new Date(0),
+      updatedAt: new Date(1),
+      assigneeId: agentUser.id,
+      assignee: { id: agentUser.id },
+      actingManagerId: agentUser.id,
+      actingManager: { id: agentUser.id },
+      approvedById: agentUser.id,
+      approvedBy: { id: agentUser.id },
+      approvedOn: new Date(1),
+      archivedById: agentUser.id,
+      archivedBy: { id: agentUser.id },
+      actionPlan: { id: "internal-plan" },
+      checklist: [{ id: "internal-step" }],
+      executionState: { state: "running" },
+      repositoryRun: { phase: "validating" },
+      branchName: "internal-agent-branch",
+      commitPrefix: "INTERNAL",
+      alertReporter: true,
+      statusChangedAt: new Date(1),
+      project: { repositoryPath: "/internal/repo", deploymentProductionBranch: "main" },
+      epic: { actingManagerId: agentUser.id, actingManager: { id: agentUser.id }, branchName: "internal-epic", commitPrefix: "EPIC" },
+    };
+    const customerTaskShell = taskCache.projectTaskDetailShellForViewer(rawTaskShell, member);
+    assert.equal(customerTaskShell?.assigneeId, null, "Customer cached Task payloads exclude agent assignments");
+    assert.equal(customerTaskShell?.actingManagerId, null, "Customer cached Task payloads exclude reviewer fields");
+    assert.equal(customerTaskShell?.branchName, null, "Customer cached Task payloads exclude internal source-control metadata");
+    assert.equal(customerTaskShell?.alertReporter, false, "Customer cached Task payloads exclude workflow alert state");
+    assert.equal(
+      customerTaskShell?.updatedAt.getTime(),
+      customerTaskShell?.createdAt.getTime(),
+      "Customer cached Task timestamps do not reveal hidden workflow updates",
+    );
+    const adminTaskShell = taskCache.projectTaskDetailShellForViewer(rawTaskShell, admin);
+    assert.equal(adminTaskShell?.assigneeId, agentUser.id, "Admin cached Task payloads retain masked-mode assignments");
+    assert.equal(adminTaskShell?.actingManagerId, agentUser.id, "Admin cached Task payloads retain masked-mode reviewer fields");
+    assert.equal(adminTaskShell?.branchName, "internal-agent-branch", "Admin cached Task payloads retain source-control state");
     assert.deepEqual(
       (await taskCache.getCachedProjectEpics(visibleProject.id, member)).map(({ id }) => id),
       [publicEpic.id],
@@ -475,30 +536,43 @@ async function main() {
       prisma.activityLog.create({
         data: { projectId: hiddenProject.id, taskId: hiddenTask.id, kind: "task.hidden-project-test" },
       }),
+      prisma.activityLog.create({
+        data: { projectId: visibleProject.id, taskId: publicTask.id, userId: memberUser.id, kind: "task.customer-visible-update" },
+      }),
+      prisma.activityLog.create({
+        data: { projectId: visibleProject.id, taskId: publicTask.id, kind: "task.customer-system-trace" },
+      }),
+      prisma.activityLog.create({
+        data: { projectId: visibleProject.id, taskId: publicTask.id, userId: agentUser.id, kind: "task.customer-addressed-agent-update" },
+      }),
     ]);
-    const memberActivity = await prisma.activityLog.findMany({
-      where: await permissions.accessibleActivityWhere(member, { projectId: visibleProject.id }),
-      select: { id: true },
-    });
+    const memberActivityWhere = await permissions.accessibleActivityWhere(member, { projectId: visibleProject.id });
+    const [memberActivity, memberActivityCount, newestMemberActivity] = await Promise.all([
+      prisma.activityLog.findMany({ where: memberActivityWhere, select: { id: true } }),
+      prisma.activityLog.count({ where: memberActivityWhere }),
+      prisma.activityLog.findFirst({ where: memberActivityWhere, orderBy: { createdAt: "desc" }, select: { id: true } }),
+    ]);
     assert.deepEqual(
       new Set(memberActivity.map(({ id }) => id)),
-      new Set([activity[0].id, activity[2].id, activity[4].id]),
-      "member activity feeds omit private Task and Epic activity",
+      new Set([activity[6].id]),
+      "Customer activity feeds retain only human-authored rows from the accessible set",
     );
+    assert.equal(memberActivityCount, 1, "Customer activity totals are computed after hidden agent/system rows are removed");
+    assert.equal(newestMemberActivity?.id, activity[6].id, "hidden activity cannot consume the newest Customer pagination slot");
     const adminActivityWhere = await permissions.accessibleActivityWhere(admin);
     const [pagedAdminActivity, adminActivityCount] = await Promise.all([
       prisma.activityLog.findMany({ where: adminActivityWhere, orderBy: { createdAt: "desc" }, take: 1, select: { id: true } }),
       prisma.activityLog.count({ where: adminActivityWhere }),
     ]);
     assert.notEqual(pagedAdminActivity[0]?.id, activity[5].id, "out-of-scope activity cannot consume a pagination slot");
-    assert.equal(adminActivityCount, 3, "activity totals are computed from the post-scope set");
+    assert.equal(adminActivityCount, 6, "Admin activity totals retain ordinary in-scope rows after project scoping");
     const adminActivity = await prisma.activityLog.findMany({
       where: adminActivityWhere,
       select: { id: true },
     });
     assert.deepEqual(
       new Set(adminActivity.map(({ id }) => id)),
-      new Set([activity[0].id, activity[2].id, activity[4].id]),
+      new Set([activity[0].id, activity[2].id, activity[4].id, activity[6].id, activity[7].id, activity[8].id]),
       "Admin retains in-scope agent activity while out-of-scope activity stays hidden",
     );
     const agentActivity = await prisma.activityLog.findMany({
@@ -576,13 +650,54 @@ async function main() {
       },
     });
     const memberVisibility = await actorVisibility.getActorVisibility(member);
+    assert.deepEqual(
+      agentContentPolicy.agentContentPolicy(member),
+      {
+        mode: "hidden",
+        excludeAgentRecords: true,
+        maskAgentRecords: false,
+        redactAgentReferences: true,
+      },
+      "Customer policy removes agent rows and redacts references that survive in human-authored bodies",
+    );
     const hiddenActor = actorVisibility.serializeVisibleActor(agentActor, memberVisibility);
     assert.equal(hiddenActor, null, "Customers receive no agent identity or placeholder");
+    assert.equal(
+      buildAgentRedactor(memberVisibility.agentIdentities, memberVisibility.redactAgentReferences)(
+        "Agent Test rebased it; ask @agent-test",
+      ),
+      "an agent rebased it; ask @agent",
+      "Customer body redaction removes bare-name and username references from human-authored comments",
+    );
+
+    const adminVisibility = await actorVisibility.getActorVisibility(admin);
+    assert.equal(
+      actorVisibility.serializeVisibleActorAs(agentActor, "reviewer", adminVisibility)?.id,
+      "synthetic:review",
+      "Admin reviewer projection retains the Feedback / Review mask",
+    );
+    assert.equal(
+      actorVisibility.serializeVisibleActorAs(agentActor, "assignee", adminVisibility)?.id,
+      ownerUser.id,
+      "Admin assignee projection retains Owner re-attribution",
+    );
+    assert.equal(
+      buildAgentRedactor(adminVisibility.agentIdentities, adminVisibility.redactAgentReferences)("Ask @agent-test"),
+      "Ask @agent",
+      "Admin body redaction remains enabled",
+    );
 
     const ownerVisibility = await actorVisibility.getActorVisibility(owner);
     const ownerActor = actorVisibility.serializeVisibleActor(agentActor, ownerVisibility);
     assert.equal(ownerActor?.id, agentUser.id, "the owner sees the real agent identity");
     assert.equal(ownerActor?.agent?.slug, agent.slug, "the owner retains agent metadata");
+    assert.equal(
+      buildAgentRedactor(ownerVisibility.agentIdentities, ownerVisibility.redactAgentReferences)(
+        "Agent Test rebased it; ask @agent-test",
+      ),
+      "Agent Test rebased it; ask @agent-test",
+      "Owner body rendering remains unredacted",
+    );
 
     console.log("user-access-control-test: ok");
   } finally {

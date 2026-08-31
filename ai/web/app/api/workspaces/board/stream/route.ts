@@ -46,9 +46,11 @@ export async function GET(req: Request) {
 
       send("hello", { workspaceIds, projectIds });
 
-      const unsubs = projectIds.map((projectId) =>
-        subscribeBoardTouch(projectId, (event) => send("board.touch", event)),
-      );
+      const unsubs = viewer.agentVisibility === "hidden"
+        ? []
+        : projectIds.map((projectId) =>
+            subscribeBoardTouch(projectId, (event) => send("board.touch", event)),
+          );
 
       const heartbeat = setInterval(() => {
         controller.enqueue(encoder.encode(`: hb\n\n`));

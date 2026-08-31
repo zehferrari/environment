@@ -47,6 +47,7 @@ type Task = {
   hasActiveBlocker: boolean;
   activeBlockerCommentId: string | null;
   activeWorking: boolean;
+  hideInternalActors: boolean;
   project: { slug: string; name: string; workspace?: { slug: string; name: string } | null } | null;
   workspaceColor?: string | null;
   projectColor?: string | null;
@@ -2001,6 +2002,7 @@ function PersonCell({
 }
 
 function boardActorForTask(task: Task): BoardActor | null {
+  if (task.hideInternalActors) return null;
   if (task.status === "To Do") return task.assignee ?? task.reporter;
   if (task.status === "In Progress") {
     return task.assignee ?? task.reviewer ?? task.manager ?? task.reporter;

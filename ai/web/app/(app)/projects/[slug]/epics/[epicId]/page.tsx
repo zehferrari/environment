@@ -70,6 +70,7 @@ import {
   type ActorVisibility,
 } from "@/lib/users/actor-visibility";
 import { buildAgentRedactor } from "@/lib/users/redact-agents";
+import { visibleActivityRecordWhere } from "@/lib/users/agent-content-policy";
 
 type ActorRow = {
   id: string;
@@ -625,7 +626,7 @@ export default async function EpicDetailPage({
     }) as Promise<Array<ActivityTimelineRow & { taskId: string | null }>>,
     taskIds.length > 0
       ? db.activityLog.findMany({
-          where: { taskId: { in: taskIds } },
+          where: { AND: [{ taskId: { in: taskIds } }, visibleActivityRecordWhere(viewer)] },
           orderBy: { createdAt: "desc" },
           select: {
             taskId: true,
@@ -663,8 +664,8 @@ export default async function EpicDetailPage({
   const resolvedReviewerId = epic.actingManagerId ?? null;
   // Body redactor: strips real agent slugs/usernames/names from member-visible
   // comment bodies. No-op for the owner.
-  const redactBody = buildAgentRedactor(actorVisibility.agentIdentities, actorVisibility.maskAgents);
-  const visibleEpicComments = viewer.canAccessOwnerFeatures
+  const redactBody = buildAgentRedactor(actorVisibility.agentIdentities, actorVisibility.redactAgentReferences);
+  const visibleEpicComments = (viewer.canAccessOwnerFeatures
     ? epic.comments
     : epic.comments.filter((comment) => {
         // Deleted agent comments stay hidden from members (the deleted-divider
@@ -675,7 +676,11 @@ export default async function EpicDetailPage({
           comment.user.id === actorVisibility.owner?.id &&
           extractMentions(comment.body, actorVisibility.agentIdentities.map(({ username }) => ({ username }))).length > 0
         );
-      });
+      })).map((comment) => (
+        actorVisibility.excludeAgentRecords && comment.deletedBy?.kind === "agent"
+          ? { ...comment, deletedById: null, deletedBy: null }
+          : comment
+      ));
 
   const chatMessages = canSeeAgentContent ? await db.agentChatMessage.findMany({
     where: {
@@ -773,7 +778,7 @@ export default async function EpicDetailPage({
     : null;
 
   const [chatArchives, binChatArchives, selectedChatArchive] = await Promise.all([
-    db.agentChatRoomArchive.findMany({
+    canSeeAgentContent ? db.agentChatRoomArchive.findMany({
       where: { projectId: epic.project.id, epicId: epic.id, deletedAt: null },
       orderBy: { createdAt: "desc" },
       take: 20,
@@ -784,8 +789,8 @@ export default async function EpicDetailPage({
         endedAt: true,
         messageCount: true,
       },
-    }),
-    db.agentChatRoomArchive.findMany({
+    }) : Promise.resolve([]),
+    canSeeAgentContent ? db.agentChatRoomArchive.findMany({
       where: { projectId: epic.project.id, epicId: epic.id, deletedAt: { not: null } },
       orderBy: { deletedAt: "desc" },
       take: 20,
@@ -797,8 +802,8 @@ export default async function EpicDetailPage({
         messageCount: true,
         deletedAt: true,
       },
-    }),
-    chatArchive
+    }) : Promise.resolve([]),
+    canSeeAgentContent && chatArchive
       ? db.agentChatRoomArchive.findFirst({
           where: { id: chatArchive, projectId: epic.project.id, epicId: epic.id },
           include: {
@@ -1031,6 +1036,9 @@ export default async function EpicDetailPage({
     row.kind === "epic.status" ||
     row.kind === "epic.action_plan.approve"
   )) ?? createdActivity;
+  const visibleEpicUpdatedAt = actorVisibility.excludeAgentRecords
+    ? new Date(createdAtMs(updatedActivity?.createdAt ?? epic.createdAt))
+    : epic.updatedAt;
 
   const tasksByStatus = new Map<string, typeof epic.tasks>();
   for (const s of TASK_STATUS_ORDER) tasksByStatus.set(s, []);
@@ -1092,10 +1100,10 @@ export default async function EpicDetailPage({
               <span className="text-nano font-semibold uppercase tracking-wider text-text-muted">
                 Updated{" "}
                 <time
-                  dateTime={epic.updatedAt.toISOString()}
-                  title={epic.updatedAt.toISOString()}
+                  dateTime={visibleEpicUpdatedAt.toISOString()}
+                  title={visibleEpicUpdatedAt.toISOString()}
                 >
-                  {timeAgo(epic.updatedAt)}
+                  {timeAgo(visibleEpicUpdatedAt)}
                 </time>
               </span>
               <button
@@ -1201,7 +1209,7 @@ export default async function EpicDetailPage({
                     ) : null}
 
                     {/* Branch, commit prefix, and deployment — persisted by the card's single Save. */}
-                    <div className="space-y-3 rounded-card border border-line bg-panel-soft p-card">
+                    {canSeeAgentContent ? <div className="space-y-3 rounded-card border border-line bg-panel-soft p-card">
                       <label className="block">
                         <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">
                           Branch
@@ -1244,9 +1252,9 @@ export default async function EpicDetailPage({
                           )}
                         </div>
                       </div>
-                    </div>
+                    </div> : null}
 
-                    {epic.status === "Review" || epic.completionReviewStatus !== "Not Required" ? (
+                    {canSeeAgentContent && (epic.status === "Review" || epic.completionReviewStatus !== "Not Required") ? (
                       <div className="space-y-1 rounded-card border border-amber-500/40 bg-amber-500/[0.08] p-card text-caption">
                         <div className="text-micro font-semibold uppercase tracking-wider text-text-muted">Whole-Epic acceptance</div>
                         <div className="font-semibold text-text">{epic.completionReviewStatus}</div>
@@ -1340,18 +1348,18 @@ export default async function EpicDetailPage({
                           <dt className="text-text-muted">Updated</dt>
                           <dd className="flex items-center gap-2">
                             <time
-                              dateTime={epic.updatedAt.toISOString()}
-                              title={epic.updatedAt.toISOString()}
+                              dateTime={visibleEpicUpdatedAt.toISOString()}
+                              title={visibleEpicUpdatedAt.toISOString()}
                               className="tabular-nums"
                             >
-                              {timeAgo(epic.updatedAt)}
+                              {timeAgo(visibleEpicUpdatedAt)}
                             </time>
                             {updatedActivity?.user ? (
                               <MessageAvatar actor={updatedActivity.user} size="sm" />
                             ) : null}
                           </dd>
                         </div>
-                        {epic.approvedOn ? (
+                        {canSeeAgentContent && epic.approvedOn ? (
                           <div className="flex items-center justify-between gap-3">
                             <dt className="text-text-muted">Approved</dt>
                             <dd className="flex items-center gap-2">
@@ -1366,7 +1374,7 @@ export default async function EpicDetailPage({
                             </dd>
                           </div>
                         ) : null}
-                        {epic.status === "Done" && epic.statusChangedAt ? (
+                        {canSeeAgentContent && epic.status === "Done" && epic.statusChangedAt ? (
                           <div className="flex items-center justify-between gap-3">
                             <dt className="text-text-muted">Done</dt>
                             <dd className="flex items-center gap-2">
@@ -1480,11 +1488,11 @@ export default async function EpicDetailPage({
                 workItemKey: t.workItemKey,
                 title: t.title,
                 status: t.status,
-                alertReporter: t.alertReporter,
+                alertReporter: actorVisibility.excludeAgentRecords ? false : t.alertReporter,
                 href: `/projects/${slug}/tasks/${t.id}`,
                 createdAt: t.createdAt.toISOString(),
-                statusChangedAt: t.statusChangedAt?.toISOString() ?? null,
-                approvedOn: t.approvedOn?.toISOString() ?? null,
+                statusChangedAt: actorVisibility.excludeAgentRecords ? null : t.statusChangedAt?.toISOString() ?? null,
+                approvedOn: actorVisibility.excludeAgentRecords ? null : t.approvedOn?.toISOString() ?? null,
                 archivedAt: t.archivedAt?.toISOString() ?? null,
                 reporter: viewer.canAccessOwnerFeatures ? serializeActor(t.reporter, actorVisibility) : null,
                 assignee: viewer.canAccessOwnerFeatures ? serializeActor(t.assignee, actorVisibility) : null,
@@ -1493,12 +1501,12 @@ export default async function EpicDetailPage({
                 updatedBy: viewer.canAccessOwnerFeatures ? (taskActivityActors.updatedBy.get(t.id) ?? taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter, actorVisibility)) : null,
                 assigneeName: viewer.canAccessOwnerFeatures ? (serializeActor(t.assignee, actorVisibility)?.username ?? null) : null,
                 reviewerName: viewer.canAccessOwnerFeatures ? (serializeActor(t.actingManager, actorVisibility)?.username ?? null) : null,
-                updatedAt: t.updatedAt.toISOString(),
-                activeWorking:
+                updatedAt: (actorVisibility.excludeAgentRecords ? t.createdAt : t.updatedAt).toISOString(),
+                activeWorking: actorVisibility.excludeAgentRecords ? false : (
                   (t.status === "In Progress" &&
                     Boolean(t.assignee?.agent?.slug && busyAgentSlugs.has(t.assignee.agent.slug))) ||
                   (t.status === "Review" &&
-                    Boolean(t.actingManager?.agent?.slug && busyAgentSlugs.has(t.actingManager.agent.slug))),
+                    Boolean(t.actingManager?.agent?.slug && busyAgentSlugs.has(t.actingManager.agent.slug)))),
               }))}
               projectSlug={slug}
               reorderEpicTasks={reorderEpicTasks}
