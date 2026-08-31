@@ -5,7 +5,7 @@ import { PersistentPmStreamProvider } from "@/components/persistent-pm-stream-pr
 import { ViewerPolicyProvider } from "@/components/viewer-policy-provider";
 import Sidebar from "@/components/sidebar";
 import ToastProvider from "@/components/toast";
-import { requireViewer } from "@/lib/auth/permissions";
+import { requireViewer, viewerExperienceForRole } from "@/lib/auth/permissions";
 
 export default async function AppLayout({
   children,
@@ -20,23 +20,27 @@ export default async function AppLayout({
   // provider for non-owners would loop it through 403 reconnects forever, so
   // only owners get the live stream; everyone else keeps the SSR status hint.
   const viewer = await requireViewer();
-  return (
-    <PersistentPmStreamProvider>
-      <ViewerPolicyProvider>
-        <ToastProvider>
-        {viewer.canAccessOwnerFeatures ? <AgentPresenceProvider /> : null}
+  const experience = viewerExperienceForRole(viewer.role);
+  const shell = (
+    <ViewerPolicyProvider>
+      <ToastProvider>
+        {experience.canViewGlobalAgentOperations ? <AgentPresenceProvider /> : null}
         <div className="relative flex min-h-screen text-text">
           <Sidebar />
           <main className="relative min-w-0 flex-1 px-4 pt-4 pb-[calc(env(safe-area-inset-bottom)+6.5rem)] sm:px-page-x md:pt-page-y md:pb-24 lg:px-page-x-lg">
             <div className="mx-auto w-full min-w-0 max-w-[1480px] 3xl:max-w-[1780px] 4xl:max-w-[5000px]">{children}</div>
           </main>
-          <CommandDeck />
+          {experience.canViewProjectWorkflow ? <CommandDeck /> : null}
         </div>
-        {/* The one app-wide create (+). Context-aware, in-place, no redirects. */}
-        <CreateFabServer />
-        {chatpane}
-        </ToastProvider>
-      </ViewerPolicyProvider>
+        {experience.canViewProjectWorkflow ? <CreateFabServer /> : null}
+        {experience.canViewGlobalAgentOperations ? chatpane : null}
+      </ToastProvider>
+    </ViewerPolicyProvider>
+  );
+  if (experience.customerSafe) return shell;
+  return (
+    <PersistentPmStreamProvider>
+      {shell}
     </PersistentPmStreamProvider>
   );
 }

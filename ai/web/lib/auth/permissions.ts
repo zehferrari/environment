@@ -7,6 +7,7 @@ import {
   hasOwnerRole,
   isActiveOwnerPrincipal,
   resolveHumanRole,
+  viewerExperienceForRole,
   type AgentVisibilityMode,
   type HumanRole,
 } from "@/lib/auth/roles";
@@ -28,9 +29,13 @@ export {
   hasOwnerRole,
   hasRole,
   isActiveOwnerPrincipal,
+  customerSafeWorkflowLabel,
+  epicDetailTabsForRole,
   resolveHumanRole,
+  taskDetailTabsForRole,
+  viewerExperienceForRole,
 } from "@/lib/auth/roles";
-export type { AgentVisibilityMode, HumanRole } from "@/lib/auth/roles";
+export type { AgentVisibilityMode, HumanRole, ViewerExperience } from "@/lib/auth/roles";
 
 export type Viewer = {
   id: string;

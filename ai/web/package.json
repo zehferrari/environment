@@ -78,6 +78,7 @@
     "test:workspace-api": "tsx scripts/workspace-api-test.ts",
     "test:user-access-control": "tsx scripts/user-access-control-test.ts",
     "test:human-role-policy": "tsx scripts/human-role-policy-test.ts",
+    "test:customer-role-dom-contract": "tsx scripts/customer-role-dom-contract-test.tsx",
     "test:access-policy": "tsx scripts/access-policy-test.ts",
     "test:access-management": "tsx scripts/access-management-test.ts",
     "test:access-revocation": "tsx scripts/access-revocation-test.ts",

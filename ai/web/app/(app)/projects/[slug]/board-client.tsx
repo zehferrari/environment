@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, useTransition } from "react";
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState, useTransition } from "react";
 import { createPortal } from "react-dom";
 import {
   actorDisplayName,
@@ -14,6 +14,7 @@ import { formatGridDate } from "@/lib/date-format";
 import ConfirmPopup from "@/components/confirm-popup";
 import { canShowDeploymentForTask, deploymentStatusIcon } from "@/lib/deploy/deployment-status";
 import { boardAvailableHeight, boardChromeSlotId, boardStickyTop } from "@/lib/board-chrome";
+import { customerSafeWorkflowLabel } from "@/lib/auth/roles";
 
 type BoardActor = MessageActor & { id: string };
 
@@ -217,6 +218,7 @@ type BoardProps = {
   columns: ReadonlyArray<Column>;
   tasks: Task[];
   deleteTaskAction: (formData: FormData) => Promise<void>;
+  customerSafe?: boolean;
 };
 
 // Per Stage 0 sign-off (HOMELAB-44 description): the Backlog column has a
@@ -230,7 +232,7 @@ const FOCUS_VISIBLE_KEY_PREFIX = "pm.board.focusVisible.";
 
 const DONE_VISIBLE_KEY_PREFIX = "pm.board.doneVisible.";
 
-export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, columns, tasks, deleteTaskAction }: BoardProps) {
+export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, columns, tasks, deleteTaskAction, customerSafe = false }: BoardProps) {
   // Card colour context drives which identity cues a card shows:
   //   home  (aggregate landing) → workspace left border + project background
   //   workspace board           → project background only (no border)
@@ -514,7 +516,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
       byStatus,
     };
   }, [columns, items]);
-  const filtersActive = Boolean(normalizedQuery || attentionOnly || !doneVisible);
+  const filtersActive = Boolean(normalizedQuery || (!customerSafe && attentionOnly) || !doneVisible);
 
   // Backlog is no longer a board column: it renders immediately before the
   // four workflow columns as its own task grid (HOMELAB-41).
@@ -534,7 +536,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
   const columnLanes = useMemo(
     () =>
       workflowColumns.map((col) => ({
-        col,
+        col: { ...col, label: customerSafeWorkflowLabel(col.label, customerSafe) },
         tasks: visibleItems
           .filter((t) => t.status === col.id)
           .sort((a, b) => {
@@ -544,9 +546,10 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
             return a.rank - b.rank;
           }),
         })),
-    [workflowColumns, visibleItems],
+    [customerSafe, workflowColumns, visibleItems],
   );
   const workflowFocus = useMemo(() => {
+    if (customerSafe) return [];
     const priority: Record<string, number> = {
       Review: 0,
       "To Do": 1,
@@ -566,7 +569,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
         return a.rank - b.rank;
       })
       .slice(0, 6);
-  }, [visibleItems]);
+  }, [customerSafe, visibleItems]);
   // While the Workflow Focus block is visible the board narrows to the two
   // active lanes: To Do and Done are hidden (Backlog keeps its own toggle but
   // stays hidden too). Toggling focus off restores every column.
@@ -580,7 +583,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
   );
   const mobileLanes = focusActive
     ? visibleColumnLanes
-    : backlogVisible
+    : !customerSafe && backlogVisible
       ? [mobileBacklogLane, ...columnLanes]
       : columnLanes;
 
@@ -680,7 +683,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
 
   return (
     <>
-      <ConfirmPopup
+      {!customerSafe ? <ConfirmPopup
         open={Boolean(deleteTarget)}
         title="Move task to bin"
         description={deleteTarget ? `Move “${deleteTarget.title}” to the bin? You can restore it before the bin TTL elapses.` : ""}
@@ -689,7 +692,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
         busy={isPending}
         onConfirm={performSingleDelete}
         onCancel={() => setDeleteTarget(null)}
-      />
+      /> : null}
       {chromeTargets.controls
         ? createPortal(
             <BoardControls
@@ -714,6 +717,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
                 setDoneVisible(true);
               }}
               boardStats={boardStats}
+              customerSafe={customerSafe}
             />,
             chromeTargets.controls,
           )
@@ -759,6 +763,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
             setDoneVisible(true);
           }}
           boardStats={boardStats}
+          customerSafe={customerSafe}
         />
         {filtersActive ? (
           <BoardFilterStatus
@@ -854,7 +859,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
           className="4xl:min-h-[calc(100dvh-var(--board-sticky-top))]"
         >
           {/* Backlog before board in ultra-wide */}
-          {backlogVisible && !focusActive ? (
+          {!customerSafe && backlogVisible && !focusActive ? (
             <section className="mb-5 hidden rounded-2xl border border-line bg-panel/95 shadow-[var(--shadow-sm)] backdrop-blur 4xl:block 4xl:mb-3 4xl:max-h-[35%] 4xl:overflow-hidden">
               <div className="flex items-center justify-between gap-3 border-b border-line bg-panel-soft/70 px-4 py-2">
                 <h2 className="flex items-center gap-2 text-subheading font-semibold text-text">
@@ -934,7 +939,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
       )}
 
       {/* Backlog is ordered before the board on non-ultra-wide desktop. */}
-      {backlogVisible && !isMobileBoard && !focusActive ? (
+      {!customerSafe && backlogVisible && !isMobileBoard && !focusActive ? (
         <section className="mb-5 hidden md:order-first md:block 4xl:hidden">
           <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
             <div>
@@ -995,18 +1000,20 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
 function BoardSummary({
   boardStats,
   placement,
+  customerSafe,
 }: {
   boardStats: BoardStats;
   placement: "header" | "stacked";
+  customerSafe: boolean;
 }) {
   const summary = (
     <div className="min-w-0">
       <div className="flex flex-wrap items-center gap-2">
-        <h2 className="text-subheading font-semibold tracking-tight text-text">Workflow board</h2>
+        <h2 className="text-subheading font-semibold tracking-tight text-text">{customerSafe ? "Project board" : "Workflow board"}</h2>
         <span className="rounded-full border border-line bg-panel-soft px-2 py-0.5 text-caption font-semibold tabular-nums text-text-muted">
           {boardStats.open} open
         </span>
-        {boardStats.blocked > 0 ? (
+        {!customerSafe && boardStats.blocked > 0 ? (
           <span className="inline-flex items-center gap-1 rounded-full border border-crit/30 bg-crit/[0.07] px-2 py-0.5 text-caption font-semibold text-crit">
             <LockGlyph /> {boardStats.blocked} blocked
           </span>
@@ -1032,7 +1039,7 @@ function BoardSummary({
     <div className="grid grid-cols-3 divide-x divide-line overflow-hidden rounded-xl border border-line bg-panel-soft">
       <BoardMetric label="To do" value={boardStats.byStatus["To Do"] ?? 0} tone="todo" />
       <BoardMetric label="Doing" value={boardStats.byStatus["In Progress"] ?? 0} tone="progress" />
-      <BoardMetric label="Review" value={boardStats.byStatus.Review ?? 0} tone="review" />
+      <BoardMetric label={customerSafe ? "Ready" : "Review"} value={boardStats.byStatus.Review ?? 0} tone="review" />
     </div>
   );
 
@@ -1040,7 +1047,7 @@ function BoardSummary({
     return (
       <section
         data-board-summary
-        aria-label="Workflow board summary"
+        aria-label={customerSafe ? "Project board summary" : "Workflow board summary"}
         className="grid w-full min-w-0 grid-cols-[minmax(24rem,1fr)_auto] items-center gap-8"
       >
         {summary}
@@ -1075,6 +1082,7 @@ function BoardControls({
   filtersActive,
   onReset,
   boardStats,
+  customerSafe,
 }: {
   placement: "toolbar" | "stacked";
   searchQuery: string;
@@ -1093,6 +1101,7 @@ function BoardControls({
   filtersActive: boolean;
   onReset: () => void;
   boardStats: BoardStats;
+  customerSafe: boolean;
 }) {
   const toolbar = placement === "toolbar";
   return (
@@ -1112,7 +1121,7 @@ function BoardControls({
           aria-label="Search board"
           value={searchQuery}
           onChange={(event) => onSearchChange(event.currentTarget.value)}
-          placeholder="Search key, task, epic, project or person…"
+          placeholder={customerSafe ? "Search key, task, epic or project…" : "Search key, task, epic, project or person…"}
           className="min-h-11 w-full rounded-lg border border-line bg-panel py-2 pl-9 pr-10 text-body text-text shadow-[var(--shadow-xs)] outline-none transition focus:border-accent focus:shadow-[var(--focus-ring)] md:min-h-0"
         />
         {searchQuery ? (
@@ -1128,13 +1137,13 @@ function BoardControls({
       </div>
 
       <div className={`flex min-w-0 items-center gap-2 ${toolbar ? "shrink-0" : "flex-wrap"}`}>
-        <BoardToggle
+        {!customerSafe ? <BoardToggle
           active={attentionOnly}
           onClick={onToggleAttention}
           label="Attention"
           count={boardStats.attention}
           icon={<SparkIcon />}
-        />
+        /> : null}
         <BoardToggle
           active={!doneVisible}
           onClick={onToggleDone}
@@ -1142,7 +1151,7 @@ function BoardControls({
           count={boardStats.done}
           icon={<EyeIcon crossed={!doneVisible} />}
         />
-        {showFocus ? (
+        {!customerSafe && showFocus ? (
           <BoardToggle
             active={focusVisible}
             onClick={onToggleFocus}
@@ -1151,13 +1160,13 @@ function BoardControls({
             icon={<FocusIcon />}
           />
         ) : null}
-        <BoardToggle
+        {!customerSafe ? <BoardToggle
           active={backlogVisible}
           onClick={onToggleBacklog}
           label="Backlog"
           count={backlogCount}
           icon={<BacklogIcon />}
-        />
+        /> : null}
         {filtersActive ? (
           <button
             type="button"
@@ -1549,23 +1558,24 @@ function BoardCardBody({
       </span>
     )
   ) : null;
+  const customerSafe = task.hideInternalActors;
+  const contentColumn = customerSafe ? "col-start-1" : "col-start-2";
 
   return (
     <div className="relative z-10">
-      <HumanReviewSrLabel task={task} />
-      <div data-board-card-grid className="grid grid-cols-[2.625rem_minmax(0,1fr)] gap-x-2.5">
-        <div className="col-start-1 row-start-1 flex min-h-7 items-center justify-center">
+      {!customerSafe ? <HumanReviewSrLabel task={task} /> : null}
+      <div data-board-card-grid className={`grid gap-x-2.5 ${customerSafe ? "grid-cols-[minmax(0,1fr)]" : "grid-cols-[2.625rem_minmax(0,1fr)]"}`}>
+        {!customerSafe ? <div className="col-start-1 row-start-1 flex min-h-7 items-center justify-center">
           <BoardReporterMarker task={task} />
-        </div>
+        </div> : null}
 
-        <div className="col-start-2 row-start-1 flex min-h-7 min-w-0 items-center gap-1.5 overflow-hidden text-micro text-text-muted">
+        <div className={`${contentColumn} row-start-1 flex min-h-7 min-w-0 items-center gap-1.5 overflow-hidden text-micro text-text-muted`}>
           <Link
             href={href}
             className="min-w-0 truncate font-mono font-semibold tracking-wide outline-none transition hover:text-accent"
           >
             {task.workItemKey ?? "—"}
           </Link>
-          <ElapsedClock task={task} now={now} />
           <time
             dateTime={task.updatedAt}
             title={`Updated ${task.updatedAt}`}
@@ -1574,9 +1584,10 @@ function BoardCardBody({
           >
             {relativeUpdated(task.updatedAt)}
           </time>
-          <ExecutionBadge task={task} />
-          <BlockedBadge task={task} />
-          {canShowTaskDeploymentIndicator(task) ? (
+          {!customerSafe ? <ElapsedClock task={task} now={now} /> : null}
+          {!customerSafe ? <ExecutionBadge task={task} /> : null}
+          {!customerSafe ? <BlockedBadge task={task} /> : null}
+          {!customerSafe && canShowTaskDeploymentIndicator(task) ? (
             <DeploymentIndicator status={task.deploymentStatus} />
           ) : null}
         </div>
@@ -1584,7 +1595,7 @@ function BoardCardBody({
         {/* Both identities share the rail cell: the builder at full size with
             the resolved reviewer riding its bottom-right corner, so a Done
             card gains a second face without gaining a row. */}
-        <div
+        {!customerSafe ? <div
           data-board-card-avatar
           className="col-start-1 row-start-2 row-span-3 -mt-1 flex justify-center"
         >
@@ -1607,16 +1618,16 @@ function BoardCardBody({
               </span>
             ) : null}
           </span>
-        </div>
+        </div> : null}
 
-        <Link href={href} className="col-start-2 row-start-2 min-w-0 rounded-md pt-0.5 outline-none">
+        <Link href={href} className={`${contentColumn} row-start-2 min-w-0 rounded-md pt-0.5 outline-none`}>
           <span className="line-clamp-2 font-medium leading-snug text-text">{task.title}</span>
         </Link>
 
         {hasScope ? (
           <div
             data-board-card-scope
-            className="col-start-2 row-start-3 flex min-w-0 flex-wrap items-center gap-x-1.5 pt-1 font-mono text-micro font-semibold text-text-muted"
+            className={`${contentColumn} row-start-3 flex min-w-0 flex-wrap items-center gap-x-1.5 pt-1 font-mono text-micro font-semibold text-text-muted`}
           >
             {workspaceSlug ? (
               <Link
@@ -1648,12 +1659,12 @@ function BoardCardBody({
           </div>
         ) : null}
         {!epicInline && epicNode ? (
-          <div className="col-start-2 row-start-4 flex min-w-0 pt-1 text-micro">
+          <div className={`${contentColumn} row-start-4 flex min-w-0 pt-1 text-micro`}>
             {epicNode}
           </div>
         ) : null}
 
-        {task.hasActiveBlocker ? (
+        {!customerSafe && task.hasActiveBlocker ? (
           <div
             data-board-card-blocker-slot
             className="col-start-1 row-start-5 flex items-center justify-center pt-2"
@@ -1662,7 +1673,7 @@ function BoardCardBody({
           </div>
         ) : null}
 
-        <div className="col-start-2 row-start-5 flex min-w-0 items-center gap-2 pt-2 text-caption text-text-muted">
+        {!customerSafe ? <div className="col-start-2 row-start-5 flex min-w-0 items-center gap-2 pt-2 text-caption text-text-muted">
           <SubtaskProgress task={task} />
           <button
             type="button"
@@ -1677,7 +1688,7 @@ function BoardCardBody({
           >
             <TrashIcon />
           </button>
-        </div>
+        </div> : null}
       </div>
     </div>
   );

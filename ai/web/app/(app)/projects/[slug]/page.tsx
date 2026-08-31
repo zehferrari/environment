@@ -21,6 +21,7 @@ import {
   requireProjectAccess,
   requireViewer,
   type Viewer,
+  viewerExperienceForRole,
 } from "@/lib/auth/permissions";
 import { visibleActivityRecordWhere } from "@/lib/users/agent-content-policy";
 import {
@@ -219,6 +220,7 @@ export default async function ProjectBoardPage({
 }) {
   const { slug } = await params;
   const viewer = await requireViewer();
+  const experience = viewerExperienceForRole(viewer.role);
   const project = await db.project.findFirst({
     where: accessibleProjectWhere(viewer, { slug, deletedAt: null }),
     include: {
@@ -319,7 +321,7 @@ export default async function ProjectBoardPage({
               .filter((edge) => edge.prerequisite.status !== "Done")
               .map((edge) => edge.prerequisite.id),
           ])];
-          const blockedByKeys = unresolvedIds.map((id) => visibleBlockerById.get(id)?.workItemKey ?? "another task");
+          const blockedByKeys = experience.customerSafe ? [] : unresolvedIds.map((id) => visibleBlockerById.get(id)?.workItemKey ?? "another task");
           return {
             id: t.id,
             workItemKey: t.workItemKey ?? null,
@@ -362,13 +364,14 @@ export default async function ProjectBoardPage({
             hideInternalActors: actorVisibility.excludeAgentRecords,
           };
         })}
+        customerSafe={experience.customerSafe}
         deleteTaskAction={binTask}
       />
 
       {/* The shared board (+) speed-dial is the visible FAB; AddTaskFab stays
           mounted (hidden trigger) purely for its New-task modal + the
           ?newTask=1 hand-off the menu routes through. */}
-      <AddTaskFab
+      {!experience.customerSafe ? <AddTaskFab
         projectId={project.id}
         projectSlug={project.slug}
         principals={principals.map((p) => ({
@@ -387,7 +390,7 @@ export default async function ProjectBoardPage({
         canSetPrivate={viewer.canAccessOwnerFeatures}
         createTaskAction={createTask}
         hideTrigger
-      />
+      /> : null}
       <PublishedUpdatesList published={publishedUpdates} />
     </div>
   );

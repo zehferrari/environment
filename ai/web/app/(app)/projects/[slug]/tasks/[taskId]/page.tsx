@@ -118,10 +118,13 @@ import {
   accessibleUserWhere,
   assertAgentAssignmentAllowed,
   canAccessTask,
+  customerSafeWorkflowLabel,
   requireProjectAccess,
   requireTaskAccess,
   requireViewer,
+  taskDetailTabsForRole,
   type Viewer,
+  viewerExperienceForRole,
 } from "@/lib/auth/permissions";
 import {
   getActorVisibility,
@@ -1302,7 +1305,6 @@ function discussionTargetValue(
 
 const DEVELOPMENT_TAB = "Development";
 const TASK_TABS = ["Description", "Action Plan", "Sub-Tasks", "Attachments", "Comments", "Activities", DEVELOPMENT_TAB, "Changes"] as const;
-const OWNER_ONLY_TASK_TABS = new Set(["Action Plan", "Activities", DEVELOPMENT_TAB, "Changes"]);
 
 function tabParam(tab: string) {
   return tab
@@ -1345,6 +1347,7 @@ export default async function TaskDetailPage({
 
   const viewer = await requireActor();
   if (!(await canAccessTask(viewer, taskId))) notFound();
+  const experience = viewerExperienceForRole(viewer.role);
   const canSeeAgentContent = viewer.agentVisibility !== "hidden";
 
   const [taskShell, comments, attachments] = await Promise.all([
@@ -1365,10 +1368,8 @@ export default async function TaskDetailPage({
   // for standalone tasks (no epic parent — an epic owns its tasks' deploy gate).
   const hasDeploymentTab =
     canShowDeploymentTab(task) && Boolean(task.project.repositoryPath) && task.status === "Done";
-  const showDeploymentTab = viewer.canAccessOwnerFeatures && hasDeploymentTab;
-  const taskTabs = (hasDeploymentTab ? [...TASK_TABS] : TASK_TABS.filter((name) => name !== DEVELOPMENT_TAB))
-    .filter((name) => viewer.canAccessOwnerFeatures || !OWNER_ONLY_TASK_TABS.has(name))
-    .filter((name) => canSeeAgentContent || name !== "Sub-Tasks");
+  const showDeploymentTab = experience.canViewProjectWorkflow && hasDeploymentTab;
+  const taskTabs = taskDetailTabsForRole(viewer.role, hasDeploymentTab);
   if (!taskTabs.some((name) => name === selectedTab)) selectedTab = "Description";
 
   // Comment moderation is exclusive to the Mission Control owner.
@@ -1454,6 +1455,7 @@ export default async function TaskDetailPage({
   const visibleTaskComments = viewer.canAccessOwnerFeatures
     ? task.comments
     : task.comments.filter((comment) => {
+        if (experience.customerSafe && comment.user.kind === "agent") return false;
         // Deleted agent comments were fully hidden from members before this
         // change; keep them hidden (the deleted-divider reveal would expose the
         // raw body and the deleting agent's slug).
@@ -1889,13 +1891,13 @@ export default async function TaskDetailPage({
                 </time>
               </span>
               <div className="flex items-center gap-2">
-                <TaskHeaderWorkflowActions
+                {!experience.customerSafe ? <TaskHeaderWorkflowActions
                   taskId={task.id}
                   projectSlug={slug}
                   canReset={taskWorkflowActions.canReset}
                   canCancel={taskWorkflowActions.canCancel}
                   canAccept={taskWorkflowActions.canAccept}
-                />
+                /> : null}
                 <button
                   form="taskMain"
                   type="submit"
@@ -2006,7 +2008,7 @@ export default async function TaskDetailPage({
             <TabsNav
               tabs={taskTabs}
               sticky
-              badges={viewer.canAccessOwnerFeatures ? { "Action Plan": unreadActionPlanMessages.length } : undefined}
+              badges={experience.canViewProjectWorkflow ? { "Action Plan": unreadActionPlanMessages.length } : undefined}
             />
             <div className="pt-4">
               <TabPanel name="Description">
@@ -2046,7 +2048,7 @@ export default async function TaskDetailPage({
                         >
                           {COLUMN_IDS.map((id) => (
                             <option key={id} value={id}>
-                              {id}
+                              {customerSafeWorkflowLabel(id, experience.customerSafe)}
                             </option>
                           ))}
                         </select>
@@ -2060,7 +2062,7 @@ export default async function TaskDetailPage({
                       ) : null}
                     </div>
 
-                    <div
+                    {canSeeAgentContent ? <div
                       data-task-roles
                       className="grid grid-cols-2 gap-3 rounded-card border border-line bg-panel-soft p-card"
                     >
@@ -2112,7 +2114,7 @@ export default async function TaskDetailPage({
                           </time>
                         </div>
                       </div>
-                    </div>
+                    </div> : null}
 
                     {/* Branch, commit prefix, and deployment — persisted by the card's single Save. */}
                     {canSeeAgentContent ? <div data-task-source-control className="space-y-3 rounded-card border border-line bg-panel-soft p-card">
@@ -2315,7 +2317,7 @@ export default async function TaskDetailPage({
               </TabPanel>
 
 
-              {viewer.canAccessOwnerFeatures ? <TabPanel name="Action Plan">
+              {experience.canViewProjectWorkflow ? <TabPanel name="Action Plan">
                 <div className="space-y-3 pt-2">
                   <div
                     data-structured-action-plan-status
@@ -2535,12 +2537,14 @@ export default async function TaskDetailPage({
                     </li>
                   );
                 }
-                const commentAuthor = serializeVisibleActorAs(
-                  c.user,
-                  c.user.id === resolvedReviewerId ? "reviewer" : "assignee",
-                  actorVisibility,
-                )!;
-                const authorRole = syntheticRoleMeta(commentAuthor);
+                const commentAuthor = experience.customerSafe
+                  ? serializeActor(c.user, actorVisibility)!
+                  : serializeVisibleActorAs(
+                      c.user,
+                      c.user.id === resolvedReviewerId ? "reviewer" : "assignee",
+                      actorVisibility,
+                    )!;
+                const authorRole = experience.customerSafe ? null : syntheticRoleMeta(commentAuthor);
                 return (
                   <li
                     key={c.id}
@@ -2666,7 +2670,7 @@ export default async function TaskDetailPage({
                 </div>
               </TabPanel>
 
-              {viewer.canAccessOwnerFeatures ? <TabPanel name="Activities">
+              {experience.canViewProjectWorkflow ? <TabPanel name="Activities">
                 <div className="pt-2">
                   <ActivityTimeline rows={visibleActivity} />
                 </div>
@@ -2696,7 +2700,7 @@ export default async function TaskDetailPage({
                 </TabPanel>
               ) : null}
 
-              {viewer.canAccessOwnerFeatures ? <TabPanel name="Changes">
+              {experience.canViewProjectWorkflow ? <TabPanel name="Changes">
                 <TaskChangesPanel
                   changes={taskChanges}
                   branchName={taskBranchName}

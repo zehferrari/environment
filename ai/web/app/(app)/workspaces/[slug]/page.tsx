@@ -11,6 +11,7 @@ import {
   accessibleTaskWhere,
   requireViewer,
   workspaceAccessWhere,
+  viewerExperienceForRole,
 } from "@/lib/auth/permissions";
 import { visibleActivityRecordWhere } from "@/lib/users/agent-content-policy";
 import {
@@ -90,6 +91,7 @@ export const dynamic = "force-dynamic";
 
 export default async function WorkspaceBoardPage({ params }: { params: Promise<{ slug: string }> }) {
   const viewer = await requireViewer();
+  const experience = viewerExperienceForRole(viewer.role);
   const { slug: rawSlug } = await params;
   let slug: string;
   try {
@@ -187,7 +189,7 @@ export default async function WorkspaceBoardPage({ params }: { params: Promise<{
             ...(t.blockedById && t.blockedBy?.status !== "Done" ? [t.blockedById] : []),
             ...t.dependencies.filter((edge) => edge.prerequisite.status !== "Done").map((edge) => edge.prerequisite.id),
           ])];
-          const blockedByKeys = unresolvedIds.map((id) => visibleBlockerById.get(id)?.workItemKey ?? "another task");
+          const blockedByKeys = experience.customerSafe ? [] : unresolvedIds.map((id) => visibleBlockerById.get(id)?.workItemKey ?? "another task");
           return {
             id: t.id,
             workItemKey: t.workItemKey ?? null,
@@ -225,6 +227,7 @@ export default async function WorkspaceBoardPage({ params }: { params: Promise<{
             hideInternalActors: actorVisibility.excludeAgentRecords,
           };
         })}
+        customerSafe={experience.customerSafe}
         deleteTaskAction={binTask}
       />
     </div>

@@ -18,6 +18,7 @@ import {
   requireViewer,
   workspaceAccessWhere,
   type Viewer,
+  viewerExperienceForRole,
 } from "@/lib/auth/permissions";
 import { visibleActivityRecordWhere } from "@/lib/users/agent-content-policy";
 import {
@@ -129,6 +130,7 @@ export default async function WorkspacesLandingPage({ searchParams }: { searchPa
   const params = await searchParams;
   const showingArchived = params?.archived === "1";
   const viewer = await requireViewer();
+  const experience = viewerExperienceForRole(viewer.role);
 
   if (showingArchived) {
     return <ArchivedWorkspaces viewer={viewer} restoreAction={restoreWorkspaceAction} />;
@@ -242,7 +244,9 @@ export default async function WorkspacesLandingPage({ searchParams }: { searchPa
     <div data-board-focus-root>
       {workspaces.length === 0 ? (
         <div className="rounded-panel border border-dashed border-line bg-panel p-card text-body text-text-muted">
-          No active workspaces yet. Use the (+) button to create one, then manage projects, boards, and agents here.
+          {experience.customerSafe
+            ? "No project access has been shared with you yet."
+            : "No active workspaces yet. Use the (+) button to create one, then manage projects and boards here."}
         </div>
       ) : (
         <Board
@@ -255,7 +259,7 @@ export default async function WorkspacesLandingPage({ searchParams }: { searchPa
               ...(t.blockedById && t.blockedBy?.status !== "Done" ? [t.blockedById] : []),
               ...t.dependencies.filter((edge) => edge.prerequisite.status !== "Done").map((edge) => edge.prerequisite.id),
             ])];
-            const blockedByKeys = unresolvedIds.map((id) => visibleBlockerById.get(id)?.workItemKey ?? "another task");
+            const blockedByKeys = experience.customerSafe ? [] : unresolvedIds.map((id) => visibleBlockerById.get(id)?.workItemKey ?? "another task");
             const project = projectById.get(t.projectId) ?? null;
             return {
               id: t.id,
@@ -300,6 +304,7 @@ export default async function WorkspacesLandingPage({ searchParams }: { searchPa
               hideInternalActors: actorVisibility.excludeAgentRecords,
             };
           })}
+          customerSafe={experience.customerSafe}
           deleteTaskAction={binTask}
         />
       )}
