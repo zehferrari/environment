@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 // Locked behind auth — Stage 1 only; Stage 2 (HOMELAB-44) gates by role.
 export async function GET() {
   const viewer = await getViewer();
-  if (!viewer?.isOwner) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  if (!viewer?.canAccessOwnerFeatures) return NextResponse.json({ error: "forbidden" }, { status: 403 });
 
   const ownerBootstrap = await bootstrapOwner();
   const result = await syncAgents();

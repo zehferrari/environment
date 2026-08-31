@@ -211,7 +211,7 @@ export default async function WorkspacesLandingPage({ searchParams }: { searchPa
           select: { taskId: true, kind: true, payload: true, createdAt: true, user: { select: actorSelect } },
         })
       : Promise.resolve([]),
-    viewer.isOwner ? readBusyAgentSlugs() : Promise.resolve(new Set<string>()),
+    viewer.canAccessOwnerFeatures ? readBusyAgentSlugs() : Promise.resolve(new Set<string>()),
     getActorVisibility(viewer),
     blockerIds.length > 0
       ? db.task.findMany({
@@ -370,7 +370,7 @@ async function ArchivedWorkspaces({
                   <dt className="text-nano uppercase tracking-wider">Projects</dt>
                   <dd className="text-body font-semibold text-text">{workspace.projects.length}</dd>
                 </div>
-                {viewer.isOwner ? (
+                {viewer.canAccessOwnerFeatures ? (
                   <div className="rounded-xl border border-line bg-bg px-3 py-2">
                     <dt className="text-nano uppercase tracking-wider">Agent pool</dt>
                     <dd className="text-body font-semibold text-text">{workspace.agentPool.length}</dd>
@@ -378,7 +378,7 @@ async function ArchivedWorkspaces({
                 ) : null}
               </dl>
             </Link>
-            {viewer.isOwner ? (
+            {viewer.canAccessOwnerFeatures ? (
               <form action={restoreAction}>
                 <input type="hidden" name="slug" value={workspace.slug} />
                 <button type="submit" className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-caption font-medium text-text-muted hover:border-accent hover:text-accent">

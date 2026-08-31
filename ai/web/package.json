@@ -76,6 +76,7 @@
     "test:workspace-deployment-rollup": "tsx scripts/workspace-deployment-rollup-test.ts",
     "test:workspace-api": "tsx scripts/workspace-api-test.ts",
     "test:user-access-control": "tsx scripts/user-access-control-test.ts",
+    "test:human-role-policy": "tsx scripts/human-role-policy-test.ts",
     "test:user-lifecycle": "tsx scripts/user-lifecycle-test.ts",
     "test:user-lifecycle-controls": "tsx scripts/user-lifecycle-controls-test.tsx",
     "test:password-policy": "tsx scripts/password-policy-test.ts",

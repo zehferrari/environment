@@ -34,6 +34,9 @@ model User {
   // The first human account owns Mission Control. This is an explicit,
   // immutable capability rather than a username convention.
   isOwner            Boolean         @default(false) @map("is_owner")
+  // Canonical human role. Owner authority still comes exclusively from
+  // isOwner; the relation makes owner/admin/customer explicit for policy and
+  // presentation without allowing a role row to manufacture ownership.
   rolePermissionId   String?
   rolePermission     RolePermission? @relation(fields: [rolePermissionId], references: [id])
   agentId            String?         @unique
@@ -87,13 +90,13 @@ model User {
   @@index([kind])
   @@index([status])
   @@index([isOwner])
+  @@index([rolePermissionId])
 }
 
 model RolePermission {
   id          String   @id @default(cuid())
-  name        String   @unique // e.g. "developer", "manager", "admin"
+  name        String   @unique // canonical human role: "owner" | "admin" | "customer"
   description String?
-  // Stage 2 (HOMELAB-44) will hang permission JSON / policy here.
   users       User[]
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt

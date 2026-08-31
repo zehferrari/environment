@@ -26,6 +26,7 @@
 import { revalidatePath } from "next/cache";
 import { NextResponse, type NextRequest } from "next/server";
 import { Prisma } from "@prisma/client";
+import { isActiveOwnerPrincipal } from "@/lib/auth/roles";
 import { db } from "@/lib/db";
 import { verifyWorkItemGrantToken } from "@/lib/agents/workflow/token/work-item";
 import { validateProposal } from "@/lib/work-items/proposal";
@@ -102,12 +103,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isActiveOwnerGrant(grant: WorkItemGrant): boolean {
-  return Boolean(
-    grant.sender
-      && grant.sender.kind === "human"
-      && grant.sender.status === "active"
-      && grant.sender.isOwner,
-  );
+  return isActiveOwnerPrincipal(grant.sender);
 }
 
 async function discussionGrantIsPrivate(grant: Extract<WorkItemGrant, { source: "discussion" }>) {

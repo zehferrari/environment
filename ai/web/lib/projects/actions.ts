@@ -93,7 +93,7 @@ export async function setProjectSettings(formData: FormData) {
 
   const canEditDeployment =
     actor.kind === "human" ||
-    actor.isOwner ||
+    actor.canAccessOwnerFeatures ||
     project.members.some((member) => member.role === "owner");
   const data: Prisma.ProjectUpdateInput = {};
   const payload: Record<string, unknown> = { scope };
@@ -149,10 +149,10 @@ export async function setProjectSettings(formData: FormData) {
     const onlyReportersCanApprovePullRequests = formData.get("onlyReportersCanApprovePullRequests") === "on";
     let defaultAssigneeId = trimOrNull(formData.get("defaultAssigneeId"));
     let defaultReviewerId = trimOrNull(formData.get("defaultReviewerId"));
-    if (!actor.isOwner && project.defaultAssignee?.kind === "agent") {
+    if (!actor.canAccessOwnerFeatures && project.defaultAssignee?.kind === "agent") {
       defaultAssigneeId = project.defaultAssigneeId;
     }
-    if (!actor.isOwner && project.defaultReviewer?.kind === "agent") {
+    if (!actor.canAccessOwnerFeatures && project.defaultReviewer?.kind === "agent") {
       defaultReviewerId = project.defaultReviewerId;
     }
     await assertAgentAssignmentAllowed(actor, [defaultAssigneeId, defaultReviewerId]);
@@ -160,7 +160,7 @@ export async function setProjectSettings(formData: FormData) {
       .getAll("managerAssignableAgentId")
       .map((value) => (typeof value === "string" ? value.trim() : ""))
       .filter(Boolean);
-    managerAssignableAgentIds = actor.isOwner ? [...new Set(rawManagerAssignableAgentIds)] : null;
+    managerAssignableAgentIds = actor.canAccessOwnerFeatures ? [...new Set(rawManagerAssignableAgentIds)] : null;
     if (managerAssignableAgentIds && managerAssignableAgentIds.length > 0) {
       const validUsers = await db.user.findMany({
         where: {

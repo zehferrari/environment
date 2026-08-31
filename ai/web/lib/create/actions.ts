@@ -56,15 +56,15 @@ export async function createTaskFromFab(formData: FormData): Promise<CreateResul
   const description = String(formData.get("description") ?? "").trim() || null;
   const epicRaw = String(formData.get("epicId") ?? "");
   if (
-    !actor.isOwner &&
+    !actor.canAccessOwnerFeatures &&
     (formData.has("reporterId") || formData.has("assigneeId") || formData.has("actingManagerId"))
   ) {
     throw new Error("Only the Mission Control owner can set task roles.");
   }
   const assigneeRaw = String(formData.get("assigneeId") ?? "");
   const reviewerRaw = String(formData.get("actingManagerId") ?? "");
-  if (formData.has("private") && !actor.isOwner) throw new Error("Not authorized");
-  const isPrivate = actor.isOwner && formData.get("private") === "on";
+  if (formData.has("private") && !actor.canAccessOwnerFeatures) throw new Error("Not authorized");
+  const isPrivate = actor.canAccessOwnerFeatures && formData.get("private") === "on";
 
   const maxRank = await db.task.aggregate({
     where: { projectId, status: "Backlog", archivedAt: null, deletedAt: null },
@@ -304,7 +304,7 @@ export async function postCommentFromFab(formData: FormData): Promise<CreateResu
     });
 
     revalidateTaskReplyScope(taskId, "comment");
-    if (actor.isOwner) {
+    if (actor.canAccessOwnerFeatures) {
       await sendTaskCommentNotifications({
         taskId: task.id,
         commentId: comment.id,

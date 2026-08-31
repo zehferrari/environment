@@ -56,7 +56,7 @@ export default async function WorkspacesLandingLayout({
 
       <WorkspacesLandingTabs
         boardChromeScope={LANDING_CHROME_SCOPE}
-        isOwner={viewer.isOwner}
+        isOwner={viewer.canAccessOwnerFeatures}
       />
       {/* Same split-viewport contract as the per-workspace layout: the board
           stays mounted while a task route is intercepted; at the 146rem /ws

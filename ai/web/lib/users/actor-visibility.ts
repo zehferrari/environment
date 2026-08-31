@@ -63,6 +63,7 @@ const EMPTY_MONITOR_SLUGS: ReadonlySet<string> = new Set<string>();
 export type AgentIdentityToken = { username: string; slug: string | null; name: string | null };
 
 export type ActorVisibility = {
+  mode: Viewer["agentVisibility"];
   maskAgents: boolean;
   owner: ActorRow | null;
   // Slugs of agents whose registry role is "monitor" (e.g. karen). Any actor
@@ -77,8 +78,9 @@ export type ActorVisibility = {
 };
 
 export async function getActorVisibility(viewer: Viewer): Promise<ActorVisibility> {
-  if (viewer.isOwner) {
+  if (viewer.agentVisibility === "full") {
     return {
+      mode: "full",
       maskAgents: false,
       owner: null,
       monitorSlugs: EMPTY_MONITOR_SLUGS,
@@ -117,6 +119,7 @@ export async function getActorVisibility(viewer: Viewer): Promise<ActorVisibilit
     });
   }
   return {
+    mode: viewer.agentVisibility,
     maskAgents: true,
     owner,
     monitorSlugs,
@@ -147,6 +150,7 @@ export function visibleActor<T extends ActorRow>(
 ): ActorRow | T | null {
   if (!actor) return null;
   if (!visibility.maskAgents || actor.kind !== "agent") return actor;
+  if (visibility.mode === "hidden") return null;
   return visibility.owner;
 }
 
@@ -166,6 +170,7 @@ export function serializeVisibleActorAs(
   if (!visibility.maskAgents || actor.kind !== "agent") {
     return serializeActorRow(actor);
   }
+  if (visibility.mode === "hidden") return null;
   const slug = actor.agent?.slug ?? null;
   if ((slug && visibility.monitorSlugs.has(slug)) || role === "monitor") {
     return visibility.monitor;
@@ -199,7 +204,7 @@ const AGENT_SESSION_ACTIVITY = /(^agent\.|^pm\.|\.action_plan(?:\.|$)|\.chat(?:\
  * through describeActivity.
  */
 export function visibleActivityWhere(viewer: Viewer): Prisma.ActivityLogWhereInput {
-  if (viewer.isOwner) return {};
+  if (viewer.agentVisibility === "full") return {};
   return {
     AND: [
       { targetAgent: null },

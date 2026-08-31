@@ -52,7 +52,7 @@ export default async function ProjectSettingsPage({
     searchParams ?? Promise.resolve({} as { tab?: string | string[] }),
   ]);
   const viewer = await getViewer();
-  if (!viewer?.isOwner) notFound();
+  if (!viewer?.canAccessOwnerFeatures) notFound();
   const activeTab = parseSettingsTab(sp.tab);
   const session = await auth();
   const project = await db.project.findUnique({

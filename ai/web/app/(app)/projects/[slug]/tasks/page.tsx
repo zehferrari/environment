@@ -143,13 +143,13 @@ export default async function ProjectTasksPage({
   // Keep existing ?view=board|archive links compatible while also allowing an
   // aggregate view that includes both active and archived tasks.
   const view = parseTaskView(sp.view);
-  const reporterIds = viewer.isOwner ? multi(sp.reporterId) : [];
-  const assigneeIds = viewer.isOwner ? multi(sp.assigneeId) : [];
-  const reviewerIds = viewer.isOwner ? multi(sp.reviewerId) : [];
+  const reporterIds = viewer.canAccessOwnerFeatures ? multi(sp.reporterId) : [];
+  const assigneeIds = viewer.canAccessOwnerFeatures ? multi(sp.assigneeId) : [];
+  const reviewerIds = viewer.canAccessOwnerFeatures ? multi(sp.reviewerId) : [];
   const status = single(sp.status) ?? "";
   const pageSize = parsePageSize(sp.pageSize);
   const take = pageSize === "all" ? undefined : Number(pageSize);
-  const taskGridClass = viewer.isOwner
+  const taskGridClass = viewer.canAccessOwnerFeatures
     ? "grid min-w-[68rem] grid-cols-[minmax(14rem,1.6fr)_6rem_4rem_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_5.5rem_5.5rem_5.5rem] items-center gap-3 xl:min-w-0"
     : "grid min-w-[48rem] grid-cols-[minmax(14rem,1.6fr)_6rem_4rem_5.5rem_5.5rem_5.5rem] items-center gap-3 xl:min-w-0";
 
@@ -169,7 +169,7 @@ export default async function ProjectTasksPage({
   });
 
   const [principals, tasks, totalCount, busyAgentSlugs, actorVisibility] = await Promise.all([
-    viewer.isOwner ? listAssignablePrincipals(viewer) : Promise.resolve([]),
+    viewer.canAccessOwnerFeatures ? listAssignablePrincipals(viewer) : Promise.resolve([]),
     db.task.findMany({
       where,
       orderBy: { updatedAt: "desc" },
@@ -193,11 +193,11 @@ export default async function ProjectTasksPage({
       },
     }),
     db.task.count({ where }),
-    viewer.isOwner ? readBusyAgentSlugs() : Promise.resolve(new Set<string>()),
+    viewer.canAccessOwnerFeatures ? readBusyAgentSlugs() : Promise.resolve(new Set<string>()),
     getActorVisibility(viewer),
   ]);
   const taskIds = tasks.map((task) => task.id);
-  const activityRows = viewer.isOwner && taskIds.length > 0
+  const activityRows = viewer.canAccessOwnerFeatures && taskIds.length > 0
     ? await db.activityLog.findMany({
         where: { taskId: { in: taskIds } },
         orderBy: { createdAt: "desc" },
@@ -253,13 +253,13 @@ export default async function ProjectTasksPage({
         </Link>
         <StatusPill status={task.status} />
         {canShowDeploymentForTask(task) ? <DeploymentIndicator status={deploymentStatus} /> : <span aria-hidden="true" />}
-        {viewer.isOwner ? <PersonCell actor={serializeActor(task.reporter, actorVisibility)} emptyLabel="none" /> : null}
-        {viewer.isOwner ? <PersonCell
+        {viewer.canAccessOwnerFeatures ? <PersonCell actor={serializeActor(task.reporter, actorVisibility)} emptyLabel="none" /> : null}
+        {viewer.canAccessOwnerFeatures ? <PersonCell
           actor={serializeActor(task.assignee, actorVisibility)}
           emptyLabel="unassigned"
           busy={task.status === "In Progress" && Boolean(task.assignee?.agent?.slug && busyAgentSlugs.has(task.assignee.agent.slug))}
         /> : null}
-        {viewer.isOwner ? <PersonCell actor={serializeActor(task.actingManager, actorVisibility)} emptyLabel="none" /> : null}
+        {viewer.canAccessOwnerFeatures ? <PersonCell actor={serializeActor(task.actingManager, actorVisibility)} emptyLabel="none" /> : null}
         <ElapsedCell
           status={task.status}
           createdAt={task.createdAt}
@@ -269,12 +269,12 @@ export default async function ProjectTasksPage({
         />
         <DateActorCell
           iso={task.createdAt.toISOString()}
-          actor={activityActors.createdBy.get(task.id) ?? (viewer.isOwner ? serializeActor(task.reporter, actorVisibility) : null)}
+          actor={activityActors.createdBy.get(task.id) ?? (viewer.canAccessOwnerFeatures ? serializeActor(task.reporter, actorVisibility) : null)}
           dateOnly
         />
         <DateActorCell
           iso={task.updatedAt.toISOString()}
-          actor={activityActors.updatedBy.get(task.id) ?? activityActors.createdBy.get(task.id) ?? (viewer.isOwner ? serializeActor(task.reporter, actorVisibility) : null)}
+          actor={activityActors.updatedBy.get(task.id) ?? activityActors.createdBy.get(task.id) ?? (viewer.canAccessOwnerFeatures ? serializeActor(task.reporter, actorVisibility) : null)}
         />
       </li>
     );
@@ -321,9 +321,9 @@ export default async function ProjectTasksPage({
       <span>Task</span>
       <span>Status</span>
       <span>Deploy</span>
-      {viewer.isOwner ? <span>Reporter</span> : null}
-      {viewer.isOwner ? <span>Assignee</span> : null}
-      {viewer.isOwner ? <span>Reviewer</span> : null}
+      {viewer.canAccessOwnerFeatures ? <span>Reporter</span> : null}
+      {viewer.canAccessOwnerFeatures ? <span>Assignee</span> : null}
+      {viewer.canAccessOwnerFeatures ? <span>Reviewer</span> : null}
       <span className="text-right">Elapsed</span>
       <span className="text-right">Created At</span>
       <span className="text-right">Updated</span>
@@ -344,7 +344,7 @@ export default async function ProjectTasksPage({
 
       <TaskFilters
         slug={slug}
-        isOwner={viewer.isOwner}
+        isOwner={viewer.canAccessOwnerFeatures}
         view={view}
         reporterIds={reporterIds}
         assigneeIds={assigneeIds}
@@ -400,10 +400,10 @@ export default async function ProjectTasksPage({
                   ) : (
                     <span aria-hidden="true" />
                   )}
-                  {viewer.isOwner ? <PersonCell actor={serializeActor(group.epic?.reporter ?? null, actorVisibility)} emptyLabel="—" /> : null}
+                  {viewer.canAccessOwnerFeatures ? <PersonCell actor={serializeActor(group.epic?.reporter ?? null, actorVisibility)} emptyLabel="—" /> : null}
                   {/* Assignee column intentionally blank at the Epic level. */}
-                  {viewer.isOwner ? <span aria-hidden="true" /> : null}
-                  {viewer.isOwner ? <PersonCell
+                  {viewer.canAccessOwnerFeatures ? <span aria-hidden="true" /> : null}
+                  {viewer.canAccessOwnerFeatures ? <PersonCell
                     actor={serializeActor(group.epic?.actingManager ?? group.epic?.reporter ?? null, actorVisibility)}
                     emptyLabel="—"
                   /> : null}

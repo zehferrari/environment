@@ -88,7 +88,7 @@ export default async function WorkspaceLayout({
         slug={workspace.slug}
         name={workspace.name}
         boardChromeScope={boardChromeScope}
-        canAccessSettings={viewer.isOwner}
+        canAccessSettings={viewer.canAccessOwnerFeatures}
       />
       {/* Keep the workspace board mounted while a task route is intercepted.
           At the same /ws container thresholds as a project board, the task

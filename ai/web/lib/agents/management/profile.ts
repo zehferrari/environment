@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "crypto";
 import { constants } from "fs";
 import { access, copyFile, lstat, mkdir, open, readdir, readFile, rename, stat, unlink } from "fs/promises";
 import path from "path";
+import { isActiveOwnerPrincipal } from "@/lib/auth/roles";
 import { db } from "@/lib/db";
 import { readAgentIndex } from "@/lib/agents/management/index-loader";
 
@@ -100,7 +101,7 @@ export async function canEditProfile(actor: { name?: string | null; kind?: strin
   });
   // Agent-management APIs are owner-only. Browser-authenticated agents use
   // scoped runtime APIs rather than this administrative surface.
-  return owner?.kind === "human" && owner.status === "active" && owner.isOwner;
+  return isActiveOwnerPrincipal(owner);
 }
 
 function unifiedDiff(oldText: string, newText: string, file: string): string {

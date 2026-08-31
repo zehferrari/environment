@@ -29,7 +29,7 @@ function workflowActor(actor: Viewer) {
     id: actor.id,
     kind: actor.kind === "human" ? "human" as const : "agent" as const,
     username: actor.username,
-    role: actor.isOwner ? "admin" as const : undefined,
+    role: actor.canAccessOwnerFeatures ? "admin" as const : undefined,
   };
 }
 
@@ -58,7 +58,7 @@ export async function getBrowserTaskWorkflowActions(args: {
     reviewRunId: state.activeReviewRun?.id ?? null,
     reviewStatus: state.activeReviewRun?.status ?? null,
     candidateSha: state.activeReviewRun?.candidateSha ?? null,
-    canReset: args.actor.kind === "human" && args.actor.isOwner,
+    canReset: args.actor.kind === "human" && args.actor.canAccessOwnerFeatures,
     canCancel: state.status !== "Backlog" && available("cancel_task"),
     canRequestChanges: available("request_review_changes"),
     canAccept: available("accept_review"),

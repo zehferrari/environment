@@ -89,7 +89,7 @@ export default async function ProjectBinPage() {
                   {p.deletedAt ? `${daysLeft(p.deletedAt)}d left` : ""}
                 </div>
               </div>
-              {viewer.isOwner ? <form action={restoreProject}>
+              {viewer.canAccessOwnerFeatures ? <form action={restoreProject}>
                 <input type="hidden" name="projectSlug" value={p.slug} />
                 <button
                   type="submit"

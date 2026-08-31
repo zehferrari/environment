@@ -1,6 +1,7 @@
 #!/usr/bin/env tsx
 
 import { readFileSync } from "node:fs";
+import { isActiveOwnerPrincipal } from "@/lib/auth/roles";
 import { db } from "@/lib/db";
 import {
   getCohortSummary,
@@ -53,7 +54,7 @@ async function ownerId(username: string): Promise<string> {
     where: { username },
     select: { id: true, kind: true, status: true, isOwner: true },
   });
-  if (!owner || owner.kind !== "human" || owner.status !== "active" || !owner.isOwner) {
+  if (!isActiveOwnerPrincipal(owner)) {
     throw new Error(`Active Mission Control owner not found: ${username}`);
   }
   return owner.id;

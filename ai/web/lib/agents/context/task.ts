@@ -20,6 +20,7 @@ import {
 } from "@/lib/agents/watchdog/state";
 import { isActionableEpicStatus } from "@/lib/tasks/workflow-actors";
 import { resolveAgentTaskAccess } from "@/lib/agents/private-task-access";
+import { hasImmutableOwnerCapability } from "@/lib/auth/roles";
 
 // Context-packet caps live in ./caps.ts and are resolved per-recipient
 // from agent.role. Coding agents (can_modify_code=true) get the 1M-token
@@ -145,7 +146,7 @@ function actorLabel(user: UserLabel) {
   const username = typeof user?.username === "string" && user.username
     ? `@${user.username}`
     : "unknown user";
-  if (user?.isOwner) return `${username} (Mission Control owner)`;
+  if (hasImmutableOwnerCapability(user)) return `${username} (Mission Control owner)`;
   return user?.kind === "agent" ? `${username} (agent)` : username;
 }
 

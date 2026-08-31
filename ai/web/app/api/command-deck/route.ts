@@ -53,7 +53,7 @@ export async function GET() {
   // Agent presence is owner-only everywhere else (/api/agents/presence,
   // sidebar, boards) — non-owners get no agents field at all here either.
   const [agents, queueGroups, activity, actorVisibility] = await Promise.all([
-    viewer.isOwner ? readAgentStates() : Promise.resolve(null),
+    viewer.canAccessOwnerFeatures ? readAgentStates() : Promise.resolve(null),
     db.task.groupBy({
       by: ["status"],
       where: accessibleTaskWhere(viewer, { deletedAt: null, parentTaskId: null }),

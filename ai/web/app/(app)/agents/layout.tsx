@@ -9,7 +9,7 @@ export default async function AgentsLayout({
   detail: React.ReactNode;
 }) {
   const viewer = await getViewer();
-  if (!viewer?.isOwner) notFound();
+  if (!viewer?.canAccessOwnerFeatures) notFound();
   // Ultra-wide only: opening an agent from the hub keeps the cards mounted in
   // a left rail and drops the profile beside them. Sized on AVAILABLE width
   // (a container query), not the viewport, so the sidebar's collapsed state

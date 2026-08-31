@@ -265,7 +265,7 @@ export async function listWorkspaces(includeArchived = false, viewer?: Viewer) {
   const projectAccess = viewer
     ? accessibleProjectWhere(
         viewer,
-        viewer.isOwner ? {} : { archivedAt: null, deletedAt: null },
+        viewer.canAccessOwnerFeatures ? {} : { archivedAt: null, deletedAt: null },
       )
     : {};
   const rows = await db.workspace.findMany({
@@ -280,7 +280,7 @@ export async function listWorkspaces(includeArchived = false, viewer?: Viewer) {
     },
     orderBy: [{ archivedAt: "asc" }, { name: "asc" }],
   });
-  return rows.map((workspace) => serializeWorkspace(workspace, viewer?.isOwner ?? true));
+  return rows.map((workspace) => serializeWorkspace(workspace, viewer?.canAccessOwnerFeatures ?? true));
 }
 
 export async function getWorkspaceBySlug(slug: string, viewer?: Viewer) {
@@ -288,7 +288,7 @@ export async function getWorkspaceBySlug(slug: string, viewer?: Viewer) {
   const projectAccess = viewer
     ? accessibleProjectWhere(
         viewer,
-        viewer.isOwner ? {} : { archivedAt: null, deletedAt: null },
+        viewer.canAccessOwnerFeatures ? {} : { archivedAt: null, deletedAt: null },
       )
     : {};
   return db.workspace.findFirst({

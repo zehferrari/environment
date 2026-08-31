@@ -227,7 +227,7 @@ export default async function ProjectsPage() {
     slug: true,
     name: true,
     description: true,
-    ...(viewer.isOwner ? {
+    ...(viewer.canAccessOwnerFeatures ? {
       repositoryPath: true,
       defaultGitUserName: true,
       defaultGitUserEmail: true,
@@ -255,13 +255,13 @@ export default async function ProjectsPage() {
     }),
     db.project.count({ where: accessibleProjectWhere(viewer, { deletedAt: { not: null } }) }),
     db.project.count({ where: accessibleProjectWhere(viewer, { archivedAt: { not: null }, deletedAt: null }) }),
-    viewer.isOwner ? listAssignablePrincipals(viewer) : Promise.resolve([]),
+    viewer.canAccessOwnerFeatures ? listAssignablePrincipals(viewer) : Promise.resolve([]),
   ]);
 
   const projects = workspaces.flatMap((workspace) => workspace.projects.map(({ project }) => project));
   const projectIds = projects.map((p) => p.id);
   const statsByProject = new Map(projects.map((p) => [p.id, emptyStats()]));
-  const visibleEpicIds = viewer.isOwner || projectIds.length === 0
+  const visibleEpicIds = viewer.canAccessOwnerFeatures || projectIds.length === 0
     ? []
     : (await db.epic.findMany({
         where: accessibleEpicWhere(viewer, { projectId: { in: projectIds } }),
@@ -284,7 +284,7 @@ export default async function ProjectsPage() {
         }]
       : [{ NOT: { kind: { startsWith: "epic." } } }],
   };
-  const activityVisibilityWhere: Prisma.ActivityLogWhereInput = viewer.isOwner
+  const activityVisibilityWhere: Prisma.ActivityLogWhereInput = viewer.canAccessOwnerFeatures
     ? {}
     : {
         OR: [
@@ -424,7 +424,7 @@ export default async function ProjectsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {viewer.isOwner ? (
+          {viewer.canAccessOwnerFeatures ? (
             <AddProjectFab
               principals={principals.map((p) => ({ id: p.id, name: p.name }))}
               workspaces={workspaces.map((workspace) => ({ id: workspace.id, name: workspace.name }))}

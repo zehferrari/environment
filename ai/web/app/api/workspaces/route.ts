@@ -11,7 +11,7 @@ export async function GET(req: NextRequest) {
   const includeArchived = req.nextUrl.searchParams.get("includeArchived") === "1";
   return NextResponse.json({
     workspaces: await listWorkspaces(includeArchived, viewer),
-    selectableAgents: viewer.isOwner ? await selectableWorkspaceAgents() : [],
+    selectableAgents: viewer.canAccessOwnerFeatures ? await selectableWorkspaceAgents() : [],
   });
 }
 

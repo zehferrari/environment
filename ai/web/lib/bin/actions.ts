@@ -61,7 +61,7 @@ export async function binTask(formData: FormData): Promise<void> {
     },
   });
   if (!task || task.project.slug !== slug || task.deletedAt) return;
-  if (!actor.isOwner) {
+  if (!actor.canAccessOwnerFeatures) {
     const allChildCount = await db.task.count({ where: { parentTaskId: task.id, deletedAt: null } });
     if (allChildCount !== task.subtasks.length) throw new Error("Not authorized");
   }
@@ -129,7 +129,7 @@ export async function binEpic(formData: FormData): Promise<void> {
     },
   });
   if (!epic || epic.project.slug !== slug || epic.deletedAt) return;
-  if (!actor.isOwner) {
+  if (!actor.canAccessOwnerFeatures) {
     const allTaskCount = await db.task.count({ where: { epicId: epic.id, deletedAt: null } });
     if (allTaskCount !== epic.tasks.length) throw new Error("Not authorized");
     const visibleParentIds = epic.tasks.map((task) => task.id);
@@ -204,7 +204,7 @@ export async function restoreTask(formData: FormData) {
     include: { project: { select: { slug: true } } },
   });
   if (!task || task.project.slug !== slug || !task.deletedAt) return;
-  if (withChildren && !actor.isOwner) {
+  if (withChildren && !actor.canAccessOwnerFeatures) {
     const allChildCount = await db.task.count({ where: { parentTaskId: task.id, deletedAt: task.deletedAt } });
     const visibleChildCount = await db.task.count({
       where: accessibleTaskWhere(actor, { parentTaskId: task.id, deletedAt: task.deletedAt }),
@@ -266,7 +266,7 @@ export async function restoreEpic(formData: FormData) {
     include: { project: { select: { slug: true } } },
   });
   if (!epic || epic.project.slug !== slug || !epic.deletedAt) return;
-  if (withChildren && !actor.isOwner) {
+  if (withChildren && !actor.canAccessOwnerFeatures) {
     const allTaskCount = await db.task.count({ where: { epicId, deletedAt: epic.deletedAt } });
     const visibleTaskCount = await db.task.count({
       where: accessibleTaskWhere(actor, { epicId, deletedAt: epic.deletedAt }),
@@ -441,7 +441,7 @@ export async function bulkBinTasks(taskIds: string[], slug: string): Promise<voi
     },
   });
   if (tasks.length !== requestedIds.length) throw new Error("Not authorized");
-  if (!actor.isOwner) {
+  if (!actor.canAccessOwnerFeatures) {
     const allChildCount = await db.task.count({
       where: { parentTaskId: { in: requestedIds }, deletedAt: null },
     });

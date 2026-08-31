@@ -38,7 +38,7 @@ export default async function ProjectCodePage({
     searchParams ?? Promise.resolve({} as CodeSearchParams),
   ]);
   const viewer = await requireViewer();
-  if (!viewer.isOwner) notFound();
+  if (!viewer.canAccessOwnerFeatures) notFound();
   const project = await db.project.findUnique({
     where: { slug },
     select: {
@@ -51,7 +51,7 @@ export default async function ProjectCodePage({
   });
   if (!project || project.deletedAt || !project.repositoryPath) notFound();
 
-  const canWriteSession = viewer.isOwner;
+  const canWriteSession = viewer.canAccessOwnerFeatures;
   const sources = await listCodeSources(project.repositoryPath);
   const source = chooseCodeSource(sources, sp.source);
   if (!source) notFound();

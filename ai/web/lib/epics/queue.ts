@@ -4,6 +4,7 @@
 // queue may have new work" event: task Done, ready_for_review, human
 // unassign/pull-back, epic action-plan approval.
 import { db } from "@/lib/db";
+import { hasImmutableOwnerCapability } from "@/lib/auth/roles";
 import { assignOpenEpicTasks, type PolicyEvidenceTrigger } from "@/lib/epics/assignment";
 import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
 import { unresolvedTaskPrerequisites } from "@/lib/tasks/blocking";
@@ -130,7 +131,9 @@ export async function refillDependentEpicQueuesForDoneTask(args: {
         select: { id: true, username: true, kind: true, isOwner: true },
       })
     : null;
-  const requestedActorUsable = Boolean(requestedActor && (requestedActor.kind === "agent" || requestedActor.isOwner));
+  const requestedActorUsable = Boolean(
+    requestedActor && (requestedActor.kind === "agent" || hasImmutableOwnerCapability(requestedActor)),
+  );
   const fallbackActor = requestedActorUsable ? null : await db.user.findFirst({
     where: { status: "active", OR: [{ isOwner: true }, { agent: { role: "monitor", deactivatedAt: null } }] },
     orderBy: [{ isOwner: "desc" }, { createdAt: "asc" }],

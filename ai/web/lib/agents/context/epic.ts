@@ -11,6 +11,7 @@ import {
 } from "@/lib/agents/ops/directed-targets";
 import { resolveAgentCaps, type ContextCaps } from "@/lib/agents/context/caps";
 import { clip, clipWithMeta, renderBudgetedTimeline } from "@/lib/agents/context/budget";
+import { hasImmutableOwnerCapability } from "@/lib/auth/roles";
 import { createEpicWorkflowToken } from "@/lib/agents/workflow/token/epic";
 
 // Context-packet caps live in ./caps.ts and are resolved per-recipient
@@ -109,7 +110,7 @@ function actorLabel(user: UserLabel) {
   const username = typeof user?.username === "string" && user.username
     ? `@${user.username}`
     : "unknown user";
-  if (user?.isOwner) return `${username} (Mission Control owner)`;
+  if (hasImmutableOwnerCapability(user)) return `${username} (Mission Control owner)`;
   return user?.kind === "agent" ? `${username} (agent)` : username;
 }
 

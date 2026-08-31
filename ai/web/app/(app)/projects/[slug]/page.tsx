@@ -108,7 +108,7 @@ async function createTask(formData: FormData) {
   const projectSlug = String(formData.get("projectSlug") ?? "");
   const description = String(formData.get("description") ?? "").trim() || null;
   const epicRaw = String(formData.get("epicId") ?? "");
-  if (!actor.isOwner && (
+  if (!actor.canAccessOwnerFeatures && (
     formData.has("reporterId") ||
     formData.has("assigneeId") ||
     formData.has("actingManagerId")
@@ -117,8 +117,8 @@ async function createTask(formData: FormData) {
   }
   const assigneeRaw = String(formData.get("assigneeId") ?? "");
   const reviewerRaw = String(formData.get("actingManagerId") ?? "");
-  if (formData.has("private") && !actor.isOwner) throw new Error("Not authorized");
-  const isPrivate = actor.isOwner && formData.get("private") === "on";
+  if (formData.has("private") && !actor.canAccessOwnerFeatures) throw new Error("Not authorized");
+  const isPrivate = actor.canAccessOwnerFeatures && formData.get("private") === "on";
 
   const maxRank = await db.task.aggregate({
     where: { projectId, status: "Backlog", archivedAt: null, deletedAt: null },
@@ -252,7 +252,7 @@ export default async function ProjectBoardPage({
     .flatMap((task) => [task.blockedById, ...task.dependencies.map((edge) => edge.prerequisite.id)])
     .filter((id): id is string => Boolean(id));
   const [principals, epicOptions, taskActivityRows, busyAgentSlugs, actorVisibility, visibleBlockers, legacyBlockerComments] = await Promise.all([
-    viewer.isOwner ? listAssignablePrincipals(viewer) : Promise.resolve([]),
+    viewer.canAccessOwnerFeatures ? listAssignablePrincipals(viewer) : Promise.resolve([]),
     db.epic.findMany({
       where: accessibleEpicWhere(viewer, { projectId: project.id, archivedAt: null, deletedAt: null }),
       orderBy: [{ status: "asc" }, { title: "asc" }],
@@ -271,7 +271,7 @@ export default async function ProjectBoardPage({
           },
         })
       : Promise.resolve([]),
-    viewer.isOwner ? readBusyAgentSlugs() : Promise.resolve(new Set<string>()),
+    viewer.canAccessOwnerFeatures ? readBusyAgentSlugs() : Promise.resolve(new Set<string>()),
     getActorVisibility(viewer),
     blockerIds.length > 0
       ? db.task.findMany({
@@ -368,10 +368,10 @@ export default async function ProjectBoardPage({
           agentAvatar: p.agentAvatar,
         }))}
         epics={epicOptions}
-        defaultAssigneeId={viewer.isOwner && principals.some((p) => p.id === project.defaultAssigneeId) ? project.defaultAssigneeId : null}
-        defaultReviewerId={viewer.isOwner && principals.some((p) => p.id === project.defaultReviewerId) ? project.defaultReviewerId : null}
-        canManageAssignments={viewer.isOwner}
-        canSetPrivate={viewer.isOwner}
+        defaultAssigneeId={viewer.canAccessOwnerFeatures && principals.some((p) => p.id === project.defaultAssigneeId) ? project.defaultAssigneeId : null}
+        defaultReviewerId={viewer.canAccessOwnerFeatures && principals.some((p) => p.id === project.defaultReviewerId) ? project.defaultReviewerId : null}
+        canManageAssignments={viewer.canAccessOwnerFeatures}
+        canSetPrivate={viewer.canAccessOwnerFeatures}
         createTaskAction={createTask}
         hideTrigger
       />
