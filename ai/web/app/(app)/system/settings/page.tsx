@@ -1,4 +1,6 @@
 import Link from "next/link";
+import { notFound } from "next/navigation";
+import { getViewer } from "@/lib/auth/permissions";
 import { getSystemSettings } from "@/lib/settings/system";
 import { setSystemSettings } from "@/lib/settings/actions";
 
@@ -27,6 +29,9 @@ export default async function SystemSettingsPage({
 }: {
   searchParams?: Promise<{ tab?: string | string[] }>;
 }) {
+  const viewer = await getViewer();
+  if (!viewer?.canAccessOwnerFeatures) notFound();
+
   const sp = await (searchParams ?? Promise.resolve({} as { tab?: string | string[] }));
   const activeTab = parseSettingsTab(sp.tab);
   const settings = await getSystemSettings();
