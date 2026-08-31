@@ -49,7 +49,6 @@ import {
 import { validateBlockedBy } from "@/lib/tasks/blocking";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import {
-  canApproveActionPlanForActor,
   isActionableEpicStatus,
 } from "@/lib/tasks/workflow-actors";
 import { syncEpicOnHumanTaskStatus } from "@/lib/epics/sync-on-human-task-move";
@@ -103,6 +102,7 @@ import {
 import DescriptionField from "@/components/description-field";
 import PrivateToggle from "@/components/private-toggle";
 import { TabsProvider, TabsNav, TabPanel } from "@/components/task-tabs";
+import RoleVisibleTabPanel from "@/components/role-visible-tab-panel";
 import StickyViewportSurface from "@/components/sticky-viewport-surface";
 import PmOptions from "@/components/pm-options";
 import { findPmOptionResolution, parsePmOptions, isPmOptionsTargetedAtCurrentUser } from "@/lib/pm-options";
@@ -1776,9 +1776,9 @@ export default async function TaskDetailPage({
     ?? aiTargetOptions[0]?.value
     ?? "";
   const canApproveActionPlan =
+    viewer.canAccessOwnerFeatures &&
     !task.approvedOn &&
-    task.actionPlan?.status === "draft" &&
-    (viewer.kind === "human" || canApproveActionPlanForActor(task, viewer.id));
+    task.actionPlan?.status === "draft";
   const doneActivity = allActivity.find((row) =>
     row.kind === "task.move" && payloadValue(row.payload, "to") === "Done"
   );
@@ -2432,6 +2432,7 @@ export default async function TaskDetailPage({
                   <ChatRoom
                     projectSlug={slug}
                     taskId={task.id}
+                    readOnly={!viewer.canAccessOwnerFeatures}
                     messages={visibleActionPlanMessages}
                     activeMessageCount={activeActionPlanMessageCount}
                     archives={chatArchives}
@@ -2451,7 +2452,10 @@ export default async function TaskDetailPage({
                 </div>
               </TabPanel> : null}
 
-              <TabPanel name="Sub-Tasks">
+              <RoleVisibleTabPanel
+                name="Sub-Tasks"
+                visible={experience.canViewProjectWorkflow}
+              >
                 <TaskChecklist
                   taskId={task.id}
                   projectSlug={slug}
@@ -2470,7 +2474,7 @@ export default async function TaskDetailPage({
                   removeAction={removeSubTaskItem}
                   reorderAction={reorderChecklist}
                 />
-              </TabPanel>
+              </RoleVisibleTabPanel>
 
               <TabPanel name="Attachments">
                 <div>

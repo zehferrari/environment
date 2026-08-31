@@ -9,12 +9,15 @@ import {
   SearchParamsContext,
 } from "next/dist/shared/lib/hooks-client-context.shared-runtime";
 import Board from "../app/(app)/projects/[slug]/board-client";
+import ChatRoom from "../components/chat-room";
+import RoleVisibleTabPanel from "../components/role-visible-tab-panel";
 import SidebarNav from "../components/sidebar-nav";
 import { TabsNav, TabsProvider } from "../components/task-tabs";
 import {
   customerSafeWorkflowLabel,
   epicDetailTabsForRole,
   taskDetailTabsForRole,
+  viewerExperienceForRole,
 } from "../lib/auth/roles";
 
 (globalThis as typeof globalThis & { React: typeof React }).React = React;
@@ -106,12 +109,66 @@ assert.doesNotMatch(customerEpicTabs, /Action Plan|Activities|Development|Change
 const adminTaskTabs = renderedTabs(taskDetailTabsForRole("admin", true));
 assert.match(adminTaskTabs, /Action Plan.*Activities.*Development.*Changes/s, "Admin retains project-scoped workflow context");
 
+const customerTaskPanels = renderToStaticMarkup(
+  <TabsProvider defaultTab="Description">
+    <RoleVisibleTabPanel
+      name="Sub-Tasks"
+      visible={viewerExperienceForRole("customer").canViewProjectWorkflow}
+    >
+      <div>Internal checklist item · review · 37 minutes</div>
+    </RoleVisibleTabPanel>
+  </TabsProvider>,
+);
+assert.doesNotMatch(
+  customerTaskPanels,
+  /Internal checklist item|review|37 minutes/,
+  "Customer rendered Task panels omit the Sub-Tasks payload instead of mounting it hidden",
+);
+
+const adminTaskPanels = renderToStaticMarkup(
+  <TabsProvider defaultTab="Sub-Tasks">
+    <RoleVisibleTabPanel
+      name="Sub-Tasks"
+      visible={viewerExperienceForRole("admin").canViewProjectWorkflow}
+    >
+      <div>Internal checklist item</div>
+    </RoleVisibleTabPanel>
+  </TabsProvider>,
+);
+assert.match(adminTaskPanels, /Internal checklist item/, "Admin retains project-scoped Task checklist context");
+
 const internalActor = {
   id: "agent-user-1",
   username: "internal-agent",
   kind: "agent",
   agent: { slug: "internal", name: "Internal Agent", avatar: null },
 };
+const adminActionPlan = renderToStaticMarkup(withNavigation(
+  <ChatRoom
+    readOnly
+    projectSlug="alpha"
+    taskId="task-1"
+    messages={[{
+      id: "message-1",
+      body: "Scoped workflow context",
+      createdAt: "2026-08-31T00:00:00.000Z",
+      allowDescriptionEdit: false,
+      editGrantUsedAt: null,
+      sender: internalActor,
+    }]}
+    pendingAgents={[{ slug: "internal", username: "Internal Agent" }]}
+    latestMessageId="message-1"
+    currentUserId="admin-1"
+  />,
+));
+assert.match(adminActionPlan, /Scoped workflow context/, "Admin retains read-only project Action Plan context");
+assert.match(adminActionPlan, /Read-only/, "Admin Action Plan identifies its non-mutating mode");
+assert.doesNotMatch(
+  adminActionPlan,
+  /Approve Plan|New Discussion|Message action plan|Send|Delete message|Stop and edit/,
+  "Admin Action Plan DOM omits Owner-only approval, messaging, and moderation controls",
+);
+
 const customerBoard = renderToStaticMarkup(withNavigation(
   <Board
     projectSlug="alpha"

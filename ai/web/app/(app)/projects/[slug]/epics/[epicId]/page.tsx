@@ -1022,13 +1022,9 @@ export default async function EpicDetailPage({
     Boolean(value?.startsWith("agent:") && aiTargetOptions.some((option) => option.value === value)),
   ) ?? aiTargetOptions[0]?.value ?? "";
   const canApproveActionPlan =
+    viewer.canAccessOwnerFeatures &&
     !epic.approvedOn &&
-    Boolean(viewer.id && (
-      viewer.kind !== "agent" ||
-      (epic.project.onlyReportersCanApproveActionPlans
-        ? viewer.id === epic.reporterId
-        : viewer.id === epic.reporterId || viewer.id === epic.actingManagerId)
-    ));
+    Boolean(viewer.id);
   const doneActivity = visibleActivity.find((row) =>
     row.kind === "epic.status" && payloadValue(row.payload, "to") === "Done"
   );
@@ -1429,6 +1425,7 @@ export default async function EpicDetailPage({
                   <ChatRoom
                     projectSlug={slug}
                     epicId={epic.id}
+                    readOnly={!viewer.canAccessOwnerFeatures}
                     messages={visibleActionPlanMessages}
                     activeMessageCount={activeActionPlanMessageCount}
                     archives={chatArchives}
