@@ -300,6 +300,11 @@ function PersistentPmStreamProviderInner({ children }: { children: React.ReactNo
       const controller = record.controller;
       if (!controller) return;
       const maxAttempts = 20;
+      // ENV-168: a 401/403 is a terminal authz failure, not a transient
+      // one. Retrying would loop a revoked viewer against a stream they can
+      // no longer reach; stop instead — the app-wide viewer policy channel
+      // settles the tab into the safe denied state.
+      let authzTerminal = false;
 
       while (!controller.signal.aborted && !isTerminalStatus(record.state.status)) {
         const headers: Record<string, string> = { Accept: "text/event-stream" };
@@ -307,7 +312,10 @@ function PersistentPmStreamProviderInner({ children }: { children: React.ReactNo
 
         try {
           const response = await fetch(record.url, { method: "GET", headers, signal: controller.signal });
-          if (!response.ok) throw new Error(`SSE fetch failed: ${response.status}`);
+          if (!response.ok) {
+            if (response.status === 401 || response.status === 403) authzTerminal = true;
+            throw new Error(`SSE fetch failed: ${response.status}`);
+          }
           if (!response.body) throw new Error("SSE fetch: no response body");
 
           record.reconnectAttempt = 0;
@@ -366,6 +374,7 @@ function PersistentPmStreamProviderInner({ children }: { children: React.ReactNo
         }
 
         if (controller.signal.aborted || isTerminalStatus(record.state.status)) break;
+        if (authzTerminal) break;
         if (record.reconnectAttempt >= maxAttempts) break;
         const delay = nextBackoff(record.reconnectAttempt);
         record.reconnectAttempt += 1;

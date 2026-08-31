@@ -6,6 +6,7 @@ import {
   requireViewer,
   workspaceAccessWhere,
 } from "@/lib/auth/permissions";
+import { attachRevocationGuard } from "@/lib/users/access-revocation-guard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -59,7 +60,9 @@ export async function GET(
         controller.enqueue(encoder.encode(`: hb\n\n`));
       }, HEARTBEAT_MS);
 
+      let revocationGuard: { stop: () => void } | null = null;
       const cleanup = () => {
+        revocationGuard?.stop();
         clearInterval(heartbeat);
         for (const unsub of unsubs) unsub();
         try {
@@ -68,6 +71,24 @@ export async function GET(
           // already closed
         }
       };
+
+      // ENV-168: re-evaluate this viewer's workspace access on every
+      // access-change hub event plus a heartbeat fallback; a revoked
+      // connection gets one explicit `access-revoked` event and a terminal
+      // close instead of serving stale scope forever.
+      revocationGuard = attachRevocationGuard({
+        userId: viewer.id,
+        send,
+        close: cleanup,
+        stillAuthorized: async (fresh) => {
+          if (!fresh) return false;
+          const reachable = await db.workspace.findFirst({
+            where: { AND: [{ id: workspace.id }, workspaceAccessWhere(fresh)] },
+            select: { id: true },
+          });
+          return Boolean(reachable);
+        },
+      });
 
       req.signal.addEventListener("abort", cleanup);
     },

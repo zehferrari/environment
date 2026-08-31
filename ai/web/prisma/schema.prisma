@@ -34,6 +34,12 @@ model User {
   // The first human account owns Mission Control. This is an explicit,
   // immutable capability rather than a username convention.
   isOwner            Boolean         @default(false) @map("is_owner")
+  // Access-policy epoch (ENV-168): bumped in-transaction by every
+  // access-management mutation. Viewer-scoped streams compare it against the
+  // durable database value to detect missed policy changes — the in-process
+  // access-change hub is only an accelerator (see
+  // lib/users/access-change-hub.ts).
+  policyVersion      Int             @default(0)
   // Canonical human role. Owner authority still comes exclusively from
   // isOwner; the relation makes owner/admin/customer explicit for policy and
   // presentation without allowing a role row to manufacture ownership.

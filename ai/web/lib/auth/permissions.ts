@@ -67,6 +67,40 @@ export async function getViewer(): Promise<Viewer | null> {
   };
 }
 
+/**
+ * Session-free viewer resolution by user id (ENV-168). Long-lived stream
+ * guards re-check authorization after an access-change hub event or on their
+ * heartbeat; auth()/headers() are not available inside a streaming interval,
+ * so the check re-reads role/status from the database — authorization never
+ * derives from JWT claims. Returns null when the account is gone or
+ * deactivated, which stream guards treat as a terminal authz close.
+ */
+export async function getViewerByUserId(userId: string): Promise<Viewer | null> {
+  const user = await db.user.findUnique({
+    where: { id: userId },
+    select: {
+      id: true,
+      username: true,
+      kind: true,
+      status: true,
+      isOwner: true,
+      rolePermission: { select: { name: true } },
+    },
+  });
+  if (!user || user.status !== "active") return null;
+
+  const role = resolveHumanRole(user);
+
+  return {
+    id: user.id,
+    username: user.username,
+    kind: user.kind === "agent" ? "agent" : "human",
+    role,
+    agentVisibility: agentVisibilityForRole(role),
+    canAccessOwnerFeatures: role === "owner",
+  };
+}
+
 export async function requireViewer(): Promise<Viewer> {
   const viewer = await getViewer();
   // Middleware can verify the JWT signature without a database lookup, while

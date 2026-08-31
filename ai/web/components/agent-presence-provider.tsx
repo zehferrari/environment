@@ -104,12 +104,32 @@ export function AgentPresenceProvider({ children }: { children?: React.ReactNode
         } catch {
           return;
         }
+        if (payload?.type === "access-revoked") {
+          // ENV-168: owner-only stream revoked mid-session (demote).
+          // Terminal — stop reconnecting; the app-wide viewer policy channel
+          // refreshes the layout so owner-only surfaces unmount with the
+          // now-denied route. SSR presence hints keep rendering.
+          source?.close();
+          source = null;
+          closed = true;
+          if (retryTimer) clearTimeout(retryTimer);
+          return;
+        }
         if (payload?.type === "presence" && payload.agents) applyPresence(payload.agents);
       };
       source.onerror = () => {
+        // ENV-168: readyState CLOSED means the server answered a
+        // (re)connect attempt with a terminal 401/403 — stop retrying
+        // instead of looping.
+        const terminal = source?.readyState === EventSource.CLOSED;
         source?.close();
         source = null;
         if (closed) return;
+        if (terminal) {
+          closed = true;
+          if (retryTimer) clearTimeout(retryTimer);
+          return;
+        }
         retryTimer = setTimeout(connect, retryMs);
         retryMs = Math.min(retryMs * 2, 60_000);
       };

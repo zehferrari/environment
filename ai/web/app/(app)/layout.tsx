@@ -2,6 +2,7 @@ import { AgentPresenceProvider } from "@/components/agent-presence-provider";
 import CommandDeck from "@/components/command-deck";
 import CreateFabServer from "@/components/create-fab-server";
 import { PersistentPmStreamProvider } from "@/components/persistent-pm-stream-provider";
+import { ViewerPolicyProvider } from "@/components/viewer-policy-provider";
 import Sidebar from "@/components/sidebar";
 import ToastProvider from "@/components/toast";
 import { requireViewer } from "@/lib/auth/permissions";
@@ -21,7 +22,8 @@ export default async function AppLayout({
   const viewer = await requireViewer();
   return (
     <PersistentPmStreamProvider>
-      <ToastProvider>
+      <ViewerPolicyProvider>
+        <ToastProvider>
         {viewer.canAccessOwnerFeatures ? <AgentPresenceProvider /> : null}
         <div className="relative flex min-h-screen text-text">
           <Sidebar />
@@ -33,7 +35,8 @@ export default async function AppLayout({
         {/* The one app-wide create (+). Context-aware, in-place, no redirects. */}
         <CreateFabServer />
         {chatpane}
-      </ToastProvider>
+        </ToastProvider>
+      </ViewerPolicyProvider>
     </PersistentPmStreamProvider>
   );
 }
