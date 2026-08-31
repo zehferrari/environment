@@ -656,12 +656,19 @@ async function main() {
         mode: "hidden",
         excludeAgentRecords: true,
         maskAgentRecords: false,
-        redactAgentReferences: false,
+        redactAgentReferences: true,
       },
-      "Customer policy removes agent rows instead of invoking masking/redaction",
+      "Customer policy removes agent rows and redacts references that survive in human-authored bodies",
     );
     const hiddenActor = actorVisibility.serializeVisibleActor(agentActor, memberVisibility);
     assert.equal(hiddenActor, null, "Customers receive no agent identity or placeholder");
+    assert.equal(
+      buildAgentRedactor(memberVisibility.agentIdentities, memberVisibility.redactAgentReferences)(
+        "Agent Test rebased it; ask @agent-test",
+      ),
+      "an agent rebased it; ask @agent",
+      "Customer body redaction removes bare-name and username references from human-authored comments",
+    );
 
     const adminVisibility = await actorVisibility.getActorVisibility(admin);
     assert.equal(
@@ -684,6 +691,13 @@ async function main() {
     const ownerActor = actorVisibility.serializeVisibleActor(agentActor, ownerVisibility);
     assert.equal(ownerActor?.id, agentUser.id, "the owner sees the real agent identity");
     assert.equal(ownerActor?.agent?.slug, agent.slug, "the owner retains agent metadata");
+    assert.equal(
+      buildAgentRedactor(ownerVisibility.agentIdentities, ownerVisibility.redactAgentReferences)(
+        "Agent Test rebased it; ask @agent-test",
+      ),
+      "Agent Test rebased it; ask @agent-test",
+      "Owner body rendering remains unredacted",
+    );
 
     console.log("user-access-control-test: ok");
   } finally {

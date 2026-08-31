@@ -20,7 +20,12 @@ export function agentContentPolicy(viewer: AgentContentViewer) {
     mode,
     excludeAgentRecords: mode === "hidden",
     maskAgentRecords: mode === "masked",
-    redactAgentReferences: mode === "masked",
+    // Body redaction is a superset safety net over exclusion: exclusion drops
+    // agent-authored rows, but human-authored rows can still name an agent
+    // ("@asdrubal", "Asdrubal rebased it"). Both masked Admins and hidden
+    // Customers must never see real agent identities in free text, so redact
+    // for both. The owner path (maskAgents=false) remains a no-op.
+    redactAgentReferences: mode === "masked" || mode === "hidden",
   } as const;
 }
 
