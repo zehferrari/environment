@@ -1,5 +1,12 @@
 import { revalidateTag, unstable_cache } from "next/cache";
 import { db } from "@/lib/db";
+import {
+  accessibleAttachmentWhere,
+  accessibleCommentWhere,
+  accessibleEpicWhere,
+  accessibleTaskWhere,
+  type Viewer,
+} from "@/lib/auth/permissions";
 
 type RepoVerifyActivityRow = {
   kind: string;
@@ -89,7 +96,7 @@ export function revalidateTaskAttachments(taskId: string, revalidate: Revalidate
   revalidate(taskCacheTag.activity(taskId));
 }
 
-export function getCachedTaskDetailShell(taskId: string) {
+async function getRawCachedTaskDetailShell(taskId: string) {
   return unstable_cache(
     async () => db.task.findUnique({
       where: { id: taskId },
@@ -298,9 +305,32 @@ export function getCachedTaskDetailShell(taskId: string) {
   )();
 }
 
-export function getCachedTaskComments(taskId: string) {
+export async function getCachedTaskDetailShell(taskId: string, viewer?: Viewer) {
+  const task = await getRawCachedTaskDetailShell(taskId);
+  if (!task || !viewer) return task;
+
+  const relatedIds = [...new Set([
+    ...(task.blockedById ? [task.blockedById] : []),
+    ...task.dependencies.map(({ prerequisite }) => prerequisite.id),
+  ])];
+  if (relatedIds.length === 0) return task;
+
+  const visible = new Set((await db.task.findMany({
+    where: accessibleTaskWhere(viewer, { id: { in: relatedIds } }),
+    select: { id: true },
+  })).map(({ id }) => id));
+  const blockedByVisible = task.blockedById ? visible.has(task.blockedById) : true;
+  return {
+    ...task,
+    blockedById: blockedByVisible ? task.blockedById : null,
+    blockedBy: blockedByVisible ? task.blockedBy : null,
+    dependencies: task.dependencies.filter(({ prerequisite }) => visible.has(prerequisite.id)),
+  };
+}
+
+export function getCachedTaskComments(taskId: string, viewer?: Viewer) {
   return db.comment.findMany({
-    where: { taskId },
+    where: viewer ? accessibleCommentWhere(viewer, { taskId }) : { taskId },
     // Soft-deleted comments are returned to humans on the task page so
     // they can render the collapsed dotted divider. Agent context queries
     // filter deletedAt: null upstream so agents never see deleted bodies.
@@ -338,7 +368,14 @@ export function getCachedTaskComments(taskId: string) {
   }).then(sortByCreatedAtAsc);
 }
 
-export function getCachedTaskAttachments(taskId: string) {
+export function getCachedTaskAttachments(taskId: string, viewer?: Viewer) {
+  if (viewer) {
+    return db.attachment.findMany({
+      where: accessibleAttachmentWhere(viewer, { taskId }),
+      orderBy: { createdAt: "desc" },
+      include: { uploader: { select: { username: true, kind: true } } },
+    });
+  }
   return unstable_cache(
     async () => db.attachment.findMany({
       where: { taskId },
@@ -350,7 +387,14 @@ export function getCachedTaskAttachments(taskId: string) {
   )();
 }
 
-export function getCachedProjectEpics(projectId: string) {
+export function getCachedProjectEpics(projectId: string, viewer?: Viewer) {
+  if (viewer) {
+    return db.epic.findMany({
+      where: accessibleEpicWhere(viewer, { projectId, archivedAt: null, deletedAt: null }),
+      orderBy: [{ status: "asc" }, { title: "asc" }],
+      select: { id: true, title: true, status: true, private: true },
+    });
+  }
   return unstable_cache(
     async () => db.epic.findMany({
       where: {

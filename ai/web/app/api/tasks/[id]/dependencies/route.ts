@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { getViewer, canAccessTask } from "@/lib/auth/permissions";
+import { accessibleTaskWhere, getViewer, canAccessTask } from "@/lib/auth/permissions";
 import {
   getTaskDependenciesWithDetails,
   setTaskDependencies,
@@ -44,7 +44,7 @@ export async function GET(
     return NextResponse.json({ error: "Task not found" }, { status: 404 });
   }
 
-  const dependencies = await getTaskDependenciesWithDetails(taskId);
+  const dependencies = await getTaskDependenciesWithDetails(taskId, viewer);
   return NextResponse.json({ dependencies });
 }
 
@@ -96,6 +96,14 @@ export async function POST(
         { status: 400 },
       );
     }
+  }
+
+  const requestedIds = [...new Set(body.prerequisiteTaskIds)];
+  const visibleRequestedCount = await db.task.count({
+    where: accessibleTaskWhere(viewer, { id: { in: requestedIds }, deletedAt: null }),
+  });
+  if (visibleRequestedCount !== requestedIds.length) {
+    return NextResponse.json({ error: "not_found" }, { status: 404 });
   }
 
   // Preserve cross-project (manager-created) edges that the viewer cannot remove.

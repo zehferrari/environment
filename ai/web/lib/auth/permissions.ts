@@ -148,6 +148,76 @@ export function accessibleProjectWhere(
 }
 
 /**
+ * User identities are project data too. Customers may resolve only humans in
+ * their scope. Admins additionally retain agent identities that participate in
+ * an accessible project, while agents that exist only outside that scope stay
+ * undiscoverable through user and avatar reads.
+ */
+export function accessibleUserWhere(
+  viewer: Viewer,
+  where: Prisma.UserWhereInput = {},
+): Prisma.UserWhereInput {
+  if (hasOwnerRole(viewer)) return where;
+  if (viewer.kind === "agent") {
+    return { AND: [where, { id: { equals: "__no-browser-agent-user-access__" } }] };
+  }
+  const projectWhere = projectAccessWhere(viewer);
+  const humanWhere: Prisma.UserWhereInput = {
+    kind: "human",
+    OR: [
+      { id: viewer.id },
+      { isOwner: true },
+      { projectMembers: { some: { project: projectWhere } } },
+    ],
+  };
+  if (viewer.agentVisibility === "hidden") {
+    return { AND: [where, humanWhere] };
+  }
+
+  const taskWhere = accessibleTaskWhere(viewer);
+  const epicWhere = accessibleEpicWhere(viewer);
+  const agentWhere: Prisma.UserWhereInput = {
+    kind: "agent",
+    OR: [
+      { assignedTasks: { some: taskWhere } },
+      { actingManagerOf: { some: taskWhere } },
+      { reportedTasks: { some: taskWhere } },
+      { actingManagerOfEpic: { some: epicWhere } },
+      { reportedEpics: { some: epicWhere } },
+      { epicWorkerAssignments: { some: { epic: epicWhere } } },
+      { defaultAssigneeForProjects: { some: projectWhere } },
+      { defaultReviewerForProjects: { some: projectWhere } },
+      { managerAssignableProjects: { some: { project: projectWhere } } },
+      {
+        comments: {
+          some: {
+            OR: [
+              { task: taskWhere },
+              { epic: epicWhere },
+            ],
+          },
+        },
+      },
+      { uploadedAttachments: { some: { project: projectWhere } } },
+      { activity: { some: { project: projectWhere } } },
+      { agentChatMessages: { some: { project: projectWhere } } },
+      {
+        agent: {
+          workspacePools: {
+            some: {
+              workspace: {
+                projects: { some: { project: projectWhere } },
+              },
+            },
+          },
+        },
+      },
+    ],
+  };
+  return { AND: [where, { OR: [humanWhere, agentWhere] }] };
+}
+
+/**
  * Private Epics are owner-only. This applies to agent contexts as well as
  * human member sessions so private work cannot be inferred through workflows.
  */
@@ -190,6 +260,52 @@ export function accessibleTaskWhere(
   return clauses.length === 1 ? where : { AND: clauses };
 }
 
+/** Project/item authorization for comment readers, plus Customer redaction. */
+export function accessibleCommentWhere(
+  viewer: Viewer,
+  where: Prisma.CommentWhereInput = {},
+): Prisma.CommentWhereInput {
+  const clauses: Prisma.CommentWhereInput[] = [
+    where,
+    {
+      OR: [
+        { task: { is: accessibleTaskWhere(viewer) } },
+        { epic: { is: accessibleEpicWhere(viewer) } },
+      ],
+    },
+  ];
+  if (viewer.role === "customer") {
+    clauses.push({
+      authorAgentSlug: null,
+      isGenerated: false,
+      user: { is: { kind: "human" } },
+    });
+  }
+  return { AND: clauses };
+}
+
+/** Project/item authorization for attachment lists and direct downloads. */
+export function accessibleAttachmentWhere(
+  viewer: Viewer,
+  where: Prisma.AttachmentWhereInput = {},
+): Prisma.AttachmentWhereInput {
+  const clauses: Prisma.AttachmentWhereInput[] = [
+    where,
+    { project: { is: accessibleProjectWhere(viewer) } },
+    {
+      OR: [
+        { task: { is: accessibleTaskWhere(viewer) } },
+        { epic: { is: accessibleEpicWhere(viewer) } },
+        { taskId: null, epicId: null },
+      ],
+    },
+  ];
+  if (viewer.role === "customer") {
+    clauses.push({ uploader: { is: { kind: "human" } } });
+  }
+  return { AND: clauses };
+}
+
 export async function accessibleActivityWhere(
   viewer: Viewer,
   where: Prisma.ActivityLogWhereInput = {},
@@ -199,6 +315,7 @@ export async function accessibleActivityWhere(
     return { AND: [where, { id: { in: [] } }] };
   }
 
+  const projectAccess = projectAccessWhere(viewer);
   const visibleEpicIds = (await db.epic.findMany({
     where: accessibleEpicWhere(viewer),
     select: { id: true },
@@ -227,7 +344,12 @@ export async function accessibleActivityWhere(
       {
         OR: [
           { task: { is: accessibleTaskWhere(viewer) } },
-          nonTaskActivity,
+          {
+            AND: [
+              { project: { is: projectAccess } },
+              nonTaskActivity,
+            ],
+          },
         ],
       },
     ],

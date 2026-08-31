@@ -38,7 +38,7 @@ export default async function CreateFabServer() {
         },
       },
     }),
-    listAssignablePrincipals(viewer),
+    viewer.canAccessOwnerFeatures ? listAssignablePrincipals(viewer) : Promise.resolve([]),
   ]);
 
   const workspaces: CreateFabWorkspace[] = workspaceRows;

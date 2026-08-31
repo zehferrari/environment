@@ -50,6 +50,9 @@ import { effectiveCommitPrefix, effectiveTaskCommitPrefix } from "@/lib/work-ite
 import { effectiveEpicBranchName } from "@/lib/work-items/branches";
 import DeploymentTab, { DeploymentStatusSelect, canShowDeploymentAction, type DeploymentPrRow } from "@/components/deployment-tab";
 import {
+  accessibleActivityWhere,
+  accessibleAttachmentWhere,
+  accessibleCommentWhere,
   accessibleEpicWhere,
   accessibleTaskWhere,
   requireEpicAccess,
@@ -63,6 +66,7 @@ import {
   serializeVisibleActor,
   serializeVisibleActorAs,
   visibleActivityRows,
+  visibleActivityWhere,
   type ActorVisibility,
 } from "@/lib/users/actor-visibility";
 import { buildAgentRedactor } from "@/lib/users/redact-agents";
@@ -536,10 +540,12 @@ export default async function EpicDetailPage({
         },
       },
       attachments: {
+        where: accessibleAttachmentWhere(viewer, { epicId }),
         orderBy: { createdAt: "desc" },
         include: { uploader: { select: { username: true, kind: true } } },
       },
       comments: {
+        where: accessibleCommentWhere(viewer, { epicId }),
         // Soft-deleted comments (HOMELAB-41 / item 2) stay on the
         // human-facing page so the dotted divider can render; agent
         // context filters deletedAt: null upstream.
@@ -574,6 +580,7 @@ export default async function EpicDetailPage({
     },
   });
   if (!epic || epic.project.slug !== slug || epic.deletedAt) notFound();
+  const canSeeAgentContent = viewer.agentVisibility !== "hidden";
 
   const canDeleteComments = viewer.canAccessOwnerFeatures;
   // Deployment is an optional post-Done step, only for repo-backed projects.
@@ -583,9 +590,10 @@ export default async function EpicDetailPage({
     .filter((name) => viewer.canAccessOwnerFeatures || !OWNER_ONLY_EPIC_TABS.has(name));
   if (!epicTabs.some((name) => name === selectedTab)) selectedTab = "Description";
   const taskIds = epic.tasks.map((task) => task.id);
-  const [principals, recentReplyActivity, allActivity, taskActivityRows, deploymentPullRequests, busyAgentSlugs, actorVisibility, agentUsers] = await Promise.all([
+  const epicActivityWhere = await accessibleActivityWhere(viewer, { projectId: epic.project.id });
+  const [principals, recentReplyActivity, allActivity, taskActivityRows, deploymentPullRequests, busyAgentSlugs, actorVisibility] = await Promise.all([
     viewer.canAccessOwnerFeatures ? listAssignablePrincipals(viewer) : Promise.resolve([]),
-    db.activityLog.findMany({
+    canSeeAgentContent ? db.activityLog.findMany({
       where: {
         projectId: epic.project.id,
         kind: {
@@ -598,12 +606,9 @@ export default async function EpicDetailPage({
       orderBy: { createdAt: "desc" },
       take: 160,
       select: { kind: true, payload: true, targetAgent: true },
-    }),
+    }) : Promise.resolve([]),
     db.activityLog.findMany({
-      where: {
-        projectId: epic.project.id,
-        payload: { contains: epic.id },
-      },
+      where: { AND: [epicActivityWhere, visibleActivityWhere(viewer), { payload: { contains: epic.id } }] },
       orderBy: { createdAt: "desc" },
       include: {
         user: {
@@ -638,9 +643,6 @@ export default async function EpicDetailPage({
       : Promise.resolve([]),
     viewer.canAccessOwnerFeatures ? readBusyAgentSlugs() : Promise.resolve(new Set<string>()),
     getActorVisibility(viewer),
-    viewer.canAccessOwnerFeatures
-      ? Promise.resolve([])
-      : db.user.findMany({ where: { kind: "agent" }, select: { username: true } }),
   ]);
   const visibleTaskIds = new Set(taskIds);
   const visibleAttachments = epic.attachments.map((attachment) => ({
@@ -671,11 +673,11 @@ export default async function EpicDetailPage({
         // Owner's @agent-mention notes stay hidden (they embed real slugs).
         return !(
           comment.user.id === actorVisibility.owner?.id &&
-          extractMentions(comment.body, agentUsers).length > 0
+          extractMentions(comment.body, actorVisibility.agentIdentities.map(({ username }) => ({ username }))).length > 0
         );
       });
 
-  const chatMessages = await db.agentChatMessage.findMany({
+  const chatMessages = canSeeAgentContent ? await db.agentChatMessage.findMany({
     where: {
       epicId: epic.id,
       agentSlug: "room",
@@ -698,7 +700,7 @@ export default async function EpicDetailPage({
       },
       deletedBy: { select: { username: true, name: true, kind: true } },
     },
-  });
+  }) : [];
   const currentUserId = viewer.id;
   const epicChatCursorKey = `epic:${epic.id}`;
   const epicChatReadCursor = currentUserId

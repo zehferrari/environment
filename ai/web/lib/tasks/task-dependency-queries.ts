@@ -1,6 +1,7 @@
 import { db } from "@/lib/db";
 import type { PrismaClient } from "@prisma/client";
 import { validateTaskDependency, taskPrerequisites } from "./blocking";
+import { accessibleTaskWhere, type Viewer } from "@/lib/auth/permissions";
 
 /**
  * ENV-159 Step 8: Task dependency queries.
@@ -37,9 +38,9 @@ export async function getTaskDependencies(taskId: string, client?: PrismaClient)
  * Get prerequisite task details for the editor UI.
  * Uses taskPrerequisites from blocking.ts for the union read.
  */
-export async function getTaskDependenciesWithDetails(taskId: string) {
-  const task = await db.task.findUnique({
-    where: { id: taskId },
+export async function getTaskDependenciesWithDetails(taskId: string, viewer?: Viewer) {
+  const task = await db.task.findFirst({
+    where: viewer ? accessibleTaskWhere(viewer, { id: taskId }) : { id: taskId },
     select: {
       id: true,
       blockedById: true,
@@ -86,23 +87,24 @@ export async function getTaskDependenciesWithDetails(taskId: string) {
   const prereqIds = prerequisites.map((p) => p.id);
   const prereqMeta = prereqIds.length > 0
     ? await db.task.findMany({
-        where: { id: { in: prereqIds } },
-        select: { id: true, projectId: true, private: true },
+        where: viewer ? accessibleTaskWhere(viewer, { id: { in: prereqIds } }) : { id: { in: prereqIds } },
+        select: { id: true, title: true, workItemKey: true, status: true, projectId: true, private: true },
       })
     : [];
   const metaMap = new Map(prereqMeta.map((m) => [m.id, m]));
 
-  return prerequisites.map((p) => {
+  return prerequisites.flatMap((p) => {
     const meta = metaMap.get(p.id);
-    return {
+    if (!meta) return [];
+    return [{
       id: p.id,
-      title: p.title ?? "",
-      workItemKey: p.workItemKey ?? null,
-      status: p.status,
-      projectId: meta?.projectId ?? null,
-      private: meta?.private ?? false,
+      title: meta.title,
+      workItemKey: meta.workItemKey,
+      status: meta.status,
+      projectId: meta.projectId,
+      private: meta.private,
       source: legacyId === p.id && !depIds.has(p.id) ? "legacy" as const : "dependency" as const,
-    };
+    }];
   });
 }
 
