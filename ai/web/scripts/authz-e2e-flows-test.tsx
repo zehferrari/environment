@@ -76,6 +76,21 @@ async function drainStream(
   }
 }
 
+async function assertRejected(
+  promise: Promise<unknown>,
+  messagePart: string,
+  label: string,
+): Promise<void> {
+  await assert.rejects(promise, (error: unknown) => {
+    assert.ok(error instanceof Error, `${label}: rejection must be an Error`);
+    assert.ok(
+      error.message.includes(messagePart),
+      `${label}: expected rejection message to include "${messagePart}", got: ${error.message}`,
+    );
+    return true;
+  });
+}
+
 async function main(): Promise<void> {
   const s = await setupAuthzScenario();
   const { db, world, modules } = s;
@@ -118,7 +133,7 @@ async function main(): Promise<void> {
 
     const sentinels = agentIdentifierSentinels(world);
     const sweep = (payload: unknown, label: string): void => {
-      const json = JSON.stringify(payload);
+      const json = JSON.stringify(payload) ?? "null";
       for (const forbidden of sentinels) {
         assert.equal(json.includes(forbidden), false, `${label} must not contain "${forbidden}"`);
       }
@@ -246,39 +261,44 @@ async function main(): Promise<void> {
       members: await db.projectMember.count(),
       audits: await db.accessAuditLog.count(),
     };
-    await assert.rejects(
+    await assertRejected(
       accessManagement.updateHumanAccessCore(adminAViewer, {
         userId: world.adminA.id,
         projectIds: [projectA.id],
       }),
+      "An Admin cannot edit their own access.",
       "J2: Admin cannot edit their own access",
     );
-    await assert.rejects(
+    await assertRejected(
       accessManagement.updateHumanAccessCore(adminAViewer, {
         userId: world.adminB.id,
         projectIds: [projectA.id],
       }),
+      "An Admin can only manage Customer access.",
       "J2: Admin cannot edit another Admin",
     );
-    await assert.rejects(
+    await assertRejected(
       accessManagement.updateHumanAccessCore(adminAViewer, {
         userId: world.owner.id,
         projectIds: [projectA.id],
       }),
+      "The Mission Control owner has access to every project.",
       "J2: Admin cannot edit the Owner",
     );
-    await assert.rejects(
+    await assertRejected(
       accessManagement.updateHumanAccessCore(adminAViewer, {
         userId: world.customerBare.id,
         projectIds: [projectB.id],
       }),
+      "Access can only be granted or revoked within your own project scope.",
       "J2: Admin cannot grant an out-of-scope project",
     );
-    await assert.rejects(
+    await assertRejected(
       accessManagement.setHumanUserRoleCore(adminAViewer, {
         userId: world.customerA.id,
         role: "admin",
       }),
+      "Only the Mission Control owner can promote or demote.",
       "J2: Admin cannot promote or demote",
     );
     assert.equal(await db.user.count(), before.users, "J2: rejected edits create no users");

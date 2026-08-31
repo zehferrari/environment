@@ -251,6 +251,43 @@ async function main(): Promise<void> {
     assert.equal(adminAttachmentIds.has(world.attachments.humanOnProjectB.id), false,
       "AC3: Project B attachment undiscoverable");
 
+    // Search surface (GET /api/tasks/search?q=…): the route resolves its
+    // session through getViewer() — the request-ALS class the harness
+    // documents as undrivable in-process — so this case drives the exact
+    // predicate composition the route runs (same where + projection + take),
+    // per the plan's "undiscoverable via pages, APIs, search and direct URLs".
+    const searchResults = async (viewer: unknown, q: string) =>
+      db.task.findMany({
+        where: permissions.accessibleTaskWhere(viewer as never, {
+          deletedAt: null,
+          OR: [
+            { title: { contains: q } },
+            { workItemKey: { contains: q } },
+          ],
+        }),
+        select: {
+          id: true,
+          title: true,
+          workItemKey: true,
+          status: true,
+          project: { select: { name: true, slug: true } },
+        },
+        take: 20,
+      });
+    for (const viewer of [adminA, customerA]) {
+      assert.deepEqual(
+        (await searchResults(viewer, "Task A")).map((t) => t.id),
+        [world.tasks.taskA.id],
+        "AC3: search returns exactly the permitted Project A row — the composition is not vacuously empty",
+      );
+      assert.deepEqual(await searchResults(viewer, "Task B"), [],
+        "AC3: Project B task is undiscoverable via search");
+      assert.deepEqual(await searchResults(viewer, "Private Task"), [],
+        "AC3: private Task stays undiscoverable via search");
+      assert.deepEqual(await searchResults(viewer, "az-no-such-term-anywhere"), [],
+        "AC3: search denies forbidden content with the identical empty shape of a nonexistent term (no existence oracle)");
+    }
+
     // ---------------------------------------------------------------- AC4 --
     // Customer: permitted human-facing views work, agent surfaces are absent.
     assert.deepEqual(await wsSlugs(customerA), ["az-workspace-a"],
@@ -392,7 +429,8 @@ async function main(): Promise<void> {
 
     console.log(
       "authz-matrix-test: ok — AC1 owner-global + role machinery, AC2 admin guardrails (server-side, audited), " +
-      "AC3 admin scope isolation (Project B undiscoverable), AC4 customer experience (zero agent surfaces), " +
+      "AC3 admin scope isolation (Project B undiscoverable — pages, APIs, search composition, direct URLs), " +
+      "AC4 customer experience (zero agent surfaces, search-safe), " +
       "AC6 deep-link safety (no existence oracle)",
     );
   } finally {

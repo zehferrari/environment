@@ -197,7 +197,60 @@ async function main(): Promise<void> {
       assert.deepEqual(pagedIds, visibleTasks.map((t) => t.id), "pagination union is exactly the filtered set");
     });
 
-    // 8. Chat absence: the real chat visibility predicate yields no row set
+    // 8. Search results: the /api/tasks/search route resolves its session
+    //    through getViewer() — the request-ALS class the harness documents
+    //    as undrivable in-process — so this section sweeps the exact where
+    //    composition + result projection the route runs. Permitted rows
+    //    surface through the route's own payload shape; Project B and
+    //    private content are absent with the identical empty shape of a
+    //    nonexistent term (no existence oracle).
+    await section("search-results", async () => {
+      const searchRows = (q: string) =>
+        db.task.findMany({
+          where: permissions.accessibleTaskWhere(customerA, {
+            deletedAt: null,
+            OR: [
+              { title: { contains: q } },
+              { workItemKey: { contains: q } },
+            ],
+          }),
+          select: {
+            id: true,
+            title: true,
+            workItemKey: true,
+            status: true,
+            project: { select: { name: true, slug: true } },
+          },
+          take: 20,
+        });
+      const exact = await searchRows("Task A");
+      assert.deepEqual(
+        exact.map((t) => t.id),
+        [world.tasks.taskA.id],
+        "search surfaces the permitted Project A row (agent-assignee task stays searchable, identity does not)",
+      );
+      sweep("customer search payload — exact hit (route projection)", exact);
+      const page = await searchRows("Task");
+      assert.equal(page.length, 20, "broad terms page at the route's take cap over the permitted set");
+      sweep("customer search payload — capped page (route projection)", page);
+      for (const row of page) {
+        assert.equal(row.project?.slug, "az-project-a", "every search row stays inside the permitted project");
+      }
+      assert.equal(
+        page.some((t) => t.id === world.tasks.privateTaskA.id),
+        false,
+        "the private task never surfaces in search",
+      );
+      assert.deepEqual(await searchRows("Task B"), [], "Project B content is undiscoverable via search");
+      assert.deepEqual(await searchRows("Private Task"), [], "the private task is undiscoverable via search");
+      assert.deepEqual(
+        await searchRows("az-no-such-term-anywhere"),
+        [],
+        "forbidden and nonexistent terms return the identical empty shape (no existence oracle)",
+      );
+    });
+
+    // 9. Chat absence: the real chat visibility predicate yields no row set
     //    at all for a hidden viewer.
     await section("chat-absence", async () => {
       const chatRows = await db.agentChatMessage.findMany({
@@ -206,7 +259,7 @@ async function main(): Promise<void> {
       assert.equal(chatRows.length, 0, "agent chat is entirely absent from the Customer universe");
     });
 
-    // 9. Viewer policy stream: the real stream factory, wired exactly as the
+    // 10. Viewer policy stream: the real stream factory, wired exactly as the
     //    route wires it (the route itself resolves sessions through
     //    headers()/auth() — the request-ALS class the harness documents as
     //    undrivable in-process). The channel contract is the AC5 surface:
@@ -240,7 +293,7 @@ async function main(): Promise<void> {
       sweep("viewer policy stream frames", sseText);
     });
 
-    // 10. Rendered customer navigation HTML (proven matrix render pattern).
+    // 11. Rendered customer navigation HTML (proven matrix render pattern).
     await section("rendered-html", async () => {
       const React = (await import("react")).default;
       const { renderToStaticMarkup } = await import("react-dom/server");
@@ -295,7 +348,8 @@ async function main(): Promise<void> {
 
     console.log(
       "authz-negative-space-test: ok — AC5 zero agent identifiers across workspaces/comments (projected+redacted)/" +
-      "hidden complement/activities/attachments/users/tasks+pagination (projected actors)/chat absence/" +
+      "hidden complement/activities/attachments/users/tasks+pagination (projected actors)/" +
+      "search results (route composition + projected payload)/chat absence/" +
       "policy stream frames (epoch-only)/rendered HTML; counts and pagination totals equal the filtered set",
     );
   } finally {

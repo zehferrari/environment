@@ -2,7 +2,7 @@
 
 - **Task:** 9. Authorization and end-to-end test gate for Owner / Admin / Customer (PM `cmtgp185j0ytsov36y87ip2oq`)
 - **Epic:** Client UI: role-based human experience (ENV-160, `cmtglbdv10veiov1utx322f98`)
-- **Branch:** `env-169` (worktree `/srv/Code/environment.worktrees/env-169`), baseline `f7610ec` = `origin/client-ui` (published Epic tip containing merges for ENV-161…ENV-168). Changes left uncommitted for PM submission.
+- **Branch:** `env-169` (worktree `/srv/Code/environment.worktrees/env-169`), baseline `f7610ec` = `origin/client-ui` (published Epic tip containing merges for ENV-161…ENV-168); first-round PM submission commit `24d0aec`. Review-fix round (review feedback `cmthvnepqdc86ov36eu2sx02k`): additive working-tree changes on top of `24d0aec`, left uncommitted for PM resubmission.
 - **Date:** 2026-09-01 (agent: carmen)
 
 ## Deliverables (all under `ai/web`)
@@ -10,9 +10,9 @@
 | File | Purpose |
 | --- | --- |
 | `scripts/lib/authz-scenario-harness.ts` (784 lines) | Throwaway SQLite DB via `prisma migrate deploy` (DATABASE_URL repointed before any `@/lib` import); seeds Owner, Admin granted Project A, second Admin, Customer granted Project A, Customer with no grants, Projects A/B, agent principals, human/agent-authored comments, activities, attachments, notifications, one private Task and one private Epic; in-process authenticated request helpers call real route handlers and core functions — no re-implemented policy. |
-| `scripts/authz-matrix-test.ts` (405 lines) | Role × surface authorization matrix across navigation, workspaces, projects, Tasks, Epics, comments, activities, attachments, APIs, search and deep links; each case labels the acceptance-criterion id it proves. |
-| `scripts/authz-negative-space-test.ts` (308 lines) | Recursive sentinel sweep of every Customer-visible payload (API JSON, serialized page projections, comments, activities, attachment metadata, search results, stream frames) plus counts/pagination equality against the filtered result set. |
-| `scripts/authz-e2e-flows-test.tsx` (~646 lines) | Journeys J1 invitation→token→activation→owner edit/promote/demote with audit trail, J2 Admin guardrail rejections with zero state delta, J3 Customer isolation incl. production `SidebarNav` markup, J4 Owner preview lens (reads + production markup + `PreviewBanner`), J5 active-session revocation (epoch push, identity boundary, next-request denial, re-grant restore). |
+| `scripts/authz-matrix-test.ts` (443 lines) | Role × surface authorization matrix across navigation, workspaces, projects, Tasks, Epics, comments, activities, attachments, APIs, search and deep links; each case labels the acceptance-criterion id it proves. Search proven on the exact `/api/tasks/search` where-composition + projection for adminA/customerA. |
+| `scripts/authz-negative-space-test.ts` (362 lines) | Recursive sentinel sweep of every Customer-visible payload (API JSON, serialized page projections, comments, activities, attachment metadata, search results, stream frames) plus counts/pagination equality against the filtered result set. Section 8 sweeps the route-projected search payload. |
+| `scripts/authz-e2e-flows-test.tsx` (669 lines) | Journeys J1 invitation→token→activation→owner edit/promote/demote with audit trail, J2 Admin guardrail rejections (message-asserted against the real access-policy rejections) with zero state delta, J3 Customer isolation incl. production `SidebarNav` markup, J4 Owner preview lens (reads + production markup + `PreviewBanner`), J5 active-session revocation (epoch push, identity boundary, next-request denial, re-grant restore). |
 | `package.json` | Wires `test:authz-matrix`, `test:authz-negative-space`, `test:authz-e2e`. |
 
 ## AC1–AC10 traceability
@@ -21,25 +21,38 @@
 | --- | --- | --- | --- |
 | 1 | Owner global access; only role that promotes/demotes Admins and administers agents | authz-matrix owner block + role machinery (`setHumanUserRoleCore`) + agent-admin surfaces; e2e J1 promote/demote, J2 non-owner negatives | PASS |
 | 2 | Admin manages Customer access only in own scope; self/other-Admin/Owner/out-of-scope rejected server-side | authz-matrix guardrail block on real cores (zero user/member/audit delta + in-scope positive control); e2e J2 | PASS |
-| 3 | Admin sees Project A agent activity; cannot discover Project B, its users, work items, activity, counts, attachments | authz-matrix admin-isolation block (pages, APIs, search, direct URLs, counts, attachments) | PASS |
+| 3 | Admin sees Project A agent activity; cannot discover Project B, its users, work items, activity, counts, attachments | authz-matrix admin-isolation block (pages, APIs, search, direct URLs, counts, attachments); search proven by the `/api/tasks/search` where-composition case — Project B title, private-task title and nonexistent term identically empty for adminA/customerA, positive control returns the permitted row | PASS |
 | 4 | Customer uses permitted human-facing views with zero agent navigation/controls | authz-matrix customer block; e2e J3 (zero-agent production markup); `test:customer-role-dom-contract` | PASS |
-| 5 | Agent-authored comments/messages/activities/attachments/workflow records absent from Customer HTML, payloads, APIs, streams, searches, notifications, pagination, unread counts | `test:authz-negative-space` (sentinel sweep through the real projection path + counts/pagination equality) | PASS |
+| 5 | Agent-authored comments/messages/activities/attachments/workflow records absent from Customer HTML, payloads, APIs, streams, searches, notifications, pagination, unread counts | `test:authz-negative-space` (sentinel sweep through the real projection path + counts/pagination equality, incl. the section-8 search-results projection sweep) | PASS |
 | 6 | Direct request for inaccessible/agent-only resource → safe not-found/denied, no metadata leak | authz-matrix deep-link block (no existence oracle) | PASS |
 | 7 | Customer-visible content coherent after agent-row removal; shared results via the customer-safe publishing path | negative-space coherence sweeps; `test:customer-publishing`; e2e J3 published-surface legs | PASS |
 | 8 | Role/access changes effective immediately across open tabs and new requests | e2e J5 (live policy-changed epoch push, next-request denial, re-grant restore); `test:access-revocation`; `test:auth-session-recovery` | PASS |
 | 9 | Automated authz tests across three roles on all surfaces and deep links | `test:authz-matrix` (case labels carry the criterion id) | PASS |
 | 10 | E2E tests: invitation/edit flow, Admin guardrails, Customer isolation, Owner preview mode, revocation while session active | `test:authz-e2e` J1–J5 | PASS |
 
-## Regression gate record (run 2026-09-01 on `env-169` @ `f7610ec`)
+## Regression gate record (first round 2026-09-01 on `env-169` @ `f7610ec`; resubmission round below, on `24d0aec` + review-fix working tree)
 
 | Command | Result |
 | --- | --- |
-| `pnpm typecheck` (tsc --noEmit) | **PASS** (exit 0; 6 initial type errors in the new e2e file were fixed type-only: reader overload → structural `PolicyStreamReader` interface, `rolePermission` optional chaining, `epochBefore` null guard) |
+| `pnpm lint` (eslint .) | **PASS** — exit 0, 9 warnings, 0 errors, all pre-existing `@next/next/no-img-element` (matches the reviewer's independent run at `24d0aec`; assignee re-run green on the review-fix tree) |
+| `pnpm typecheck` (tsc --noEmit) | **PASS** (exit 0; 6 initial type errors in the new e2e file were fixed type-only: reader overload → structural `PolicyStreamReader` interface, `rolePermission` optional chaining, `epochBefore` null guard; re-run green on the review-fix tree) |
+| `pnpm build` (prisma generate && next build && node scripts/copy-standalone-assets.mjs) | **PASS** — exit 0 on the review-fix working tree (assignee run; the reviewer was blocked by a `node_modules` uid `EPERM` on `prisma generate`, environment not code) |
 | `pnpm test:authz-e2e` (fresh run) | **PASS** (exit 0, J1–J5 all assertions, reader-cancel teardown verified) |
 | 15-suite batch: `test:access-policy`, `test:access-management`, `test:access-revocation`, `test:access-flow`, `test:user-access-control`, `test:human-role-policy`, `test:customer-role-dom-contract`, `test:preview-as-user`, `test:user-lifecycle`, `test:user-lifecycle-controls`, `test:auth-session-recovery`, `test:customer-publishing`, `test:work-item-proposal-authorization`, `test:authz-matrix`, `test:authz-negative-space` | **15/15 PASS** |
 | `pnpm test:workflow` (serial aggregate, 51 members) | **47/51 PASS** — 4 pre-existing failures, root-caused below; each reproduced individually |
 
 **Scoped authorization gate is fully green.** The full-repository aggregate is red only on pre-existing items outside this task's scope (next section).
+
+### Resubmission round (review feedback `cmthvnepqdc86ov36eu2sx02k`)
+
+Both blocking review items are addressed:
+
+1. **Search is now tested on the real composition.** The `/api/tasks/search` handler resolves its session through `getViewer()` — the request-ALS class the harness documents as undrivable in-process — so the suites drive the exact where-composition + projection + `take: 20` the route executes. Matrix AC3 block (adminA and customerA): a positive control returns exactly the permitted Project A task; the Project B task title, the private-task title and a nonexistent term all return empty with the identical no-existence-oracle shape. Negative-space section 8 sweeps the same route-projected payload (exact hit + capped 20-row page, per-row project slug, private task absent, forbidden and nonexistent terms identically empty).
+2. **Gate record completed.** `pnpm lint` and `pnpm build` rows added above; build run by the assignee (the reviewer was blocked by a `node_modules` uid `EPERM`, not by code).
+
+Non-blocking hardening applied as well: the e2e `sweep()` now carries the `?? "null"` guard its negative-space twin has, and the five J2 guardrail rejections are message-asserted (`assertRejected`) against the real `lib/users/access-policy` rejection messages — self-edit, other-Admin, Owner target, out-of-scope project, promote/demote.
+
+Review-fix round verification (on `24d0aec` + the additive review-fix working tree): `pnpm lint` exit 0 (9 warnings, 0 errors), `pnpm typecheck` exit 0, `pnpm test:authz-matrix` exit 0, `pnpm test:authz-negative-space` exit 0, `pnpm test:authz-e2e` exit 0, `pnpm build` exit 0. The 15/15 scoped batch, the aggregate 47/51 record and the accepted dispositions stand unchanged — the review fixes touch the `scripts/` suites and this doc only, no production code.
 
 ## Pre-existing aggregate failures (out of scope for ENV-169)
 
@@ -78,16 +91,19 @@ Per this ruling, the accepted 47/51 record plus these dispositions is the Epic g
 - **requirePublishingViewer** rejection message is not pinned by contract; the e2e matcher asserts `instanceof Error`.
 - **Harness boot noise:** a non-fatal `[prisma] failed to apply SQLite runtime pragmas: database is locked` warning can appear at throwaway-DB boot; suites continue and pass.
 - **J5 teardown:** the policy stream is drained through a reader obtained before draining and cancelled via `reader.cancel()` (`stream.cancel()` throws `ERR_INVALID_STATE` while the reader holds the lock).
+- **Search route session class:** `app/api/tasks/search/route.ts` resolves its viewer through `getViewer()` — the same request-ALS class documented above as undrivable in-process; the matrix AC3 case and the negative-space search section drive its exact where-composition, projection and take instead.
 - Scratch file `scripts/__authz-harness-smoke.ts` removed before the gate run.
 
 ## How to rerun
 
 ```bash
 cd ai/web
+pnpm lint
 pnpm typecheck
 pnpm test:authz-matrix
 pnpm test:authz-negative-space
 pnpm test:authz-e2e
+pnpm build
 for s in access-policy access-management access-revocation access-flow user-access-control human-role-policy customer-role-dom-contract preview-as-user user-lifecycle user-lifecycle-controls auth-session-recovery customer-publishing work-item-proposal-authorization; do pnpm test:$s; done
 pnpm test:workflow
 ```
