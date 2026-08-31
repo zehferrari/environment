@@ -104,7 +104,7 @@ async function main(): Promise<void> {
       setHumanUserRoleCore,
       updateHumanAccessCore,
     } = await import("../lib/users/access-management");
-    const { subscribeAccessChanges } = await import("../lib/users/access-change-hub");
+    const { subscribeAccessChanges, accessChangeListenerCount } = await import("../lib/users/access-change-hub");
     const { attachRevocationGuard } = await import("../lib/users/access-revocation-guard");
     const { createViewerPolicyStream } = await import("../lib/viewer-policy-stream");
     const permissions = await import("../lib/auth/permissions");
@@ -364,6 +364,105 @@ async function main(): Promise<void> {
       /rolePermission|projectMember|members:/,
       "policy route never queries or emits role/scope/project content",
     );
+    assert.doesNotMatch(
+      policyRouteSrc,
+      /stream\.cancel\(\)/,
+      "route never manually cancels the Response stream — the runtime's pipeTo teardown owns cancellation (ENV-168 review defect)",
+    );
+
+    // ---------- 7. Route handler: Response locking + abort teardown ----------
+    // ENV-168 review-defect regression: the route once cancelled the
+    // Response-locked stream from a req.signal abort listener — a rejected
+    // promise on every client disconnect. This exercises the REAL route
+    // handler in-process (auth injected via the documented test seam), locks
+    // the body the way the runtime does, aborts the request, then runs the
+    // runtime's pipeTo teardown (reader.cancel) and asserts a clean close:
+    // no unhandled rejection, hub subscription released, no later activity.
+    const routeMod = await import("../app/api/viewer/policy/stream/route");
+
+    const unhandled: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => { unhandled.push(reason); };
+    process.on("unhandledRejection", onUnhandledRejection);
+
+    const baselineListeners = accessChangeListenerCount(customerUser.id);
+    const routeEpochBefore = await epochOf();
+    const abortController = new AbortController();
+    const routeReq = new Request("http://localhost/api/viewer/policy/stream", {
+      signal: abortController.signal,
+    });
+    const routeRes = await routeMod.GET(routeReq, undefined, {
+      getViewer: () => Promise.resolve(viewerFor(customerUser, "customer")),
+      heartbeatMs: 40,
+    });
+    assert.equal(routeRes.status, 200, "route resolves an authenticated viewer to 200");
+    assert.equal(
+      routeRes.headers.get("content-type"),
+      "text/event-stream; charset=utf-8",
+      "route returns the SSE content type",
+    );
+    const routeBody = routeRes.body;
+    assert.ok(routeBody, "route body is the policy stream");
+    assert.equal(
+      accessChangeListenerCount(customerUser.id),
+      baselineListeners + 1,
+      "route stream subscribes to the access-change hub",
+    );
+
+    const routeReader = routeBody.getReader(); // the runtime's reader — this locks the stream
+    assert.equal(
+      routeBody.locked,
+      true,
+      "the Response reader locks the stream (the review defect's precondition)",
+    );
+
+    // connect frame carries the current durable epoch
+    const routeDecoder = new TextDecoder();
+    let routeBuffer = "";
+    const routeDeadline = Date.now() + 5000;
+    while (!routeBuffer.includes("\n\n") && Date.now() < routeDeadline) {
+      const next = await routeReader.read();
+      if (next.done) break;
+      routeBuffer += routeDecoder.decode(next.value, { stream: true });
+    }
+    const connectFrame = routeBuffer.match(/^event: policy-version\ndata: (\d+)\n\n/);
+    assert.ok(connectFrame, `connect epoch frame well-formed: ${JSON.stringify(routeBuffer)}`);
+    assert.equal(
+      Number(connectFrame[1]),
+      routeEpochBefore,
+      "connect epoch is the current durable policyVersion",
+    );
+
+    // client disconnect: abort the request. The fixed route registers nothing
+    // on abort; the old listener cancelled the locked stream here and
+    // surfaced an unhandled TypeError.
+    abortController.abort();
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    assert.equal(
+      unhandled.length,
+      0,
+      "aborting the request raises no unhandled rejection from the route handler",
+    );
+
+    // Next's pipeTo teardown on abort cancels the source reader, which must
+    // run createViewerPolicyStream's cancel() → closeStream(): heartbeat
+    // cleared, hub subscription released.
+    await routeReader.cancel();
+    assert.equal(
+      accessChangeListenerCount(customerUser.id),
+      baselineListeners,
+      "runtime teardown releases the route stream's hub subscription",
+    );
+
+    // quiet window: a moving epoch across several fast-heartbeat intervals
+    // must produce no activity — no leaked heartbeat, no rejection.
+    await prisma.user.update({
+      where: { id: customerUser.id },
+      data: { policyVersion: { increment: 1 } },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 240));
+    assert.equal(unhandled.length, 0, "no leaked heartbeat activity after teardown");
+
+    process.off("unhandledRejection", onUnhandledRejection);
 
     unsubscribeCustomer();
     console.log("access-revocation-test: ok");

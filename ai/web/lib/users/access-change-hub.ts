@@ -57,3 +57,12 @@ export function subscribeAccessChanges(
   emitter.on(key, listener);
   return () => emitter.off(key, listener);
 }
+
+/**
+ * Listener count for a viewer's access-change channel (test/ops
+ * introspection): lets tests prove a stream released its hub subscription
+ * on teardown without reaching into the globalThis pin from outside.
+ */
+export function accessChangeListenerCount(userId: string): number {
+  return getEmitter().listenerCount(channel(userId));
+}
