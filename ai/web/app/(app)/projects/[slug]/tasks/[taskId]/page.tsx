@@ -83,6 +83,9 @@ import AutoRefresh from "@/components/auto-refresh";
 import AutoScrollToLatest from "@/components/auto-scroll-to-latest";
 import FocusTaskComment from "@/components/focus-task-comment";
 import TaskCommentStreams from "@/components/task-comment-streams";
+import { PublishedUpdatesPanel } from "@/components/published-updates";
+import { listPublishedForTask, listPublishableSources } from "@/lib/publishing/service";
+import { hasAdminRole, hasOwnerRole } from "@/lib/auth/permissions";
 import ChatRoom from "@/components/chat-room";
 import ActivityTimeline, { type ActivityTimelineRow } from "@/components/activity-timeline";
 import TaskChangesPanel from "@/components/task-changes-panel";
@@ -1370,6 +1373,15 @@ export default async function TaskDetailPage({
 
   // Comment moderation is exclusive to the Mission Control owner.
   const canDeleteComments = viewer.canAccessOwnerFeatures;
+  // ENV-166 — Customer-safe published updates: visible to every human role
+  // via the Comments tab; the publish entry point is owner/admin-only.
+  const viewerCanPublish =
+    viewer.kind === "human" && (hasOwnerRole(viewer) || hasAdminRole(viewer));
+  const publishedUpdates =
+    viewer.kind === "human" ? await listPublishedForTask(viewer, taskId) : [];
+  const publishSourceOptions = viewerCanPublish
+    ? await listPublishableSources(viewer, taskId)
+    : null;
   // Recompute blocked-by edit permission in the page component scope;
   // the value in updateTask() lives in a different function.
   const canEditBlockedBy = !task.blockedById || await canAccessTask(viewer, task.blockedById);
@@ -2644,6 +2656,13 @@ export default async function TaskDetailPage({
             />
           ) : null}
                   </div>
+                  <PublishedUpdatesPanel
+                    projectId={task.project.id}
+                    taskId={task.id}
+                    canPublish={viewerCanPublish}
+                    published={publishedUpdates}
+                    sourceOptions={publishSourceOptions}
+                  />
                 </div>
               </TabPanel>
 
