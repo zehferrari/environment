@@ -1958,3 +1958,43 @@ model WebPushSubscription {
 
   @@index([userId])
 }
+
+// ------------------------------------------------------------------
+// ENV-166 — Customer-safe publishing of internally produced results
+// ------------------------------------------------------------------
+
+// A PublishedItem is the deliberate route from internal-only content to
+// Customer-visible project content. Rows are created exclusively by the
+// publishing service: title/body are redacted *before* persist (real agent
+// slugs/usernames/display names never reach the row), the author is always
+// the publishing human, and source references are plain string columns (no
+// relations) so internal sources can be pruned without cascading published
+// history. Serialization is a strict whitelist; the internal-only source
+// columns are never exposed to any viewer role.
+model PublishedItem {
+  id                 String    @id @default(cuid())
+  projectId          String
+  // Optional task scope: a published update can also be project-level.
+  taskId             String?
+  // Publishing human (User.id); enforced server-side by the publishing
+  // service — only owner/admin humans may publish.
+  authorId           String
+  title              String
+  // Redacted snapshot at publish time. Never the live internal source.
+  body               String
+  publishedAt        DateTime  @default(now())
+  // Non-null = private again. Active reads filter this to null.
+  unpublishedAt      DateTime?
+  // Internal-only provenance (never serialized): originating comment row.
+  sourceCommentId    String?   @map("source_comment_id")
+  // Internal-only provenance (never serialized): originating attachment row.
+  sourceAttachmentId String?   @map("source_attachment_id")
+  // JSON string array of re-hosted Attachment ids (human-uploader copies).
+  attachmentIds      String?   @map("attachment_ids")
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@index([projectId, unpublishedAt])
+  @@index([taskId, unpublishedAt])
+  @@index([authorId])
+}

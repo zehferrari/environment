@@ -38,6 +38,7 @@
     "test:add-epic-task-fab": "tsx scripts/add-epic-task-fab-test.tsx",
     "test:epic-status-filter": "tsx scripts/epic-status-filter-test.ts",
     "test:epic-workflow-guards": "tsx scripts/epic-workflow-guards-test.ts",
+    "test:customer-publishing": "tsx scripts/customer-publishing-test.ts",
     "test:pm-channel-stream-protocol": "tsx scripts/pm-channel-stream-protocol-test.ts",
     "test:pm-channel-transport": "tsx scripts/pm-channel-transport-test.ts",
     "test:pm-channel-runtime-compat": "node scripts/pm-channel-runtime-compat-test.mjs",

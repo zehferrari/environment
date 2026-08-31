@@ -8,6 +8,8 @@ import { nextEpicTaskTitle } from "@/lib/tasks/epic-numbering";
 import { allocateWorkItemKey } from "@/lib/work-items/keys";
 import { activeFormalBlockersByTask } from "@/lib/tasks/formal-blocker";
 import Board from "./board-client";
+import { PublishedUpdatesList } from "@/components/published-updates";
+import { listPublishedForProject } from "@/lib/publishing/service";
 import AddTaskFab from "./add-task-fab";
 import { COLUMNS } from "./columns";
 import {
@@ -297,6 +299,13 @@ export default async function ProjectBoardPage({
   const activeFormalBlockers = activeFormalBlockersByTask(taskActivityRows, legacyBlockerComments);
   const visibleBlockerById = new Map(visibleBlockers.map((task) => [task.id, task]));
 
+  // ENV-166 — compact Latest updates list: deliberately shared, customer-safe
+  // published items for this project.
+  const publishedUpdates =
+    viewer.kind === "human"
+      ? await listPublishedForProject(viewer, project.id, 5)
+      : [];
+
   return (
     <div>
       <Board
@@ -379,6 +388,7 @@ export default async function ProjectBoardPage({
         createTaskAction={createTask}
         hideTrigger
       />
+      <PublishedUpdatesList published={publishedUpdates} />
     </div>
   );
 }
