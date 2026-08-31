@@ -178,7 +178,11 @@ export async function inviteHumanUserCore(
 
 export type UpdateHumanAccessInput = {
   userId: string;
-  /** Full replacement project set for the target. */
+  /**
+   * Requested project set for the target. The Owner replaces the full
+   * access set; an Admin edit applies only within the Admin's own scope,
+   * preserving memberships outside it.
+   */
   projectIds: string[];
   /** Optional combined role change from the unified edit form. */
   role?: string;
@@ -188,7 +192,10 @@ export type UpdateHumanAccessInput = {
  * Combined project-access (and optional role) edit. The policy core is
  * evaluated server-side for both intents — including forged payloads — and
  * the mutation plus its grant/revoke/promote/demote audit rows commit in a
- * single transaction: a failure rolls the audit rows back with it.
+ * single transaction: a failure rolls the audit rows back with it. The
+ * Owner's edit replaces the target's full project set; an Admin's edit is
+ * restricted to the Admin's own scope, so memberships outside it are
+ * preserved and can never be revoked through a scoped edit.
  */
 export async function updateHumanAccessCore(
   viewer: Viewer,
@@ -236,7 +243,17 @@ export async function updateHumanAccessCore(
       select: { projectId: true },
     });
     const oldIds = current.map((membership) => membership.projectId);
-    const newIds = [...new Set(input.projectIds)];
+    const requestedIds = [...new Set(input.projectIds)];
+    // The Owner replaces the target's full access set. An Admin edit is
+    // scoped: the policy core has already rejected any requested project
+    // outside the Admin's own scope, and memberships beyond that scope are
+    // preserved rather than revoked. The scoped UI only ever submits the
+    // in-scope subset, so treating the request as a full replacement would
+    // let an Admin silently revoke access they cannot even see.
+    const scope = new Set(scopeIds);
+    const preservedIds =
+      viewer.role === "owner" ? [] : oldIds.filter((projectId) => !scope.has(projectId));
+    const newIds = [...new Set([...requestedIds, ...preservedIds])];
     const added = newIds.filter((projectId) => !oldIds.includes(projectId));
     const removed = oldIds.filter((projectId) => !newIds.includes(projectId));
 

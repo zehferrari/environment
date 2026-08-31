@@ -55,7 +55,11 @@ export type AccessPolicyInput = {
   target: AccessPolicySubject | null;
   /** Role the request asks for. "owner" is never assignable. */
   requestedRole: HumanRole | null;
-  /** Project ids the request asks for (the target's full new access set). */
+  /**
+   * Project ids the request asks for. The Owner's edit replaces the
+   * target's full access set; an Admin's request is the in-scope subset —
+   * the transactional core preserves memberships outside the scope.
+   */
   requestedProjectIds: readonly string[];
 };
 

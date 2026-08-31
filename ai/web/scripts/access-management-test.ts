@@ -274,6 +274,68 @@ async function main(): Promise<void> {
     assert.equal(noOp.changed, false);
     assert.equal(await auditCount(), auditBefore, "no-op edit writes no audit rows");
 
+    // ---- 7b. Scoped Admin edits never revoke out-of-scope access (revoke
+    // direction). Customer E holds p1 (inside the Admin's scope) and p3
+    // (outside it). The scoped UI only ever submits the in-scope subset, so
+    // the server must preserve p3 rather than treat its absence from the
+    // request as a revocation.
+    const customerE = await prisma.user.create({
+      data: {
+        username: "am-customer-e", email: "am-customer-e@example.test", kind: "human",
+        mustRotatePassword: false, rolePermission: customerRoleData,
+        projectMembers: { create: [{ projectId: p1.id }, { projectId: p3.id }] },
+      },
+    });
+
+    // Submitting exactly the in-scope subset is a no-op: p3 survives and no
+    // revoke audit row is written for it.
+    auditBefore = await auditCount();
+    const scopedNoOp = await updateHumanAccessCore(admin, { userId: customerE.id, projectIds: [p1.id] });
+    assert.equal(scopedNoOp.changed, false, "in-scope subset must not change the target's access");
+    assert.deepEqual(
+      (await prisma.projectMember.findMany({ where: { userId: customerE.id }, select: { projectId: true } }))
+        .map((m) => m.projectId)
+        .sort(),
+      [p1.id, p3.id].sort(),
+      "out-of-scope membership survives a scoped Admin edit",
+    );
+    assert.equal(await auditCount(), auditBefore, "scoped no-op edit writes no revoke audit rows");
+
+    // An in-scope revocation removes only the in-scope membership: p3 stays,
+    // and exactly one revoke row — for p1 — is written.
+    const scopedRevoke = await updateHumanAccessCore(admin, { userId: customerE.id, projectIds: [] });
+    assert.equal(scopedRevoke.changed, true);
+    assert.deepEqual(
+      (await prisma.projectMember.findMany({ where: { userId: customerE.id }, select: { projectId: true } }))
+        .map((m) => m.projectId),
+      [p3.id],
+      "scoped revoke removes only the in-scope membership",
+    );
+    const scopedRevokeRows = await prisma.accessAuditLog.findMany({
+      where: { affectedUserId: customerE.id, action: "revoke" },
+    });
+    assert.equal(scopedRevokeRows.length, 1, "exactly one revoke row for the in-scope removal");
+    assert.deepEqual(JSON.parse(scopedRevokeRows[0].oldProjectIds), [p1.id]);
+    assert.deepEqual(JSON.parse(scopedRevokeRows[0].newProjectIds), []);
+
+    // The Owner path stays a true full replacement: p3 is revoked and audited.
+    const ownerReplacement = await updateHumanAccessCore(owner, { userId: customerE.id, projectIds: [p1.id] });
+    assert.equal(ownerReplacement.changed, true);
+    assert.deepEqual(
+      (await prisma.projectMember.findMany({ where: { userId: customerE.id }, select: { projectId: true } }))
+        .map((m) => m.projectId),
+      [p1.id],
+      "Owner edit replaces the full access set, including out-of-scope memberships",
+    );
+    const ownerScopedRevokeRows = await prisma.accessAuditLog.findMany({
+      where: { affectedUserId: customerE.id, action: "revoke" },
+    });
+    assert.equal(ownerScopedRevokeRows.length, 2, "the Owner's out-of-scope revocation is audited too");
+    assert.ok(
+      ownerScopedRevokeRows.some((row) => JSON.parse(row.oldProjectIds).includes(p3.id)),
+      "a revoke audit row exists for the out-of-scope membership",
+    );
+
     // ---- 8. Owner edits an Admin's access (any non-owner human).
     const ownerEdit = await updateHumanAccessCore(owner, { userId: adminB.id, projectIds: [p3.id] });
     assert.equal(ownerEdit.changed, true);
