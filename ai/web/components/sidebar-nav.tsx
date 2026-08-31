@@ -6,7 +6,7 @@ import AgentAvatar from "@/components/agent-avatar";
 import { useAgentPresenceMap } from "@/components/agent-presence-provider";
 import { agentStatusRank } from "@/lib/agents/presence";
 import { usePathname } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 
 export type SidebarAgent = {
   slug: string;
@@ -44,6 +44,8 @@ export type SidebarWorkspace = {
 type SidebarNavProps = {
   isOwner: boolean;
   canViewAgents: boolean;
+  canManageCustomerAccess: boolean;
+  customerSafe: boolean;
   agents: SidebarAgent[];
   projects: SidebarProject[];
   workspaces: SidebarWorkspace[];
@@ -285,6 +287,8 @@ function NavItem({
 export default function SidebarNav({
   isOwner,
   canViewAgents,
+  canManageCustomerAccess,
+  customerSafe,
   agents,
   projects,
   workspaces,
@@ -393,6 +397,9 @@ export default function SidebarNav({
       { href: "/system/activity", icon: icons.activity, label: "Activity", active: isActivityActive },
       { href: "/system/settings", icon: icons.settings, label: "Settings", active: isSettingsActive },
     ] : []),
+    ...(!isOwner && canManageCustomerAccess ? [
+      { href: "/system/users", icon: icons.users, label: "Customer access", active: pathname === "/system/users" },
+    ] : []),
   ];
 
   function toggleWorkspace(slug: string) {
@@ -500,7 +507,7 @@ export default function SidebarNav({
               : "flex items-center justify-between gap-2"
           }
         >
-          <Link href="/" title={collapsed ? `${meName} / Mission Control` : undefined} className="flex min-w-0 items-center gap-2 rounded-lg hover:text-accent">
+          <Link href="/" title={collapsed ? `${meName} / ${customerSafe ? "Workspace" : "Mission Control"}` : undefined} className="flex min-w-0 items-center gap-2 rounded-lg hover:text-accent">
             <AvatarStatus sizeClass="h-8 w-8" roundedClass="rounded-lg" className="bg-accent text-body font-bold text-bg shadow-sm">
               {userAvatarVersion != null && userId ? (
                 // eslint-disable-next-line @next/next/no-img-element
@@ -515,7 +522,7 @@ export default function SidebarNav({
                   {meName}
                 </div>
                 <div className="truncate text-caption text-text-muted">
-                  Mission Control
+                  {customerSafe ? "Workspace" : "Mission Control"}
                 </div>
               </div>
             ) : null}
@@ -643,7 +650,16 @@ export default function SidebarNav({
         </> : null}
       </nav>
 
-      {isOwner ? <div className="space-y-1 border-t border-line px-3 py-3 text-body">
+      {canManageCustomerAccess ? <div className="space-y-1 border-t border-line px-3 py-3 text-body">
+        {!isOwner ? <NavItem
+          href="/system/users"
+          icon={icons.users}
+          label="Customer access"
+          color={NAV_COLORS.users}
+          collapsed={collapsed}
+          active={pathname === "/system/users"}
+        /> : null}
+        {isOwner ? <>
         <NavItem
           href="/system/settings"
           icon={icons.settings}
@@ -675,6 +691,7 @@ export default function SidebarNav({
           collapsed={collapsed}
           active={pathname === "/system/audit"}
         />
+        </> : null}
       </div> : null}
 
       <form action={signOutAction} className="border-t border-line px-3 py-3">
@@ -757,7 +774,7 @@ export default function SidebarNav({
               <div className="grid h-11 w-11 shrink-0 place-items-center overflow-hidden rounded-2xl bg-accent text-body font-bold text-bg shadow-sm">{userAvatarVersion != null && userId ? <img src={`/api/users/${userId}/avatar?v=${userAvatarVersion}`} alt="" className="h-full w-full object-cover" /> : meInitial}</div>
               <div className="min-w-0">
                 <h2 id="mobile-nav-title" className="truncate text-body font-semibold tracking-tight">{meName}</h2>
-                <p className="truncate text-caption text-text-muted">Mission Control</p>
+                <p className="truncate text-caption text-text-muted">{customerSafe ? "Workspace" : "Mission Control"}</p>
               </div>
             </div>
             <button
@@ -859,14 +876,17 @@ export default function SidebarNav({
               })}
             </section> : null}
 
-            {isOwner ? (
+            {canManageCustomerAccess ? (
               <>
                 <div className="my-4 border-t border-line" />
                 <section aria-label="System navigation" className="space-y-1">
+                  {!isOwner ? <NavSheetLink href="/system/users" icon={icons.users} label="Customer access" color={NAV_COLORS.users} active={pathname === "/system/users"} onNavigate={closeMobileMenu} /> : null}
+                  {isOwner ? <>
                   <NavSheetLink href="/system/activity" icon={icons.activity} label="Logs & Activity" color={NAV_COLORS.activity} active={isActivityActive} onNavigate={closeMobileMenu} />
                   <NavSheetLink href="/system/settings" icon={icons.settings} label="Settings" color={NAV_COLORS.settings} active={isSettingsActive} onNavigate={closeMobileMenu} />
                   <NavSheetLink href="/system/users" icon={icons.users} label="Users" color={NAV_COLORS.users} active={pathname === "/system/users"} onNavigate={closeMobileMenu} />
                   <NavSheetLink href="/system/audit" icon={icons.users} label="Access audit" color={NAV_COLORS.users} active={pathname === "/system/audit"} onNavigate={closeMobileMenu} />
+                  </> : null}
                 </section>
               </>
             ) : null}

@@ -55,11 +55,14 @@ import {
   accessibleCommentWhere,
   accessibleEpicWhere,
   accessibleTaskWhere,
+  customerSafeWorkflowLabel,
+  epicDetailTabsForRole,
   requireEpicAccess,
   requireOwner,
   requireTaskAccess,
   requireViewer,
   type Viewer,
+  viewerExperienceForRole,
 } from "@/lib/auth/permissions";
 import {
   getActorVisibility,
@@ -362,7 +365,6 @@ function settledAgentSlugsForMessage(
 
 const DEVELOPMENT_TAB = "Development";
 const EPIC_TABS = ["Description", "Action Plan", "Tasks", "Attachments", "Comments", "Activities", DEVELOPMENT_TAB, "Changes"] as const;
-const OWNER_ONLY_EPIC_TABS = new Set(["Action Plan", "Activities", DEVELOPMENT_TAB, "Changes"]);
 
 function tabParam(tab: string) {
   return tab
@@ -408,6 +410,7 @@ export default async function EpicDetailPage({
     : tabFromSearchParam(tab, EPIC_TABS) ?? "Description";
 
   const viewer = await requireActor();
+  const experience = viewerExperienceForRole(viewer.role);
 
   const epic = await db.epic.findFirst({
     where: accessibleEpicWhere(viewer, { id: epicId }),
@@ -586,9 +589,7 @@ export default async function EpicDetailPage({
   const canDeleteComments = viewer.canAccessOwnerFeatures;
   // Deployment is an optional post-Done step, only for repo-backed projects.
   const epicHasDeployment = Boolean(epic.project.repositoryPath) && epic.status === "Done";
-  const epicTabs = EPIC_TABS
-    .filter((name) => name !== DEVELOPMENT_TAB || epicHasDeployment)
-    .filter((name) => viewer.canAccessOwnerFeatures || !OWNER_ONLY_EPIC_TABS.has(name));
+  const epicTabs = epicDetailTabsForRole(viewer.role, epicHasDeployment);
   if (!epicTabs.some((name) => name === selectedTab)) selectedTab = "Description";
   const taskIds = epic.tasks.map((task) => task.id);
   const epicActivityWhere = await accessibleActivityWhere(viewer, { projectId: epic.project.id });
@@ -668,6 +669,7 @@ export default async function EpicDetailPage({
   const visibleEpicComments = (viewer.canAccessOwnerFeatures
     ? epic.comments
     : epic.comments.filter((comment) => {
+        if (experience.customerSafe && comment.user.kind === "agent") return false;
         // Deleted agent comments stay hidden from members (the deleted-divider
         // reveal would expose the raw body + deleting agent's slug).
         if (comment.user.kind === "agent") return !comment.deletedAt;
@@ -1020,13 +1022,9 @@ export default async function EpicDetailPage({
     Boolean(value?.startsWith("agent:") && aiTargetOptions.some((option) => option.value === value)),
   ) ?? aiTargetOptions[0]?.value ?? "";
   const canApproveActionPlan =
+    viewer.canAccessOwnerFeatures &&
     !epic.approvedOn &&
-    Boolean(viewer.id && (
-      viewer.kind !== "agent" ||
-      (epic.project.onlyReportersCanApproveActionPlans
-        ? viewer.id === epic.reporterId
-        : viewer.id === epic.reporterId || viewer.id === epic.actingManagerId)
-    ));
+    Boolean(viewer.id);
   const doneActivity = visibleActivity.find((row) =>
     row.kind === "epic.status" && payloadValue(row.payload, "to") === "Done"
   );
@@ -1134,7 +1132,7 @@ export default async function EpicDetailPage({
             <TabsNav
               tabs={epicTabs}
               sticky
-              badges={viewer.canAccessOwnerFeatures ? { "Action Plan": unreadActionPlanMessages.length } : undefined}
+              badges={experience.canViewProjectWorkflow ? { "Action Plan": unreadActionPlanMessages.length } : undefined}
             />
             <div className="pt-4">
               <TabPanel name="Description">
@@ -1173,7 +1171,7 @@ export default async function EpicDetailPage({
                           <option value="Backlog">Backlog</option>
                           <option value="To Do">To Do</option>
                           <option value="In Progress">In Progress</option>
-                          <option value="Review" disabled={epic.status !== "Review"}>Review</option>
+                          <option value="Review" disabled={epic.status !== "Review"}>{customerSafeWorkflowLabel("Review", experience.customerSafe)}</option>
                           <option value="Done">Done</option>
                         </select>
                       </label>
@@ -1410,7 +1408,7 @@ export default async function EpicDetailPage({
                 </div>
               </TabPanel>
 
-              {viewer.canAccessOwnerFeatures ? <TabPanel name="Action Plan">
+              {experience.canViewProjectWorkflow ? <TabPanel name="Action Plan">
                 <div className="space-y-3 pt-2">
                   {canApproveActionPlan ? (
                     <form action={approveEpicActionPlan} className="flex justify-end">
@@ -1427,6 +1425,7 @@ export default async function EpicDetailPage({
                   <ChatRoom
                     projectSlug={slug}
                     epicId={epic.id}
+                    readOnly={!viewer.canAccessOwnerFeatures}
                     messages={visibleActionPlanMessages}
                     activeMessageCount={activeActionPlanMessageCount}
                     archives={chatArchives}
@@ -1570,12 +1569,14 @@ export default async function EpicDetailPage({
                               </li>
                             );
                           }
-                          const commentAuthor = serializeVisibleActorAs(
-                            c.user,
-                            c.user.id === resolvedReviewerId ? "reviewer" : "assignee",
-                            actorVisibility,
-                          )!;
-                          const authorRole = syntheticRoleMeta(commentAuthor);
+                          const commentAuthor = experience.customerSafe
+                            ? serializeActor(c.user, actorVisibility)!
+                            : serializeVisibleActorAs(
+                                c.user,
+                                c.user.id === resolvedReviewerId ? "reviewer" : "assignee",
+                                actorVisibility,
+                              )!;
+                          const authorRole = experience.customerSafe ? null : syntheticRoleMeta(commentAuthor);
                           return (
                             <li
                               key={c.id}
@@ -1638,13 +1639,13 @@ export default async function EpicDetailPage({
                 </div>
               </TabPanel>
 
-              {viewer.canAccessOwnerFeatures ? <TabPanel name="Activities">
+              {experience.canViewProjectWorkflow ? <TabPanel name="Activities">
                 <div className="pt-2">
                   <ActivityTimeline rows={visibleActivity} />
                 </div>
               </TabPanel> : null}
 
-              {viewer.canAccessOwnerFeatures && epicHasDeployment ? <TabPanel name={DEVELOPMENT_TAB}>
+              {experience.canViewProjectWorkflow && epicHasDeployment ? <TabPanel name={DEVELOPMENT_TAB}>
                 <DeploymentTab
                   mode="epic"
                   title={epic.title}
@@ -1666,7 +1667,7 @@ export default async function EpicDetailPage({
                 />
               </TabPanel> : null}
 
-              {viewer.canAccessOwnerFeatures ? <TabPanel name="Changes">
+              {experience.canViewProjectWorkflow ? <TabPanel name="Changes">
                 <TaskChangesPanel
                   changes={epicChanges}
                   branchName={epicChangeBranchName}
