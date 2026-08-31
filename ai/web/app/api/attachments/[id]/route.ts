@@ -19,9 +19,7 @@ import { checkAgentAttachmentReadAccess } from "@/lib/attachments/agent-access";
 import { attachmentAbsolutePath } from "@/lib/attachments/storage";
 import { normalizeAttachmentMimeType } from "@/lib/attachments/mime";
 import {
-  canAccessEpic,
-  canAccessProject,
-  canAccessTask,
+  accessibleAttachmentWhere,
   getViewer,
 } from "@/lib/auth/permissions";
 
@@ -129,13 +127,12 @@ async function authorizeAttachmentRead(
   if (session?.user?.id) {
     const viewer = await getViewer();
     const canAccessItem = viewer
-      ? scope.taskId
-        ? await canAccessTask(viewer, scope.taskId)
-        : scope.epicId
-          ? await canAccessEpic(viewer, scope.epicId)
-          : true
+      ? Boolean(await db.attachment.findFirst({
+          where: accessibleAttachmentWhere(viewer, { id: attachmentId }),
+          select: { id: true },
+        }))
       : false;
-    if (viewer && canAccessItem && await canAccessProject(viewer, { id: scope.projectId })) {
+    if (viewer && canAccessItem) {
       return { ok: true as const };
     }
     return { ok: false as const, status: 404, error: "Not found" };
@@ -180,8 +177,8 @@ async function authorizeAttachmentRead(
   if (!access.allowed) {
     return {
       ok: false as const,
-      status: access.reason === "attachment-not-found" ? 404 : 403,
-      error: "Agent cannot read this attachment",
+      status: 404,
+      error: "Not found",
     };
   }
 

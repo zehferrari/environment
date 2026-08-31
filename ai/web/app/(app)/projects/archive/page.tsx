@@ -2,6 +2,7 @@ import Link from "next/link";
 import { db } from "@/lib/db";
 import { unarchiveProject } from "@/lib/projects/actions";
 import {
+  accessibleAttachmentWhere,
   accessibleEpicWhere,
   accessibleProjectWhere,
   accessibleTaskWhere,
@@ -28,14 +29,7 @@ export default async function ProjectArchivePage() {
         select: {
           epics: { where: accessibleEpicWhere(viewer) },
           tasks: { where: accessibleTaskWhere(viewer) },
-          attachments: {
-            where: {
-              OR: [
-                { task: { is: accessibleTaskWhere(viewer) } },
-                { epic: { is: accessibleEpicWhere(viewer) } },
-              ],
-            },
-          },
+          attachments: { where: accessibleAttachmentWhere(viewer) },
         },
       },
     },

@@ -31,6 +31,7 @@ async function main() {
     const permissions = await import("../lib/auth/permissions");
     const actorVisibility = await import("../lib/users/actor-visibility");
     const workspaceService = await import("../lib/workspaces/service");
+    const taskCache = await import("../lib/tasks/cache");
     const contextApi = await import("../lib/agents/context/api/serialize");
     const agentAttachmentAccess = await import("../lib/attachments/agent-access");
     db = dbMod.db as PrismaClient;
@@ -84,7 +85,11 @@ async function main() {
       },
     });
     const hiddenProject = await prisma.project.create({
-      data: { slug: "hidden-project", name: "Hidden Project" },
+      data: {
+        slug: "hidden-project",
+        name: "Hidden Project",
+        members: { create: { userId: otherHuman.id } },
+      },
     });
     const publicEpic = await prisma.epic.create({
       data: { projectId: visibleProject.id, title: "Public Epic" },
@@ -149,6 +154,54 @@ async function main() {
         sha256: "a".repeat(64),
       },
     });
+    const publicAgentComment = await prisma.comment.create({
+      data: { taskId: publicTask.id, userId: agentUser.id, authorAgentSlug: agent.slug, body: "internal agent note" },
+    });
+    const publicHumanComment = await prisma.comment.create({
+      data: { taskId: publicTask.id, userId: memberUser.id, body: "customer-safe note" },
+    });
+    const publicAgentAttachment = await prisma.attachment.create({
+      data: {
+        projectId: visibleProject.id,
+        taskId: publicTask.id,
+        uploaderId: agentUser.id,
+        filename: "internal.txt",
+        storagePath: "internal.txt",
+        mimeType: "text/plain",
+        sizeBytes: 8,
+        sha256: "b".repeat(64),
+      },
+    });
+    const publicHumanAttachment = await prisma.attachment.create({
+      data: {
+        projectId: visibleProject.id,
+        taskId: publicTask.id,
+        uploaderId: memberUser.id,
+        filename: "shared.txt",
+        storagePath: "shared.txt",
+        mimeType: "text/plain",
+        sizeBytes: 6,
+        sha256: "c".repeat(64),
+      },
+    });
+    const hiddenTask = await prisma.task.create({
+      data: { projectId: hiddenProject.id, title: "Hidden Project Task" },
+    });
+    const hiddenHumanComment = await prisma.comment.create({
+      data: { taskId: hiddenTask.id, userId: otherHuman.id, body: "hidden project note" },
+    });
+    const hiddenHumanAttachment = await prisma.attachment.create({
+      data: {
+        projectId: hiddenProject.id,
+        taskId: hiddenTask.id,
+        uploaderId: otherHuman.id,
+        filename: "hidden.txt",
+        storagePath: "hidden.txt",
+        mimeType: "text/plain",
+        sizeBytes: 6,
+        sha256: "d".repeat(64),
+      },
+    });
     await prisma.workspace.create({
       data: {
         slug: "mixed-workspace",
@@ -194,6 +247,7 @@ async function main() {
       agentVisibility: "hidden",
       canAccessOwnerFeatures: false,
     };
+    const admin: Viewer = { ...member, role: "admin", agentVisibility: "masked" };
 
     const memberProjects = await prisma.project.findMany({
       where: permissions.accessibleProjectWhere(member),
@@ -216,6 +270,82 @@ async function main() {
       ["hidden-project", "visible-project"],
       "the owner has global project access",
     );
+
+    const memberUsers = await prisma.user.findMany({
+      where: permissions.accessibleUserWhere(member),
+      select: { id: true },
+    });
+    assert.deepEqual(
+      new Set(memberUsers.map(({ id }) => id)),
+      new Set([ownerUser.id, memberUser.id]),
+      "project-scoped viewers cannot enumerate unrelated humans or agent identities",
+    );
+
+    const customerComments = await prisma.comment.findMany({
+      where: permissions.accessibleCommentWhere(member, { taskId: publicTask.id }),
+      select: { id: true },
+    });
+    assert.deepEqual(customerComments.map(({ id }) => id), [publicHumanComment.id], "Customer comment rows exclude agent-authored content before serialization");
+    const adminComments = await prisma.comment.findMany({
+      where: permissions.accessibleCommentWhere(admin, { taskId: publicTask.id }),
+      select: { id: true },
+    });
+    assert.deepEqual(new Set(adminComments.map(({ id }) => id)), new Set([publicAgentComment.id, publicHumanComment.id]), "Admin retains scoped agent comments");
+    const allAdminComments = await prisma.comment.findMany({
+      where: permissions.accessibleCommentWhere(admin),
+      select: { id: true },
+    });
+    assert.equal(allAdminComments.some(({ id }) => id === hiddenHumanComment.id), false, "Admin cannot discover comments from an out-of-scope project");
+
+    const customerAttachments = await prisma.attachment.findMany({
+      where: permissions.accessibleAttachmentWhere(member, { taskId: publicTask.id }),
+      select: { id: true },
+    });
+    assert.deepEqual(customerAttachments.map(({ id }) => id), [publicHumanAttachment.id], "Customer attachment rows exclude agent uploads");
+    const adminAttachments = await prisma.attachment.findMany({
+      where: permissions.accessibleAttachmentWhere(admin, { taskId: publicTask.id }),
+      select: { id: true },
+    });
+    assert.deepEqual(new Set(adminAttachments.map(({ id }) => id)), new Set([publicAgentAttachment.id, publicHumanAttachment.id]), "Admin retains scoped attachments");
+    const allAdminAttachments = await prisma.attachment.findMany({
+      where: permissions.accessibleAttachmentWhere(admin),
+      select: { id: true },
+    });
+    assert.equal(allAdminAttachments.some(({ id }) => id === hiddenHumanAttachment.id), false, "Admin cannot discover attachments from an out-of-scope project");
+
+    assert.deepEqual(
+      (await taskCache.getCachedTaskComments(publicTask.id, member)).map(({ id }) => id),
+      [publicHumanComment.id],
+      "the Task detail reader filters Customer comments at its query boundary",
+    );
+    assert.deepEqual(
+      (await taskCache.getCachedTaskAttachments(publicTask.id, member)).map(({ id }) => id),
+      [publicHumanAttachment.id],
+      "the Task detail reader filters Customer attachments at its query boundary",
+    );
+    assert.deepEqual(
+      (await taskCache.getCachedProjectEpics(visibleProject.id, member)).map(({ id }) => id),
+      [publicEpic.id],
+      "the Task detail Epic picker excludes private Epics before serialization",
+    );
+
+    const pagedTasks = await prisma.task.findMany({
+      where: permissions.accessibleTaskWhere(admin, { deletedAt: null }),
+      orderBy: { createdAt: "desc" },
+      take: 1,
+      select: { id: true },
+    });
+    const scopedTaskCount = await prisma.task.count({ where: permissions.accessibleTaskWhere(admin, { deletedAt: null }) });
+    assert.notEqual(pagedTasks[0]?.id, hiddenTask.id, "scope filtering happens before pagination");
+    assert.equal(scopedTaskCount, 2, "totals are computed from the post-scope task set");
+    const groupedTasks = await prisma.task.groupBy({
+      by: ["status"],
+      where: permissions.accessibleTaskWhere(admin, { deletedAt: null }),
+      _count: { _all: true },
+    });
+    assert.equal(groupedTasks.reduce((sum, group) => sum + group._count._all, 0), 2, "grouped totals are computed after project scoping");
+    assert.equal(await permissions.canAccessTask(admin, hiddenTask.id), false, "out-of-scope deep links fail closed");
+    assert.equal(await permissions.canAccessTask(admin, "absent-task"), false, "absent deep links have the same authorization result");
 
     const memberEpics = await prisma.epic.findMany({
       where: permissions.accessibleEpicWhere(member),
@@ -315,6 +445,9 @@ async function main() {
       prisma.activityLog.create({
         data: { projectId: visibleProject.id, kind: "project.public-test" },
       }),
+      prisma.activityLog.create({
+        data: { projectId: hiddenProject.id, taskId: hiddenTask.id, kind: "task.hidden-project-test" },
+      }),
     ]);
     const memberActivity = await prisma.activityLog.findMany({
       where: await permissions.accessibleActivityWhere(member, { projectId: visibleProject.id }),
@@ -325,6 +458,13 @@ async function main() {
       new Set([activity[0].id, activity[2].id, activity[4].id]),
       "member activity feeds omit private Task and Epic activity",
     );
+    const adminActivityWhere = await permissions.accessibleActivityWhere(admin);
+    const [pagedAdminActivity, adminActivityCount] = await Promise.all([
+      prisma.activityLog.findMany({ where: adminActivityWhere, orderBy: { createdAt: "desc" }, take: 1, select: { id: true } }),
+      prisma.activityLog.count({ where: adminActivityWhere }),
+    ]);
+    assert.notEqual(pagedAdminActivity[0]?.id, activity[5].id, "out-of-scope activity cannot consume a pagination slot");
+    assert.equal(adminActivityCount, 3, "activity totals are computed from the post-scope set");
     const agentActivity = await prisma.activityLog.findMany({
       where: await permissions.accessibleActivityWhere(agentViewer, { projectId: visibleProject.id }),
       select: { id: true },
@@ -335,14 +475,6 @@ async function main() {
       "browser-authenticated agents do not receive activity",
     );
 
-    await prisma.project.update({
-      where: { id: hiddenProject.id },
-      data: {
-        archivedAt: new Date(),
-        members: { create: { userId: memberUser.id } },
-      },
-    });
-
     const memberWorkspaces = await workspaceService.listWorkspaces(false, member);
     assert.deepEqual(
       memberWorkspaces.map(({ slug }) => slug),
@@ -352,7 +484,7 @@ async function main() {
     assert.deepEqual(
       memberWorkspaces[0]?.projects.map(({ slug }) => slug),
       ["visible-project"],
-      "inaccessible, archived projects are omitted from an otherwise visible workspace",
+      "an active out-of-scope sibling project is omitted from an otherwise visible workspace",
     );
     assert.deepEqual(
       memberWorkspaces[0]?.agentPool,

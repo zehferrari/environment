@@ -109,8 +109,10 @@ import { TaskPrerequisiteEditor } from "./task-prerequisite-editor";
 import DeploymentTab, { DeploymentStatusSelect, canShowDeploymentAction, canShowDeploymentTab, type DeploymentPrRow } from "@/components/deployment-tab";
 import { checkDeploymentStatusWrite, isDeploymentStatus } from "@/lib/deploy/deployment-status";
 import {
+  accessibleActivityWhere,
   accessibleEpicWhere,
   accessibleTaskWhere,
+  accessibleUserWhere,
   assertAgentAssignmentAllowed,
   canAccessTask,
   requireProjectAccess,
@@ -123,6 +125,7 @@ import {
   serializeVisibleActor,
   serializeVisibleActorAs,
   visibleActivityRows,
+  visibleActivityWhere,
   type ActorVisibility,
 } from "@/lib/users/actor-visibility";
 import { buildAgentRedactor } from "@/lib/users/redact-agents";
@@ -1339,9 +1342,9 @@ export default async function TaskDetailPage({
   if (!(await canAccessTask(viewer, taskId))) notFound();
 
   const [taskShell, comments, attachments] = await Promise.all([
-    getCachedTaskDetailShell(taskId),
-    getCachedTaskComments(taskId),
-    getCachedTaskAttachments(taskId),
+    getCachedTaskDetailShell(taskId, viewer),
+    getCachedTaskComments(taskId, viewer),
+    getCachedTaskAttachments(taskId, viewer),
   ]);
   const task = taskShell ? { ...taskShell, comments, attachments } : null;
   if (!task || task.project.slug !== slug || task.deletedAt) notFound();
@@ -1367,17 +1370,18 @@ export default async function TaskDetailPage({
   // the value in updateTask() lives in a different function.
   const canEditBlockedBy = !task.blockedById || await canAccessTask(viewer, task.blockedById);
 
+  const taskActivityWhere = await accessibleActivityWhere(viewer, { taskId: task.id });
   const [principals, cachedProjectEpics, mentionableUsers, recentTaskChatMessages, recentReplyActivity, latestRepoVerify, allActivity, targetedCommentRows, taskWorkflowActions] = await Promise.all([
     viewer.canAccessOwnerFeatures ? listAssignablePrincipals(viewer) : Promise.resolve([]),
-    getCachedProjectEpics(task.project.id),
-    db.user.findMany({ select: { username: true, kind: true } }),
-    getCachedRecentTaskChatMessages(task.id),
-    getCachedTaskActivity(task.id),
+    getCachedProjectEpics(task.project.id, viewer),
+    db.user.findMany({ where: accessibleUserWhere(viewer), select: { username: true, kind: true } }),
+    viewer.canAccessOwnerFeatures ? getCachedRecentTaskChatMessages(task.id) : Promise.resolve([]),
+    viewer.canAccessOwnerFeatures ? getCachedTaskActivity(task.id) : Promise.resolve([]),
     // Latest monitor-verifier branch row, if any. Used by the Review-state
     // Repo verification panel below.
-    getCachedLatestRepoVerifyActivity(task.id),
+    viewer.canAccessOwnerFeatures ? getCachedLatestRepoVerifyActivity(task.id) : Promise.resolve(null),
     db.activityLog.findMany({
-      where: { taskId: task.id },
+      where: { AND: [taskActivityWhere, visibleActivityWhere(viewer)] },
       orderBy: { createdAt: "desc" },
       include: {
         user: {
@@ -1411,7 +1415,7 @@ export default async function TaskDetailPage({
     ? blockerPermissionGrantForComment(allActivity, activeFormalBlocker.commentId)
     : null;
 
-  const agentUsernames = mentionableUsers.filter((user) => user.kind === "agent").map((user) => user.username);
+  const agentUsernames = actorVisibility.agentIdentities.map((identity) => identity.username);
   const targetedCommentIds = new Set(targetedCommentRows.map((row) => row.originCommentId).filter(Boolean));
   const mentionables = mentionableUsers
     .filter((user) => viewer.canAccessOwnerFeatures || user.kind !== "agent")
@@ -1475,7 +1479,7 @@ export default async function TaskDetailPage({
         include: { task: { select: { workItemKey: true, title: true } } },
       })
     : [];
-  const chatMessages = await getCachedTaskRoomMessages(task.id);
+  const chatMessages = viewer.canAccessOwnerFeatures ? await getCachedTaskRoomMessages(task.id) : [];
   const taskChatCursorKey = `task:${task.id}`;
   const taskChatReadCursor = await db.chatReadCursor.findUnique({
     where: { userId_agentSlug: { userId: viewer.id, agentSlug: taskChatCursorKey } },

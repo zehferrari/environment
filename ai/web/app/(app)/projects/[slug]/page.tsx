@@ -12,6 +12,7 @@ import AddTaskFab from "./add-task-fab";
 import { COLUMNS } from "./columns";
 import {
   accessibleEpicWhere,
+  accessibleProjectWhere,
   accessibleTaskWhere,
   assertAgentAssignmentAllowed,
   requireProjectAccess,
@@ -214,8 +215,8 @@ export default async function ProjectBoardPage({
 }) {
   const { slug } = await params;
   const viewer = await requireViewer();
-  const project = await db.project.findUnique({
-    where: { slug, deletedAt: null },
+  const project = await db.project.findFirst({
+    where: accessibleProjectWhere(viewer, { slug, deletedAt: null }),
     include: {
       tasks: {
         where: accessibleTaskWhere(viewer, { deletedAt: null, archivedAt: null, parentTaskId: null }),
