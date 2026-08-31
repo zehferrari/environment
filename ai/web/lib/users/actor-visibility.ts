@@ -2,6 +2,10 @@ import type { MessageActor } from "@/components/message-avatar";
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import type { Viewer } from "@/lib/auth/permissions";
+import {
+  agentContentPolicy,
+  visibleActivityRecordWhere,
+} from "@/lib/users/agent-content-policy";
 
 // Loose actor shape accepted by the projectors. Every Prisma `actorSelect`
 // used across the app (task/epic reporter/assignee/actingManager, comment
@@ -65,6 +69,9 @@ export type AgentIdentityToken = { username: string; slug: string | null; name: 
 export type ActorVisibility = {
   mode: Viewer["agentVisibility"];
   maskAgents: boolean;
+  excludeAgentRecords: boolean;
+  maskAgentRecords: boolean;
+  redactAgentReferences: boolean;
   owner: ActorRow | null;
   // Slugs of agents whose registry role is "monitor" (e.g. karen). Any actor
   // whose agent.slug is in here projects to the Monitor identity regardless of
@@ -78,10 +85,14 @@ export type ActorVisibility = {
 };
 
 export async function getActorVisibility(viewer: Viewer): Promise<ActorVisibility> {
+  const policy = agentContentPolicy(viewer);
   if (viewer.agentVisibility === "full") {
     return {
       mode: "full",
       maskAgents: false,
+      excludeAgentRecords: policy.excludeAgentRecords,
+      maskAgentRecords: policy.maskAgentRecords,
+      redactAgentReferences: policy.redactAgentReferences,
       owner: null,
       monitorSlugs: EMPTY_MONITOR_SLUGS,
       agentIdentities: [],
@@ -121,6 +132,9 @@ export async function getActorVisibility(viewer: Viewer): Promise<ActorVisibilit
   return {
     mode: viewer.agentVisibility,
     maskAgents: true,
+    excludeAgentRecords: policy.excludeAgentRecords,
+    maskAgentRecords: policy.maskAgentRecords,
+    redactAgentReferences: policy.redactAgentReferences,
     owner,
     monitorSlugs,
     agentIdentities,
@@ -204,25 +218,7 @@ const AGENT_SESSION_ACTIVITY = /(^agent\.|^pm\.|\.action_plan(?:\.|$)|\.chat(?:\
  * through describeActivity.
  */
 export function visibleActivityWhere(viewer: Viewer): Prisma.ActivityLogWhereInput {
-  if (viewer.agentVisibility === "full") return {};
-  return {
-    AND: [
-      { targetAgent: null },
-      {
-        NOT: [
-          { kind: { startsWith: "agent." } },
-          { kind: { startsWith: "pm." } },
-          { kind: { contains: ".action_plan" } },
-          { kind: { contains: ".chat" } },
-          { kind: { contains: ".comment" } },
-          { kind: { contains: ".dispatch" } },
-          { kind: { contains: ".stream" } },
-          { kind: { contains: ".workflow" } },
-          { kind: { contains: ".wake" } },
-        ],
-      },
-    ],
-  };
+  return visibleActivityRecordWhere(viewer);
 }
 
 type ActivityRowWithActor = {
@@ -246,7 +242,11 @@ export function visibleActivityRows<T extends ActivityRowWithActor>(
   // every row and payload untouched; only the actor is serialized (identity is
   // unchanged for the owner because maskAgents is false).
   const source = visibility.maskAgents
-    ? rows.filter((row) => !row.targetAgent && !AGENT_SESSION_ACTIVITY.test(row.kind))
+    ? rows.filter((row) => (
+        !row.targetAgent
+        && !AGENT_SESSION_ACTIVITY.test(row.kind)
+        && (!visibility.excludeAgentRecords || row.user?.kind === "human")
+      ))
     : rows;
   return source.map((row) => ({
     ...row,

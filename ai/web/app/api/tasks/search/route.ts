@@ -45,7 +45,9 @@ export async function GET(req: NextRequest) {
       project: { select: { name: true, slug: true } },
     },
     take: 20,
-    orderBy: { updatedAt: "desc" },
+    orderBy: viewer.agentVisibility === "hidden"
+      ? [{ createdAt: "desc" }, { id: "desc" }]
+      : [{ updatedAt: "desc" }, { id: "desc" }],
   });
 
   return NextResponse.json({

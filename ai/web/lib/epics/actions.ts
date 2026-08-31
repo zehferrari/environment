@@ -682,8 +682,10 @@ export async function updateEpic(formData: FormData) {
   const newReporterId = reporterRaw === "" ? null : reporterRaw;
   const branchRaw = String(formData.get("branchName") ?? "").trim();
   const newBranchName = branchRaw === "" ? null : branchRaw;
+  const hasBranchField = formData.has("branchName");
   const commitRaw = String(formData.get("commitPrefix") ?? "").trim();
   const newCommitPrefix = commitRaw === "" ? null : commitRaw;
+  const hasCommitPrefixField = formData.has("commitPrefix");
   const deploymentRaw = String(formData.get("deploymentStatus") ?? "");
   const hasPrivateField = formData.has("privateSubmitted");
   if (!actor.canAccessOwnerFeatures && (
@@ -920,14 +922,14 @@ export async function updateEpic(formData: FormData) {
   }
 
   // Epic git defaults inherited by child tasks while their own values are blank.
-  if ((epic.branchName ?? null) !== newBranchName) {
+  if (actor.agentVisibility !== "hidden" && hasBranchField && (epic.branchName ?? null) !== newBranchName) {
     data.branchName = newBranchName;
     activity.push({
       kind: "epic.branch",
       payload: JSON.stringify({ from: epic.branchName ?? null, to: newBranchName }),
     });
   }
-  if ((epic.commitPrefix ?? null) !== newCommitPrefix) {
+  if (actor.agentVisibility !== "hidden" && hasCommitPrefixField && (epic.commitPrefix ?? null) !== newCommitPrefix) {
     data.commitPrefix = newCommitPrefix;
     activity.push({
       kind: "epic.commit_prefix",
