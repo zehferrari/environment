@@ -667,6 +667,14 @@ export default function SidebarNav({
           color={NAV_COLORS.users}
           collapsed={collapsed}
         />
+        <NavItem
+          href="/system/audit"
+          icon={icons.users}
+          label="Access audit"
+          color={NAV_COLORS.users}
+          collapsed={collapsed}
+          active={pathname === "/system/audit"}
+        />
       </div> : null}
 
       <form action={signOutAction} className="border-t border-line px-3 py-3">
@@ -858,6 +866,7 @@ export default function SidebarNav({
                   <NavSheetLink href="/system/activity" icon={icons.activity} label="Logs & Activity" color={NAV_COLORS.activity} active={isActivityActive} onNavigate={closeMobileMenu} />
                   <NavSheetLink href="/system/settings" icon={icons.settings} label="Settings" color={NAV_COLORS.settings} active={isSettingsActive} onNavigate={closeMobileMenu} />
                   <NavSheetLink href="/system/users" icon={icons.users} label="Users" color={NAV_COLORS.users} active={pathname === "/system/users"} onNavigate={closeMobileMenu} />
+                  <NavSheetLink href="/system/audit" icon={icons.users} label="Access audit" color={NAV_COLORS.users} active={pathname === "/system/audit"} onNavigate={closeMobileMenu} />
                 </section>
               </>
             ) : null}

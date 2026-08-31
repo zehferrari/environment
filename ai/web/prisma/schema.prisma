@@ -62,6 +62,8 @@ model User {
   comments                       Comment[]
   deletedComments                Comment[]                       @relation("CommentDeletedBy")
   activity                       ActivityLog[]
+  accessAuditsAsActor            AccessAuditLog[]               @relation("AccessAuditActor")
+  accessAuditsAsAffected         AccessAuditLog[]               @relation("AccessAuditAffected")
   uploadedAttachments            Attachment[]
   agentChatMessages              AgentChatMessage[]              @relation("AgentChatSender")
   deletedAgentChatMessages       AgentChatMessage[]              @relation("AgentChatMessageDeletedBy")
@@ -1245,6 +1247,28 @@ model ActivityLog {
   // PHASEE-10 — Unique index on dedupeKey. SQLite UNIQUE constraints treat
   // NULL values as distinct, so rows without a dedupe key remain valid.
   @@unique([dedupeKey])
+}
+
+// ENV-164 — Owner-visible audit trail for every scoped access/role change:
+// the invitation grant, each project grant/revoke, and each promote/demote.
+// Required relations keep the history intact: an account with audit entries
+// is not removable (see lib/users/removal.ts).
+model AccessAuditLog {
+  id             String   @id @default(cuid())
+  actorUserId    String
+  actor          User     @relation("AccessAuditActor", fields: [actorUserId], references: [id])
+  affectedUserId String
+  affectedUser   User     @relation("AccessAuditAffected", fields: [affectedUserId], references: [id])
+  action         String // "grant" | "revoke" | "promote" | "demote"
+  oldRole        String?
+  newRole        String?
+  oldProjectIds  String   @default("[]") // JSON string array
+  newProjectIds  String   @default("[]")
+  createdAt      DateTime @default(now())
+
+  @@index([actorUserId])
+  @@index([affectedUserId])
+  @@index([createdAt])
 }
 
 model DeploymentPullRequest {

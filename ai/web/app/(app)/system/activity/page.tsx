@@ -1,4 +1,6 @@
 import Link from "next/link";
+import { notFound } from "next/navigation";
+import { getViewer } from "@/lib/auth/permissions";
 import { db } from "@/lib/db";
 import { describeActivity } from "@/lib/activity";
 import {
@@ -262,6 +264,9 @@ export default async function SystemActivityPage({
 }: {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
 }) {
+  const viewer = await getViewer();
+  if (!viewer?.canAccessOwnerFeatures) notFound();
+
   const sp = await (searchParams ?? Promise.resolve({} as Record<string, string | string[] | undefined>));
   const url: UrlState = {
     tab: parseTab(single(sp.tab)),
