@@ -87,8 +87,9 @@ export function PublishedUpdatesPanel({
     setSelectedCommentId(commentId);
     const source = commentOptions.find((option) => option.id === commentId);
     if (source) {
-      // Prefill with the redacted snapshot: what you see is what ships.
-      setBody(source.preview);
+      // Prefill with the FULL redacted snapshot — not the 280-char label
+      // preview, which would publish the source truncated.
+      setBody(source.body);
       if (!title) setTitle(`Project update — ${source.createdAt.slice(0, 10)}`);
     }
   }

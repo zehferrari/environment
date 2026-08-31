@@ -8,7 +8,9 @@
 // no source provenance, no agent author/provider/model/run fields — so a
 // published item renders as ordinary human-authored content for every
 // viewer role. Unpublishing restores the private state: active-only reads
-// drop the row and the internal source was never mutated.
+// drop the row and the re-hosted attachment copy rows are deleted —
+// shared content-addressed blobs survive while the untouched internal
+// source rows still reference them.
 
 import { readFile } from "node:fs/promises";
 import type { Prisma } from "@prisma/client";
@@ -28,7 +30,11 @@ import {
   type ActorRow,
   type VisibleMessageActor,
 } from "@/lib/users/actor-visibility";
-import { attachmentAbsolutePath, writeAttachment } from "@/lib/attachments/storage";
+import {
+  attachmentAbsolutePath,
+  deleteAttachmentFile,
+  writeAttachment,
+} from "@/lib/attachments/storage";
 
 export type SerializedPublishedAttachment = {
   id: string;
@@ -49,6 +55,10 @@ export type SerializedPublishedItem = {
 
 export type PublishableCommentOption = {
   id: string;
+  // Full redacted snapshot: the compose form prefills with this so a
+  // selected source publishes untruncated. The short preview below stays
+  // for the option label.
+  body: string;
   preview: string;
   createdAt: string;
 };
@@ -249,7 +259,14 @@ export async function unpublishPublishedItem(input: {
   if (!input.publishedItemId) throw new Error("Missing publishedItemId");
   const item = await db.publishedItem.findUnique({
     where: { id: input.publishedItemId },
-    select: { id: true, projectId: true, taskId: true, unpublishedAt: true },
+    select: {
+      id: true,
+      projectId: true,
+      taskId: true,
+      authorId: true,
+      unpublishedAt: true,
+      attachmentIds: true,
+    },
   });
   if (!item) throw new Error("Unknown published item");
   if (!(await canAccessProject(viewer, { id: item.projectId }))) {
@@ -257,10 +274,42 @@ export async function unpublishPublishedItem(input: {
   }
   // Idempotent: an already-private item stays private.
   if (item.unpublishedAt) return item;
-  await db.publishedItem.update({
-    where: { id: item.id },
-    data: { unpublishedAt: new Date() },
-  });
+
+  // Restoring the private state includes the re-hosted attachment copies:
+  // they are ordinary human-uploader rows whose Customer visibility does
+  // not depend on this row's unpublishedAt, so the copy rows must be
+  // actively deleted. Blobs are content-addressed and shared with any row
+  // holding the same bytes — the untouched internal source in the common
+  // case — so a blob is removed only once nothing references it anymore
+  // (the same rule as the interactive delete and bin purge paths).
+  const copyIds = parseAttachmentIds(item.attachmentIds);
+  const copies = copyIds.length
+    ? await db.attachment.findMany({
+        // Defensive scope: only rows this publish created — uploader is
+        // the publishing human — never arbitrary ids from a corrupted row.
+        where: { id: { in: copyIds }, uploaderId: item.authorId },
+      })
+    : [];
+  await db.$transaction([
+    db.publishedItem.update({
+      where: { id: item.id },
+      data: { unpublishedAt: new Date() },
+    }),
+    ...(copies.length
+      ? [db.attachment.deleteMany({ where: { id: { in: copies.map((c) => c.id) } } })]
+      : []),
+  ]);
+  const seenPath = new Set<string>();
+  for (const copy of copies) {
+    if (seenPath.has(copy.storagePath)) continue;
+    seenPath.add(copy.storagePath);
+    const stillRef = await db.attachment.count({
+      where: { storagePath: copy.storagePath },
+    });
+    if (stillRef === 0) {
+      await deleteAttachmentFile({ storagePath: copy.storagePath, otherRefs: 0 });
+    }
+  }
   return item;
 }
 
@@ -361,7 +410,8 @@ export async function listPublishedForProject(
   return serializePublishedItems(viewer, rows);
 }
 
-// Owner/admin-only: the redacted previews ARE the candidate snapshot, so
+// Owner/admin-only: the redacted snapshots ARE the candidate compose
+// payload (full body for the prefill + short preview for the label), so
 // this must never be reachable by a Customer.
 export async function listPublishableSources(
   viewer: Viewer,
@@ -390,11 +440,18 @@ export async function listPublishableSources(
     select: { id: true, filename: true },
   });
   return {
-    comments: comments.map((row) => ({
-      id: row.id,
-      preview: redact(row.body).slice(0, 280),
-      createdAt: row.createdAt.toISOString(),
-    })),
+    comments: comments.map((row) => {
+      const snapshot = redact(row.body);
+      return {
+        id: row.id,
+        // Full redacted snapshot for the compose prefill: a truncated
+        // preview here would publish the source cut off mid-sentence.
+        body: snapshot,
+        // Label-length preview only.
+        preview: snapshot.slice(0, 280),
+        createdAt: row.createdAt.toISOString(),
+      };
+    }),
     attachments,
   };
 }

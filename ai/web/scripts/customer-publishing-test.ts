@@ -13,11 +13,16 @@
 //   4. Re-hosted attachment copies are human-provenance rows.
 //   5. Agent source rows stay excluded from Customer payloads while
 //      published items are present (criterion 7 coherence).
-//   6. Unpublish restores the private state.
+//   6. Unpublish restores the private state — deleting the re-hosted
+//      attachment copy rows (shared content-addressed blobs survive while
+//      the internal source still references them).
+//   7. The compose form publishes the FULL redacted snapshot untruncated.
+//   8. A copy that is the blob's last reference removes the blob on
+//      unpublish.
 
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -49,7 +54,7 @@ async function main() {
     const dbMod = await import("../lib/db");
     const permissions = await import("../lib/auth/permissions");
     const agentContentPolicy = await import("../lib/users/agent-content-policy");
-    const { writeAttachment } = await import("../lib/attachments/storage");
+    const { attachmentAbsolutePath, writeAttachment } = await import("../lib/attachments/storage");
     const publishing = await import("../lib/publishing/service");
     db = dbMod.db as PrismaClient;
     const prisma = db;
@@ -142,6 +147,24 @@ async function main() {
         mimeType: written.mimeType,
         sizeBytes: written.sizeBytes,
         sha256: written.sha256,
+      },
+    });
+
+    // Long internal comment: proves the compose form receives the FULL
+    // redacted snapshot rather than the 280-char label preview.
+    const longAgentBody =
+      "Agent Test produced the detailed end-to-end narrative. " +
+      "Verification progressed through staging, data integrity checks, and rollback drills. ".repeat(8) +
+      "FINAL_MARKER_9Z";
+    const longAgentComment = await prisma.comment.create({
+      data: {
+        taskId: task.id,
+        userId: agentUser.id,
+        body: longAgentBody,
+        authorAgentSlug: "agent-test",
+        provider: "ollama",
+        model: "test-model",
+        commentKind: "agent_reply",
       },
     });
 
@@ -250,6 +273,30 @@ async function main() {
     assert.equal(copyRow!.filename, sourceAttachment.filename, "same filename");
     assert.equal(copyRow!.taskId, task.id, "copy is scoped to the task");
 
+    // The re-hosted copy rides the ordinary task attachment list for
+    // Customers (human uploader), independent of the PublishedItem row —
+    // so unpublish must actively remove it.
+    const customerAttachmentWhere = {
+      AND: [
+        { taskId: task.id },
+        agentContentPolicy.hiddenAttachmentWhere(customerViewer!),
+      ],
+    };
+    const customerAttachmentsWhilePublished = await prisma.attachment.findMany({
+      where: customerAttachmentWhere,
+    });
+    assert.ok(
+      customerAttachmentsWhilePublished.some((row) => row.id === copyIds[0]),
+      "re-hosted copy is customer-visible through the ordinary attachment list while published",
+    );
+    const copyBlobPath = attachmentAbsolutePath(copyRow!);
+    const sourceBlobPath = attachmentAbsolutePath(sourceAttachment);
+    assert.equal(
+      copyBlobPath,
+      sourceBlobPath,
+      "re-hosted copy shares the content-addressed blob with the internal source",
+    );
+
     // The internal source rows are untouched (private state preserved).
     const sourceStillThere = await prisma.comment.findUnique({
       where: { id: agentComment.id },
@@ -309,6 +356,25 @@ async function main() {
     assert.ok(sourceOption, "internal comment offered as a publishable source");
     assert.ok(!sourceOption!.preview.includes("agent-test"), "source preview redacts the slug");
     assert.ok(!sourceOption!.preview.includes("Agent Test"), "source preview redacts the name");
+    assert.ok(!sourceOption!.body.includes("agent-test"), "compose snapshot redacts the slug");
+    assert.ok(!sourceOption!.body.includes("Agent Test"), "compose snapshot redacts the name");
+    const longOption = sources.comments.find(
+      (option) => option.id === longAgentComment.id,
+    );
+    assert.ok(longOption, "long internal comment offered as a publishable source");
+    assert.ok(
+      longOption!.body.length > 280,
+      "compose snapshot is the full redacted body, not the label preview",
+    );
+    assert.ok(
+      longOption!.body.endsWith("FINAL_MARKER_9Z"),
+      "compose snapshot keeps the source tail untruncated",
+    );
+    assert.ok(
+      longOption!.body.startsWith(longOption!.preview),
+      "preview is a prefix of the full snapshot",
+    );
+    assert.ok(longOption!.preview.length <= 280, "preview stays label-length");
     assert.ok(sources.attachments.some((option) => option.id === sourceAttachment.id));
     await assert.rejects(
       () => publishing.listPublishableSources(customerViewer!, task.id),
@@ -344,6 +410,29 @@ async function main() {
     });
     assert.ok(rowAfterUnpublish!.unpublishedAt, "unpublishedAt set");
 
+    // Unpublish restored the private state for the re-hosted attachment:
+    // the copy row is gone, the ordinary Customer attachment query no
+    // longer returns it, and the internal source row and its shared
+    // content-addressed blob were never touched.
+    const customerAttachmentsAfterUnpublish = await prisma.attachment.findMany({
+      where: customerAttachmentWhere,
+    });
+    assert.ok(
+      !customerAttachmentsAfterUnpublish.some((row) => row.id === copyIds[0]),
+      "re-hosted copy is gone from the Customer attachment query after unpublish",
+    );
+    const copyRowAfterUnpublish = await prisma.attachment.findUnique({
+      where: { id: copyIds[0] },
+    });
+    assert.equal(copyRowAfterUnpublish, null, "re-hosted copy row deleted on unpublish");
+    const sourceRowAfterUnpublish = await prisma.attachment.findUnique({
+      where: { id: sourceAttachment.id },
+    });
+    assert.ok(sourceRowAfterUnpublish, "internal source attachment row intact");
+    // The blob survives unpublish: it is content-addressed and still
+    // referenced by the intact internal source row.
+    await access(sourceBlobPath);
+
     await publishing.unpublishPublishedItem({
       actorUserId: adminUser.id,
       publishedItemId: adminPublished.id,
@@ -361,6 +450,79 @@ async function main() {
         }),
       /Not authorized/,
       "customers cannot unpublish",
+    );
+
+    // --- 7. compose form publishes the FULL redacted snapshot -----------
+    const composePublished = await publishing.publishInternalItem({
+      actorUserId: ownerUser.id,
+      projectId: project.id,
+      taskId: task.id,
+      title: "Composed from the full snapshot",
+      body: longOption!.body,
+      sourceCommentId: longAgentComment.id,
+    });
+    const composeStored = await prisma.publishedItem.findUnique({
+      where: { id: composePublished.id },
+    });
+    assert.ok(composeStored, "compose publish stored");
+    assert.equal(
+      composeStored!.body,
+      longOption!.body,
+      "publishing the compose snapshot stores the untruncated redacted body",
+    );
+    assert.ok(
+      composeStored!.body.endsWith("FINAL_MARKER_9Z"),
+      "stored compose body keeps the tail marker",
+    );
+    const customerCompose = await publishing.listPublishedForTask(customerViewer!, task.id);
+    assert.equal(customerCompose.length, 1, "composed update is customer-visible");
+    await publishing.unpublishPublishedItem({
+      actorUserId: ownerUser.id,
+      publishedItemId: composePublished.id,
+    });
+    const afterComposeUnpublish = await publishing.listPublishedForTask(
+      customerViewer!,
+      task.id,
+    );
+    assert.equal(afterComposeUnpublish.length, 0, "composed update private after unpublish");
+
+    // --- 8. last-referencing copy: unpublish also removes the blob -------
+    const orphanWritten = await writeAttachment({
+      projectId: project.id,
+      filename: "orphan-report.txt",
+      mimeType: "text/plain",
+      data: Buffer.from("orphan internal report contents", "utf8"),
+    });
+    const orphanSource = await prisma.attachment.create({
+      data: {
+        projectId: project.id,
+        taskId: task.id,
+        uploaderId: agentUser.id,
+        filename: "orphan-report.txt",
+        storagePath: orphanWritten.storagePath,
+        mimeType: orphanWritten.mimeType,
+        sizeBytes: orphanWritten.sizeBytes,
+        sha256: orphanWritten.sha256,
+      },
+    });
+    const orphanPublished = await publishing.publishInternalItem({
+      actorUserId: ownerUser.id,
+      projectId: project.id,
+      taskId: task.id,
+      title: "Orphan attachment publish",
+      body: "Publishing an attachment whose source row will be deleted.",
+      sourceAttachmentIds: [orphanSource.id],
+    });
+    await prisma.attachment.delete({ where: { id: orphanSource.id } });
+    await access(orphanWritten.absolutePath);
+    await publishing.unpublishPublishedItem({
+      actorUserId: ownerUser.id,
+      publishedItemId: orphanPublished.id,
+    });
+    await assert.rejects(
+      () => access(orphanWritten.absolutePath),
+      /ENOENT/,
+      "blob removed on unpublish when the copy was its last reference",
     );
 
     console.log("customer-publishing-test: all assertions passed");
