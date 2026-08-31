@@ -1,6 +1,7 @@
 import { db } from "@/lib/db";
 import { subscribeBoardTouch } from "@/lib/pm/board-events";
-import { accessibleProjectWhere, requireViewer } from "@/lib/auth/permissions";
+import { accessibleProjectWhere, canAccessProject, requireViewer } from "@/lib/auth/permissions";
+import { attachRevocationGuard } from "@/lib/users/access-revocation-guard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -40,7 +41,9 @@ export async function GET(
         controller.enqueue(encoder.encode(`: hb\n\n`));
       }, HEARTBEAT_MS);
 
+      let revocationGuard: { stop: () => void } | null = null;
       const cleanup = () => {
+        revocationGuard?.stop();
         clearInterval(heartbeat);
         unsub();
         try {
@@ -49,6 +52,20 @@ export async function GET(
           // already closed
         }
       };
+
+      // ENV-168: streams authenticated once at connect would otherwise keep
+      // serving under the old policy forever. The guard re-evaluates this
+      // viewer's access on every access-change hub event and on a heartbeat
+      // fallback; a failed check emits one explicit `access-revoked` event
+      // and closes the stream terminally (the client stops reconnecting
+      // and refreshes into the safe denied state).
+      revocationGuard = attachRevocationGuard({
+        userId: viewer.id,
+        send,
+        close: cleanup,
+        stillAuthorized: (fresh) =>
+          fresh ? canAccessProject(fresh, { id: project.id }) : Promise.resolve(false),
+      });
 
       req.signal.addEventListener("abort", cleanup);
     },

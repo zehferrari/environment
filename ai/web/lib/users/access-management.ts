@@ -12,6 +12,8 @@ import { db } from "@/lib/db";
 import type { Viewer } from "@/lib/auth/permissions";
 import { resolveHumanRole, type HumanRole } from "@/lib/auth/roles";
 import { evaluateAccessPolicy, type AccessPolicySubject } from "@/lib/users/access-policy";
+import { publishAccessChange } from "@/lib/users/access-change-hub";
+import { revalidateAccessCachesForProjects } from "@/lib/users/access-invalidation";
 
 type TransactionClient = Prisma.TransactionClient;
 
@@ -145,6 +147,10 @@ export async function inviteHumanUserCore(
         kind: "human",
         status: "invited",
         isOwner: false,
+        // The invitation is the initial policy grant: every human row starts
+        // at epoch 1 (0 is the pre-ENV-168 schema default) so the epoch is a
+        // meaningful anchor from birth.
+        policyVersion: 1,
         rolePermission: {
           connectOrCreate: {
             where: { name: role },
@@ -172,6 +178,12 @@ export async function inviteHumanUserCore(
     });
     return user.id;
   });
+
+  // Publish after commit: subscribers must never observe a pre-commit epoch.
+  // The invited user has no sessions yet, but the bump+publish invariant is
+  // uniform across every access-management mutation.
+  publishAccessChange({ userId, projectId: null, at: Date.now(), policyVersion: 1 });
+  revalidateAccessCachesForProjects(input.projectIds);
 
   return { userId, token };
 }
@@ -237,7 +249,7 @@ export async function updateHumanAccessCore(
 
   await validateProjectIds(input.projectIds);
 
-  return db.$transaction(async (tx) => {
+  const result = await db.$transaction(async (tx) => {
     const current = await tx.projectMember.findMany({
       where: { userId: input.userId },
       select: { projectId: true },
@@ -310,12 +322,56 @@ export async function updateHumanAccessCore(
       }
     }
 
+    // One epoch bump per mutation, in the same transaction as the audit
+    // rows — a failed edit rolls the bump back with everything else. Role
+    // and membership changes share a single bump: policyVersion is an epoch,
+    // not a per-change counter.
+    let policyVersion: number | null = null;
+    if (changed) {
+      const bumped = await tx.user.update({
+        where: { id: input.userId },
+        data: { policyVersion: { increment: 1 } },
+        select: { policyVersion: true },
+      });
+      policyVersion = bumped.policyVersion;
+    }
+
     const user = await tx.user.findUnique({
       where: { id: input.userId },
       select: { username: true },
     });
-    return { changed, username: user?.username ?? "" };
+    return {
+      changed,
+      username: user?.username ?? "",
+      policyVersion,
+      changedProjectId:
+        added.length === 1 && removed.length === 0
+          ? added[0]
+          : removed.length === 1 && added.length === 0
+            ? removed[0]
+            : null,
+      invalidationProjectIds: [
+        ...new Set([...added, ...removed, ...(roleChanges ? oldIds : [])]),
+      ],
+    };
   });
+
+  if (result.changed) {
+    // Publish after commit. The project hint names the single project when
+    // exactly one was granted or revoked; consumers re-check everything on
+    // any event for this user regardless.
+    if (result.policyVersion !== null) {
+      publishAccessChange({
+        userId: input.userId,
+        projectId: result.changedProjectId,
+        at: Date.now(),
+        policyVersion: result.policyVersion,
+      });
+    }
+    revalidateAccessCachesForProjects(result.invalidationProjectIds);
+  }
+
+  return { changed: result.changed, username: result.username };
 }
 
 /**
@@ -353,13 +409,13 @@ export async function setHumanUserRoleCore(
 
   const newRole = input.role as "admin" | "customer";
 
-  return db.$transaction(async (tx) => {
+  const result = await db.$transaction(async (tx) => {
     const current = await tx.projectMember.findMany({
       where: { userId: input.userId },
       select: { projectId: true },
     });
     const memberIds = current.map((membership) => membership.projectId);
-    await tx.user.update({
+    const bumped = await tx.user.update({
       where: { id: input.userId },
       data: {
         rolePermission: {
@@ -368,7 +424,11 @@ export async function setHumanUserRoleCore(
             create: { name: newRole, description: ROLE_DESCRIPTIONS[newRole] },
           },
         },
+        // A role change is a policy change: bump the epoch in the same
+        // transaction as the promote/demote audit row.
+        policyVersion: { increment: 1 },
       },
+      select: { policyVersion: true },
     });
     await writeAuditRow(tx, viewer.id, input.userId, {
       action: newRole === "admin" ? "promote" : "demote",
@@ -381,6 +441,25 @@ export async function setHumanUserRoleCore(
       where: { id: input.userId },
       select: { username: true },
     });
-    return { changed: true, username: user?.username ?? "" };
+    return {
+      changed: true,
+      username: user?.username ?? "",
+      policyVersion: bumped.policyVersion,
+      memberIds,
+    };
   });
+
+  // Publish after commit: a role change is project-wide policy (private epic
+  // visibility, owner-feature gating), so no single project hint.
+  publishAccessChange({
+    userId: input.userId,
+    projectId: null,
+    at: Date.now(),
+    policyVersion: result.policyVersion,
+  });
+  // Private-epic visibility changed for this viewer — the project epic caches
+  // they could have prefetched must not survive the role change.
+  revalidateAccessCachesForProjects(result.memberIds);
+
+  return { changed: result.changed, username: result.username };
 }
