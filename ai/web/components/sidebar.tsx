@@ -207,6 +207,7 @@ export default async function Sidebar() {
       userId={viewer.id}
       userAvatarVersion={me?.avatarUpdatedAt ? me.avatarUpdatedAt.getTime() : null}
       signOutAction={signOutAction}
+      previewActive={Boolean(viewer.preview)}
     />
   );
 }

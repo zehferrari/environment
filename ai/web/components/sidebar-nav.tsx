@@ -54,6 +54,7 @@ type SidebarNavProps = {
   userId: string | null;
   userAvatarVersion: number | null;
   signOutAction: () => Promise<void>;
+  previewActive?: boolean;
 };
 
 const STORAGE_KEY = "pm:sidebar:collapsed";
@@ -297,6 +298,7 @@ export default function SidebarNav({
   userId,
   userAvatarVersion,
   signOutAction,
+  previewActive = false,
 }: SidebarNavProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [expandedWorkspaceSlugs, setExpandedWorkspaceSlugs] = useState<string[]>([]);
@@ -495,7 +497,9 @@ export default function SidebarNav({
   return (
     <>
     <aside
-      className={`sticky top-0 z-30 hidden h-screen shrink-0 flex-col border-r border-line bg-panel/90 shadow-[8px_0_30px_rgba(20,31,55,0.035)] backdrop-blur-xl transition-[width] duration-200 md:flex ${
+      className={`sticky z-30 hidden shrink-0 flex-col border-r border-line bg-panel/90 shadow-[8px_0_30px_rgba(20,31,55,0.035)] backdrop-blur-xl transition-[width] duration-200 md:flex ${
+        previewActive ? "top-12 h-[calc(100vh-3rem)]" : "top-0 h-screen"
+      } ${
         collapsed ? "w-16" : "w-64"
       }`}
     >

@@ -83,6 +83,7 @@
     "test:access-management": "tsx scripts/access-management-test.ts",
     "test:access-revocation": "tsx scripts/access-revocation-test.ts",
     "test:access-flow": "tsx scripts/access-flow-test.tsx",
+    "test:preview-as-user": "tsx scripts/preview-as-user-test.tsx",
     "test:user-lifecycle": "tsx scripts/user-lifecycle-test.ts",
     "test:user-lifecycle-controls": "tsx scripts/user-lifecycle-controls-test.tsx",
     "test:password-policy": "tsx scripts/password-policy-test.ts",

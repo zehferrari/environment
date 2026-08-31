@@ -1522,7 +1522,7 @@ export default async function TaskDetailPage({
     && (taskChatReadCursorMs === null || createdAtMs(message.createdAt) > taskChatReadCursorMs)
   ));
   const firstUnreadMessageId = unreadActionPlanMessages[0]?.id ?? null;
-  if (selectedTab === "Action Plan" && !chatArchive) {
+  if (!viewer.preview && selectedTab === "Action Plan" && !chatArchive) {
     await db.chatReadCursor.upsert({
       where: { userId_agentSlug: { userId: viewer.id, agentSlug: taskChatCursorKey } },
       create: { userId: viewer.id, agentSlug: taskChatCursorKey },
@@ -1561,12 +1561,13 @@ export default async function TaskDetailPage({
   // getDescriptionDraft() also returns null for stale drafts
   // (lastSeenAt > 60s ago) so a closed-tab requester doesn't leak
   // their draft into a later session.
-  const { getDescriptionDraft } = await import("@/lib/description-drafts");
-  const draftDescription = await getDescriptionDraft({
-    scope: "task",
-    targetId: task.id,
-    requesterUserId: viewer.id,
-  });
+  const draftDescription = viewer.preview
+    ? null
+    : await (await import("@/lib/description-drafts")).getDescriptionDraft({
+        scope: "task",
+        targetId: task.id,
+        requesterUserId: viewer.id,
+      });
 
   const [[chatArchives, binChatArchives], selectedChatArchive] = await Promise.all([
     canSeeAgentContent ? getCachedTaskChatArchives(task.project.id, task.id) : Promise.resolve([[], []]),
@@ -2026,6 +2027,7 @@ export default async function TaskDetailPage({
                     aiRunning={viewer.canAccessOwnerFeatures && isAiDescriptionRunning}
                     runningMessageId={viewer.canAccessOwnerFeatures ? runningDescriptionRun?.messageId ?? null : null}
                     runningAgentSlug={viewer.canAccessOwnerFeatures ? runningDescriptionRun?.agentSlug ?? null : null}
+                    readOnlyPreview={Boolean(viewer.preview)}
                     // Sub-tasks (parentTaskId !== null) get a taller editor —
                     // they're where most of the day-to-day work detail lands,
                     // so the larger box matches actual use (HOMELAB-48).

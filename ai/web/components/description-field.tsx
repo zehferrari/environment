@@ -34,6 +34,7 @@ export default function DescriptionField({
   aiRunning = false,
   runningMessageId = null,
   runningAgentSlug = null,
+  readOnlyPreview = false,
 }: {
   previewHtml: string;
   defaultValue: string;
@@ -52,6 +53,8 @@ export default function DescriptionField({
   aiRunning?: boolean;
   runningMessageId?: string | null;
   runningAgentSlug?: string | null;
+  /** Owner preview renders the target's field without any draft/session writes. */
+  readOnlyPreview?: boolean;
 }) {
   const router = useRouter();
   const [editing, setEditing] = useState(draftDescription !== null || defaultValue.trim() === "");
@@ -119,7 +122,7 @@ export default function DescriptionField({
   useEffect(() => {
     const id = taskId ?? epicId;
     const scope: "task" | "epic" | null = taskId ? "task" : epicId ? "epic" : null;
-    if (!id || !scope) return;
+    if (!id || !scope || readOnlyPreview) return;
 
     const ping = () => {
       // navigator.sendBeacon isn't ideal here (it's POST-only and we want
@@ -142,7 +145,7 @@ export default function DescriptionField({
       window.clearInterval(handle);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [taskId, epicId]);
+  }, [taskId, epicId, readOnlyPreview]);
 
   useEffect(() => {
     if (!aiRunning || !runningMessageId || !runningAgentSlug) {

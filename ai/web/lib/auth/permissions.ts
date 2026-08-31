@@ -1,4 +1,5 @@
 import type { Prisma } from "@prisma/client";
+import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import {
@@ -12,6 +13,11 @@ import {
   type HumanRole,
 } from "@/lib/auth/roles";
 import { SESSION_RECOVERY_PATH } from "@/lib/auth/session-recovery";
+import {
+  resolveOwnerPreviewTarget,
+  type PreviewActor,
+} from "@/lib/auth/preview";
+import { PREVIEW_COOKIE_NAME } from "@/lib/auth/preview-cookie";
 import { db } from "@/lib/db";
 import {
   hiddenAttachmentWhere,
@@ -45,13 +51,18 @@ export type Viewer = {
   agentVisibility: AgentVisibilityMode;
   /** Centralized compatibility capability for existing Owner-only surfaces. */
   canAccessOwnerFeatures: boolean;
+  /**
+   * Present only while an authenticated Owner is reading through another
+   * human's real policy identity. Mutations are fenced at middleware before
+   * they can reach a server action or browser API route.
+   */
+  preview?: {
+    actor: PreviewActor;
+    targetUserId: string;
+  } | null;
 };
 
-export async function getViewer(): Promise<Viewer | null> {
-  const session = await auth();
-  const id = session?.user?.id;
-  if (!id) return null;
-
+async function loadViewerByUserId(id: string): Promise<Viewer | null> {
   const user = await db.user.findUnique({
     where: { id },
     select: {
@@ -77,6 +88,38 @@ export async function getViewer(): Promise<Viewer | null> {
   };
 }
 
+/** The real authenticated actor, never replaced by preview state. */
+export async function getAuthenticatedViewer(): Promise<Viewer | null> {
+  const session = await auth();
+  const id = session?.user?.id;
+  return id ? loadViewerByUserId(id) : null;
+}
+
+export async function getViewer(): Promise<Viewer | null> {
+  const actor = await getAuthenticatedViewer();
+  if (!actor) return null;
+
+  const rawPreview = (await cookies()).get(PREVIEW_COOKIE_NAME)?.value;
+  if (!rawPreview) return actor;
+
+  const target = await resolveOwnerPreviewTarget(actor, rawPreview);
+  // A stale, forged, or actor-mismatched cookie is a rejected preview entry,
+  // not a reason to silently expose the authenticated Owner experience.
+  if (!target) redirect("/api/preview/exit?reason=invalid");
+  return {
+    ...target,
+    preview: {
+      actor: {
+        id: actor.id,
+        username: actor.username,
+        kind: "human",
+        role: "owner",
+      },
+      targetUserId: target.id,
+    },
+  };
+}
+
 /**
  * Session-free viewer resolution by user id (ENV-168). Long-lived stream
  * guards re-check authorization after an access-change hub event or on their
@@ -86,29 +129,7 @@ export async function getViewer(): Promise<Viewer | null> {
  * deactivated, which stream guards treat as a terminal authz close.
  */
 export async function getViewerByUserId(userId: string): Promise<Viewer | null> {
-  const user = await db.user.findUnique({
-    where: { id: userId },
-    select: {
-      id: true,
-      username: true,
-      kind: true,
-      status: true,
-      isOwner: true,
-      rolePermission: { select: { name: true } },
-    },
-  });
-  if (!user || user.status !== "active") return null;
-
-  const role = resolveHumanRole(user);
-
-  return {
-    id: user.id,
-    username: user.username,
-    kind: user.kind === "agent" ? "agent" : "human",
-    role,
-    agentVisibility: agentVisibilityForRole(role),
-    canAccessOwnerFeatures: role === "owner",
-  };
+  return loadViewerByUserId(userId);
 }
 
 export async function requireViewer(): Promise<Viewer> {
