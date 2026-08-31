@@ -3,6 +3,7 @@ import CommandDeck from "@/components/command-deck";
 import CreateFabServer from "@/components/create-fab-server";
 import { PersistentPmStreamProvider } from "@/components/persistent-pm-stream-provider";
 import { ViewerPolicyProvider } from "@/components/viewer-policy-provider";
+import PreviewBanner from "@/components/preview-banner";
 import Sidebar from "@/components/sidebar";
 import ToastProvider from "@/components/toast";
 import { requireViewer, viewerExperienceForRole } from "@/lib/auth/permissions";
@@ -24,6 +25,9 @@ export default async function AppLayout({
   const shell = (
     <ViewerPolicyProvider>
       <ToastProvider>
+        {viewer.preview ? (
+          <PreviewBanner username={viewer.username} role={viewer.role as "admin" | "customer"} />
+        ) : null}
         {experience.canViewGlobalAgentOperations ? <AgentPresenceProvider /> : null}
         <div className="relative flex min-h-screen text-text">
           <Sidebar />
@@ -37,7 +41,7 @@ export default async function AppLayout({
       </ToastProvider>
     </ViewerPolicyProvider>
   );
-  if (experience.customerSafe) return shell;
+  if (viewer.role !== "owner") return shell;
   return (
     <PersistentPmStreamProvider>
       {shell}

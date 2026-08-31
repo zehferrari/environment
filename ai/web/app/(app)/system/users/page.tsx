@@ -188,12 +188,26 @@ export default async function SystemUsersPage({
                   <p className="mt-1 truncate text-caption text-text-muted">@{user.username} · {user.email}</p>
                 </div>
                 {isOwner && user.status === "active" ? (
-                  <form action={resetHumanPassword}>
-                    <input type="hidden" name="userId" value={user.id} />
-                    <button type="submit" className="rounded-lg border border-line bg-bg px-control-x py-control-y text-body font-medium hover:border-accent hover:text-accent">
-                      Create password reset link
-                    </button>
-                  </form>
+                  <div className="flex flex-wrap gap-2">
+                    {!isImmutableOwner ? (
+                      <form action="/api/preview" method="post">
+                        <input type="hidden" name="userId" value={user.id} />
+                        <button
+                          type="submit"
+                          data-owner-preview-trigger
+                          className="rounded-lg border border-amber-500/50 bg-amber-50 px-control-x py-control-y text-body font-semibold text-amber-900 hover:border-amber-700"
+                        >
+                          Preview as {userRole === "admin" ? "Admin" : "Customer"}
+                        </button>
+                      </form>
+                    ) : null}
+                    <form action={resetHumanPassword}>
+                      <input type="hidden" name="userId" value={user.id} />
+                      <button type="submit" className="rounded-lg border border-line bg-bg px-control-x py-control-y text-body font-medium hover:border-accent hover:text-accent">
+                        Create password reset link
+                      </button>
+                    </form>
+                  </div>
                 ) : null}
               </div>
 

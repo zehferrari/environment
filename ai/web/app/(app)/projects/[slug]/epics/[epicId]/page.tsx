@@ -729,7 +729,7 @@ export default async function EpicDetailPage({
       ))
     : [];
   const firstUnreadMessageId = unreadActionPlanMessages[0]?.id ?? null;
-  if (currentUserId && selectedTab === "Action Plan" && !chatArchive) {
+  if (!viewer.preview && currentUserId && selectedTab === "Action Plan" && !chatArchive) {
     await db.chatReadCursor.upsert({
       where: { userId_agentSlug: { userId: currentUserId, agentSlug: epicChatCursorKey } },
       create: { userId: currentUserId, agentSlug: epicChatCursorKey },
@@ -770,9 +770,8 @@ export default async function EpicDetailPage({
 
   // Draft is requester-bound — only the human who clicked "Ask AI" sees
   // it, and only while their page heartbeats. See lib/description-drafts.ts.
-  const { getDescriptionDraft } = await import("@/lib/description-drafts");
-  const draftDescription = viewer.id
-    ? await getDescriptionDraft({
+  const draftDescription = viewer.id && !viewer.preview
+    ? await (await import("@/lib/description-drafts")).getDescriptionDraft({
         scope: "epic",
         targetId: epic.id,
         requesterUserId: viewer.id,
@@ -1150,6 +1149,7 @@ export default async function EpicDetailPage({
                     aiRunning={viewer.canAccessOwnerFeatures && isAiDescriptionRunning}
                     runningMessageId={viewer.canAccessOwnerFeatures ? runningDescriptionRun?.messageId ?? null : null}
                     runningAgentSlug={viewer.canAccessOwnerFeatures ? runningDescriptionRun?.agentSlug ?? null : null}
+                    readOnlyPreview={Boolean(viewer.preview)}
                     rows={12}
                   />
 
