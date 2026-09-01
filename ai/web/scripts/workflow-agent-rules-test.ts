@@ -346,14 +346,16 @@ assert(
   "complete_subtask must be owned by the authoritative intent executor",
 );
 
-// P4: the shared gate lives in auto-start and is per-project.
+// P4: the shared gate is imported by auto-start and is per-project.
 const autoStartLib = readFileSync(join(root, "lib/tasks/auto-start.ts"), "utf8");
+const startConflictLib = readFileSync(join(root, "lib/tasks/start-conflict.ts"), "utf8");
 assert(
-  autoStartLib.includes("export async function findInProgressStartConflict"),
-  "auto-start must export the shared In Progress entry gate",
+  startConflictLib.includes("export async function findInProgressStartConflict") &&
+    autoStartLib.includes('from "@/lib/tasks/start-conflict"'),
+  "auto-start must import the shared In Progress entry gate",
 );
 assert(
-  autoStartLib.includes("projectId: args.projectId"),
+  startConflictLib.includes("projectId: args.projectId"),
   "the shared WIP gate must scope the busy check to the task's project",
 );
 assert(

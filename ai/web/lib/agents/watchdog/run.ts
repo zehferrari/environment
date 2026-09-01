@@ -17,6 +17,7 @@ import {
 } from "@/lib/tasks/formal-blocker";
 import {
   detectWatchdogFindings,
+  hasDurableRecoveryProgress,
   healthyExecutionState,
   WATCHDOG_BLOCKER_LOOP_WINDOW_MS,
   type WatchdogFinding,
@@ -422,7 +423,9 @@ export async function runWorkflowWatchdog(
         detectorId: finding?.detectorId ?? null,
       });
       if (written) report.stateWrites += 1;
-      if (!finding) await clearWatchdogEscalation(task.id);
+      if (!finding && hasDurableRecoveryProgress(task)) {
+        await clearWatchdogEscalation(task.id);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       report.errors.push(`state/${task.id}: ${message}`);

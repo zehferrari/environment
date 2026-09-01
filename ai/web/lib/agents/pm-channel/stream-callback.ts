@@ -505,13 +505,17 @@ export async function applyPmChannelStreamCallback(args: {
     if (event === "turn:admitted" || event === "dispatch:delivered") {
       const lifecycleProvider = typeof args.payload.provider === "string" ? args.payload.provider : null;
       const lifecycleModel = typeof args.payload.model === "string" ? args.payload.model : null;
-      if (lifecycleProvider || lifecycleModel) {
+      const lifecycleGatewayDispatchId = typeof args.payload.gatewayDispatchId === "string"
+        ? args.payload.gatewayDispatchId
+        : null;
+      if (lifecycleProvider || lifecycleModel || lifecycleGatewayDispatchId) {
         try {
           await db.pmChannelRun.update({
             where: { targetKey: pmChannelRunTargetKey(target) },
             data: {
               ...(lifecycleProvider ? { provider: lifecycleProvider } : {}),
               ...(lifecycleModel ? { model: lifecycleModel } : {}),
+              ...(lifecycleGatewayDispatchId ? { gatewayDispatchId: lifecycleGatewayDispatchId } : {}),
             },
           });
         } catch (err) {
@@ -548,6 +552,9 @@ export async function applyPmChannelStreamCallback(args: {
     // to admitted, which starts the lease and represents actual model execution.
     if (event === "turn:admitted") {
       const now = new Date();
+      const gatewayDispatchId = typeof args.payload.gatewayDispatchId === "string"
+        ? args.payload.gatewayDispatchId
+        : null;
       const leaseMs = Number.parseInt(process.env.PM_OPENCLAW_LEASE_MS ?? "120000", 10);
       const leaseExpiresAt = new Date(now.getTime() + (Number.isFinite(leaseMs) && leaseMs >= 30_000 ? leaseMs : 120_000));
       try {
@@ -559,6 +566,7 @@ export async function applyPmChannelStreamCallback(args: {
             leaseExpiresAt,
             heartbeatAt: now,
             lastEventAt: now,
+            ...(gatewayDispatchId ? { gatewayDispatchId } : {}),
           },
           select: { id: true },
         });

@@ -3,9 +3,11 @@
 // An agent that received a per-conversation "manage work items" grant on
 // a direct chat or Task/Epic Discussion message POSTs a typed change-set
 // here. PM validates the grant + token (mirrors /api/tasks/[id]/description),
-// dry-run-validates the change-set against lib/workflow.ts, and stores it
-// as a PENDING WorkItemProposal. Nothing on the board changes until a
-// human applies it (lib/work-items/actions.ts, Slice 3).
+// dry-run-validates the change-set against lib/workflow.ts, and stores it as a
+// WorkItemProposal. Owner-requested task-creation-only batches are applied
+// immediately when exactly one agent is action-authorized for the message;
+// other discussion proposals remain pending until a human applies them
+// (lib/work-items/actions.ts, Slice 3).
 //
 // Auth model (same shape as the description-write grant):
 //   - body.grantMessageId references a DirectAgentChatMessage, or an
@@ -17,13 +19,13 @@
 //   - the slug's Agent + seeded User must be active.
 // On success: persist the proposal, stamp the grant used, write an
 // ActivityLog row as the agent. Only grants authored by the active Mission
-// Control owner are accepted; direct owner grants auto-apply after validation.
-// Discussion grants remain pending except narrow workflow
-// auto-apply cases such as Epic-manager task breakdowns. Re-using the grant
-// returns 410. Re-using the same planId returns the existing proposal
-// (idempotent).
+// Control owner are accepted; direct owner grants auto-apply after validation,
+// as do sole-agent task-creation-only discussion grants. Other discussion
+// grants remain pending except narrow workflow auto-apply cases such as
+// Epic-manager task breakdowns. Re-using the grant returns 410. Re-using the
+// same planId returns the existing proposal (idempotent).
 
-import { revalidatePath } from "next/cache";
+import { revalidatePath, revalidateTag } from "next/cache";
 import { NextResponse, type NextRequest } from "next/server";
 import { Prisma } from "@prisma/client";
 import { isActiveOwnerPrincipal } from "@/lib/auth/roles";
@@ -31,6 +33,8 @@ import { db } from "@/lib/db";
 import { verifyWorkItemGrantToken } from "@/lib/agents/workflow/token/work-item";
 import { validateProposal } from "@/lib/work-items/proposal";
 import { commitProposal } from "@/lib/work-items/apply";
+import { resolveDirectedFromDiscussionRow } from "@/lib/agents/ops/directed-targets";
+import { taskCacheTag } from "@/lib/tasks/cache";
 import {
   absolutePublicUrl,
   isLoopbackOrigin,
@@ -49,7 +53,7 @@ type WorkItemGrant =
       projectId: string | null;
       allowWorkItemManagement: boolean;
       workItemGrantUsedAt: Date | null;
-      sender: { kind: string; status: string; isOwner: boolean } | null;
+      sender: { id: string; kind: string; status: string; isOwner: boolean } | null;
       usesProjectLink: boolean;
       taskId?: null;
       epicId?: null;
@@ -62,9 +66,13 @@ type WorkItemGrant =
       projectId: string;
       allowWorkItemManagement: boolean;
       workItemGrantUsedAt: Date | null;
-      sender: { kind: string; status: string; isOwner: boolean } | null;
+      sender: { id: string; kind: string; status: string; isOwner: boolean } | null;
       taskId: string | null;
       epicId: string | null;
+      originCommentId: string | null;
+      targetType: string | null;
+      targetValue: string | null;
+      targetLabel: string | null;
     };
 
 class GrantAlreadyUsedError extends Error {
@@ -150,6 +158,46 @@ function isEpicManagerTaskBreakdown(operations: unknown[], epicId: string) {
   }
 
   return topLevelTaskRefs.size > 0 && subtaskRefs.size + topLevelTaskRefs.size === operations.length;
+}
+
+function isTaskCreationOnly(operations: unknown[]) {
+  return operations.length > 0 && operations.every((operation) => (
+    isRecord(operation) && operation.op === "create_task"
+  ));
+}
+
+async function isSoleAuthorizedDiscussionAgent(
+  grant: Extract<WorkItemGrant, { source: "discussion" }>,
+) {
+  if (grant.originCommentId) {
+    const authorizedMessages = await db.agentChatMessage.findMany({
+      where: {
+        originCommentId: grant.originCommentId,
+        allowWorkItemManagement: true,
+      },
+      select: { agentSlug: true },
+    });
+    const authorizedSlugs = new Set(authorizedMessages.map((message) => message.agentSlug));
+    return authorizedSlugs.size === 1 && authorizedSlugs.has(grant.agentSlug);
+  }
+
+  const activeAgents = await db.agent.findMany({
+    where: { deactivatedAt: null, user: { status: "active" } },
+    select: { slug: true },
+  });
+  const descriptor = resolveDirectedFromDiscussionRow({
+    targetType: grant.targetType,
+    targetValue: grant.targetValue,
+    targetLabel: grant.targetLabel,
+    activeAgentSlugs: new Set(activeAgents.map((agent) => agent.slug)),
+  });
+  // Shared Task/Epic Action Plan messages persist their target set before any
+  // agent is dispatched. Base auto-apply on that durable intent, never on the
+  // number of PmChannelRun rows currently visible (which would race concurrent
+  // dispatch creation). Explicit broadcasts remain reviewable proposals.
+  return !descriptor.isBroadcast
+    && descriptor.directedAgentSlugs.length === 1
+    && descriptor.directedAgentSlugs[0] === grant.agentSlug;
 }
 
 async function canAutoApplyEpicManagerTaskBreakdown(args: {
@@ -267,7 +315,7 @@ export async function POST(
       projectId: true,
       allowWorkItemManagement: true,
       workItemGrantUsedAt: true,
-      sender: { select: { kind: true, status: true, isOwner: true } },
+      sender: { select: { id: true, kind: true, status: true, isOwner: true } },
       projects: {
         where: { projectId },
         select: {
@@ -302,9 +350,13 @@ export async function POST(
         projectId: true,
         taskId: true,
         epicId: true,
+        originCommentId: true,
+        targetType: true,
+        targetValue: true,
+        targetLabel: true,
         allowWorkItemManagement: true,
         workItemGrantUsedAt: true,
-        sender: { select: { kind: true, status: true, isOwner: true } },
+        sender: { select: { id: true, kind: true, status: true, isOwner: true } },
       },
     });
     if (discussionGrant) {
@@ -416,13 +468,21 @@ export async function POST(
   }
 
   const autoApplyDirectOwnerRequest = grant.source === "direct" && isActiveOwnerGrant(grant);
+  const autoApplyOwnerTaskRequest =
+    grant.source === "discussion"
+    && isActiveOwnerGrant(grant)
+    && isTaskCreationOnly(operations)
+    && await isSoleAuthorizedDiscussionAgent(grant);
   const autoApplyEpicManagerBreakdown = await canAutoApplyEpicManagerTaskBreakdown({
     grant,
     projectId,
     agentUserId,
     operations,
   });
-  const autoApply = autoApplyDirectOwnerRequest || autoApplyEpicManagerBreakdown;
+  const autoApply =
+    autoApplyDirectOwnerRequest
+    || autoApplyOwnerTaskRequest
+    || autoApplyEpicManagerBreakdown;
   const publicOrigin =
     await storedPublicOriginForGrant(grant) ??
     requestedPublicOrigin ??
@@ -496,7 +556,9 @@ export async function POST(
     });
 
     if (autoApply) {
-      const applied = await commitProposal(created.id, agentUserId);
+      // The owner message is the authorization decision. Attribute approval
+      // to that human while preserving the proposing agent on each mutation.
+      const applied = await commitProposal(created.id, grant.sender!.id);
       if (!applied.ok) {
         return NextResponse.json(
           {
@@ -509,6 +571,7 @@ export async function POST(
         );
       }
       revalidatePath(`/projects/${project.slug}`);
+      if (grant.taskId) revalidateTag(taskCacheTag.proposals(grant.taskId));
       if (grant.epicId) {
         revalidatePath(`/projects/${project.slug}/epics/${grant.epicId}`);
       }
@@ -520,6 +583,8 @@ export async function POST(
           autoApplied: true,
           autoApplyReason: autoApplyDirectOwnerRequest
             ? "direct_owner_request"
+            : autoApplyOwnerTaskRequest
+              ? "owner_task_request"
             : "epic_manager_task_breakdown",
           validation,
           result: applied.counts,
@@ -532,6 +597,7 @@ export async function POST(
     if (grant.source === "direct") {
       revalidatePath(`/agents/${grant.agentSlug}/chat`);
     } else if (grant.taskId) {
+      revalidateTag(taskCacheTag.proposals(grant.taskId));
       revalidatePath(`/projects/${project.slug}/tasks/${grant.taskId}`);
     } else if (grant.epicId) {
       revalidatePath(`/projects/${project.slug}/epics/${grant.epicId}`);

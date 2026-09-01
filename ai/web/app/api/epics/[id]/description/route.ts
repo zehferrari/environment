@@ -44,6 +44,7 @@ export async function POST(
       senderUserId: true,
       allowDescriptionEdit: true,
       editGrantUsedAt: true,
+      originChannel: true,
       sender: { select: { kind: true, status: true, isOwner: true } },
     },
   });
@@ -124,7 +125,9 @@ export async function POST(
 
   const newDescription = description.trim();
   const canDirectWriteEmptyEpicDescription =
-    !epic.description?.trim() && epic.actingManagerId === resolvedAgent.user.id;
+    grant.originChannel !== "description"
+    && !epic.description?.trim()
+    && epic.actingManagerId === resolvedAgent.user.id;
 
   if (canDirectWriteEmptyEpicDescription) {
     await db.$transaction([

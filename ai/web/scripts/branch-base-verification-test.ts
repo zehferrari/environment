@@ -4,9 +4,11 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  fetchVerificationBase,
   fetchVerificationBranch,
   resolveEpicVerificationBase,
   validateEpicBase,
+  validateLocalBranchBase,
   validateOriginBase,
 } from "../lib/deploy/branch-base";
 
@@ -41,6 +43,7 @@ try {
   git(seed, ["commit", "-m", "V23-3 feature"]);
   git(seed, ["push", "-u", "origin", "feature/v23-3"]);
   execFileSync("git", ["clone", remote, verifier], { stdio: "ignore" });
+  git(verifier, ["branch", "feature/v23-3", "origin/feature/v23-3"]);
 
   const configured = await fetchVerificationBranch(verifier, "feature/v23-3", "master");
   assert.equal(configured.error, null);
@@ -63,6 +66,13 @@ try {
   git(verifier, ["commit", "-m", "V23-4 local feature"]);
   const beforePush = await fetchVerificationBranch(verifier, "feature/local-only", "master");
   assert.notEqual(beforePush.error, null, "a feature absent from origin should initially report a fetch error");
+  const localOnlyBase = await fetchVerificationBase(verifier, "master");
+  assert.equal(localOnlyBase.error, null, "base-only preflight must not require a published task branch");
+  assert.equal(
+    (await validateLocalBranchBase(verifier, "feature/local-only", localOnlyBase.baseBranch)).ok,
+    true,
+    "an unpublished local branch based on current master must pass the read-only preflight",
+  );
   git(verifier, ["push", "origin", "feature/local-only"]);
   const afterPush = await fetchVerificationBranch(verifier, "feature/local-only", "master");
   assert.equal(afterPush.error, null, "the verifier must be able to recover after publishing a local-only branch");
@@ -79,6 +89,22 @@ try {
   const stale = await validateOriginBase(verifier, "feature/v23-3", refreshed.baseBranch);
   assert.equal(stale.ok, false, "feature branches missing the current base tip must fail review");
   assert.match(stale.error ?? "", /does not contain the current origin\/master/);
+
+  const localHeadBeforePreflight = git(verifier, ["rev-parse", "refs/heads/feature/v23-3"]);
+  const statusBeforePreflight = git(verifier, ["status", "--porcelain"]);
+  const localStale = await validateLocalBranchBase(verifier, "feature/v23-3", refreshed.baseBranch);
+  assert.equal(localStale.ok, false, "the local pre-publication gate must reject the same stale base");
+  assert.match(localStale.error ?? "", /before PM creates or publishes the submission commit/);
+  assert.equal(
+    git(verifier, ["rev-parse", "refs/heads/feature/v23-3"]),
+    localHeadBeforePreflight,
+    "preflight must not create a commit",
+  );
+  assert.equal(
+    git(verifier, ["status", "--porcelain"]),
+    statusBeforePreflight,
+    "preflight must not change the worktree or index",
+  );
 
   git(seed, ["checkout", "master"]);
   git(seed, ["checkout", "-b", "epic-v23"]);

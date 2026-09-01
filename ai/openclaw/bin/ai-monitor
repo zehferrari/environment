@@ -3338,9 +3338,25 @@ def ai_judge(cfg, probe_blob, prev_open):
     }
 
 
+PM_EXECUTION_RECOVERY_KINDS = {
+    "pm-todo-not-started",
+    "pm-in-progress-stale",
+    "pm-channel-no-start",
+    "pm-channel-stalled",
+    "pm-channel-failed",
+}
+
+
 def event_key(issue):
+    kind = issue.get("kind", "?")
+    # These are successive symptoms of one task execution episode, not fresh
+    # incidents. Keep the same ladder/budget when a validation callback moves
+    # the task To Do and the recovery moves it back In Progress, or when the
+    # channel symptom changes from no-start to failed/stalled.
+    if kind in PM_EXECUTION_RECOVERY_KINDS:
+        kind = "pm-execution-recovery"
     raw = (
-        f"{issue.get('unit','?')}|{issue.get('kind','?')}|{issue.get('severity','?')}"
+        f"{issue.get('unit','?')}|{kind}|{issue.get('severity','?')}"
     )
     return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
@@ -3815,6 +3831,7 @@ def restart_and_wake_stalled_agents(no_agent_issues, cfg=None, registry=None):
                 # suffix after the task id — strip it for the nudge target.
                 "task_id": tail.split("/", 1)[0],
                 "kind": kind,
+                "message_id": issue.get("message_id"),
                 # Keep the probe's full "Required action:" tail intact — a
                 # tighter cap truncated the nudge's required-action text
                 # mid-sentence.
@@ -4012,6 +4029,7 @@ def auto_wake_stalled_agents(no_agent_issues, cfg=None, registry=None):
                 # suffix after the task id — strip it for the nudge target.
                 "task_id": tail.split("/", 1)[0],
                 "kind": kind,
+                "message_id": issue.get("message_id"),
                 # Keep the probe's full "Required action:" tail intact — a
                 # tighter cap truncated the nudge's required-action text
                 # mid-sentence.

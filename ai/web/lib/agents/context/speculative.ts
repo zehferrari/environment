@@ -222,13 +222,44 @@ function newestDate(...values: Array<Date | null | undefined>) {
   return max;
 }
 
+async function activityRevision(args: {
+  projectId: string;
+  taskId?: string | null;
+  excludeMessageId?: string | null;
+}) {
+  try {
+    const aggregate = await db.activityLog.aggregate({
+      where: {
+        ...(args.taskId ? { taskId: args.taskId } : { projectId: args.projectId }),
+        ...(args.excludeMessageId ? { NOT: { payload: { contains: args.excludeMessageId } } } : {}),
+      },
+      _count: { _all: true },
+      _max: { createdAt: true },
+    });
+    return {
+      count: aggregate._count._all,
+      newestAt: newestDate(aggregate._max.createdAt),
+    };
+  } catch (error) {
+    // Speculative context is an optimization, never a delivery gate. Older
+    // direct SQLite maintenance could leave DATETIME values as ISO text while
+    // Prisma expects epoch milliseconds; decoding _max(createdAt) then throws
+    // P2023. Force a cache miss for this send and let the canonical live-fetch
+    // context path proceed. The data-normalization migration repairs existing
+    // rows, but this fence also protects delivery from future bad historical
+    // data or a transient aggregate failure.
+    console.warn("[speculative-context] activity revision unavailable; bypassing cache", error);
+    return { count: -1, newestAt: Date.now() };
+  }
+}
+
 export async function chatContextRevision(args: {
   projectId: string;
   taskId?: string | null;
   epicId?: string | null;
   excludeMessageId?: string | null;
 }) {
-  const [project, task, epic, commentsAgg, chatsAgg, activityAgg, attachmentCount, members, usersAgg] = await Promise.all([
+  const [project, task, epic, commentsAgg, chatsAgg, activityRev, attachmentCount, members, usersAgg] = await Promise.all([
     db.project.findUnique({ where: { id: args.projectId }, select: { updatedAt: true } }),
     args.taskId
       ? db.task.findUnique({ where: { id: args.taskId }, select: { updatedAt: true, epicId: true } })
@@ -249,14 +280,7 @@ export async function chatContextRevision(args: {
       _count: { _all: true },
       _max: { createdAt: true, deletedAt: true },
     }),
-    db.activityLog.aggregate({
-      where: {
-        ...(args.taskId ? { taskId: args.taskId } : { projectId: args.projectId }),
-        ...(args.excludeMessageId ? { NOT: { payload: { contains: args.excludeMessageId } } } : {}),
-      },
-      _count: { _all: true },
-      _max: { createdAt: true },
-    }),
+    activityRevision(args),
     db.attachment.count({
       where: args.taskId ? { taskId: args.taskId } : { epicId: args.epicId ?? undefined },
     }),
@@ -278,7 +302,7 @@ export async function chatContextRevision(args: {
     e: newestDate(epic?.updatedAt, taskEpic?.updatedAt),
     c: [commentsAgg._count._all, newestDate(commentsAgg._max.createdAt, commentsAgg._max.deletedAt)],
     ch: [chatsAgg._count._all, newestDate(chatsAgg._max.createdAt, chatsAgg._max.deletedAt)],
-    a: [activityAgg._count._all, newestDate(activityAgg._max.createdAt)],
+    a: [activityRev.count, activityRev.newestAt],
     att: attachmentCount,
     m: [members._count._all, newestDate(members._max.createdAt)],
     u: newestDate(usersAgg._max.updatedAt),

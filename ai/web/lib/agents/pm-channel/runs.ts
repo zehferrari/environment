@@ -517,6 +517,7 @@ export async function recordPmChannelRunQueued(args: {
             cancellationRequestedAt: null,
             cancellationAcknowledgedAt: null,
             cancellationError: null,
+            gatewayDispatchId: null,
             lastEventAt: now,
           },
           select: {
@@ -571,6 +572,7 @@ export async function recordPmChannelRunQueued(args: {
         cancellationRequestedAt: null,
         cancellationAcknowledgedAt: null,
         cancellationError: null,
+        gatewayDispatchId: null,
         lastEventAt: now,
       },
       select: {
@@ -712,6 +714,9 @@ export async function recordPmChannelRunDispatch(args: {
           lastEventAt: now,
           ...(provider !== null ? { provider } : {}),
           ...(model !== null ? { model } : {}),
+          ...(args.result.gatewayDispatchId
+            ? { gatewayDispatchId: args.result.gatewayDispatchId }
+            : {}),
         },
       }),
     "dispatch run state",

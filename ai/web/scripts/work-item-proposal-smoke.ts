@@ -121,6 +121,17 @@ async function main(): Promise<void> {
         agentId: agent.id,
       },
     });
+    const reviewerAgent = await prisma.agent.create({
+      data: { slug: "smokereviewer", name: "Smoke Reviewer", role: "coding" },
+    });
+    const reviewerUser = await prisma.user.create({
+      data: {
+        username: "smokereviewer",
+        email: "smokereviewer@smoke.test",
+        kind: "agent",
+        agentId: reviewerAgent.id,
+      },
+    });
     const human = await prisma.user.create({
       data: {
         username: "smoke-human",
@@ -200,7 +211,7 @@ async function main(): Promise<void> {
         rank: 5,
         statusChangedAt: new Date(),
         assigneeId: agentUser.id,
-        actingManagerId: human.id,
+        actingManagerId: reviewerUser.id,
       },
     });
     const grantComment = await prisma.comment.create({
@@ -233,6 +244,19 @@ async function main(): Promise<void> {
       mirroredGrant?.allowWorkItemManagement === true && mirroredGrant.workItemGrantUsedAt === null,
       mirroredGrant,
     );
+    const reviewerNotification = notifications.find((n) => n.agentSlug === reviewerAgent.slug);
+    const reviewerMirror = reviewerNotification
+      ? await prisma.agentChatMessage.findUnique({
+          where: { id: reviewerNotification.id },
+          select: { allowWorkItemManagement: true },
+        })
+      : null;
+    check("directed task comment still wakes the reviewer for awareness", !!reviewerNotification, notifications);
+    check(
+      "non-directed reviewer receives no work-item grant",
+      reviewerMirror?.allowWorkItemManagement === false,
+      reviewerMirror,
+    );
     const grantRun = mirroredGrant
       ? await prisma.pmChannelRun.findFirst({
           where: { messageId: mirroredGrant.id, agentSlug: agent.slug },
@@ -256,6 +280,27 @@ async function main(): Promise<void> {
         grantPayload.systemPrompt.includes(mirroredGrant.id) &&
         grantPayload.systemPrompt.includes(expectedCommentToken),
       grantPayload?.systemPrompt?.slice(-1600),
+    );
+    check(
+      "sole-agent task creation prompt documents immediate application",
+      !!grantPayload?.systemPrompt?.includes("task-creation-only batches apply immediately")
+        && grantPayload.systemPrompt.includes("Do not tell the user it is awaiting approval"),
+      grantPayload?.systemPrompt?.slice(-2200),
+    );
+    const reviewerRun = reviewerNotification
+      ? await prisma.pmChannelRun.findFirst({
+          where: { messageId: reviewerNotification.id, agentSlug: reviewerAgent.slug },
+          select: { id: true },
+        })
+      : null;
+    const reviewerJob = reviewerRun
+      ? await prisma.pmChannelJob.findUnique({ where: { runId: reviewerRun.id }, select: { payload: true } })
+      : null;
+    const reviewerPayload = reviewerJob ? JSON.parse(reviewerJob.payload) as { systemPrompt?: string } : null;
+    check(
+      "non-directed reviewer prompt contains no work-item token",
+      !reviewerPayload?.systemPrompt?.includes("WORK-ITEM PLANNING GRANT"),
+      reviewerPayload?.systemPrompt?.slice(-1200),
     );
     check(
       "proposal grant documents blockedBy create/update semantics",

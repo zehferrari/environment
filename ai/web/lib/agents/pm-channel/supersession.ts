@@ -14,6 +14,7 @@ export async function abortGatewaySession(args: {
   agentSlug: string;
   gatewayPort: number;
   sessionKey: string;
+  gatewayDispatchId?: string | null;
   fetchImpl?: typeof fetch;
 }) {
   const token = await resolvePmChannelToken(args.agentSlug);
@@ -26,7 +27,10 @@ export async function abortGatewaySession(args: {
         "content-type": "application/json",
         authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify({ sessionKey: args.sessionKey }),
+      body: JSON.stringify({
+        sessionKey: args.sessionKey,
+        ...(args.gatewayDispatchId ? { gatewayDispatchId: args.gatewayDispatchId } : {}),
+      }),
       signal: AbortSignal.timeout(10_000),
     });
     // 404 means the gateway no longer owns that process/session. That is a
@@ -117,8 +121,11 @@ export async function fenceSupersededPmChannelRuns(args: {
       agentSlug: true,
       gatewayPort: true,
       sessionKey: true,
+      status: true,
+      acceptedAt: true,
       admittedAt: true,
       streamingAt: true,
+      gatewayDispatchId: true,
     },
   });
   const cancelledRunIds: string[] = [];
@@ -131,7 +138,14 @@ export async function fenceSupersededPmChannelRuns(args: {
 
     // A queued run was never handed to a gateway, so retiring its job is the
     // complete cancellation acknowledgement.
-    const wasDelivered = predecessor.admittedAt !== null || predecessor.streamingAt !== null;
+    const wasDelivered =
+      predecessor.status === "delivered" ||
+      predecessor.status === "accepted" ||
+      predecessor.status === "waiting_capacity" ||
+      predecessor.status === "admitted" ||
+      predecessor.acceptedAt !== null ||
+      predecessor.admittedAt !== null ||
+      predecessor.streamingAt !== null;
     if (!wasDelivered) {
       await db.pmChannelRun.update({
         where: { id: predecessor.id },
@@ -154,6 +168,7 @@ export async function fenceSupersededPmChannelRuns(args: {
       agentSlug: predecessor.agentSlug,
       gatewayPort: predecessor.gatewayPort,
       sessionKey: predecessor.sessionKey,
+      gatewayDispatchId: predecessor.gatewayDispatchId,
       fetchImpl: args.fetchImpl,
     });
     if (!aborted.ok) {

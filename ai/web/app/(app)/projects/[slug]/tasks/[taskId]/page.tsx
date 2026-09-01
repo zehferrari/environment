@@ -86,6 +86,7 @@ import { PublishedUpdatesPanel } from "@/components/published-updates";
 import { listPublishedForTask, listPublishableSources } from "@/lib/publishing/service";
 import { hasAdminRole, hasOwnerRole } from "@/lib/auth/permissions";
 import ChatRoom from "@/components/chat-room";
+import ProposalReview from "@/app/(app)/agents/[agent]/chat/proposal-review";
 import ActivityTimeline, { type ActivityTimelineRow } from "@/components/activity-timeline";
 import TaskChangesPanel from "@/components/task-changes-panel";
 import CloseTaskButton from "@/components/close-task-button";
@@ -1529,11 +1530,18 @@ export default async function TaskDetailPage({
       update: { lastReadAt: new Date() },
     });
   }
-  const pendingProposals = await getCachedPendingTaskProposals(
-    task.id,
-    task.projectId,
-    chatMessages.map((m) => m.id),
-  );
+  const pendingProposals = await getCachedPendingTaskProposals(task.id, task.projectId);
+  const pendingProposalReviews = pendingProposals.map((proposal) => ({
+    id: proposal.id,
+    summary: proposal.summary,
+    operations: proposal.operations,
+    validation: proposal.validation,
+    createdAt: proposal.createdAt instanceof Date
+      ? proposal.createdAt.toISOString()
+      : String(proposal.createdAt),
+    projectName: proposal.project.name,
+    agentSlug: proposal.agentSlug,
+  }));
   const pendingDescriptionMessages = await db.agentChatMessage.findMany({
     where: {
       taskId: task.id,
@@ -2011,6 +2019,11 @@ export default async function TaskDetailPage({
               sticky
               badges={experience.canViewProjectWorkflow ? { "Action Plan": unreadActionPlanMessages.length } : undefined}
             />
+            {viewer.canAccessOwnerFeatures && pendingProposalReviews.length > 0 ? (
+              <div className="pt-4">
+                <ProposalReview proposals={pendingProposalReviews} />
+              </div>
+            ) : null}
             <div className="pt-4">
               <TabPanel name="Description">
                 <div className="grid gap-card xl:grid-cols-[minmax(0,1fr)_20rem] 4xl:grid-cols-[minmax(0,1fr)_24rem]">
@@ -2449,7 +2462,6 @@ export default async function TaskDetailPage({
                     firstUnreadMessageId={firstUnreadMessageId}
                     currentUserId={viewer.id}
                     currentUsername={viewer.username}
-                    pendingProposals={pendingProposals}
                   />
                 </div>
               </TabPanel> : null}

@@ -190,7 +190,20 @@ export async function settleExpiredRun(args: {
     where: { runId: args.runId, status: { in: ["armed", "queued", "dispatching"] } },
   });
   const settled = await db.pmChannelRun.updateMany({
-    where: { id: args.runId, status: { in: ["queued", "delivered", "accepted", "streaming"] } },
+    where: {
+      id: args.runId,
+      status: {
+        in: [
+          "queued",
+          "claimed",
+          "delivered",
+          "waiting_capacity",
+          "accepted",
+          "admitted",
+          "streaming",
+        ],
+      },
+    },
     data: {
       status: "timed_out",
       failedAt: args.now,

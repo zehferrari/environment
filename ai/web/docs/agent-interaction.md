@@ -313,8 +313,10 @@ agent so an `All Coders` message or a multi-agent task comment can let
 each coder submit one proposal. Agent-authored comments and PM workflow
 notifications do not grant work-item management. The agent must use that
 grant only when the current human message directly asks for project
-work-item changes. The agent does NOT mutate the board — it submits a
-typed change-set:
+work-item changes. The agent submits a typed change-set; PM applies an
+owner-requested `create_task`-only batch immediately when exactly one agent is
+action-authorized for the message, and stores other discussion changes for
+review:
 
 ```text
 POST http://127.0.0.1:3000/api/agent/projects/<projectId>/proposals
@@ -361,10 +363,16 @@ deleted by the time the human
 applies the proposal, PM falls back to the agent as reporter. The proposal
 endpoint is token-scoped and intentionally does not require a browser
 session; middleware lets the request reach the route handler, where the
-HMAC grant and active agent are verified. A valid change-set is stored
-as a pending `WorkItemProposal`; nothing on the board changes yet. A
-human reviews it in the chat and clicks Apply (the whole set commits in
-one transaction) or Reject. Applied mutations are attributed to the
+HMAC grant and active agent are verified. A valid owner-requested change-set
+containing only `create_task` operations is applied immediately after
+validation when exactly one agent is action-authorized for the task comment or
+Task/Epic Action Plan discussion. New tasks land in Backlog and the response
+returns their links. Multi-agent / `All Coders` task creation remains pending
+so independent per-agent grants cannot race into duplicate tasks.
+Other valid discussion change-sets are stored as pending `WorkItemProposal`
+rows; a human reviews them in the chat and clicks Apply (the whole set commits
+in one transaction) or Reject. Direct owner-chat grants keep their broader
+immediate-apply behaviour. Applied mutations are attributed to the
 agent in `ActivityLog`, while the human's approval is recorded by
 `WorkItemProposal.appliedById` + a `workitem.proposal.apply` row.
 Re-validation runs again at apply time, so a stale proposal aborts
@@ -391,7 +399,18 @@ The endpoint validates the message grant, target id, token, active
 agent, and single-use stamp, then stores the proposed description as a
 **draft** in the `DescriptionDraft` table tagged with the human
 `requesterUserId` taken from the grant message's `senderUserId`. The
-agent's POST does NOT replace the task/epic description directly.
+agent's POST from the Epic/Task **Ask AI to update description** control
+does NOT replace the task/epic description directly. It replaces only
+the requester's current unsaved form text; the requester must use the
+normal Save button to persist it.
+
+The dedicated description control is not a proposal flow and requires
+no approval or Apply action. Its PM turn grants description write-back
+only (not work-item management). The agent should use all relevant
+Task/Epic context available through the normal scoped context bundle,
+plus any optional additional context entered by the requester in the
+dialog, then publish one complete replacement description through the
+one-shot endpoint.
 
 The draft is requester-bound and ephemeral:
 

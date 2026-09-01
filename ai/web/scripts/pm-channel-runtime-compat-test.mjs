@@ -118,6 +118,16 @@ assert.match(
 );
 assert.match(
   pluginSource,
+  /gatewayDispatchId: acceptedId/,
+  "every lifecycle callback must carry the exact accepted gateway generation",
+);
+assert.match(
+  pluginSource,
+  /active\.acceptedId !== expectedDispatchId[\s\S]*reason: "dispatch_mismatch"/,
+  "cancellation must refuse to abort a different live gateway generation",
+);
+assert.match(
+  pluginSource,
   /current\.canonicalSessionKey \|\| lookupKey/,
   "gateway cancellation must resolve the canonical key rather than the raw PM key",
 );
@@ -140,6 +150,16 @@ assert.match(
   pluginSource,
   /aborted: false, reason: "active_run_not_drained"/,
   "gateway cancellation must reject a process fence that did not drain",
+);
+assert.match(
+  pluginSource,
+  /if \(result\.aborted\) releaseCanceledGeneration\(active\.acceptedId\)/,
+  "a drained gateway generation must release its ingress slot before cancellation is acknowledged",
+);
+assert.match(
+  pluginSource,
+  /current\?\.acceptedId === acceptedId\) activeTurns\.delete\(sessionKey\)/,
+  "cancellation must only release the exact gateway generation it fenced",
 );
 assert.match(
   pluginSource,

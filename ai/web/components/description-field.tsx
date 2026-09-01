@@ -60,9 +60,9 @@ export default function DescriptionField({
   const [editing, setEditing] = useState(draftDescription !== null || defaultValue.trim() === "");
   const [value, setValue] = useState(draftDescription !== null ? draftDescription : defaultValue);
   const [aiOpen, setAiOpen] = useState(false);
-  const [aiMode, setAiMode] = useState<"format" | "both">("both");
-  const [modeOpen, setModeOpen] = useState(false);
+  const [aiExtraContext, setAiExtraContext] = useState("");
   const [aiSubmitting, setAiSubmitting] = useState(false);
+  const [aiSubmitError, setAiSubmitError] = useState<string | null>(null);
 
   const rollbackKey = `description-rollback-${taskId ?? epicId ?? "scope"}`;
   const [hasRollback, setHasRollback] = useState(false);
@@ -85,15 +85,11 @@ export default function DescriptionField({
     [value],
   );
 
-  const improveText = aiMode === "both";
-  const improveFormatting = true;
-  const aiInstructionParts = [
-    improveText ? "improve the wording, clarity, and completeness" : null,
-    improveFormatting ? "improve the markdown structure and formatting" : null,
-  ].filter(Boolean);
-  const aiInstruction = aiInstructionParts.length > 0
-    ? `Please propose a new ${descriptionLabel.toLowerCase()} description as a draft: ${aiInstructionParts.join(" and ")}. Preserve useful existing details. ${descriptionLabel.toLowerCase() === "task" ? "For task descriptions, use a concise operational markdown format with clear sections when useful: Goal, Scope, Acceptance Criteria, Implementation Notes, Test Notes, and Relevant Attachments. Keep empty or irrelevant sections out." : ""} Do NOT submit this as a work-item proposal. Use your description write-back token/endpoint to publish the draft for the requester to review; the requester will explicitly Save it (or Rollback) on the task/epic page.`
-    : "";
+  const baseAiInstruction = `Improve the current ${descriptionLabel.toLowerCase()} description using all relevant information available in the ${descriptionLabel.toLowerCase()} context, including its current description, status, relationships, discussion, comments, attachments, action plan, and repository context when available. Improve the wording, clarity, completeness, markdown structure, and formatting while preserving useful existing details. ${descriptionLabel.toLowerCase() === "task" ? "For task descriptions, use a concise operational markdown format with clear sections when useful: Goal, Scope, Acceptance Criteria, Implementation Notes, Test Notes, and Relevant Attachments. Keep empty or irrelevant sections out. " : ""}This action requires no proposal or approval. Do NOT submit a work-item proposal and do NOT save the task or epic. Use your description write-back token/endpoint to replace the text in the requester's unsaved form draft. The requester will decide whether to Save or discard it.`;
+  const trimmedExtraContext = aiExtraContext.trim();
+  const aiInstruction = trimmedExtraContext
+    ? `${baseAiInstruction}\n\nAdditional context from the requester:\n${trimmedExtraContext}`
+    : baseAiInstruction;
 
   useEffect(() => {
     if (draftDescription !== null && draftDescription !== undefined) {
@@ -245,14 +241,19 @@ export default function DescriptionField({
 
   const submitAiPrompt = async (formData: FormData) => {
     if (aiSubmitting) return;
+    setAiSubmitError(null);
     localStorage.setItem(rollbackKey, defaultValue);
     setHasRollback(true);
     setAiSubmitting(true);
     try {
       formData.set("messageId", generateClientMessageId());
       await sendAgentChatMessage(formData);
+      setAiExtraContext("");
       setAiOpen(false);
       router.refresh();
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      setAiSubmitError(detail || "The agent request could not be started. Please try again.");
     } finally {
       setAiSubmitting(false);
     }
@@ -317,7 +318,10 @@ export default function DescriptionField({
           {aiAvailable ? (
             <button
               type="button"
-              onClick={() => setAiOpen(true)}
+              onClick={() => {
+                setAiSubmitError(null);
+                setAiOpen(true);
+              }}
               aria-label="Ask AI to update description"
               title="Ask AI to update description"
               className="rounded p-1 text-text-muted transition hover:text-accent"
@@ -460,7 +464,7 @@ export default function DescriptionField({
                   Description update
                 </div>
                 <p className="mt-1 text-caption text-text-muted">
-                  Sends a discussion message with a one-shot description edit grant.
+                  The agent will replace the text in this form. Nothing is saved until you save changes.
                 </p>
               </div>
               <button
@@ -474,54 +478,7 @@ export default function DescriptionField({
               </button>
             </div>
             <input type="hidden" name="body" value={aiInstruction} />
-            <div className="grid grid-cols-2 gap-3 relative">
-              <label className="block space-y-1.5 text-caption font-medium text-text-muted relative">
-                <span>Action</span>
-                <div className="relative">
-                  <button
-                    type="button"
-                    onClick={() => setModeOpen((current) => !current)}
-                    className="flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-line bg-bg px-3 text-left text-caption text-text outline-none transition hover:border-accent"
-                  >
-                    <span>{aiMode === "both" ? "Improve Description" : "Improve Only Formatting"}</span>
-                    <span className="shrink-0 text-text-muted" aria-hidden="true">
-                      {modeOpen ? "▴" : "▾"}
-                    </span>
-                  </button>
-                  {modeOpen ? (
-                    <div className="absolute left-0 right-0 top-full z-30 mt-1 rounded-card border border-line bg-panel p-1.5 shadow-2xl">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setAiMode("both");
-                          setModeOpen(false);
-                        }}
-                        className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-caption transition ${
-                          aiMode === "both"
-                            ? "bg-accent/[0.12] text-text"
-                            : "text-text-muted hover:bg-panel-soft hover:text-text"
-                        }`}
-                      >
-                        Improve Description
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setAiMode("format");
-                          setModeOpen(false);
-                        }}
-                        className={`mt-1 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-caption transition ${
-                          aiMode === "format"
-                            ? "bg-accent/[0.12] text-text"
-                            : "text-text-muted hover:bg-panel-soft hover:text-text"
-                        }`}
-                      >
-                        Improve Only Formatting
-                      </button>
-                    </div>
-                  ) : null}
-                </div>
-              </label>
+            <div>
               <label className="block space-y-1.5 text-caption font-medium text-text-muted">
                 <span>Select Agent</span>
                 <AvatarCombobox
@@ -534,6 +491,25 @@ export default function DescriptionField({
                 />
               </label>
             </div>
+            <label className="block space-y-1.5 text-caption font-medium text-text-muted">
+              <span>Additional context <span className="font-normal text-text-subtle">(optional)</span></span>
+              <textarea
+                value={aiExtraContext}
+                onChange={(event) => setAiExtraContext(event.currentTarget.value)}
+                rows={4}
+                maxLength={2000}
+                placeholder="Add priorities, constraints, missing details, or guidance for the new description..."
+                className="w-full resize-y rounded-lg border border-line bg-bg px-3 py-2 text-body leading-relaxed text-text outline-none transition placeholder:text-text-subtle focus:border-accent"
+              />
+              <span className="block text-right text-pico font-normal text-text-subtle">
+                {aiExtraContext.length}/2000
+              </span>
+            </label>
+            {aiSubmitError ? (
+              <div role="alert" className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-caption text-danger">
+                The request could not be started: {aiSubmitError}
+              </div>
+            ) : null}
             <div className="flex justify-end gap-2 pt-2">
               <button
                 type="button"

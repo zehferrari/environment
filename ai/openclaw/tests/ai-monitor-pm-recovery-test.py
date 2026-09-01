@@ -341,6 +341,7 @@ class PmRecoveryTest(unittest.TestCase):
             "unit": "pm:asdrubal/task-1",
             "kind": "pm-channel-no-start",
             "reason": "Required action: review it",
+            "message_id": "failed-message-1",
         }
         calls = []
 
@@ -348,8 +349,12 @@ class PmRecoveryTest(unittest.TestCase):
             calls.append("ready")
             return {"ready": True}
 
-        def nudge(*_args):
+        def nudge(_user, bucket, _cfg=None):
             calls.append("nudge")
+            self.assertEqual(
+                bucket["pm_tasks"][0]["message_id"],
+                "failed-message-1",
+            )
             return [{
                 "task_id": "task-1",
                 "kind": "pm-channel-no-start",
@@ -451,6 +456,33 @@ class PmRecoveryTest(unittest.TestCase):
         self.assertIn(
             "pm-channel-failed",
             self.monitor.PM_WORKFLOW_RETRY_KINDS,
+        )
+
+    def test_execution_recovery_key_survives_workflow_status_changes(self):
+        common = {
+            "unit": "pm:carmen/task-1",
+            "severity": "warn",
+        }
+        todo_key = self.monitor.event_key({
+            **common,
+            "kind": "pm-todo-not-started",
+        })
+        in_progress_key = self.monitor.event_key({
+            **common,
+            "kind": "pm-in-progress-stale",
+        })
+        channel_key = self.monitor.event_key({
+            **common,
+            "kind": "pm-channel-failed",
+        })
+        self.assertEqual(todo_key, in_progress_key)
+        self.assertEqual(todo_key, channel_key)
+        self.assertNotEqual(
+            todo_key,
+            self.monitor.event_key({
+                **common,
+                "kind": "pm-review-awaiting-reviewer",
+            }),
         )
 
     def test_review_response_ignores_monitor_comment(self):

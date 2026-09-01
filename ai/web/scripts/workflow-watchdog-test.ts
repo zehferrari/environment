@@ -8,6 +8,7 @@
 
 import {
   detectWatchdogFindings,
+  hasDurableRecoveryProgress,
   healthyExecutionState,
   WATCHDOG_BLOCKER_LOOP_THRESHOLD,
   WATCHDOG_DETECTORS,
@@ -218,6 +219,40 @@ assertEqual(
 {
   const findings = detectWatchdogFindings(snapshot({ tasks: [task()], runs: [run()] }));
   assertEqual(byDetector(findings, "expired_lease").length, 0, "a fresh lease is not a finding");
+}
+
+{
+  const delivered = run({
+    status: "delivered",
+    acceptedAt: NOW - 2 * MINUTE,
+    admittedAt: null,
+    streamingAt: null,
+    lastEventAt: NOW - 2 * MINUTE,
+  });
+  const findings = detectWatchdogFindings(snapshot({ tasks: [task()], runs: [delivered] }));
+  const hits = byDetector(findings, "delivered_no_admission");
+  assertEqual(hits.length, 1, "a stale delivered turn without admission is detected");
+  assertEqual(
+    hits[0].repair,
+    "queue_continuation",
+    "delivery recovery must use the bounded continuation and supersession fence",
+  );
+}
+
+{
+  const freshDelivered = run({
+    status: "delivered",
+    acceptedAt: NOW - 30_000,
+    admittedAt: null,
+    streamingAt: null,
+    lastEventAt: NOW - 30_000,
+  });
+  const findings = detectWatchdogFindings(snapshot({ tasks: [task()], runs: [freshDelivered] }));
+  assertEqual(
+    byDetector(findings, "delivered_no_admission").length,
+    0,
+    "a newly delivered turn keeps its admission grace window",
+  );
 }
 
 {
@@ -640,6 +675,29 @@ assertEqual(
     "nothing running and nothing scheduled reads as idle",
   );
 }
+
+assertEqual(
+  hasDurableRecoveryProgress(task({ status: "In Progress" })),
+  false,
+  "another In Progress start is not durable recovery progress",
+);
+assertEqual(
+  hasDurableRecoveryProgress(task({ status: "Review" })),
+  true,
+  "validated reviewer hand-off is durable recovery progress",
+);
+assertEqual(
+  hasDurableRecoveryProgress(task({ status: "Done" })),
+  true,
+  "Done is durable recovery progress",
+);
+assertEqual(
+  hasDurableRecoveryProgress(task({
+    activeBlocker: { needsExternalInput: true, permissionGranted: false, raisedAt: STALE },
+  })),
+  true,
+  "a legitimate unresolved external blocker is a durable explicit outcome",
+);
 
 // ------------------------------------------------------------------
 // Rendering — the exact four lines the task description asks for

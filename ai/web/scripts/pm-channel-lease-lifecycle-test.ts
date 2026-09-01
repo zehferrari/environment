@@ -621,11 +621,13 @@ async function main(): Promise<void> {
       });
       await recordPmChannelRunDispatch({
         target: liveOld,
-        result: { ok: true, status: 202, driver: "openclaw-pm-channel", transportMode: "http" },
-      });
-      await db.pmChannelRun.update({
-        where: { targetKey: pmChannelRunTargetKey(liveOld) },
-        data: { admittedAt: new Date() },
+        result: {
+          ok: true,
+          status: 202,
+          driver: "openclaw-pm-channel",
+          transportMode: "http",
+          gatewayDispatchId: "gateway-live-old",
+        },
       });
       const liveOldRun = await db.pmChannelRun.findUniqueOrThrow({
         where: { targetKey: pmChannelRunTargetKey(liveOld) },
@@ -640,13 +642,19 @@ async function main(): Promise<void> {
         replacementRunId: liveReplacement!.id,
         fetchImpl: (async (_url, init) => {
           assertEqual(init?.method, "POST", "the process fence must use the gateway cancel route");
+          const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+          assertEqual(
+            body.gatewayDispatchId,
+            "gateway-live-old",
+            "the cancellation fence must target the exact delivered gateway generation",
+          );
           return new Response(JSON.stringify({ ok: true, aborted: true }), {
             status: 200,
             headers: { "content-type": "application/json" },
           });
         }) as typeof fetch,
       });
-      assert(liveFence.ok, "an acknowledged abort must open the replacement lane");
+      assert(liveFence.ok, "a delivered-but-unadmitted predecessor must still be canceled before replacement");
       const liveOldRow = await db.pmChannelRun.findUniqueOrThrow({
         where: { targetKey: pmChannelRunTargetKey(liveOld) },
         select: { cancellationRequestedAt: true, cancellationAcknowledgedAt: true, cancellationError: true },

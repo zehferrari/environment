@@ -26,6 +26,8 @@ import type { TaskWorkflowCommand } from "@/lib/tasks/orchestrator/types";
 import type { TaskStateSnapshot } from "@/lib/tasks/orchestrator/types";
 import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { activeFormalBlockerStatesByTask } from "@/lib/tasks/formal-blocker";
+import { effectiveTaskBranchName } from "@/lib/work-items/branches";
+import { findInProgressStartConflict } from "@/lib/tasks/start-conflict";
 
 // ---------------------------------------------------------------------------
 // FENCE_ERROR_CODES — local declaration, structurally assignable to 02a's
@@ -307,6 +309,7 @@ async function loadTaskAggregateWithClient(
       archivedAt: true,
       workflowEngine: true,
       workflowEnginePinnedAt: true,
+      workItemKey: true,
       branchName: true,
       commitPrefix: true,
       project: {
@@ -324,6 +327,7 @@ async function loadTaskAggregateWithClient(
       epic: {
         select: {
           id: true,
+          workItemKey: true,
           status: true,
           actingManagerId: true,
           branchName: true,
@@ -387,7 +391,6 @@ async function loadTaskAggregateWithClient(
     openChecklist,
     dependencies,
     assignee,
-    otherInProgressForAssignee,
     pmChannelRun,
     activeEpisode,
     blockerActivityRows,
@@ -472,20 +475,6 @@ async function loadTaskAggregateWithClient(
         })
       : Promise.resolve(null),
 
-    // Other In Progress task for same assignee/project
-    task.assigneeId
-      ? client.task.findFirst({
-          where: {
-            id: { not: taskId },
-            assigneeId: task.assigneeId,
-            projectId: task.projectId,
-            status: "In Progress",
-            deletedAt: null,
-          },
-          select: { id: true, title: true },
-        })
-      : Promise.resolve(null),
-
     // Active PM channel run for this task
     client.pmChannelRun.findFirst({
       where: {
@@ -544,25 +533,26 @@ async function loadTaskAggregateWithClient(
     }),
   ]);
 
-  // --- Other In Progress task on same effective branch ---
-  // The effective branch is task.branchName ?? epic.branchName ?? null.
-  const effectiveBranch = task.branchName ?? task.epic?.branchName ?? null;
-  const otherInProgressOnBranch = effectiveBranch
-    ? await client.task.findFirst({
-        where: {
-          id: { not: taskId },
-          status: "In Progress",
-          deletedAt: null,
-          OR: [
-            { branchName: effectiveBranch },
-            {
-              epic: { branchName: effectiveBranch },
-              branchName: null,
-            },
-          ],
-        },
-        select: { id: true, title: true, branchName: true },
-      })
+  // --- Shared WIP/effective-branch start gate ---
+  // This is the same resolver used by auto-start before it submits the
+  // canonical command. In particular, an Epic child with no explicit
+  // branchName resolves from its own work-item key before the Epic fallback.
+  const effectiveBranch = effectiveTaskBranchName(task);
+  const startConflict = await findInProgressStartConflict(client, {
+    taskId,
+    projectId: task.projectId,
+    assigneeId: task.assigneeId,
+    candidateBranch: effectiveBranch,
+  });
+  const otherInProgressForAssignee = startConflict?.kind === "wip"
+    ? { id: startConflict.activeTask.id, title: startConflict.activeTask.title }
+    : null;
+  const otherInProgressOnBranch = startConflict?.kind === "branch"
+    ? {
+        id: startConflict.activeTask.id,
+        title: startConflict.activeTask.title,
+        branchName: effectiveBranch,
+      }
     : null;
 
   // --- Outstanding validation/finalization jobs ---

@@ -729,8 +729,16 @@ Rules:
 - PM dry-run-validates every operation under the human-triggered grant:
   active principals, project scoping, hierarchy, known statuses, and
   valid task-status transitions are checked before the proposal is stored.
-- A valid proposal is stored pending. Nothing changes on the board until
-  a human clicks Apply.
+- A valid owner-requested change-set containing only `create_task` operations
+  is applied immediately after validation when exactly one agent is
+  action-authorized for the task comment or Task/Epic Action Plan message.
+  The new tasks land in Backlog and the endpoint returns their links; report
+  those links instead of saying the request awaits approval.
+- Multi-agent / `All Coders` task creation remains pending so independent
+  per-agent grants cannot race into duplicate tasks.
+- Other valid discussion change-sets are stored pending. Nothing changes for
+  those operations until a human clicks Apply. Direct owner-chat requests keep
+  their existing immediate-apply behaviour.
 - Re-submitting the same `planId` is idempotent.
 
 Do not create tasks, epics, comments, or status changes by writing the

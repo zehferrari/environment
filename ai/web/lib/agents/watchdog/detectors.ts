@@ -250,6 +250,19 @@ function isRepairableEpisode(task: WatchdogTaskRecord): boolean {
   return true;
 }
 
+/**
+ * A prior escalation is cleared only after durable workflow progress. Merely
+ * creating another In Progress turn is not healing: the turn can still fail
+ * before admission, as PH-187 demonstrated.
+ */
+export function hasDurableRecoveryProgress(task: WatchdogTaskRecord): boolean {
+  if (task.status === "Review" || task.status === "Done") return true;
+  return Boolean(
+    task.activeBlocker?.needsExternalInput &&
+      !task.activeBlocker.permissionGranted,
+  );
+}
+
 function idleSince(task: WatchdogTaskRecord, snapshot: WatchdogSnapshot): number {
   let anchor = Math.max(task.lastDurableActionAt ?? 0, task.statusChangedAt ?? 0);
   // A recently completed/failed planning turn is still activity. Give the
@@ -715,7 +728,7 @@ const CAPACITY_WAIT_STALE: WatchdogDetector = {
 const DELIVERED_NO_ADMISSION: WatchdogDetector = {
   id: "delivered_no_admission",
   statement:
-    "A run in delivered status for more than 60 seconds means the gateway accepted the file-drop but the agent never admitted the turn.",
+    "A run in delivered status for more than 60 seconds means the gateway accepted the file-drop but the agent never admitted the turn, so one fenced continuation is queued.",
   detect: (snapshot) => {
     const findings: WatchdogFinding[] = [];
     const staleMs = Number(process.env.PM_DELIVERED_STALE_MS ?? 60_000);
@@ -732,7 +745,7 @@ const DELIVERED_NO_ADMISSION: WatchdogDetector = {
         state: "stalled",
         reasonCode: "delivered_no_admission",
         reasonDetail: `run delivered for ${Math.round((snapshot.now - deliveredAt) / 1000)}s without admission`,
-        repair: "escalate",
+        repair: "queue_continuation",
         priority: 72,
       });
     }

@@ -660,19 +660,33 @@ export function getCachedTaskChatArchives(projectId: string, taskId: string) {
   )();
 }
 
-export function getCachedPendingTaskProposals(taskId: string, projectId: string, messageIds: string[]) {
+export async function findPendingTaskProposals(taskId: string, projectId: string) {
+  // A task-originated proposal may be bound either to the shared Action Plan
+  // room (agentSlug="room") or to an agent-specific message mirrored from
+  // Comments. Looking only at the room transcript hides every comment-
+  // triggered proposal from the human who must review it.
+  const grantMessages = await db.agentChatMessage.findMany({
+    where: { taskId },
+    select: { id: true },
+  });
+  if (grantMessages.length === 0) return [];
+
+  return db.workItemProposal.findMany({
+    where: {
+      status: "pending",
+      projectId,
+      grantMessageId: { in: grantMessages.map((message) => message.id) },
+    },
+    include: {
+      project: { select: { name: true } },
+    },
+  });
+}
+
+export function getCachedPendingTaskProposals(taskId: string, projectId: string) {
   return unstable_cache(
-    async () => db.workItemProposal.findMany({
-      where: {
-        status: "pending",
-        projectId,
-        grantMessageId: { in: messageIds },
-      },
-      include: {
-        project: { select: { name: true } },
-      },
-    }),
-    ["task-pending-proposals", taskId, projectId, ...[...messageIds].sort()],
+    () => findPendingTaskProposals(taskId, projectId),
+    ["task-pending-proposals", taskId, projectId],
     { tags: [taskCacheTag.proposals(taskId)] },
   )();
 }

@@ -72,6 +72,8 @@ export interface SendPmChannelTurnResult {
   // response so comment metadata can copy provider/model from the run.
   provider?: string | null;
   model?: string | null;
+  /** Exact gateway generation returned by /pm-channel/ingest. */
+  gatewayDispatchId?: string | null;
 }
 
 export function buildPmTurnSessionKey(baseSessionKey: string, messageId: string): string {
@@ -372,10 +374,12 @@ export async function dispatchOpenClawPmChannelTurnViaHttp(
     // into comment metadata at all comment creation sites.
     let provider: string | null = null;
     let model: string | null = null;
+    let gatewayDispatchId: string | null = null;
     try {
       const body = await res.json().catch(() => null);
       provider = typeof body?.provider === "string" ? body.provider : null;
       model = typeof body?.model === "string" ? body.model : null;
+      gatewayDispatchId = typeof body?.id === "string" ? body.id : null;
     } catch {
       // Non-JSON response — leave provider/model null.
     }
@@ -386,6 +390,7 @@ export async function dispatchOpenClawPmChannelTurnViaHttp(
       transportMode,
       provider,
       model,
+      gatewayDispatchId,
     };
     await recordPmChannelRunDispatch({ target: args.replyTarget, result });
     return result;

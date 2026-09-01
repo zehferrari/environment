@@ -88,6 +88,18 @@ async function main() {
         mustRotatePassword: false,
       },
     });
+    const secondAgent = await db.agent.create({
+      data: { slug: "proposal-agent-two", name: "Proposal Agent Two", role: "coding" },
+    });
+    await db.user.create({
+      data: {
+        username: "proposal-agent-two",
+        email: "proposal-agent-two@example.test",
+        kind: "agent",
+        agentId: secondAgent.id,
+        mustRotatePassword: false,
+      },
+    });
     const project = await db.project.create({
       data: { slug: "proposal-auth", name: "Proposal Authorization" },
     });
@@ -124,7 +136,12 @@ async function main() {
     const createOp = (title: string) => [
       { op: "create_epic", ref: "tmp:epic", title },
     ];
-    const callProposal = async (args: { messageId: string; planId: string; title: string }) => {
+    const callProposal = async (args: {
+      messageId: string;
+      planId: string;
+      title: string;
+      operations?: unknown[];
+    }) => {
       const token = createWorkItemGrantToken(project.id, agent.slug, args.messageId);
       const req = new NextRequest(`http://127.0.0.1/api/agent/projects/${project.id}/proposals`, {
         method: "POST",
@@ -133,7 +150,7 @@ async function main() {
           grantMessageId: args.messageId,
           token,
           planId: args.planId,
-          operations: createOp(args.title),
+          operations: args.operations ?? createOp(args.title),
         }),
       });
       const response = await runRouteHandler(() => route.POST(req, {
@@ -158,6 +175,9 @@ async function main() {
           projectId: project.id,
           taskId,
           agentSlug: agent.slug,
+          targetType: "agent",
+          targetValue: `agent:${agent.slug}`,
+          targetLabel: `@${agent.slug}`,
           senderUserId,
           body: "Please manage this task",
           allowWorkItemManagement: true,
@@ -225,6 +245,11 @@ async function main() {
     assert.equal(ownerDirectResult.body.status, "applied", "owner direct grant auto-applies");
     assert.equal(ownerDirectResult.body.autoApplied, true, "owner direct grant reports auto-apply");
     assert.equal(ownerDirectResult.body.autoApplyReason, "direct_owner_request", "auto-apply is attributed to the owner grant");
+    assert.equal(
+      (await db.workItemProposal.findUniqueOrThrow({ where: { planId: "proposal-direct-owner" } })).appliedById,
+      owner.id,
+      "direct owner auto-apply records the owner as approver",
+    );
     const ownerDirectRetry = await callProposal({
       messageId: ownerDirect.id,
       planId: "proposal-direct-owner",
@@ -255,6 +280,63 @@ async function main() {
     assert.equal(ownerDiscussionResult.status, 201, "owner discussion grant is accepted");
     assert.equal(ownerDiscussionResult.body.status, "pending", "owner discussion grant stays pending for review");
     assert.equal(ownerDiscussionResult.body.autoApplied, undefined, "only direct owner grants auto-apply");
+
+    const ownerTaskDiscussion = await discussionGrant("discussion-owner-task", owner.id, publicTask.id);
+    const ownerTaskDiscussionResult = await callProposal({
+      messageId: ownerTaskDiscussion.id,
+      planId: "proposal-discussion-owner-task",
+      title: "Owner discussion task",
+      operations: [{ op: "create_task", ref: "tmp:task", title: "Owner discussion task" }],
+    });
+    assert.equal(ownerTaskDiscussionResult.status, 201, "owner task request in a discussion is accepted");
+    assert.equal(ownerTaskDiscussionResult.body.status, "applied", "owner task request is applied immediately");
+    assert.equal(ownerTaskDiscussionResult.body.autoApplied, true, "owner task request reports auto-apply");
+    assert.equal(ownerTaskDiscussionResult.body.autoApplyReason, "owner_task_request", "task auto-apply reason is explicit");
+    const createdOwnerTask = await db.task.findFirstOrThrow({
+      where: { projectId: project.id, title: "Owner discussion task" },
+    });
+    assert.equal(createdOwnerTask.status, "Backlog", "immediately created owner task starts in Backlog");
+    assert.equal(createdOwnerTask.reporterId, owner.id, "the requesting owner is the created task reporter");
+    assert.equal(
+      (await db.workItemProposal.findUniqueOrThrow({ where: { planId: "proposal-discussion-owner-task" } })).appliedById,
+      owner.id,
+      "discussion task auto-apply records the owner as approver",
+    );
+
+    const multiAgentDiscussion = await discussionGrant("discussion-owner-multi-agent", owner.id, publicTask.id);
+    await db.agentChatMessage.update({
+      where: { id: multiAgentDiscussion.id },
+      data: { targetType: "all-coders", targetValue: "all-coders", targetLabel: "All Coders" },
+    });
+    await db.pmChannelRun.create({
+      data: {
+        targetKey: "proposal-auth:discussion-owner-multi-agent:second",
+        kind: "task-chat",
+        agentSlug: secondAgent.slug,
+        messageId: multiAgentDiscussion.id,
+        projectId: project.id,
+        taskId: publicTask.id,
+      },
+    });
+    const multiAgentTaskResult = await callProposal({
+      messageId: multiAgentDiscussion.id,
+      planId: "proposal-discussion-owner-multi-agent-task",
+      title: "Multi-agent task must await review",
+      operations: [{ op: "create_task", ref: "tmp:task", title: "Multi-agent task must await review" }],
+    });
+    assert.equal(multiAgentTaskResult.body.status, "pending", "multi-agent task creation does not auto-apply");
+    assert.equal(
+      await db.task.count({ where: { projectId: project.id, title: "Multi-agent task must await review" } }),
+      0,
+      "multi-agent task creation cannot race into duplicate board tasks",
+    );
+
+    const pendingFromAgentSpecificComment = await (await import("../lib/tasks/cache"))
+      .findPendingTaskProposals(publicTask.id, project.id);
+    assert.ok(
+      pendingFromAgentSpecificComment.some((candidate) => candidate.id === ownerDiscussionResult.body.proposalId),
+      "task proposal lookup includes agent-specific messages mirrored from Comments",
+    );
 
     const privateDiscussion = await discussionGrant("discussion-private", owner.id, publicTaskInPrivateEpic.id);
     const privateDiscussionResult = await callProposal({

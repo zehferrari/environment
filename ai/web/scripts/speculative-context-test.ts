@@ -7,7 +7,7 @@ function assert(condition: unknown, message: string): asserts condition {
 
 const root = process.cwd();
 const cacheSource = readFileSync(join(root, "lib/agents/context/speculative.ts"), "utf8");
-const actionsSource = readFileSync(join(root, "lib/agents/chat-actions.ts"), "utf8");
+const actionsSource = readFileSync(join(root, "lib/agents/chat/actions.ts"), "utf8");
 const decomposedComposer = readFileSync(join(root, "components/chat-room-decomposed.tsx"), "utf8");
 const legacyComposer = readFileSync(join(root, "components/legacy-chat-room.tsx"), "utf8");
 
@@ -37,6 +37,11 @@ assert(
   actionsSource.includes("consumeSpeculativeAgentChatContext")
     && actionsSource.includes("prebuiltContext?.baseSystemPrompt ??"),
   "send path must consume cache hits and preserve synchronous fallback",
+);
+assert(
+  cacheSource.includes("activity revision unavailable; bypassing cache")
+    && cacheSource.includes("return { count: -1, newestAt: Date.now() }"),
+  "activity revision failures must bypass speculative caching instead of blocking dispatch",
 );
 
 for (const token of [

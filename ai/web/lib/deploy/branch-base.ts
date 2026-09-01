@@ -86,6 +86,78 @@ async function fetchVerificationRefs(repo: string, baseBranch: string, branch: s
   await git(repo, ["fetch", "--quiet", "origin", ...refspecs], { timeout: 60_000 });
 }
 
+async function fetchVerificationBaseRef(repo: string, baseBranch: string) {
+  await git(
+    repo,
+    [
+      "fetch",
+      "--quiet",
+      "origin",
+      `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`,
+    ],
+    { timeout: 60_000 },
+  );
+}
+
+async function verificationBaseCandidates(
+  repo: string,
+  requestedBaseBranch?: string | null,
+): Promise<{ requested: string | null; candidates: string[]; error: string | null }> {
+  const requested = requestedBaseBranch?.trim() || null;
+  const validRequested = await validBranchName(repo, requested);
+  if (requested && !validRequested) {
+    return {
+      requested,
+      candidates: [],
+      error: `Invalid configured base branch: ${requested}`,
+    };
+  }
+
+  const candidates: string[] = [];
+  addCandidate(candidates, validRequested);
+  if (!validRequested || validRequested === "main") {
+    addCandidate(candidates, await remoteDefaultBranch(repo));
+    addCandidate(candidates, "main");
+    addCandidate(candidates, "master");
+  }
+  return { requested, candidates, error: null };
+}
+
+/**
+ * Refresh only the review base. Unlike fetchVerificationBranch this succeeds
+ * when the task branch has not been published yet, which lets the verifier
+ * prove the local branch base before it creates a submission commit or pushes
+ * anything to origin.
+ */
+export async function fetchVerificationBase(
+  repo: string,
+  requestedBaseBranch?: string | null,
+): Promise<VerificationBaseFetch> {
+  const resolved = await verificationBaseCandidates(repo, requestedBaseBranch);
+  if (resolved.error) {
+    return {
+      baseBranch: resolved.requested ?? "main",
+      error: resolved.error,
+    };
+  }
+
+  const errors: string[] = [];
+  for (const baseBranch of resolved.candidates) {
+    try {
+      await fetchVerificationBaseRef(repo, baseBranch);
+      return { baseBranch, error: null };
+    } catch (err) {
+      errors.push(`origin/${baseBranch}: ${trimError(err, 300)}`);
+    }
+  }
+
+  const baseBranch = resolved.candidates[0] ?? "main";
+  return {
+    baseBranch,
+    error: errors.join("\n").slice(0, 800) || "No valid repository base branch could be resolved",
+  };
+}
+
 /**
  * Fetch the feature branch and choose the base used by the review gate.
  *
@@ -104,22 +176,16 @@ export async function fetchVerificationBranch(
     return { baseBranch: "main", error: `Invalid task branch name: ${branch}` };
   }
 
-  const requested = requestedBaseBranch?.trim() || null;
-  const validRequested = await validBranchName(repo, requested);
-  if (requested && !validRequested) {
-    return { baseBranch: requested, error: `Invalid configured base branch: ${requested}` };
-  }
-
-  const candidates: string[] = [];
-  addCandidate(candidates, validRequested);
-  if (!validRequested || validRequested === "main") {
-    addCandidate(candidates, await remoteDefaultBranch(repo));
-    addCandidate(candidates, "main");
-    addCandidate(candidates, "master");
+  const resolved = await verificationBaseCandidates(repo, requestedBaseBranch);
+  if (resolved.error) {
+    return {
+      baseBranch: resolved.requested ?? "main",
+      error: resolved.error,
+    };
   }
 
   const errors: string[] = [];
-  for (const baseBranch of candidates) {
+  for (const baseBranch of resolved.candidates) {
     try {
       await fetchVerificationRefs(repo, baseBranch, validFeatureBranch);
       return { baseBranch, error: null };
@@ -128,10 +194,82 @@ export async function fetchVerificationBranch(
     }
   }
 
-  const baseBranch = candidates[0] ?? "main";
+  const baseBranch = resolved.candidates[0] ?? "main";
   return {
     baseBranch,
     error: errors.join("\n").slice(0, 800) || "No valid repository base branch could be resolved",
+  };
+}
+
+/**
+ * Pre-publication base validation for a standalone task branch.
+ *
+ * This intentionally reads refs/heads/<branch>, not origin/<branch>: the task
+ * may still contain uncommitted work and may never have been published. The
+ * check is read-only, so a stale base cannot be turned into a remote invalid
+ * candidate by the verifier itself.
+ */
+export async function validateLocalBranchBase(
+  repo: string,
+  branch: string,
+  baseBranch: string,
+): Promise<BranchBaseValidation> {
+  const originBaseSha = await gitOrNull(
+    repo,
+    ["rev-parse", "--verify", `refs/remotes/origin/${baseBranch}`],
+    { timeout: 10_000 },
+  );
+  const branchRef = `refs/heads/${branch}`;
+  const branchSha = await gitOrNull(
+    repo,
+    ["rev-parse", "--verify", branchRef],
+    { timeout: 10_000 },
+  );
+
+  if (!originBaseSha) {
+    return {
+      ok: false,
+      baseBranch,
+      originBaseSha: null,
+      branchSha,
+      mergeBaseSha: null,
+      error: `origin/${baseBranch} is unavailable after the monitor fetch`,
+    };
+  }
+  if (!branchSha) {
+    return {
+      ok: false,
+      baseBranch,
+      originBaseSha,
+      branchSha: null,
+      mergeBaseSha: null,
+      error: `${branchRef} does not exist`,
+    };
+  }
+
+  const mergeBaseSha = await gitOrNull(
+    repo,
+    ["merge-base", `origin/${baseBranch}`, branchRef],
+    { timeout: 10_000 },
+  );
+  if (mergeBaseSha !== originBaseSha) {
+    return {
+      ok: false,
+      baseBranch,
+      originBaseSha,
+      branchSha,
+      mergeBaseSha,
+      error: `${branchRef} does not contain the current origin/${baseBranch}; update the local branch before PM creates or publishes the submission commit`,
+    };
+  }
+
+  return {
+    ok: true,
+    baseBranch,
+    originBaseSha,
+    branchSha,
+    mergeBaseSha,
+    error: null,
   };
 }
 

@@ -1,89 +1,16 @@
-import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { epicAllowsAgentAction } from "@/lib/tasks/workflow-actors";
 import { effectiveTaskBranchName } from "@/lib/work-items/branches";
 import { submitWorkflowCommand } from "@/lib/tasks/orchestrator";
 import type { OrchestratorResult } from "@/lib/tasks/orchestrator/types";
 import { unresolvedTaskPrerequisites } from "@/lib/tasks/blocking";
+import { findInProgressStartConflict } from "@/lib/tasks/start-conflict";
 
 type Actor = {
   id: string;
   kind: "human" | "agent";
   username?: string | null;
 };
-
-type DbClient = Prisma.TransactionClient | typeof db;
-
-export type StartConflict = {
-  kind: "wip" | "branch";
-  activeTask: { id: string; title: string; workItemKey?: string | null };
-};
-
-// Shared entry gate for In Progress (P4): every path that moves a task to
-// In Progress (explicit workflow `start` AND PM auto-start) must pass both
-// checks. Returns the first conflict found, or null when the task may start.
-//
-// 1. WIP limit — ≤1 In Progress task per agent per PROJECT. Review does not
-//    count; assignment eligibility (To Do+In Progress) is a separate rule in
-//    lib/epics/assignment.ts.
-// 2. Branch-keyed serialization — never let two tasks that resolve to the
-//    SAME effective branch be In Progress at once: two agents editing one
-//    branch collide. Per-task branches (lib/work-items/branches.ts) make Epic
-//    siblings independent; an explicit shared branchName (manager-forced
-//    co-development) or a legacy shared Epic branch still serializes here
-//    regardless of which agent holds each task.
-export async function findInProgressStartConflict(
-  client: DbClient,
-  args: {
-    taskId: string;
-    projectId: string;
-    assigneeId: string;
-    candidateBranch: string | null;
-  },
-): Promise<StartConflict | null> {
-  const activeTask = await client.task.findFirst({
-    where: {
-      id: { not: args.taskId },
-      projectId: args.projectId,
-      assigneeId: args.assigneeId,
-      status: "In Progress",
-      archivedAt: null,
-      deletedAt: null,
-    },
-    orderBy: [{ statusChangedAt: "asc" }, { updatedAt: "asc" }],
-    select: { id: true, title: true, workItemKey: true },
-  });
-  if (activeTask) return { kind: "wip", activeTask };
-
-  if (args.candidateBranch) {
-    const branchPeers = await client.task.findMany({
-      where: {
-        id: { not: args.taskId },
-        projectId: args.projectId,
-        status: "In Progress",
-        archivedAt: null,
-        deletedAt: null,
-      },
-      select: {
-        id: true,
-        title: true,
-        workItemKey: true,
-        branchName: true,
-        epic: { select: { workItemKey: true, branchName: true } },
-      },
-    });
-    const branchClash = branchPeers.find(
-      (peer) => effectiveTaskBranchName(peer) === args.candidateBranch,
-    );
-    if (branchClash) {
-      return {
-        kind: "branch",
-        activeTask: { id: branchClash.id, title: branchClash.title, workItemKey: branchClash.workItemKey },
-      };
-    }
-  }
-  return null;
-}
 
 export type TaskAutoStartResult =
   | {
@@ -131,7 +58,11 @@ function mapRejectedStart(
     return { started: false, reason: "changed", task, commandResult: result };
   }
   if (result.domainCode === "wip_conflict" || result.domainCode === "branch_collision") {
-    return { started: false, reason: "busy", task, commandResult: result };
+    // The advisory conflict check immediately above returns a structured
+    // `busy` result. Reaching the canonical command and being rejected means
+    // state raced or the two gates disagree; recovery must not silently count
+    // that as an ordinary busy lane.
+    return { started: false, reason: "command_rejected", task, commandResult: result };
   }
   if (result.domainCode === "prerequisites_unmet") {
     return { started: false, reason: "blocked", task, commandResult: result };

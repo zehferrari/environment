@@ -420,26 +420,9 @@ async function applyValidationResult(ctx: StepHandlerContext): Promise<StepHandl
         return { status: "failed", error: `Failed to submit validation failure: ${result.status} — ${result.reason ?? "no reason"}`, retryable: result.status === "stale" };
       }
     }
-    // Enqueue feedback notification to assignee.
-    const taskForFeedback = await db.task.findUnique({ where: { id: ctx.taskId }, select: { id: true, projectId: true, assigneeId: true, assignee: { select: { id: true, username: true } }, title: true } });
-    if (taskForFeedback?.assigneeId && taskForFeedback.assignee) {
-      await enqueueWorkflowEffects(db, {
-        taskId: taskForFeedback.id,
-        projectId: taskForFeedback.projectId,
-        aggregateVersion: 0,
-        effects: [{
-          type: "task_notification",
-          key: `validation-feedback:${taskForFeedback.id}:${ctx.procedureRunId}`,
-          payload: {
-            taskId: taskForFeedback.id,
-            targetUserId: taskForFeedback.assigneeId,
-            actor: { id: taskForFeedback.assignee.id, kind: "agent", username: taskForFeedback.assignee.username },
-            reason: "review_feedback",
-            body: `Repository validation failed for "${taskForFeedback.title}": ${error}\nThe task returned to the front of To Do. Correct the issue and resubmit.`,
-          },
-        }],
-      });
-    }
+    // submitWorkflowCommand owns the single validation-feedback effect. Do not
+    // enqueue another procedure-local notification here: two distinct outbox
+    // keys used to dispatch duplicate Carmen turns for the same failure.
     // Mark the procedure as completed (it handled the failure path).
     return { status: "completed", output: { validationOutcome: "invalid", cycleClosed: true, movedToTodo: true } };
   }

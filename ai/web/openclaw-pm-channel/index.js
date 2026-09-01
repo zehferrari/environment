@@ -196,7 +196,7 @@ function sendJsonLineToUnixSocket(path, body) {
   });
 }
 
-function createPmStreamPublisher({ account, target, logger }) {
+function createPmStreamPublisher({ account, target, logger, gatewayDispatchId }) {
   const streamUrl = resolveStreamUrl(target);
   const streamTransport = typeof target.streamTransport === "string" ? target.streamTransport : "http";
   const streamSocketPath = typeof target.streamSocketPath === "string" && target.streamSocketPath.trim()
@@ -241,6 +241,7 @@ function createPmStreamPublisher({ account, target, logger }) {
       channel: CHANNEL_ID,
       target,
       transportMode: streamTransport,
+      ...(gatewayDispatchId ? { gatewayDispatchId } : {}),
       ...(selectedAgentMeta ? { meta: { agentMeta: selectedAgentMeta } } : {}),
       ...body,
     };
@@ -645,7 +646,7 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
     envelope: runtime.channel.reply.resolveEnvelopeFormatOptions(cfg),
     body: bodyForAgent,
   });
-  const stream = createPmStreamPublisher({ account, target, logger });
+  const stream = createPmStreamPublisher({ account, target, logger, gatewayDispatchId: acceptedId });
   let visibleReplySent = false;
 
   const ctxPayload = await inbound.buildContext({
@@ -819,8 +820,15 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
   }
 }
 
-async function abortActiveTurn(sessionKey) {
+async function abortActiveTurn(sessionKey, expectedDispatchId = null) {
   const active = activeTurns.get(sessionKey);
+  if (
+    active &&
+    expectedDispatchId &&
+    active.acceptedId !== expectedDispatchId
+  ) {
+    return { aborted: false, reason: "dispatch_mismatch", activeDispatchId: active.acceptedId };
+  }
   try {
     const harness = await import("openclaw/plugin-sdk/agent-harness");
     if (
@@ -839,6 +847,11 @@ async function abortActiveTurn(sessionKey) {
       return drained.drained || drained.forceCleared
         ? { aborted: true, reason: drained.forceCleared ? "force_cleared" : "drained" }
         : { aborted: false, reason: "active_run_not_drained" };
+    };
+
+    const releaseCanceledGeneration = (acceptedId) => {
+      const current = activeTurns.get(sessionKey);
+      if (current?.acceptedId === acceptedId) activeTurns.delete(sessionKey);
     };
 
     // The gateway can recover an interrupted PM session after restart before
@@ -868,7 +881,18 @@ async function abortActiveTurn(sessionKey) {
         current.canonicalSessionKey || lookupKey,
       );
       if (embeddedSessionId) {
-        return drainResolvedRun(embeddedSessionId, current.canonicalSessionKey || lookupKey);
+        const result = await drainResolvedRun(
+          embeddedSessionId,
+          current.canonicalSessionKey || lookupKey,
+        );
+        // abortAndDrainAgentHarnessRun is the process-level fence. Once it has
+        // drained (or force-cleared) this exact generation, release the
+        // plugin's ingress slot before acknowledging /cancel. Otherwise PM can
+        // receive the acknowledgement, immediately post the replacement, and
+        // still lose it to session_busy while runPmTurn's finally is flushing
+        // the canceled generation's terminal callback.
+        if (result.aborted) releaseCanceledGeneration(active.acceptedId);
+        return result;
       }
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
@@ -876,6 +900,7 @@ async function abortActiveTurn(sessionKey) {
     // No embedded run appeared during the grace window. The pre-dispatch
     // cancellation flag remains authoritative, but report the distinct state
     // instead of pretending an OpenClaw process was aborted.
+    releaseCanceledGeneration(active.acceptedId);
     return { aborted: true, reason: "canceled_before_dispatch" };
   } catch (err) {
     return { aborted: false, reason: String(err?.message ?? err) };
@@ -988,7 +1013,10 @@ async function handleCancel({ cfg, req, res }) {
     return true;
   }
 
-  const result = await abortActiveTurn(sessionKey);
+  const expectedDispatchId = typeof payload.gatewayDispatchId === "string"
+    ? payload.gatewayDispatchId.trim()
+    : null;
+  const result = await abortActiveTurn(sessionKey, expectedDispatchId);
   writeJson(res, 200, { ok: true, ...result });
   return true;
 }

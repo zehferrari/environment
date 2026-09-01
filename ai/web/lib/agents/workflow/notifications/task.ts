@@ -869,16 +869,23 @@ export async function sendTaskCommentNotifications(args: {
     "",
     args.body,
   ].join("\n");
-  const allowWorkItemManagement = args.actor.kind === "human" && !task.private;
+  const canManageWorkItems = args.actor.kind === "human" && !task.private;
+  const workItemAgentSlugs = new Set(
+    [...targetAgents.keys()].filter((agentSlug) => (
+      directedDescriptor.isBroadcast || directedDescriptor.directedAgentSlugs.includes(agentSlug)
+    )),
+  );
 
   const mirroredMessages = await db.$transaction(async (tx) => {
     const mirrored: Array<{
       id: string;
       agentSlug: string;
+      allowWorkItemManagement: boolean;
       reason: string[];
       commentCreatedAt: Date;
     }> = [];
     for (const target of targetAgents.values()) {
+      const allowWorkItemManagement = canManageWorkItems && workItemAgentSlugs.has(target.slug);
       const msg = await tx.agentChatMessage.create({
         data: {
           projectId: task.projectId,
@@ -898,6 +905,7 @@ export async function sendTaskCommentNotifications(args: {
       mirrored.push({
         id: msg.id,
         agentSlug: target.slug,
+        allowWorkItemManagement,
         reason,
         commentCreatedAt: msg.createdAt,
       });
@@ -978,7 +986,7 @@ export async function sendTaskCommentNotifications(args: {
       epicId: task.epic?.id ?? null,
       turnId: msg.id,
     });
-    const workItemPrompt = allowWorkItemManagement
+    const workItemPrompt = msg.allowWorkItemManagement
       ? buildWorkItemPlanningPrompt({
           agentSlug: msg.agentSlug,
           projectSlug: task.project.slug,
@@ -988,6 +996,7 @@ export async function sendTaskCommentNotifications(args: {
           ).toString(),
           grantMessageId: msg.id,
           token: createWorkItemGrantToken(task.projectId, msg.agentSlug, msg.id),
+          autoApplyTaskCreates: workItemAgentSlugs.size === 1,
         })
       : "";
     const kind = "task-comment" as const;

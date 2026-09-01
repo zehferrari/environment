@@ -40,14 +40,20 @@ import {
 } from "@/lib/deploy/branch-verify";
 import { isProtectedBranch, parseProtectedBranches } from "@/lib/projects/protected-branches";
 import {
+  fetchVerificationBase,
   fetchVerificationBranch,
   resolveEpicVerificationBase,
   validateEpicBase,
+  validateLocalBranchBase,
   validateOriginBase,
   type BranchBaseValidation,
 } from "@/lib/deploy/branch-base";
 import { subjectHasCommitPrefix } from "@/lib/work-items/commit-prefix";
 import { inspectOriginBranch } from "@/lib/deploy/epic-merge-git";
+import {
+  reconcileStandaloneBranch,
+  type StandaloneBranchRecoveryResult,
+} from "@/lib/deploy/standalone-branch-recovery";
 import {
   completeTaskReviewHandoffAfterValidation,
   failTaskReviewValidation,
@@ -419,7 +425,7 @@ function identityMismatch(commit: GitCommit | null, expected: ExpectedIdentity |
   };
 }
 
-async function localState(job: BranchVerifyJob, epicMode: boolean): Promise<LocalState> {
+async function inspectLocalState(job: BranchVerifyJob, epicMode: boolean): Promise<LocalState> {
   const worktreePath = await branchWorktree(job.repositoryPath, job.branchName);
   const repoBranch = await currentBranch(job.repositoryPath);
   const checkPath = worktreePath ?? (repoBranch === job.branchName ? job.repositoryPath : null);
@@ -436,30 +442,9 @@ async function localState(job: BranchVerifyJob, epicMode: boolean): Promise<Loca
   }
 
   const localSha = await gitOrNull(commandPath, ["rev-parse", "--verify", `refs/heads/${job.branchName}`], { timeout: 10_000 });
-  let remoteSha = epicMode
+  const remoteSha = epicMode
     ? null
     : await gitOrNull(commandPath, ["rev-parse", "--verify", `refs/remotes/origin/${job.branchName}`], { timeout: 10_000 });
-  let pushed = false;
-  let pushError: string | null = null;
-
-  // Standalone recovery push only. A missing remote feature branch makes the
-  // initial fetch fail, but a clean local branch is precisely what the monitor
-  // is expected to publish. Git still rejects non-fast-forward pushes, so
-  // attempting this is fail-safe. Epic children are NEVER pushed (P6): the
-  // local ref is the verified artifact and the epic-merge runner consumes it.
-  if (!epicMode && !dirtyStatus && !dirtyError && localSha && localSha !== remoteSha) {
-    try {
-      // The host pre-push hook blocks PM-managed task refs for interactive
-      // agents. This runner is the trusted publication boundary after PM has
-      // created and validated the submission commit.
-      await git(commandPath, ["push", "--no-verify", "origin", `${job.branchName}:${job.branchName}`], { timeout: 90_000, maxBuffer: 1024 * 1024 });
-      pushed = true;
-      await fetchVerificationBranch(commandPath, job.branchName, job.baseBranch);
-      remoteSha = await gitOrNull(commandPath, ["rev-parse", "--verify", `refs/remotes/origin/${job.branchName}`], { timeout: 10_000 });
-    } catch (err) {
-      pushError = trimError(err, 500);
-    }
-  }
 
   return {
     checkPath: checkPath ? real(checkPath) ?? checkPath : null,
@@ -468,9 +453,44 @@ async function localState(job: BranchVerifyJob, epicMode: boolean): Promise<Loca
     dirtyError,
     localSha,
     remoteSha,
-    pushed,
-    pushError,
+    pushed: false,
+    pushError: null,
   };
+}
+
+async function publishLocalState(job: BranchVerifyJob, inspected: LocalState): Promise<LocalState> {
+  const state = { ...inspected };
+  const commandPath = state.branchWorktreePath ?? job.repositoryPath;
+
+  // Standalone recovery push only. A missing remote feature branch makes the
+  // initial fetch fail, but a clean local branch is precisely what the monitor
+  // is expected to publish. Git still rejects non-fast-forward pushes, so
+  // attempting this is fail-safe. Epic children never call this function.
+  if (
+    !state.dirtyStatus &&
+    !state.dirtyError &&
+    state.localSha &&
+    state.localSha !== state.remoteSha
+  ) {
+    try {
+      // The host pre-push hook blocks PM-managed task refs for interactive
+      // agents. This runner is the trusted publication boundary after PM has
+      // created and validated the submission commit.
+      await git(commandPath, ["push", "--no-verify", "origin", `${job.branchName}:${job.branchName}`], { timeout: 90_000, maxBuffer: 1024 * 1024 });
+      state.pushed = true;
+      await fetchVerificationBranch(commandPath, job.branchName, job.baseBranch);
+      state.remoteSha = await gitOrNull(commandPath, ["rev-parse", "--verify", `refs/remotes/origin/${job.branchName}`], { timeout: 10_000 });
+    } catch (err) {
+      state.pushError = trimError(err, 500);
+    }
+  }
+
+  return state;
+}
+
+async function localState(job: BranchVerifyJob, epicMode: boolean): Promise<LocalState> {
+  const inspected = await inspectLocalState(job, epicMode);
+  return epicMode ? inspected : publishLocalState(job, inspected);
 }
 
 function commitSubject(job: BranchVerifyJob) {
@@ -688,6 +708,46 @@ function renderProtectedBranchBody(args: { branchName: string; epicMode: boolean
     args.protectedBranches.length > 0 ? `- Protected branches: ${args.protectedBranches.map((branch) => `\`${branch}\``).join(", ")}.` : null,
     "",
     "Assignee: start the task on an allowed task branch, leave the corrected changes uncommitted and unpushed, then call `ready_for_review` again. PM owns commit and publication.",
+  ].filter(Boolean).join("\n");
+}
+
+function renderPreflightFailBody(args: {
+  job: BranchVerifyJob;
+  epicMode: boolean;
+  fetchError: string | null;
+  baseValidation: BranchBaseValidation;
+  state: LocalState;
+  recovery: StandaloneBranchRecoveryResult | null;
+}) {
+  const branchRef = `refs/heads/${args.job.branchName}`;
+  const baseRef = args.epicMode
+    ? args.baseValidation.baseBranch
+    : `origin/${args.baseValidation.baseBranch}`;
+  return [
+    `Local branch \`${args.job.branchName}\` failed the read-only submission preflight.`,
+    "",
+    args.fetchError ? `- Base refresh failed: ${args.fetchError}` : null,
+    args.state.dirtyError ? `- Local worktree status check failed: \`${args.state.dirtyError}\`` : null,
+    args.recovery && !args.recovery.ok
+      ? `- Automatic graph recovery stopped safely: ${args.recovery.error}`
+      : null,
+    !args.baseValidation.ok
+      ? `- Branch-base validation failed: ${args.baseValidation.error}.`
+      : null,
+    !args.baseValidation.ok
+      ? `  - ${baseRef}: ${args.baseValidation.originBaseSha?.slice(0, 10) ?? "unavailable"}`
+      : null,
+    !args.baseValidation.ok
+      ? `  - ${branchRef}: ${args.baseValidation.branchSha?.slice(0, 10) ?? "unavailable"}`
+      : null,
+    !args.baseValidation.ok
+      ? `  - merge base: ${args.baseValidation.mergeBaseSha?.slice(0, 10) ?? "unavailable"}`
+      : null,
+    "- Safety boundary: PM did not create a submission commit and did not push the task branch.",
+    "",
+    args.epicMode
+      ? `Assignee: update the local task branch from the current Epic branch \`${args.baseValidation.baseBranch}\`, preserve the task changes, leave them uncommitted and unpushed, then call \`ready_for_review\` again.`
+      : `Assignee: update the local task branch from \`origin/${args.baseValidation.baseBranch}\`, preserve the task changes, leave them uncommitted and unpushed, then call \`ready_for_review\` again. PM owns the submission commit and publication.`,
   ].filter(Boolean).join("\n");
 }
 
@@ -953,6 +1013,154 @@ async function main() {
     console.log(JSON.stringify({ ok: false, taskId: job.taskId, branch: job.branchName, protectedBranch: true }, null, 2));
     unlinkSync(jobFile);
     return;
+  }
+
+  // Preflight is deliberately read-only. A stale task base must be rejected
+  // before PM stages/commits the assignee's changes or publishes any ref.
+  let preflightState = await inspectLocalState(job, epicMode);
+  let preflightFetchError: string | null = null;
+  let preflightBase: BranchBaseValidation;
+  let preflightRecovery: StandaloneBranchRecoveryResult | null = null;
+  if (epicMode) {
+    const epicBase = await resolveEpicVerificationBase(job.repositoryPath, job.epicBranch);
+    preflightFetchError = epicBase.error;
+    preflightBase = await validateEpicBase(job.repositoryPath, job.branchName, epicBase);
+  } else {
+    const fetchedBase = await fetchVerificationBase(job.repositoryPath, job.baseBranch);
+    preflightFetchError = fetchedBase.error;
+    preflightBase = await validateLocalBranchBase(
+      job.repositoryPath,
+      job.branchName,
+      fetchedBase.baseBranch,
+    );
+    if (
+      !preflightFetchError &&
+      !preflightState.dirtyError &&
+      !preflightState.dirtyStatus &&
+      preflightState.branchWorktreePath
+    ) {
+      preflightRecovery = await reconcileStandaloneBranch({
+        worktreePath: preflightState.branchWorktreePath,
+        branchName: job.branchName,
+        baseBranch: fetchedBase.baseBranch,
+        gitUserName: job.expectedGitUserName,
+        gitUserEmail: job.expectedGitUserEmail,
+      });
+      if (preflightRecovery.ok) {
+        preflightState = await inspectLocalState(job, false);
+        preflightBase = await validateLocalBranchBase(
+          job.repositoryPath,
+          job.branchName,
+          fetchedBase.baseBranch,
+        );
+      }
+    }
+  }
+
+  const preflightOperationalError =
+    (isOperationalRepositoryFailure(preflightFetchError) ? preflightFetchError : null) ||
+    (isOperationalRepositoryFailure(preflightState.dirtyError) ? preflightState.dirtyError : null) ||
+    (preflightRecovery?.operational ? preflightRecovery.error : null);
+  if (preflightOperationalError) {
+    const retry = await recordOperationalFailure(job, actor, preflightOperationalError);
+    console.log(JSON.stringify({
+      ok: false,
+      taskId: job.taskId,
+      branch: job.branchName,
+      phase: "preflight",
+      operationalError: preflightOperationalError,
+      ...retry,
+    }, null, 2));
+    unlinkSync(jobFile);
+    return;
+  }
+
+  if (
+    preflightFetchError ||
+    preflightState.dirtyError ||
+    !preflightBase.ok ||
+    (preflightRecovery && !preflightRecovery.ok)
+  ) {
+    const body = renderPreflightFailBody({
+      job,
+      epicMode,
+      fetchError: preflightFetchError,
+      baseValidation: preflightBase,
+      state: preflightState,
+      recovery: preflightRecovery,
+    });
+    await db.$transaction([
+      db.comment.create({
+        data: { taskId: job.taskId, userId: actor.id, body },
+      }),
+      db.activityLog.create({
+        data: {
+          projectId: job.projectId,
+          taskId: job.taskId,
+          userId: actor.id,
+          kind: "pm.repo.verify.fail",
+          payload: JSON.stringify({
+            jobId: job.jobId,
+            branchName: job.branchName,
+            baseBranch: preflightBase.baseBranch,
+            epicChild: epicMode,
+            reason: "submission-preflight-failed",
+            fetchError: preflightFetchError,
+            dirtyError: preflightState.dirtyError,
+            localSha: preflightState.localSha,
+            remoteSha: preflightState.remoteSha,
+            baseValidation: preflightBase,
+            recovery: preflightRecovery,
+            mutated: false,
+          }),
+        },
+      }),
+    ]);
+    await updateTaskRepositoryState(job.taskId, {
+      phase: "action_required",
+      candidateSha: job.previousCandidateSha ?? null,
+      validationOutcome: "invalid",
+      lastError: body,
+    });
+    await failTaskReviewValidation({
+      taskId: job.taskId,
+      actor,
+      error: body,
+      candidateSha: job.previousCandidateSha ?? null,
+      procedureCallback: procedureCallbackForJob(job),
+    });
+    console.log(JSON.stringify({
+      ok: false,
+      taskId: job.taskId,
+      branch: job.branchName,
+      phase: "preflight",
+      baseValidation: preflightBase,
+      mutated: false,
+    }, null, 2));
+    unlinkSync(jobFile);
+    return;
+  }
+
+  if (preflightRecovery?.ok && preflightRecovery.changed) {
+    await db.activityLog.create({
+      data: {
+        projectId: job.projectId,
+        taskId: job.taskId,
+        userId: actor.id,
+        kind: "pm.repo.recovery.ok",
+        payload: JSON.stringify({
+          jobId: job.jobId,
+          branchName: job.branchName,
+          baseBranch: preflightBase.baseBranch,
+          originalSha: preflightRecovery.originalSha,
+          recoveredSha: preflightRecovery.recoveredSha,
+          remoteSha: preflightRecovery.remoteSha,
+          baseSha: preflightRecovery.baseSha,
+          mergedRefs: preflightRecovery.mergedRefs,
+          forcePush: false,
+        }),
+      },
+    });
   }
 
   const commitResult = await commitPendingWorktreeChanges(job);

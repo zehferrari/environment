@@ -8,10 +8,11 @@
 // reply delivery.
 //
 // Human-authored task/epic chat messages carry a one-shot description
-// write capability and work-item proposal capability by default. The
-// agent gets signed tokens in the native-channel prompt and must only use
-// them for explicit human update requests. The grant-used timestamps are
-// stamped on first use.
+// write capability and work-item proposal capability by default. Messages
+// from the dedicated description control carry only the description-draft
+// capability. The agent gets signed tokens in the native-channel prompt
+// and must only use them for explicit human requests. Grant-used timestamps
+// are stamped on first use.
 
 import { revalidatePath } from "next/cache";
 import { headers } from "next/headers";
@@ -35,6 +36,7 @@ import { buildUnifiedPmTurnSystemPrompt, nullPmContextText } from "@/lib/agents/
 import { buildPmChannelDispatchMetrics } from "@/lib/agents/pm-channel/openclaw";
 import { createContextGrantUrlMap } from "@/lib/agents/context/grants";
 import { DISCUSSION_REPLY_FORMAT_PROMPT } from "@/lib/agents/chat/discussion-reply-format";
+import { discussionMessageCapabilities } from "@/lib/agents/chat/capabilities";
 import { createTaskDescriptionWriteToken } from "@/lib/agents/workflow/chat/task/token";
 import { createEpicDescriptionWriteToken } from "@/lib/agents/workflow/chat/epic/token";
 import { createWorkItemGrantToken } from "@/lib/agents/workflow/token/work-item";
@@ -115,6 +117,57 @@ function targetValueForPrincipal(user: {
 }) {
   if (user.kind === "agent" && user.agent?.slug) return `agent:${user.agent.slug}`;
   return `user:${user.id}`;
+}
+
+async function invalidateUndispatchedDescriptionGrant(args: {
+  messageId: string;
+  projectId: string;
+  taskId: string | null;
+  epicId: string | null;
+  actorId: string;
+  error: unknown;
+}) {
+  return db.$transaction(async (tx) => {
+    // If a durable run exists, the consumer/gateway owns the request and may
+    // still retry it. Only retire grants that failed before PM dispatch.
+    const run = await tx.pmChannelRun.findFirst({
+      where: { messageId: args.messageId },
+      select: { id: true },
+    });
+    if (run) return false;
+
+    const retired = await tx.agentChatMessage.updateMany({
+      where: {
+        id: args.messageId,
+        senderUserId: args.actorId,
+        originChannel: "description",
+        allowDescriptionEdit: true,
+        editGrantUsedAt: null,
+      },
+      data: { editGrantUsedAt: new Date() },
+    });
+    if (retired.count === 0) return false;
+
+    const detail = args.error instanceof Error ? args.error.message : String(args.error);
+    await tx.activityLog.create({
+      data: {
+        projectId: args.projectId,
+        taskId: args.taskId,
+        userId: args.actorId,
+        kind: args.taskId
+          ? "task.description.dispatch_failed"
+          : "epic.description.dispatch_failed",
+        payload: JSON.stringify({
+          messageId: args.messageId,
+          taskId: args.taskId,
+          epicId: args.epicId,
+          grantRetired: true,
+          error: detail.slice(0, 2_000),
+        }),
+      },
+    });
+    return true;
+  });
 }
 
 async function createDiscussionAttachments(args: {
@@ -258,8 +311,11 @@ export async function sendAgentChatMessage(formData: FormData) {
   const decisionForMessageId = String(formData.get("decisionForMessageId") ?? "").trim() || null;
   const decisionOption = String(formData.get("decisionOption") ?? "").trim() || null;
   const requestedMessageId = String(formData.get("messageId") ?? "").trim() || null;
-  const allowDescriptionEdit = actor.kind === "human" && canTriggerAgents;
-  const allowWorkItemManagement = actor.kind === "human" && canTriggerAgents;
+  const { allowDescriptionEdit, allowWorkItemManagement } = discussionMessageCapabilities({
+    actorKind: actor.kind,
+    canTriggerAgents,
+    originChannel,
+  });
 
   if (!slug || (!bodyRaw && files.length === 0)) return;
   if ((taskId === null) === (epicId === null)) {
@@ -542,6 +598,7 @@ export async function sendAgentChatMessage(formData: FormData) {
     },
   });
 
+  try {
   const actorUser = await db.user.findUnique({
     where: { id: actor.id },
     select: { username: true },
@@ -560,6 +617,11 @@ export async function sendAgentChatMessage(formData: FormData) {
     targetLabel,
     activeAgentSlugs,
   });
+  const workItemAgentSlugs = new Set(
+    [...targetAgents.keys()].filter((agentSlug) => (
+      directedDescriptor.isBroadcast || directedDescriptor.directedAgentSlugs.includes(agentSlug)
+    )),
+  );
 
   // Speculative-context lookup key shared by every target agent of this send.
   // The directed key pins the cache entry to the recipients/silence rule that
@@ -699,7 +761,7 @@ export async function sendAgentChatMessage(formData: FormData) {
         })
       : "";
     let workItemPrompt = "";
-    if (allowWorkItemManagement) {
+    if (allowWorkItemManagement && workItemAgentSlugs.has(agentSlug)) {
       const token = createWorkItemGrantToken(project.id, agentSlug, msg.id);
       const proposeUrl = new URL(
         `/api/agent/projects/${project.id}/proposals`,
@@ -711,6 +773,7 @@ export async function sendAgentChatMessage(formData: FormData) {
         proposeUrl,
         grantMessageId: msg.id,
         token,
+        autoApplyTaskCreates: !directedDescriptor.isBroadcast && workItemAgentSlugs.size === 1,
         publicOrigin,
       });
     }
@@ -797,7 +860,28 @@ export async function sendAgentChatMessage(formData: FormData) {
         }),
       },
     });
+
+    if (!delivery.ok && allowDescriptionEdit) {
+      throw new Error(delivery.error || `Could not start ${agentSlug}'s description run.`);
+    }
   }));
+  } catch (error) {
+    if (allowDescriptionEdit) {
+      try {
+        await invalidateUndispatchedDescriptionGrant({
+          messageId: msg.id,
+          projectId: project.id,
+          taskId,
+          epicId,
+          actorId: actor.id,
+          error,
+        });
+      } catch (cleanupError) {
+        console.error("[description-dispatch] failed to retire undispatched grant", cleanupError);
+      }
+    }
+    throw error;
+  }
 
   if (taskId) revalidateTaskReplyScope(taskId, "chat");
   if (epicId) revalidateEpicReplyScope(epicId, "chat");

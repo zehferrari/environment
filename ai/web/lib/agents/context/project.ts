@@ -251,8 +251,11 @@ export function buildWorkItemPlanningPrompt(args: {
   grantMessageId: string;
   token: string;
   autoApply?: boolean;
+  autoApplyTaskCreates?: boolean;
   publicOrigin?: string | null;
 }): string {
+  const appliesAllImmediately = args.autoApply === true;
+  const appliesTaskCreatesImmediately = appliesAllImmediately || args.autoApplyTaskCreates === true;
   const exampleBody = JSON.stringify(
     {
       grantMessageId: args.grantMessageId,
@@ -273,14 +276,18 @@ export function buildWorkItemPlanningPrompt(args: {
 
   return [
     `WORK-ITEM PLANNING GRANT for @${args.agentSlug} on project "${args.projectSlug}".`,
-    args.autoApply
+    appliesAllImmediately
       ? "A human-authored direct message in this project-scoped chat gives you a one-shot capability to execute requested work-item changes immediately without an additional approval step."
-      : "A human-authored message in this project-scoped chat gives you a one-shot capability to PROPOSE work-item changes.",
+      : appliesTaskCreatesImmediately
+        ? "A human-authored message in this project-scoped chat gives you a one-shot capability to execute requested task creation immediately; other work-item changes remain proposals."
+        : "A human-authored message in this project-scoped chat gives you a one-shot capability to PROPOSE work-item changes.",
     "Use it only when the current human message directly asks you to create, update, reorganize, comment on, or otherwise change project work items. If the message is only a question, discussion, or status check, do not submit a proposal.",
     "Source of truth for project state: GET /api/agents/context/project/<projectId> via the loopback fetch shown in the LIVE PM CONTEXT block in your system prompt. The proposal endpoint below is the only project-WRITE endpoint you should call from this turn.",
-    args.autoApply
+    appliesAllImmediately
       ? "For direct-chat grants, valid operations are applied immediately. The endpoint response includes links for created items when available; include those links in your visible reply."
-      : "Nothing changes on the board until the user reviews and approves your proposal, so make the breakdown clear and well structured when you do propose.",
+      : appliesTaskCreatesImmediately
+        ? "A change-set containing only create_task operations is applied immediately and returns links for the new tasks. Other valid change-sets wait for human review."
+        : "Nothing changes on the board until the user reviews and approves your proposal, so make the breakdown clear and well structured when you do propose.",
     "",
     "HOW TO SUBMIT (only when the current human message explicitly requests work-item changes; otherwise ignore this section):",
     `POST application/json to: ${args.proposeUrl}`,
@@ -290,7 +297,7 @@ export function buildWorkItemPlanningPrompt(args: {
       ? `PUBLIC_ORIGIN for returned created-resource links: ${args.publicOrigin}. Send this exact value as publicOrigin in the JSON body.`
       : "Send publicOrigin in the JSON body only when PM provides a PUBLIC_ORIGIN value.",
     "",
-    `OPERATIONS (a change-set applied in order, all-or-nothing ${args.autoApply ? "immediately after validation" : "on approval"}):`,
+    `OPERATIONS (a change-set applied in order and all-or-nothing; ${appliesAllImmediately ? "immediately after validation" : appliesTaskCreatesImmediately ? "task-creation-only batches apply immediately; other batches apply on approval" : "on approval"}):`,
     "- create_epic    { ref, title, description? }",
     "- create_task    { ref, title, description?, epic?, blockedBy? }   (epic/blocker optional; top-level task)",
     "- create_subtask { ref, parent, title, description? }  (parent required)",
@@ -312,14 +319,18 @@ export function buildWorkItemPlanningPrompt(args: {
     "- create_task can link to an existing Epic or to a newly created Epic in the same proposal when the human asked for that breakdown.",
     "- blockedBy sets a hard task dependency. Use an existing visible task id or a create_task tmp ref from this proposal; null clears it on update_task. PM rejects private, cross-project, missing/deleted/archived, self, and circular dependencies.",
     "- create_subtask must reference a top-level Task, either existing or newly created in the same proposal. Do not create subtasks under another subtask.",
-    args.autoApply
+    appliesAllImmediately
       ? "- Direct-chat requests are applied immediately after validation. Do not tell the user it is awaiting approval."
-      : "- Nothing is applied until the human reviews and approves the proposal.",
+      : appliesTaskCreatesImmediately
+        ? "- A batch containing only create_task operations is applied immediately after validation. Do not tell the user it is awaiting approval; include the returned task links. Other operation types remain pending for review."
+        : "- Nothing is applied until the human reviews and approves the proposal.",
     "- New tasks and epics start in Backlog.",
     "- Use a fresh, unique planId per proposal; re-POSTing the same planId is idempotent (no duplicate).",
     "",
-    args.autoApply
+    appliesAllImmediately
       ? "Only if you actually submit operations: briefly tell the user what changed and include returned links for created resources when possible. If you did not submit operations, do not mention this grant or endpoint."
-      : "Only if you actually submit a proposal: briefly tell the user what you proposed and that it is awaiting their review. If you did not submit a proposal, do not mention this grant, endpoint, or review flow.",
+      : appliesTaskCreatesImmediately
+        ? "If you submit only create_task operations, briefly tell the user what was created and include returned links. For any other submitted proposal, say that it awaits review. If you submit nothing, do not mention this grant or endpoint."
+        : "Only if you actually submit a proposal: briefly tell the user what you proposed and that it is awaiting their review. If you did not submit a proposal, do not mention this grant, endpoint, or review flow.",
   ].join("\n");
 }

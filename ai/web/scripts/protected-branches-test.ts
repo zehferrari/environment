@@ -30,6 +30,17 @@ assert(
 const verifier = readFileSync("scripts/pm-verify-branch-pushed.ts", "utf8");
 assert(verifier.includes('reason: "protected-agent-branch"'), "monitor verifier must report protected branch failures distinctly");
 assert(verifier.includes("validateOriginBase"), "monitor verifier must validate task branches against the resolved base");
+assert(verifier.includes("validateLocalBranchBase"), "monitor verifier must preflight the local task branch before publication");
+assert(
+  verifier.indexOf("const preflightState = await inspectLocalState") <
+    verifier.indexOf("const commitResult = await commitPendingWorktreeChanges"),
+  "the read-only branch-base preflight must run before PM creates the submission commit",
+);
+assert(
+  verifier.indexOf("const commitResult = await commitPendingWorktreeChanges") <
+    verifier.indexOf("state = await localState(job, false)"),
+  "standalone publication must remain after PM creates the validated submission commit",
+);
 assert(verifier.includes("baseValidation.ok"), "base-branch validation must be part of the monitor review gate");
 assert(verifier.includes("baseValidation.baseBranch"), "monitor output must identify the resolved base branch");
 assert(
@@ -41,6 +52,7 @@ assert(verifier.includes("state = await localState(job, false);"), "a missing re
 
 const branchBase = readFileSync("lib/deploy/branch-base.ts", "utf8");
 assert(branchBase.includes('"merge-base", `origin/${baseBranch}`'), "monitor verifier must compare against the resolved base branch");
+assert(branchBase.includes("export async function fetchVerificationBase"), "preflight must refresh the base without requiring a remote task branch");
 assert(branchBase.includes('addCandidate(candidates, "master")'), "legacy jobs must safely fall back to master when main is absent");
 
 assert(reviewHandoff.includes("baseBranch:"), "ready_for_review jobs must snapshot the effective project PR target branch");

@@ -288,9 +288,11 @@ Unauthorised request → **401 Unauthorized**.
 
 Active coding agents and the monitor agent can receive PM-channel turns,
 fetch grant-scoped PM context, read attachment metadata/text exposed by
-that context, and submit grant-scoped work-item proposals. The proposal
-endpoint stores a pending change-set only; it does not mutate the board
-until a human applies it.
+that context, and submit grant-scoped work-item change-sets. Direct owner-chat
+changes apply immediately. In task comments and Task/Epic Action Plan
+discussions, an owner-requested `create_task`-only batch applies immediately
+only when exactly one agent is action-authorized; multi-agent and other
+change-sets remain pending until a human applies them.
 
 Only active humans and active coding agents are assignable principals for
 Task assignee, Task reviewer/acting manager, and Epic acting manager
