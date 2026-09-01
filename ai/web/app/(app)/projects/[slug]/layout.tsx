@@ -75,6 +75,7 @@ export default async function ProjectLayout({
         boardChromeScope={boardChromeScope}
         hasSummary={hasSummary}
         hasCode={viewer.canAccessOwnerFeatures && hasCode}
+        hasBilling={viewer.canAccessOwnerFeatures && hasCode}
         hasBin={hasBin}
         canAccessSettings={viewer.canAccessOwnerFeatures}
       />

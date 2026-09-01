@@ -13,6 +13,7 @@ export default function ProjectTabs({
   boardChromeScope,
   hasSummary = false,
   hasCode = false,
+  hasBilling = false,
   hasBin = false,
   canAccessSettings = false,
 }: {
@@ -21,6 +22,7 @@ export default function ProjectTabs({
   boardChromeScope: string;
   hasSummary?: boolean;
   hasCode?: boolean;
+  hasBilling?: boolean;
   hasBin?: boolean;
   canAccessSettings?: boolean;
 }) {
@@ -32,7 +34,8 @@ export default function ProjectTabs({
   const base = `/projects/${slug}`;
   const sub = pathname.startsWith(base) ? pathname.slice(base.length) : "";
   // Tab order: Summary (repo README) leads when present; Code/Changes sit after
-  // Library; Activity is only its own tab when there is no Summary to host it;
+  // Library, with Billing after them because it reads the same repository;
+  // Activity is only its own tab when there is no Summary to host it;
   // the Bin tab only appears when the bin holds something.
   const tabs = [
     ...(hasSummary ? [{ href: "/summary", label: "Summary" }] : []),
@@ -42,6 +45,7 @@ export default function ProjectTabs({
     { href: "/library", label: "Library" },
     ...(hasCode ? [{ href: "/code", label: "Code" }] : []),
     ...(hasCode ? [{ href: "/changes", label: "Changes" }] : []),
+    ...(hasBilling ? [{ href: "/billing", label: "Billing" }] : []),
     ...(canAccessSettings ? [{ href: "/settings", label: "Settings" }] : []),
     ...(hasSummary ? [] : [{ href: "/activity", label: "Activity" }]),
     ...(hasBin ? [{ href: "/bin", label: "Bin" }] : []),
