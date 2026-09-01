@@ -2,6 +2,7 @@ import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { hexColorOrNull, randomBoardColor } from "@/lib/board-colors";
 import { workspaceLogoPublicUrl } from "@/lib/workspaces/storage";
+import { normalizeCurrency, parseRateInputToCents } from "@/lib/billing/rate";
 import {
   accessibleProjectWhere,
   workspaceAccessWhere,
@@ -54,6 +55,8 @@ export type WorkspacePayload = {
   deploymentBitbucketWorkspace?: unknown;
   deploymentBitbucketRepoSlug?: unknown;
   integrationDefaults?: unknown;
+  hourlyRate?: unknown;
+  billingCurrency?: unknown;
 };
 
 function stringArray(value: unknown): string[] {
@@ -97,6 +100,10 @@ function workspaceDefaultsData(payload: WorkspacePayload): Record<string, string
   if (payload.deploymentBitbucketWorkspace !== undefined) data.deploymentBitbucketWorkspace = trimOrNull(payload.deploymentBitbucketWorkspace);
   if (payload.deploymentBitbucketRepoSlug !== undefined) data.deploymentBitbucketRepoSlug = trimOrNull(payload.deploymentBitbucketRepoSlug);
   if (payload.integrationDefaults !== undefined) data.integrationDefaults = jsonObjectTextOrNull(payload.integrationDefaults);
+  // The client rate for every project in this workspace, unless a project
+  // overrides it. Stored in cents; the form takes dollars.
+  if (payload.hourlyRate !== undefined) data.hourlyRateCents = parseRateInputToCents(payload.hourlyRate);
+  if (payload.billingCurrency !== undefined) data.billingCurrency = normalizeCurrency(payload.billingCurrency);
   return data;
 }
 
@@ -162,6 +169,8 @@ type WorkspaceDefaultsSummary = {
   deploymentBitbucketWorkspace: string | null;
   deploymentBitbucketRepoSlug: string | null;
   integrationDefaults: string | null;
+  hourlyRate: string;
+  billingCurrency: string | null;
 };
 
 type SerializedWorkspaceBase = {
@@ -248,6 +257,9 @@ export function serializeWorkspace(workspace: WorkspaceWithRelations, includeOwn
       deploymentBitbucketWorkspace: workspace.deploymentBitbucketWorkspace,
       deploymentBitbucketRepoSlug: workspace.deploymentBitbucketRepoSlug,
       integrationDefaults: workspace.integrationDefaults,
+      // Dollars for the form; cents everywhere else.
+      hourlyRate: workspace.hourlyRateCents ? (workspace.hourlyRateCents / 100).toFixed(2) : "",
+      billingCurrency: workspace.billingCurrency,
     },
   };
 }

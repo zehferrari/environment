@@ -68,8 +68,8 @@ model User {
   comments                       Comment[]
   deletedComments                Comment[]                       @relation("CommentDeletedBy")
   activity                       ActivityLog[]
-  accessAuditsAsActor            AccessAuditLog[]               @relation("AccessAuditActor")
-  accessAuditsAsAffected         AccessAuditLog[]               @relation("AccessAuditAffected")
+  accessAuditsAsActor            AccessAuditLog[]                @relation("AccessAuditActor")
+  accessAuditsAsAffected         AccessAuditLog[]                @relation("AccessAuditAffected")
   uploadedAttachments            Attachment[]
   agentChatMessages              AgentChatMessage[]              @relation("AgentChatSender")
   deletedAgentChatMessages       AgentChatMessage[]              @relation("AgentChatMessageDeletedBy")
@@ -175,6 +175,9 @@ model Project {
   onlyReportersCanSetTasksDone        Boolean                         @default(false) @map("only_reporters_can_set_tasks_done")
   onlyReportersCanApprovePullRequests Boolean                         @default(false) @map("only_reporters_can_approve_pull_requests")
   deployReviewPrompt                  String?                         @map("deploy_review_prompt")
+  billingPrompt                       String?                         @map("billing_prompt")
+  // Overrides the workspace rate. Null inherits; there is no system default.
+  hourlyRateCents                     Int?                            @map("hourly_rate_cents")
   defaultAssigneeId                   String?
   defaultAssignee                     User?                           @relation("ProjectDefaultAssignee", fields: [defaultAssigneeId], references: [id])
   defaultReviewerId                   String?
@@ -221,6 +224,7 @@ model Project {
   deploymentPullRequests DeploymentPullRequest[]
   validationProfile      ProjectValidationProfile?
   validationCheckRuns    ValidationCheckRun[]
+  billingReports         BillingReport[]
 
   @@index([deletedAt])
 }
@@ -259,6 +263,9 @@ model Workspace {
   // Provider-agnostic integration defaults. Stored as JSON text and exposed
   // only as non-secret configuration; secrets stay in their existing stores.
   integrationDefaults          String?   @map("integration_defaults")
+  // Client rate for every project in this workspace unless the project overrides it.
+  hourlyRateCents              Int?      @map("hourly_rate_cents")
+  billingCurrency              String?   @map("billing_currency")
   createdAt                    DateTime  @default(now())
   updatedAt                    DateTime  @updatedAt
 
@@ -405,97 +412,97 @@ model ProjectManagerAssignableAgent {
 }
 
 model Task {
-  id                    String           @id @default(cuid())
-  projectId             String
-  project               Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  epicId                String?
-  epic                  Epic?            @relation(fields: [epicId], references: [id])
+  id                     String           @id @default(cuid())
+  projectId              String
+  project                Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  epicId                 String?
+  epic                   Epic?            @relation(fields: [epicId], references: [id])
   // DEPRECATED (ENV-60): the former self-referential child-Task "sub-task"
   // hierarchy. Sub-tasks are now lightweight checklist rows (see model SubTask
   // / Task.checklist), not child Tasks. This column + self-relation are kept
   // dormant — no live row sets parentTaskId and no code path writes it — to
   // avoid a SQLite table rebuild on the production DB. Drop in a later
   // maintenance migration once a downtime window is acceptable.
-  parentTaskId          String?
-  parent                Task?            @relation("TaskSubtasks", fields: [parentTaskId], references: [id], onDelete: Cascade)
-  subtasks              Task[]           @relation("TaskSubtasks")
+  parentTaskId           String?
+  parent                 Task?            @relation("TaskSubtasks", fields: [parentTaskId], references: [id], onDelete: Cascade)
+  subtasks               Task[]           @relation("TaskSubtasks")
   // Legacy primary hard dependency (ENV-62). New workflow code stores the full
   // dependency graph in TaskDependency and reads the union of both shapes so
   // old rows and the human single-prerequisite editor remain compatible.
-  blockedById           String?
-  blockedBy             Task?            @relation("TaskBlockedBy", fields: [blockedById], references: [id], onDelete: SetNull)
-  blocking              Task[]           @relation("TaskBlockedBy")
-  dependencies          TaskDependency[] @relation("TaskDependencies")
-  dependents            TaskDependency[] @relation("TaskDependents")
-  title                 String
-  workItemKey           String?          @unique @map("work_item_key")
-  description           String?
-  private               Boolean          @default(false)
+  blockedById            String?
+  blockedBy              Task?            @relation("TaskBlockedBy", fields: [blockedById], references: [id], onDelete: SetNull)
+  blocking               Task[]           @relation("TaskBlockedBy")
+  dependencies           TaskDependency[] @relation("TaskDependencies")
+  dependents             TaskDependency[] @relation("TaskDependents")
+  title                  String
+  workItemKey            String?          @unique @map("work_item_key")
+  description            String?
+  private                Boolean          @default(false)
   // Status uses the verbatim Stage 0 labels — no Jira aliases.
   // Backlog | To Do | In Progress | Review | Done
-  status                String           @default("Backlog")
-  assigneeId            String?
-  assignee              User?            @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  status                 String           @default("Backlog")
+  assigneeId             String?
+  assignee               User?            @relation("TaskAssignee", fields: [assigneeId], references: [id])
   // Acting manager: the User who is reviewing/owning the workflow for
   // this task. Pulled from the same users/agents table as assignee per
   // HOMELAB-44 description. Optional; agents may not set themselves as
   // acting manager (see lib/workflow.ts checkActingManager).
-  actingManagerId       String?
-  actingManager         User?            @relation("TaskActingManager", fields: [actingManagerId], references: [id])
-  reporterId            String?
-  reporter              User?            @relation("TaskReporter", fields: [reporterId], references: [id])
-  approvedOn            DateTime?        @map("approved_on")
-  approvedById          String?          @map("approved_by")
-  approvedBy            User?            @relation("TaskApprovedBy", fields: [approvedById], references: [id])
-  archivedAt            DateTime?        @map("archived_at")
-  archivedById          String?          @map("archived_by")
-  archivedBy            User?            @relation("TaskArchivedBy", fields: [archivedById], references: [id])
+  actingManagerId        String?
+  actingManager          User?            @relation("TaskActingManager", fields: [actingManagerId], references: [id])
+  reporterId             String?
+  reporter               User?            @relation("TaskReporter", fields: [reporterId], references: [id])
+  approvedOn             DateTime?        @map("approved_on")
+  approvedById           String?          @map("approved_by")
+  approvedBy             User?            @relation("TaskApprovedBy", fields: [approvedById], references: [id])
+  archivedAt             DateTime?        @map("archived_at")
+  archivedById           String?          @map("archived_by")
+  archivedBy             User?            @relation("TaskArchivedBy", fields: [archivedById], references: [id])
   // Lexorank-style ordering within column; simple Int for v1.
-  rank                  Int              @default(0)
+  rank                   Int              @default(0)
   // Set on every status transition; drives automatic archiving of Done
   // tasks after project.doneTtlDays so plain updates to title/description
   // don't reset the clock.
-  statusChangedAt       DateTime?
+  statusChangedAt        DateTime?
   // Monotonic compare-and-set revision for workflow transitions. Every
   // authoritative board status mutation increments this value and writes the
   // matching immutable WorkflowTransition row in the same transaction.
-  workflowVersion       Int              @default(0) @map("workflow_version")
+  workflowVersion        Int              @default(0) @map("workflow_version")
   // Optional free-text override. Null inherits the Epic's effective branch
   // (explicit or human-key fallback), then uses this Task's human key.
-  branchName            String?
+  branchName             String?
   // Optional commit-message override. Null inherits an explicit Epic prefix,
   // then falls back to this Task's human work-item key.
-  commitPrefix          String?
+  commitPrefix           String?
   // Agents set this when human/reporter intervention is required.
-  alertReporter         Boolean          @default(false) @map("alert_reporter")
+  alertReporter          Boolean          @default(false) @map("alert_reporter")
   // Soft delete (HOMELAB-48). See Epic.deletedAt for semantics. Sub-tasks
   // cascade with their parent task; an Epic delete cascades to its
   // non-deleted Tasks (and through them to sub-tasks). Active read
   // queries filter deletedAt: null.
-  deploymentStatus      String           @default("Not Required") @map("deployment_status")
-  activeWorkflowCycleId String?          @map("active_workflow_cycle_id")
+  deploymentStatus       String           @default("Not Required") @map("deployment_status")
+  activeWorkflowCycleId  String?          @map("active_workflow_cycle_id")
   // Phase E §5.1 — Durable engine ownership. Determines which workflow engine
   // (legacy or orchestrator_v2) owns this task's mutation path. Ownership is
   // durable state, not a per-request environment-variable decision.
-  workflowEngine        String           @default("orchestrator_v2") @map("workflow_engine")
-  workflowEnginePinnedAt DateTime?       @default(now()) @map("workflow_engine_pinned_at")
-  deletedAt             DateTime?
-  deletedById           String?
-  deletedBy             User?            @relation("TaskDeletedBy", fields: [deletedById], references: [id])
-  createdAt             DateTime         @default(now())
-  updatedAt             DateTime         @updatedAt
+  workflowEngine         String           @default("orchestrator_v2") @map("workflow_engine")
+  workflowEnginePinnedAt DateTime?        @default(now()) @map("workflow_engine_pinned_at")
+  deletedAt              DateTime?
+  deletedById            String?
+  deletedBy              User?            @relation("TaskDeletedBy", fields: [deletedById], references: [id])
+  createdAt              DateTime         @default(now())
+  updatedAt              DateTime         @updatedAt
 
   comments               Comment[]
   activity               ActivityLog[]
   deploymentPullRequests DeploymentPullRequest[]
   attachments            Attachment[]
-  chats                  AgentChatMessage[]      @relation("TaskChat")
-  chatRoomArchives       AgentChatRoomArchive[]  @relation("TaskChatRoomArchive")
+  chats                  AgentChatMessage[]           @relation("TaskChat")
+  chatRoomArchives       AgentChatRoomArchive[]       @relation("TaskChatRoomArchive")
   // Lightweight sub-task checklist (ENV-60). NOT the legacy self-referential
   // child-Task hierarchy above (parentTaskId) — that is now dormant. See SubTask.
   actionPlan             ActionPlan?
   actionPlanRevisions    ActionPlanRevision[]
-  checklist              SubTask[]               @relation("TaskChecklist")
+  checklist              SubTask[]                    @relation("TaskChecklist")
   repositoryRun          TaskRepositoryRun?
   executionEpisodes      TaskExecutionEpisode[]
   executionState         TaskExecutionState?
@@ -546,25 +553,25 @@ model TaskDependency {
 // opens a new one. The same candidate SHA may legitimately appear in multiple
 // cycles — candidate identity is evidence, not a unique review attempt.
 model TaskWorkflowCycle {
-  id                    String               @id @default(cuid())
-  taskId                String               @map("task_id")
-  task                  Task                 @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  id                    String                       @id @default(cuid())
+  taskId                String                       @map("task_id")
+  task                  Task                         @relation(fields: [taskId], references: [id], onDelete: Cascade)
   sequence              Int
-  status                String               @default("open")
+  status                String                       @default("open")
   outcome               String?
-  openedWorkflowVersion Int                  @map("opened_workflow_version")
-  closedWorkflowVersion Int?                 @map("closed_workflow_version")
-  openedByTransitionId  String?              @map("opened_by_transition_id")
-  closedByTransitionId  String?              @map("closed_by_transition_id")
-  baseSha               String?              @map("base_sha")
-  candidateSha          String?              @map("candidate_sha")
-  openedAt              DateTime             @default(now()) @map("opened_at")
-  closedAt              DateTime?            @map("closed_at")
+  openedWorkflowVersion Int                          @map("opened_workflow_version")
+  closedWorkflowVersion Int?                         @map("closed_workflow_version")
+  openedByTransitionId  String?                      @map("opened_by_transition_id")
+  closedByTransitionId  String?                      @map("closed_by_transition_id")
+  baseSha               String?                      @map("base_sha")
+  candidateSha          String?                      @map("candidate_sha")
+  openedAt              DateTime                     @default(now()) @map("opened_at")
+  closedAt              DateTime?                    @map("closed_at")
   // Phase E §5.1 — An open cycle is permanently pinned to its engine.
   // Copied from Task.workflowEngine when the cycle is opened.
-  workflowEngine        String               @default("orchestrator_v2") @map("workflow_engine")
-  createdAt             DateTime             @default(now()) @map("created_at")
-  updatedAt             DateTime             @updatedAt @map("updated_at")
+  workflowEngine        String                       @default("orchestrator_v2") @map("workflow_engine")
+  createdAt             DateTime                     @default(now()) @map("created_at")
+  updatedAt             DateTime                     @updatedAt @map("updated_at")
   transitions           WorkflowTransition[]
   outbox                WorkflowOutbox[]
   reviewRun             ReviewRun?
@@ -585,30 +592,30 @@ model TaskWorkflowCycle {
 // after transition + intent writes succeed, before commit. Rejected commands
 // are NOT stored here; operational failures that roll back leave no receipt.
 model TaskWorkflowCommandReceipt {
-  id                      String   @id @default(cuid())
-  taskId                  String   @map("task_id")
-  task                    Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
-  workflowCycleId         String?  @map("workflow_cycle_id")
-  workflowCycle           TaskWorkflowCycle? @relation(fields: [workflowCycleId], references: [id], onDelete: SetNull)
-  idempotencyKey          String   @map("idempotency_key")
-  requestFingerprint      String   @map("request_fingerprint")
-  intent                  String
-  source                  String
-  actorUserId             String?  @map("actor_user_id")
-  decisionActorId         String?  @map("decision_actor_id")
-  executorActorId         String?  @map("executor_actor_id")
-  expectedWorkflowVersion Int      @map("expected_workflow_version")
-  resultingWorkflowVersion Int     @map("resulting_workflow_version")
-  transitionId            String?  @map("transition_id")
-  procedureRunId          String?  @map("procedure_run_id")
+  id                       String             @id @default(cuid())
+  taskId                   String             @map("task_id")
+  task                     Task               @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  workflowCycleId          String?            @map("workflow_cycle_id")
+  workflowCycle            TaskWorkflowCycle? @relation(fields: [workflowCycleId], references: [id], onDelete: SetNull)
+  idempotencyKey           String             @map("idempotency_key")
+  requestFingerprint       String             @map("request_fingerprint")
+  intent                   String
+  source                   String
+  actorUserId              String?            @map("actor_user_id")
+  decisionActorId          String?            @map("decision_actor_id")
+  executorActorId          String?            @map("executor_actor_id")
+  expectedWorkflowVersion  Int                @map("expected_workflow_version")
+  resultingWorkflowVersion Int                @map("resulting_workflow_version")
+  transitionId             String?            @map("transition_id")
+  procedureRunId           String?            @map("procedure_run_id")
   // Milliseconds from transaction-client entry through durable receipt
   // creation. This excludes the driver's final COMMIT round trip but captures
   // fencing, aggregate refresh, domain writes, and receipt settlement.
-  executionDurationMs     Int?     @map("execution_duration_ms")
-  status                  String   // accepted | completed | rejected_operational
-  result                  String   // bounded canonical JSON response projection
-  createdAt               DateTime @default(now()) @map("created_at")
-  updatedAt               DateTime @updatedAt @map("updated_at")
+  executionDurationMs      Int?               @map("execution_duration_ms")
+  status                   String // accepted | completed | rejected_operational
+  result                   String // bounded canonical JSON response projection
+  createdAt                DateTime           @default(now()) @map("created_at")
+  updatedAt                DateTime           @updatedAt @map("updated_at")
 
   @@unique([taskId, idempotencyKey])
   @@index([workflowCycleId, createdAt])
@@ -1241,6 +1248,9 @@ model ActivityLog {
   dedupeKey   String?  @map("dedupe_key")
   createdAt   DateTime @default(now())
 
+  // PHASEE-10 — Unique index on dedupeKey. SQLite UNIQUE constraints treat
+  // NULL values as distinct, so rows without a dedupe key remain valid.
+  @@unique([dedupeKey])
   @@index([projectId])
   @@index([taskId])
   @@index([userId])
@@ -1250,9 +1260,6 @@ model ActivityLog {
   // PHASEE-10 — Composite index for legacy boundary invocation queries
   // (kind + createdAt range scans in getLegacyInvocationSummary).
   @@index([kind, createdAt])
-  // PHASEE-10 — Unique index on dedupeKey. SQLite UNIQUE constraints treat
-  // NULL values as distinct, so rows without a dedupe key remain valid.
-  @@unique([dedupeKey])
 }
 
 // ENV-164 — Owner-visible audit trail for every scoped access/role change:
@@ -1587,18 +1594,18 @@ model PmChannelToolCall {
 // scheduler: continuation > review feedback > reviewer/manager decisions >
 // newly approved To Do > informational.
 model AgentExecutionLease {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   agentSlug   String
-  runId       String?  @unique
+  runId       String?   @unique
   taskId      String?
-  status      String   @default("reserved") // reserved | admitted | running | released
-  leaseToken  String   @unique @default(cuid())
-  acquiredAt  DateTime @default(now())
+  status      String    @default("reserved") // reserved | admitted | running | released
+  leaseToken  String    @unique @default(cuid())
+  acquiredAt  DateTime  @default(now())
   heartbeatAt DateTime?
   expiresAt   DateTime?
   releasedAt  DateTime?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
   @@index([agentSlug])
   @@index([status])
@@ -1883,6 +1890,7 @@ model SystemSettings {
   openRouterTitle     String?
   profileImagePrompt  String?
   deployReviewPrompt  String?  @map("deploy_review_prompt")
+  billingPrompt       String?  @map("billing_prompt")
   integrationDefaults String?  @map("integration_defaults")
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
@@ -1997,4 +2005,76 @@ model PublishedItem {
   @@index([projectId, unpublishedAt])
   @@index([taskId, unpublishedAt])
   @@index([authorId])
+}
+
+// ------------------------------------------------------------------
+// Billing: a repository's commit history for a date range, summarised
+// per day with an estimated time to perform the work.
+//
+// The split matters. `ledger` holds the DETERMINISTIC git facts PM read
+// itself — commits, spans, insertions, deletions, files. The agent only
+// writes the per-day summary and the estimate, so two runs of the same
+// period can never disagree about what was committed, and every estimate
+// can be checked against the evidence it was derived from.
+//
+// The rate is SNAPSHOT here at run time and never re-resolved: raising the
+// workspace rate in October must not silently rewrite September's invoice.
+// ------------------------------------------------------------------
+
+model BillingReport {
+  id            String    @id @default(cuid())
+  projectId     String
+  project       Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  // The workspace the rate came from, when it came from one.
+  workspaceId   String?   @map("workspace_id")
+  fromDate      String    @map("from_date")
+  toDate        String    @map("to_date")
+  authorEmails  String    @map("author_emails")
+  branchFilter  String?   @map("branch_filter")
+  agentSlug     String    @map("agent_slug")
+  // queued | running | ready | failed | final
+  status        String    @default("queued")
+  // The DirectAgentChatMessage the run was dispatched on, for the audit trail.
+  runMessageId  String?   @map("run_message_id")
+  error         String?
+  ledger        String
+  notes         String?
+  rateCents     Int?      @map("rate_cents")
+  currency      String?
+  // "project" | "workspace" — shown in the UI so an override is never invisible.
+  rateSource    String?   @map("rate_source")
+  requestedById String    @map("requested_by_id")
+  finalizedAt   DateTime? @map("finalized_at")
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  days BillingReportDay[]
+
+  @@unique([projectId, fromDate, toDate, agentSlug, requestedById])
+  @@index([projectId, fromDate, toDate])
+  @@index([workspaceId])
+  @@index([status])
+}
+
+model BillingReportDay {
+  id               String        @id @default(cuid())
+  reportId         String        @map("report_id")
+  report           BillingReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  day              String
+  summary          String
+  // The agent's proposal. Never overwritten by an operator edit.
+  estimatedMinutes Int           @map("estimated_minutes")
+  // What is actually billed, when it differs from the estimate.
+  overrideMinutes  Int?          @map("override_minutes")
+  excluded         Boolean       @default(false)
+  rationale        String?
+  commitCount      Int           @map("commit_count")
+  insertions       Int
+  deletions        Int
+  filesTouched     Int           @map("files_touched")
+  firstCommitAt    String?       @map("first_commit_at")
+  lastCommitAt     String?       @map("last_commit_at")
+
+  @@unique([reportId, day])
+  @@index([reportId])
 }

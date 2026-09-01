@@ -26,6 +26,7 @@ export default function WorkspaceTabs({
   const interceptedTaskActive = /^\/projects\/[^/]+\/tasks\/[^/]+\/?$/.test(pathname);
   const boardActive = pathname === base || pathname === `${base}/` || interceptedTaskActive;
   const settingsActive = pathname === `${base}/settings` || pathname.startsWith(`${base}/settings/`);
+  const billingActive = pathname === `${base}/billing` || pathname.startsWith(`${base}/billing/`);
 
   const tabClass = (active: boolean) => active
     ? "rounded-lg bg-accent px-3 py-2 font-semibold text-bg shadow-[var(--shadow-xs)]"
@@ -57,6 +58,15 @@ export default function WorkspaceTabs({
             >
               Board
             </Link>
+            {canAccessSettings ? (
+              <Link
+                href={`${base}/billing`}
+                aria-current={billingActive ? "page" : undefined}
+                className={tabClass(billingActive)}
+              >
+                Billing
+              </Link>
+            ) : null}
             {canAccessSettings ? (
               <Link
                 href={`${base}/settings`}

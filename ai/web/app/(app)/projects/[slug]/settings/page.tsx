@@ -18,6 +18,9 @@ import WorktreeSwitcher from "@/components/worktree-switcher";
 import BranchMultiCombobox from "@/components/branch-multi-combobox";
 import { parseProtectedBranches } from "@/lib/projects/protected-branches";
 import { resolveEffectiveProjectSettings, settingSourceLabel } from "@/lib/settings/effective";
+import { formatCents, formatRate } from "@/lib/billing/rate";
+import { DEFAULT_BILLING_PROMPT } from "@/lib/billing/prompt";
+import { resolveProjectBillingRate } from "@/lib/billing/report";
 import { fallbackBoardColor } from "@/lib/board-colors";
 import { effectiveTaskBranchName } from "@/lib/work-items/branches";
 
@@ -80,8 +83,14 @@ export default async function ProjectSettingsPage({
   const switchState = switchProject ? await readSwitchState(switchProject.spoolDir) : null;
   const showSwitcher = Boolean(switchProject) && switchState !== null;
 
-  const [effectiveSettings, projectTasks] = await Promise.all([
+  const [effectiveSettings, billingRateInfo, workspaceRate, projectTasks] = await Promise.all([
     resolveEffectiveProjectSettings(project),
+    resolveProjectBillingRate(project.id),
+    db.workspace.findFirst({
+      where: { projects: { some: { projectId: project.id } }, archivedAt: null },
+      orderBy: { createdAt: "asc" },
+      select: { hourlyRateCents: true, billingCurrency: true },
+    }),
     db.task.findMany({
       where: accessibleTaskWhere(viewer, { projectId: project.id, deletedAt: null }),
       select: {
@@ -91,6 +100,12 @@ export default async function ProjectSettingsPage({
       },
     }),
   ]);
+  const billingRate = billingRateInfo.rate;
+  // The placeholder shows what leaving the field blank actually means, so the
+  // inherited rate is visible without opening workspace settings.
+  const workspaceRateHint = workspaceRate?.hourlyRateCents
+    ? `Inherits ${formatCents(workspaceRate.hourlyRateCents, workspaceRate.billingCurrency)}`
+    : "No workspace rate set";
   const protectedBranches = parseProtectedBranches(project.agentChangeBlockedBranches);
   const worktreeProtectedBranches = localWorktreeProtectedBranches(project);
   const branchOptions = [...new Set([
@@ -345,6 +360,35 @@ export default async function ProjectSettingsPage({
                 defaultValue={project.integrationDefaults ?? ""}
                 placeholder={'{\n  "deployment": { "provider": "bitbucket" }\n}'}
                 className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y font-mono text-body outline-none focus:border-accent"
+              />
+            </SettingsRow>
+            <SettingsRow
+              label="Hourly rate"
+              hint={
+                billingRate
+                  ? `Billing tab rate. Blank inherits the workspace. Effective: ${formatRate(billingRate)} (${billingRate.source === "project" ? "project override" : "inherited from workspace"}).`
+                  : "Billing tab rate. Blank inherits the workspace. No rate is set anywhere, so billing reports show hours only."
+              }
+            >
+              <input
+                type="text"
+                inputMode="decimal"
+                name="hourlyRate"
+                defaultValue={project.hourlyRateCents ? (project.hourlyRateCents / 100).toFixed(2) : ""}
+                placeholder={workspaceRateHint}
+                className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent"
+              />
+            </SettingsRow>
+            <SettingsRow
+              label="Billing prompt"
+              hint="Sent with the commit ledger when a billing report runs. Blank inherits system/default."
+            >
+              <textarea
+                name="billingPrompt"
+                rows={4}
+                defaultValue={project.billingPrompt ?? ""}
+                placeholder={DEFAULT_BILLING_PROMPT}
+                className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent"
               />
             </SettingsRow>
             <SettingsRow
