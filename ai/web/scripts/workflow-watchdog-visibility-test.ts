@@ -121,8 +121,12 @@ for (const page of [
     `${page} selects the execution state for its board cards`,
   );
   assert(
-    source.includes("executionState: t.executionState?.state ?? null"),
-    `${page} maps the execution state onto the board task`,
+    source.includes("executionState: actorVisibility.excludeAgentRecords ? null : t.executionState?.state ?? null"),
+    `${page} maps execution state for Owner/Admin while excluding it from Customer board payloads`,
+  );
+  assert(
+    source.includes("executionReason: actorVisibility.excludeAgentRecords ? null : t.executionState?.reasonDetail ?? null"),
+    `${page} maps execution reason for Owner/Admin while excluding it from Customer board payloads`,
   );
 }
 

@@ -14,6 +14,7 @@
     { "file": "lib/tasks/repository-state.ts", "reason": "exact repository-run mechanical state helper" },
     { "file": "lib/tasks/workflow-outbox-drain.ts", "reason": "durable workflow effect state engine" },
     { "file": "lib/tasks/workflow-reconciler.ts", "reason": "durable workflow recovery state engine" },
+    { "file": "lib/tasks/hard-reset.ts", "reason": "owner-triggered two-phase hard-reset kernel: quiesces all durable dispatch paths before repository cleanup, then purges and reinitializes task workflow state after reset-token fencing" },
     { "file": "scripts/pm-verify-branch-pushed.ts", "reason": "exact schema-v2 repository validation worker" }
   ],
   "boundaries": []

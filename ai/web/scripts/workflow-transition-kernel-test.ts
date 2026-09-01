@@ -248,10 +248,15 @@ async function main() {
       "app/(app)/workspaces/(landing)/page.tsx",
     ]) {
       const source = readSource(rel);
-      assert(source.includes("submitBrowserStatusOverride"), `${rel} must submit the browser override command`);
+      assert(!source.includes("submitBrowserStatusOverride"), `${rel} must not own browser status submissions`);
       assert(!/moveTaskStatus|transitionTask\(|applyTaskTransition\(/.test(source), `${rel} must have no direct status writer`);
       assert(!source.includes("recordLegacyWorkflowBoundaryInvocation"), `${rel} must not be a legacy boundary`);
     }
+
+    const taskDetailSource = readSource("app/(app)/projects/[slug]/tasks/[taskId]/page.tsx");
+    assert(taskDetailSource.includes("submitBrowserStatusOverride"), "the task detail page must submit the browser override command");
+    assert(!/moveTaskStatus|transitionTask\(|applyTaskTransition\(/.test(taskDetailSource), "the task detail page must have no direct status writer");
+    assert(!taskDetailSource.includes("recordLegacyWorkflowBoundaryInvocation"), "the task detail page must not be a legacy boundary");
 
     await db.$disconnect();
     console.log("[workflow-transition-kernel] PASS");
