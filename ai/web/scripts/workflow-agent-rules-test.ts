@@ -397,7 +397,8 @@ for (const pagePath of [
   "app/(app)/workspaces/(landing)/page.tsx",
 ]) {
   const pageSource = readFileSync(join(root, pagePath), "utf8");
-  assert(pageSource.includes("submitBrowserStatusOverride"), `${pagePath} must submit the canonical human override command`);
+  assert(!pageSource.includes("submitBrowserStatusOverride"), `${pagePath} must not own browser status submissions`);
+  assert(!/moveTaskStatus|transitionTask\(|applyTaskTransition\(/.test(pageSource), `${pagePath} must have no direct status writer`);
   assert(!pageSource.includes("runTaskReviewHandoff"), `${pagePath} must not run Review automation outside the command`);
   assert(!pageSource.includes("ensureTaskCodeWorktree"), `${pagePath} must not prepare a worktree for a blocked human override`);
 }
