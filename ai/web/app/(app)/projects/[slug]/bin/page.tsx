@@ -80,7 +80,7 @@ export default async function BinPage({
           Soft-deleted Epics and Tasks. Anything left here for more than{" "}
           {PURGE_TTL_DAYS} days is hard-deleted by the hourly purge job.
         </p>
-        {viewer.isOwner ? <EmptyBinButton projectSlug={slug} disabled={!hasDeletedRows} /> : null}
+        {viewer.canAccessOwnerFeatures ? <EmptyBinButton projectSlug={slug} disabled={!hasDeletedRows} /> : null}
       </div>
 
       {!hasDeletedRows ? (
@@ -114,7 +114,7 @@ export default async function BinPage({
                         >
                           {e.deletedAt ? timeAgo(e.deletedAt) : ""}
                         </time>
-                        {e.deletedBy ? (
+                        {viewer.agentVisibility !== "hidden" && e.deletedBy ? (
                           <>
                             {" "}by @{e.deletedBy.username}
                             {e.deletedBy.kind === "agent" ? " (agent)" : ""}
@@ -193,7 +193,7 @@ export default async function BinPage({
                         >
                           {t.deletedAt ? timeAgo(t.deletedAt) : ""}
                         </time>
-                        {t.deletedBy ? (
+                        {viewer.agentVisibility !== "hidden" && t.deletedBy ? (
                           <>
                             {" "}by @{t.deletedBy.username}
                             {t.deletedBy.kind === "agent" ? " (agent)" : ""}

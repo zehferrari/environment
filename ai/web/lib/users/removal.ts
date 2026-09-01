@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
+import { hasImmutableOwnerCapability } from "@/lib/auth/roles";
 import { db } from "@/lib/db";
 
 // Deleting an account should never erase or detach work history. Project
@@ -25,6 +26,8 @@ const REMOVAL_BLOCKERS = [
   { key: "comments", label: "comments" },
   { key: "deletedComments", label: "deleted comments" },
   { key: "activity", label: "activity log entries" },
+  { key: "accessAuditsAsActor", label: "access-audit entries (as actor)" },
+  { key: "accessAuditsAsAffected", label: "access-audit entries" },
   { key: "uploadedAttachments", label: "uploaded attachments" },
   { key: "agentChatMessages", label: "agent chat messages" },
   { key: "deletedAgentChatMessages", label: "agent chat deletion actions" },
@@ -90,6 +93,8 @@ const removalCountSelect = {
   comments: true,
   deletedComments: true,
   activity: true,
+  accessAuditsAsActor: true,
+  accessAuditsAsAffected: true,
   uploadedAttachments: true,
   agentChatMessages: true,
   deletedAgentChatMessages: true,
@@ -181,7 +186,7 @@ export async function getHumanUserRemovalStatus(
     exists: true,
     isHuman: user.kind === "human",
     isOwner: user.isOwner,
-    removable: user.kind === "human" && !user.isOwner && blockers.length === 0,
+    removable: user.kind === "human" && !hasImmutableOwnerCapability(user) && blockers.length === 0,
     blockers,
   };
 }

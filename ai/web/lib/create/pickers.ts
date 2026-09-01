@@ -123,7 +123,9 @@ export async function loadProjectDefaults(projectSlug: string): Promise<{
   defaultReviewerId: string | null;
 }> {
   const ctx = await resolveProject(projectSlug);
-  if (!ctx) return { defaultAssigneeId: null, defaultReviewerId: null };
+  if (!ctx?.viewer.canAccessOwnerFeatures) {
+    return { defaultAssigneeId: null, defaultReviewerId: null };
+  }
   const project = await db.project.findUnique({
     where: { id: ctx.project.id },
     select: { defaultAssigneeId: true, defaultReviewerId: true },

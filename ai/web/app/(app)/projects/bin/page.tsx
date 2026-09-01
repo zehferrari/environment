@@ -2,6 +2,7 @@ import Link from "next/link";
 import { db } from "@/lib/db";
 import { restoreProject } from "@/lib/projects/actions";
 import {
+  accessibleAttachmentWhere,
   accessibleEpicWhere,
   accessibleProjectWhere,
   accessibleTaskWhere,
@@ -40,14 +41,7 @@ export default async function ProjectBinPage() {
         select: {
           epics: { where: accessibleEpicWhere(viewer) },
           tasks: { where: accessibleTaskWhere(viewer) },
-          attachments: {
-            where: {
-              OR: [
-                { task: { is: accessibleTaskWhere(viewer) } },
-                { epic: { is: accessibleEpicWhere(viewer) } },
-              ],
-            },
-          },
+          attachments: { where: accessibleAttachmentWhere(viewer) },
         },
       },
     },
@@ -85,11 +79,11 @@ export default async function ProjectBinPage() {
                   {p._count.tasks === 1 ? "" : "s"} · {p._count.attachments} file
                   {p._count.attachments === 1 ? "" : "s"} · deleted{" "}
                   {p.deletedAt ? timeAgo(p.deletedAt) : "?"}
-                  {p.deletedBy ? ` by @${p.deletedBy.username}` : ""} ·{" "}
+                  {viewer.agentVisibility !== "hidden" && p.deletedBy ? ` by @${p.deletedBy.username}` : ""} ·{" "}
                   {p.deletedAt ? `${daysLeft(p.deletedAt)}d left` : ""}
                 </div>
               </div>
-              {viewer.isOwner ? <form action={restoreProject}>
+              {viewer.canAccessOwnerFeatures ? <form action={restoreProject}>
                 <input type="hidden" name="projectSlug" value={p.slug} />
                 <button
                   type="submit"

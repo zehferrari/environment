@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { deleteAttachment } from "@/lib/attachments/actions";
 import AttachmentList from "@/components/attachment-list";
 import {
+  accessibleAttachmentWhere,
   accessibleEpicWhere,
   accessibleProjectWhere,
   accessibleTaskWhere,
@@ -32,14 +33,14 @@ export default async function ProjectLibraryPage({
   // appear in the bin, not the library. Project-owned rows have neither
   // scoped target and remain visible here.
   const attachments = await db.attachment.findMany({
-    where: {
+    where: accessibleAttachmentWhere(viewer, {
       projectId: project.id,
       OR: [
         { taskId: null, epicId: null },
         { task: accessibleTaskWhere(viewer, { deletedAt: null }) },
         { epic: accessibleEpicWhere(viewer, { deletedAt: null }) },
       ],
-    },
+    }),
     orderBy: { createdAt: "desc" },
     include: {
       uploader: { select: { username: true, kind: true } },
@@ -76,7 +77,7 @@ export default async function ProjectLibraryPage({
                 : `/projects/${slug}`;
             return {
               ...a,
-              uploader: !viewer.isOwner && a.uploader?.kind === "agent"
+              uploader: !viewer.canAccessOwnerFeatures && a.uploader?.kind === "agent"
                 ? (actorVisibility.owner ? { username: actorVisibility.owner.username } : null)
                 : a.uploader,
               contextLabel,

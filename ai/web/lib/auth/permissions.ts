@@ -1,33 +1,135 @@
 import type { Prisma } from "@prisma/client";
+import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
+import {
+  agentVisibilityForRole,
+  hasAdminRole,
+  hasOwnerRole,
+  isActiveOwnerPrincipal,
+  resolveHumanRole,
+  viewerExperienceForRole,
+  type AgentVisibilityMode,
+  type HumanRole,
+} from "@/lib/auth/roles";
 import { SESSION_RECOVERY_PATH } from "@/lib/auth/session-recovery";
+import {
+  resolveOwnerPreviewTarget,
+  type PreviewActor,
+} from "@/lib/auth/preview";
+import { PREVIEW_COOKIE_NAME } from "@/lib/auth/preview-cookie";
 import { db } from "@/lib/db";
+import {
+  hiddenAttachmentWhere,
+  hiddenCommentWhere,
+  visibleActivityRecordWhere,
+} from "@/lib/users/agent-content-policy";
+
+export {
+  AGENT_VISIBILITY_MODES,
+  HUMAN_ROLES,
+  agentVisibilityForRole,
+  hasAdminRole,
+  hasCustomerRole,
+  hasImmutableOwnerCapability,
+  hasOwnerRole,
+  hasRole,
+  isActiveOwnerPrincipal,
+  customerSafeWorkflowLabel,
+  epicDetailTabsForRole,
+  resolveHumanRole,
+  taskDetailTabsForRole,
+  viewerExperienceForRole,
+} from "@/lib/auth/roles";
+export type { AgentVisibilityMode, HumanRole, ViewerExperience } from "@/lib/auth/roles";
 
 export type Viewer = {
   id: string;
   username: string;
   kind: "human" | "agent";
-  isOwner: boolean;
+  role: HumanRole | null;
+  agentVisibility: AgentVisibilityMode;
+  /** Centralized compatibility capability for existing Owner-only surfaces. */
+  canAccessOwnerFeatures: boolean;
+  /**
+   * Present only while an authenticated Owner is reading through another
+   * human's real policy identity. Mutations are fenced at middleware before
+   * they can reach a server action or browser API route.
+   */
+  preview?: {
+    actor: PreviewActor;
+    targetUserId: string;
+  } | null;
 };
 
-export async function getViewer(): Promise<Viewer | null> {
-  const session = await auth();
-  const id = session?.user?.id;
-  if (!id) return null;
-
+async function loadViewerByUserId(id: string): Promise<Viewer | null> {
   const user = await db.user.findUnique({
     where: { id },
-    select: { id: true, username: true, kind: true, status: true, isOwner: true },
+    select: {
+      id: true,
+      username: true,
+      kind: true,
+      status: true,
+      isOwner: true,
+      rolePermission: { select: { name: true } },
+    },
   });
   if (!user || user.status !== "active") return null;
+
+  const role = resolveHumanRole(user);
 
   return {
     id: user.id,
     username: user.username,
     kind: user.kind === "agent" ? "agent" : "human",
-    isOwner: user.kind === "human" && user.isOwner,
+    role,
+    agentVisibility: agentVisibilityForRole(role),
+    canAccessOwnerFeatures: role === "owner",
   };
+}
+
+/** The real authenticated actor, never replaced by preview state. */
+export async function getAuthenticatedViewer(): Promise<Viewer | null> {
+  const session = await auth();
+  const id = session?.user?.id;
+  return id ? loadViewerByUserId(id) : null;
+}
+
+export async function getViewer(): Promise<Viewer | null> {
+  const actor = await getAuthenticatedViewer();
+  if (!actor) return null;
+
+  const rawPreview = (await cookies()).get(PREVIEW_COOKIE_NAME)?.value;
+  if (!rawPreview) return actor;
+
+  const target = await resolveOwnerPreviewTarget(actor, rawPreview);
+  // A stale, forged, or actor-mismatched cookie is a rejected preview entry,
+  // not a reason to silently expose the authenticated Owner experience.
+  if (!target) redirect("/api/preview/exit?reason=invalid");
+  return {
+    ...target,
+    preview: {
+      actor: {
+        id: actor.id,
+        username: actor.username,
+        kind: "human",
+        role: "owner",
+      },
+      targetUserId: target.id,
+    },
+  };
+}
+
+/**
+ * Session-free viewer resolution by user id (ENV-168). Long-lived stream
+ * guards re-check authorization after an access-change hub event or on their
+ * heartbeat; auth()/headers() are not available inside a streaming interval,
+ * so the check re-reads role/status from the database — authorization never
+ * derives from JWT claims. Returns null when the account is gone or
+ * deactivated, which stream guards treat as a terminal authz close.
+ */
+export async function getViewerByUserId(userId: string): Promise<Viewer | null> {
+  return loadViewerByUserId(userId);
 }
 
 export async function requireViewer(): Promise<Viewer> {
@@ -43,7 +145,7 @@ export async function requireViewer(): Promise<Viewer> {
 
 export async function requireOwner(): Promise<Viewer> {
   const viewer = await requireViewer();
-  if (!viewer.isOwner) throw new Error("Not authorized");
+  if (!hasOwnerRole(viewer)) throw new Error("Not authorized");
   return viewer;
 }
 
@@ -53,15 +155,15 @@ export async function isOwnerUserId(userId: string | null | undefined): Promise<
     where: { id: userId },
     select: { kind: true, status: true, isOwner: true },
   });
-  return Boolean(user?.kind === "human" && user.status === "active" && user.isOwner);
+  return isActiveOwnerPrincipal(user);
 }
 
 export function hasGlobalProjectAccess(viewer: Viewer): boolean {
-  return viewer.isOwner;
+  return hasOwnerRole(viewer);
 }
 
 export function projectAccessWhere(viewer: Viewer): Prisma.ProjectWhereInput {
-  if (viewer.isOwner) return {};
+  if (hasGlobalProjectAccess(viewer)) return {};
   // Browser-authenticated agent accounts are never PM viewers. Native agent
   // workflows use their scoped bearer/token APIs instead of this session path.
   if (viewer.kind === "agent") return { id: { equals: "__no-browser-agent-access__" } };
@@ -77,6 +179,76 @@ export function accessibleProjectWhere(
 }
 
 /**
+ * User identities are project data too. Customers may resolve only humans in
+ * their scope. Admins additionally retain agent identities that participate in
+ * an accessible project, while agents that exist only outside that scope stay
+ * undiscoverable through user and avatar reads.
+ */
+export function accessibleUserWhere(
+  viewer: Viewer,
+  where: Prisma.UserWhereInput = {},
+): Prisma.UserWhereInput {
+  if (hasOwnerRole(viewer)) return where;
+  if (viewer.kind === "agent") {
+    return { AND: [where, { id: { equals: "__no-browser-agent-user-access__" } }] };
+  }
+  const projectWhere = projectAccessWhere(viewer);
+  const humanWhere: Prisma.UserWhereInput = {
+    kind: "human",
+    OR: [
+      { id: viewer.id },
+      { isOwner: true },
+      { projectMembers: { some: { project: projectWhere } } },
+    ],
+  };
+  if (viewer.agentVisibility === "hidden") {
+    return { AND: [where, humanWhere] };
+  }
+
+  const taskWhere = accessibleTaskWhere(viewer);
+  const epicWhere = accessibleEpicWhere(viewer);
+  const agentWhere: Prisma.UserWhereInput = {
+    kind: "agent",
+    OR: [
+      { assignedTasks: { some: taskWhere } },
+      { actingManagerOf: { some: taskWhere } },
+      { reportedTasks: { some: taskWhere } },
+      { actingManagerOfEpic: { some: epicWhere } },
+      { reportedEpics: { some: epicWhere } },
+      { epicWorkerAssignments: { some: { epic: epicWhere } } },
+      { defaultAssigneeForProjects: { some: projectWhere } },
+      { defaultReviewerForProjects: { some: projectWhere } },
+      { managerAssignableProjects: { some: { project: projectWhere } } },
+      {
+        comments: {
+          some: {
+            OR: [
+              { task: taskWhere },
+              { epic: epicWhere },
+            ],
+          },
+        },
+      },
+      { uploadedAttachments: { some: { project: projectWhere } } },
+      { activity: { some: { project: projectWhere } } },
+      { agentChatMessages: { some: { project: projectWhere } } },
+      {
+        agent: {
+          workspacePools: {
+            some: {
+              workspace: {
+                projects: { some: { project: projectWhere } },
+              },
+            },
+          },
+        },
+      },
+    ],
+  };
+  return { AND: [where, { OR: [humanWhere, agentWhere] }] };
+}
+
+/**
  * Private Epics are owner-only. This applies to agent contexts as well as
  * human member sessions so private work cannot be inferred through workflows.
  */
@@ -87,7 +259,7 @@ export function accessibleEpicWhere(
   const access = projectAccessWhere(viewer);
   const clauses: Prisma.EpicWhereInput[] = [where];
   if (Object.keys(access).length > 0) clauses.push({ project: access });
-  if (!viewer.isOwner) clauses.push({ private: false });
+  if (!hasOwnerRole(viewer)) clauses.push({ private: false });
   return clauses.length === 1 ? where : { AND: clauses };
 }
 
@@ -102,7 +274,7 @@ export function accessibleTaskWhere(
   const access = projectAccessWhere(viewer);
   const clauses: Prisma.TaskWhereInput[] = [where];
   if (Object.keys(access).length > 0) clauses.push({ project: access });
-  if (!viewer.isOwner) {
+  if (!hasOwnerRole(viewer)) {
     clauses.push({
       private: false,
       AND: [
@@ -119,15 +291,56 @@ export function accessibleTaskWhere(
   return clauses.length === 1 ? where : { AND: clauses };
 }
 
+/** Project/item authorization for comment readers, plus Customer redaction. */
+export function accessibleCommentWhere(
+  viewer: Viewer,
+  where: Prisma.CommentWhereInput = {},
+): Prisma.CommentWhereInput {
+  const clauses: Prisma.CommentWhereInput[] = [
+    where,
+    {
+      OR: [
+        { task: { is: accessibleTaskWhere(viewer) } },
+        { epic: { is: accessibleEpicWhere(viewer) } },
+      ],
+    },
+  ];
+  const hidden = hiddenCommentWhere(viewer);
+  if (Object.keys(hidden).length > 0) clauses.push(hidden);
+  return { AND: clauses };
+}
+
+/** Project/item authorization for attachment lists and direct downloads. */
+export function accessibleAttachmentWhere(
+  viewer: Viewer,
+  where: Prisma.AttachmentWhereInput = {},
+): Prisma.AttachmentWhereInput {
+  const clauses: Prisma.AttachmentWhereInput[] = [
+    where,
+    { project: { is: accessibleProjectWhere(viewer) } },
+    {
+      OR: [
+        { task: { is: accessibleTaskWhere(viewer) } },
+        { epic: { is: accessibleEpicWhere(viewer) } },
+        { taskId: null, epicId: null },
+      ],
+    },
+  ];
+  const hidden = hiddenAttachmentWhere(viewer);
+  if (Object.keys(hidden).length > 0) clauses.push(hidden);
+  return { AND: clauses };
+}
+
 export async function accessibleActivityWhere(
   viewer: Viewer,
   where: Prisma.ActivityLogWhereInput = {},
 ): Promise<Prisma.ActivityLogWhereInput> {
-  if (viewer.isOwner) return where;
+  if (hasOwnerRole(viewer)) return where;
   if (viewer.kind === "agent") {
     return { AND: [where, { id: { in: [] } }] };
   }
 
+  const projectAccess = projectAccessWhere(viewer);
   const visibleEpicIds = (await db.epic.findMany({
     where: accessibleEpicWhere(viewer),
     select: { id: true },
@@ -153,10 +366,16 @@ export async function accessibleActivityWhere(
   return {
     AND: [
       where,
+      visibleActivityRecordWhere(viewer),
       {
         OR: [
           { task: { is: accessibleTaskWhere(viewer) } },
-          nonTaskActivity,
+          {
+            AND: [
+              { project: { is: projectAccess } },
+              nonTaskActivity,
+            ],
+          },
         ],
       },
     ],
@@ -204,6 +423,51 @@ export async function requireProjectAccess(
   if (!(await canAccessProject(viewer, target))) throw new Error("Not authorized");
 }
 
+export type AccessManagementTarget = {
+  id: string;
+  kind: "human" | "agent";
+  role: HumanRole | null;
+};
+
+async function requestedProjectsAreWithinScope(
+  viewer: Viewer,
+  projectIds: readonly string[],
+): Promise<boolean> {
+  const uniqueIds = [...new Set(projectIds.filter(Boolean))];
+  if (uniqueIds.length === 0 || hasOwnerRole(viewer)) return true;
+  const count = await db.project.count({
+    where: accessibleProjectWhere(viewer, { id: { in: uniqueIds } }),
+  });
+  return count === uniqueIds.length;
+}
+
+/**
+ * Owner may manage any non-Owner human. Admin may manage Customers only, may
+ * never target themselves, and may grant/revoke only projects already in the
+ * Admin's membership scope. Customers and browser agent sessions cannot
+ * manage access.
+ */
+export async function canManageAccessFor(
+  viewer: Viewer,
+  target: AccessManagementTarget,
+  projectIds: readonly string[] = [],
+): Promise<boolean> {
+  if (viewer.kind !== "human" || target.kind !== "human" || target.role === "owner") return false;
+  if (hasOwnerRole(viewer)) return true;
+  if (!hasAdminRole(viewer) || target.id === viewer.id || target.role !== "customer") return false;
+  return requestedProjectsAreWithinScope(viewer, projectIds);
+}
+
+export async function requireCanManageAccessFor(
+  viewer: Viewer,
+  target: AccessManagementTarget,
+  projectIds: readonly string[] = [],
+): Promise<void> {
+  if (!(await canManageAccessFor(viewer, target, projectIds))) {
+    throw new Error("Not authorized to manage this user's access.");
+  }
+}
+
 export async function canAccessEpic(viewer: Viewer, epicId: string): Promise<boolean> {
   const epic = await db.epic.findFirst({
     where: accessibleEpicWhere(viewer, { id: epicId }),
@@ -232,7 +496,7 @@ export async function assertAgentAssignmentAllowed(
   viewer: Viewer,
   targetUserIds: Array<string | null | undefined>,
 ): Promise<void> {
-  if (viewer.isOwner) return;
+  if (hasOwnerRole(viewer)) return;
   const ids = [...new Set(targetUserIds.filter((id): id is string => Boolean(id)))];
   if (ids.length === 0) return;
   const agent = await db.user.findFirst({

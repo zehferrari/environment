@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { getToken } from "next-auth/jwt";
+import { PREVIEW_COOKIE_NAME } from "@/lib/auth/preview-cookie";
 
 const PUBLIC_PATHS = [
   "/login",
@@ -143,8 +144,38 @@ function forwardedUrl(req: NextRequest, pathname: string) {
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
+  // Session recovery must remain reachable if an expired Owner session leaves
+  // a stale preview cookie. Activation is still authenticated in its route.
+  if (isPublic(pathname)) return NextResponse.next();
+
+  // Preview is a read-only verification context. This request-level fence
+  // runs before browser APIs and Next Server Actions (which POST to the page
+  // URL), so no mutation handler can execute while the preview cookie exists.
+  // Agent/Bearer callbacks do not carry browser cookies and remain unaffected.
+  const previewRequested = Boolean(req.cookies.get(PREVIEW_COOKIE_NAME)?.value);
+  const previewControl = pathname === "/api/preview" || pathname === "/api/preview/exit";
+  if (previewRequested && !previewControl && !["GET", "HEAD", "OPTIONS"].includes(req.method)) {
+    return NextResponse.json(
+      { error: "Preview mode is read-only. Exit preview to make changes." },
+      { status: 403, headers: { "Cache-Control": "no-store" } },
+    );
+  }
+  // These GET surfaces authenticate the real session directly because they
+  // serve Owner fleet operations. They must not leak through an Admin preview.
   if (
-    isPublic(pathname) ||
+    previewRequested
+    && !previewControl
+    && (
+      pathname === "/rotate-password"
+      || pathname.startsWith("/agents/")
+      || pathname.startsWith("/api/agents/")
+      || pathname.startsWith("/api/openclaw/")
+    )
+  ) {
+    return new NextResponse("Not found", { status: 404, headers: { "Cache-Control": "no-store" } });
+  }
+
+  if (
     isTokenScopedAgentCallback(req, pathname) ||
     isTokenScopedAttachmentRead(req, pathname) ||
     isOpenClawPmChannelReply(pathname) ||

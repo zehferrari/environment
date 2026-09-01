@@ -1,5 +1,12 @@
 import { revalidateTag, unstable_cache } from "next/cache";
 import { db } from "@/lib/db";
+import {
+  accessibleAttachmentWhere,
+  accessibleCommentWhere,
+  accessibleEpicWhere,
+  accessibleTaskWhere,
+  type Viewer,
+} from "@/lib/auth/permissions";
 
 type RepoVerifyActivityRow = {
   kind: string;
@@ -89,7 +96,7 @@ export function revalidateTaskAttachments(taskId: string, revalidate: Revalidate
   revalidate(taskCacheTag.activity(taskId));
 }
 
-export function getCachedTaskDetailShell(taskId: string) {
+async function getRawCachedTaskDetailShell(taskId: string) {
   return unstable_cache(
     async () => db.task.findUnique({
       where: { id: taskId },
@@ -298,9 +305,113 @@ export function getCachedTaskDetailShell(taskId: string) {
   )();
 }
 
-export function getCachedTaskComments(taskId: string) {
+type CustomerProjectableTaskShell = {
+  createdAt: Date;
+  project: Record<string, unknown> & {
+    repositoryPath: string | null;
+    deploymentProductionBranch: string | null;
+  };
+  epic: (Record<string, unknown> & {
+    actingManagerId: string | null;
+    actingManager: unknown;
+    branchName: string | null;
+    commitPrefix: string | null;
+  }) | null;
+  assigneeId: string | null;
+  assignee: unknown;
+  actingManagerId: string | null;
+  actingManager: unknown;
+  approvedById: string | null;
+  approvedBy: unknown;
+  approvedOn: Date | null;
+  archivedById: string | null;
+  archivedBy: unknown;
+  actionPlan: unknown;
+  checklist: unknown[];
+  executionState: unknown;
+  repositoryRun: unknown;
+  branchName: string | null;
+  commitPrefix: string | null;
+  alertReporter: boolean;
+  statusChangedAt: Date | null;
+  updatedAt: Date;
+};
+
+export function projectTaskDetailShellForViewer<T extends CustomerProjectableTaskShell>(
+  task: T,
+  viewer: Pick<Viewer, "agentVisibility">,
+) {
+  // The raw shell is deliberately shared for cache efficiency, but Customer
+  // requests must never receive internal workflow/source-control state from
+  // an Owner/Admin cache fill. Project the cached value before it reaches a
+  // page/RSC payload; Admin masked-mode keeps the established shell intact.
+  return viewer.agentVisibility === "hidden"
+    ? {
+        ...task,
+        assigneeId: null,
+        assignee: null,
+        actingManagerId: null,
+        actingManager: null,
+        approvedById: null,
+        approvedBy: null,
+        approvedOn: null,
+        archivedById: null,
+        archivedBy: null,
+        actionPlan: null,
+        checklist: [],
+        executionState: null,
+        repositoryRun: null,
+        branchName: null,
+        commitPrefix: null,
+        alertReporter: false,
+        statusChangedAt: null,
+        updatedAt: task.createdAt,
+        project: {
+          ...task.project,
+          repositoryPath: null,
+          deploymentProductionBranch: null,
+        },
+        epic: task.epic
+          ? {
+              ...task.epic,
+              actingManagerId: null,
+              actingManager: null,
+              branchName: null,
+              commitPrefix: null,
+            }
+          : null,
+      }
+    : task;
+}
+
+export async function getCachedTaskDetailShell(taskId: string, viewer?: Viewer) {
+  const task = await getRawCachedTaskDetailShell(taskId);
+  if (!task || !viewer) return task;
+
+  const projectedTask = projectTaskDetailShellForViewer(task, viewer);
+
+  const relatedIds = [...new Set([
+    ...(projectedTask.blockedById ? [projectedTask.blockedById] : []),
+    ...projectedTask.dependencies.map(({ prerequisite }) => prerequisite.id),
+  ])];
+  if (relatedIds.length === 0) return projectedTask;
+
+  const visible = new Set((await db.task.findMany({
+    where: accessibleTaskWhere(viewer, { id: { in: relatedIds } }),
+    select: { id: true },
+  })).map(({ id }) => id));
+  const blockedByVisible = projectedTask.blockedById ? visible.has(projectedTask.blockedById) : true;
+  return {
+    ...projectedTask,
+    blockedById: blockedByVisible ? projectedTask.blockedById : null,
+    blockedBy: blockedByVisible ? projectedTask.blockedBy : null,
+    dependencies: projectedTask.dependencies.filter(({ prerequisite }) => visible.has(prerequisite.id)),
+  };
+}
+
+export function getCachedTaskComments(taskId: string, viewer?: Viewer) {
   return db.comment.findMany({
-    where: { taskId },
+    where: viewer ? accessibleCommentWhere(viewer, { taskId }) : { taskId },
     // Soft-deleted comments are returned to humans on the task page so
     // they can render the collapsed dotted divider. Agent context queries
     // filter deletedAt: null upstream so agents never see deleted bodies.
@@ -335,10 +446,21 @@ export function getCachedTaskComments(taskId: string) {
         },
       },
     },
-  }).then(sortByCreatedAtAsc);
+  }).then((rows) => sortByCreatedAtAsc(rows).map((row) => (
+    viewer?.agentVisibility === "hidden" && row.deletedBy?.kind === "agent"
+      ? { ...row, deletedById: null, deletedBy: null }
+      : row
+  )));
 }
 
-export function getCachedTaskAttachments(taskId: string) {
+export function getCachedTaskAttachments(taskId: string, viewer?: Viewer) {
+  if (viewer) {
+    return db.attachment.findMany({
+      where: accessibleAttachmentWhere(viewer, { taskId }),
+      orderBy: { createdAt: "desc" },
+      include: { uploader: { select: { username: true, kind: true } } },
+    });
+  }
   return unstable_cache(
     async () => db.attachment.findMany({
       where: { taskId },
@@ -350,7 +472,14 @@ export function getCachedTaskAttachments(taskId: string) {
   )();
 }
 
-export function getCachedProjectEpics(projectId: string) {
+export function getCachedProjectEpics(projectId: string, viewer?: Viewer) {
+  if (viewer) {
+    return db.epic.findMany({
+      where: accessibleEpicWhere(viewer, { projectId, archivedAt: null, deletedAt: null }),
+      orderBy: [{ status: "asc" }, { title: "asc" }],
+      select: { id: true, title: true, status: true, private: true },
+    });
+  }
   return unstable_cache(
     async () => db.epic.findMany({
       where: {

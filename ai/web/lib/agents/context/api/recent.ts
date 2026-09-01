@@ -8,6 +8,7 @@
 // where (a) the agent might not curl the API, and (b) even if they do,
 // the recent exchange would be buried inside a 2000-row history.
 
+import { hasImmutableOwnerCapability } from "@/lib/auth/roles";
 import { db } from "@/lib/db";
 
 const DEFAULT_RECENT_DISCUSSION = 5;
@@ -112,7 +113,7 @@ export function formatRecentBlock(args: {
     for (const m of args.discussion) {
       if (m.id === args.currentMessageId) continue;
       const who = m.sender
-        ? `@${m.sender.username}${m.sender.isOwner ? " (Mission Control owner)" : m.sender.kind === "agent" ? " (agent)" : ""}`
+        ? `@${m.sender.username}${hasImmutableOwnerCapability(m.sender) ? " (Mission Control owner)" : m.sender.kind === "agent" ? " (agent)" : ""}`
         : "(unknown sender)";
       const target = m.targetLabel ? ` → ${m.targetLabel}` : "";
       lines.push(`[${m.createdAt.toISOString()}] ${who}${target}`);
@@ -127,7 +128,7 @@ export function formatRecentBlock(args: {
     for (const c of args.comments) {
       if (c.id === args.currentMessageId) continue;
       const who = c.sender
-        ? `@${c.sender.username}${c.sender.isOwner ? " (Mission Control owner)" : c.sender.kind === "agent" ? " (agent)" : ""}`
+        ? `@${c.sender.username}${hasImmutableOwnerCapability(c.sender) ? " (Mission Control owner)" : c.sender.kind === "agent" ? " (agent)" : ""}`
         : "(unknown author)";
       lines.push(`[${c.createdAt.toISOString()}] ${who}`);
       lines.push(recentBody(c.body));

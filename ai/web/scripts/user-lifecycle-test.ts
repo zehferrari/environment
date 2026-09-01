@@ -235,6 +235,34 @@ async function main() {
       assert.equal(status.removable, true, "transactional eligibility check remains usable");
     });
 
+    // Access-audit history protects the account like any other retained
+    // record (ENV-164): audit rows must survive the account they describe.
+    const auditedUser = await prisma.user.create({
+      data: {
+        username: "audited-lifecycle",
+        email: "audited-lifecycle@example.test",
+        kind: "human",
+        mustRotatePassword: false,
+      },
+    });
+    await prisma.accessAuditLog.create({
+      data: {
+        actorUserId: owner.id,
+        affectedUserId: auditedUser.id,
+        action: "grant",
+        oldRole: null,
+        newRole: "customer",
+        oldProjectIds: "[]",
+        newProjectIds: "[]",
+      },
+    });
+    const auditedStatus = await getHumanUserRemovalStatus(auditedUser.id);
+    assert.equal(auditedStatus.removable, false, "access-audit history blocks removal");
+    assert.ok(
+      auditedStatus.blockers.some((blocker) => blocker.key === "accessAuditsAsAffected"),
+      "the access-audit blocker is surfaced with its label",
+    );
+
     console.log("user-lifecycle-test: ok");
   } finally {
     await db?.$disconnect();

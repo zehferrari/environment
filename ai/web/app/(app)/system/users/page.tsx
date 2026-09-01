@@ -1,12 +1,10 @@
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
-import { getViewer } from "@/lib/auth/permissions";
+import { getViewer, hasImmutableOwnerCapability } from "@/lib/auth/permissions";
 import {
-  inviteHumanUser,
   resetHumanPassword,
   updateHumanProfile,
-  updateHumanProjectAccess,
 } from "@/lib/users/actions";
 import { getHumanUserRemovalStatus } from "@/lib/users/removal";
 import {
@@ -14,42 +12,76 @@ import {
   publicOriginFromHeaders,
 } from "@/lib/http/public-origin";
 import UserLifecycleControls from "./user-lifecycle-controls";
+import InviteUsersForm, { EditAccessForm } from "./access-forms";
 
 export const dynamic = "force-dynamic";
 
+// Owner sees full account management. An Admin gets a scoped view: only
+// in-scope Customers, invitation as Customer, combined access editing
+// without role controls. Every mutation decision is made server-side by
+// the access-policy core (see lib/users/access-management.ts).
 export default async function SystemUsersPage({
   searchParams,
 }: {
   searchParams: Promise<{ invite?: string; reset?: string; resetUser?: string }>;
 }) {
   const [viewer, { invite = "", reset = "", resetUser = "" }] = await Promise.all([getViewer(), searchParams]);
-  if (!viewer?.isOwner) notFound();
+  if (
+    !viewer ||
+    viewer.kind !== "human" ||
+    (viewer.role !== "owner" && viewer.role !== "admin")
+  ) {
+    notFound();
+  }
+  const isOwner = viewer.role === "owner";
+  const isAdmin = viewer.role === "admin";
+
+  // An Admin manages only Customers inside their own project memberships.
+  const adminProjectIds = isAdmin
+    ? (
+        await db.projectMember.findMany({
+          where: { userId: viewer.id },
+          select: { projectId: true },
+        })
+      ).map((membership) => membership.projectId)
+    : [];
 
   const [users, projects] = await Promise.all([
     db.user.findMany({
-      where: { kind: "human" },
+      where: isOwner
+        ? { kind: "human" }
+        : {
+            kind: "human",
+            isOwner: false,
+            rolePermission: { name: "customer" },
+            projectMembers: { some: { projectId: { in: adminProjectIds } } },
+          },
       orderBy: [{ isOwner: "desc" }, { createdAt: "asc" }],
       select: {
         id: true,
         username: true,
         email: true,
         name: true,
+        kind: true,
         status: true,
         isOwner: true,
         avatarUpdatedAt: true,
+        rolePermission: { select: { name: true } },
         projectMembers: { select: { projectId: true } },
       },
     }),
     db.project.findMany({
-      where: { deletedAt: null },
+      where: { deletedAt: null, ...(isAdmin ? { id: { in: adminProjectIds } } : {}) },
       orderBy: { name: "asc" },
       select: { id: true, name: true, slug: true, archivedAt: true },
     }),
   ]);
   const removalStatuses = new Map(
-    await Promise.all(
-      users.map(async (user) => [user.id, await getHumanUserRemovalStatus(user.id)] as const),
-    ),
+    isOwner
+      ? await Promise.all(
+          users.map(async (user) => [user.id, await getHumanUserRemovalStatus(user.id)] as const),
+        )
+      : [],
   );
 
   const invitePath = invite
@@ -72,7 +104,9 @@ export default async function SystemUsersPage({
           <p className="text-caption font-semibold uppercase tracking-wider text-accent">System</p>
           <h1 className="mt-1 text-display font-semibold tracking-tight">Users</h1>
           <p className="mt-1 max-w-2xl text-body text-text-muted">
-            Invite people and control which projects appear in their Mission Control workspace.
+            {isOwner
+              ? "Invite people and control which projects appear in their Mission Control workspace."
+              : "Invite Customers and manage their project access within your own scope."}
           </p>
         </div>
         <div className="rounded-lg border border-line bg-panel-soft px-3 py-2 text-caption text-text-muted">
@@ -88,7 +122,7 @@ export default async function SystemUsersPage({
             readOnly
             value={inviteUrl}
             aria-label="Invitation link"
-            className="mt-2 w-full rounded-lg border border-ok/40 bg-bg px-3 py-2 font-mono text-caption text-text"
+            className="mt-2 w-full rounded-lg border border-ok/40 bg-bg px-4 py-2 font-mono text-caption text-text"
           />
         </section>
       ) : null}
@@ -103,7 +137,7 @@ export default async function SystemUsersPage({
             readOnly
             value={resetUrl}
             aria-label="Password reset link"
-            className="mt-2 w-full rounded-lg border border-ok/40 bg-bg px-3 py-2 font-mono text-caption text-text"
+            className="mt-2 w-full rounded-lg border border-ok/40 bg-bg px-4 py-2 font-mono text-caption text-text"
           />
         </section>
       ) : null}
@@ -115,38 +149,24 @@ export default async function SystemUsersPage({
             The account stays inactive until the person opens the invitation and sets a password.
           </p>
         </div>
-        <form action={inviteHumanUser} className="space-y-5">
-          <div className="grid gap-card md:grid-cols-3">
-            <Field label="Display name">
-              <input name="name" maxLength={120} placeholder="Rachael Smith" className={inputClass} />
-            </Field>
-            <Field label="Username">
-              <input name="username" minLength={3} maxLength={64} pattern="[a-z0-9][a-z0-9._-]{1,62}[a-z0-9]" required placeholder="rachael" autoComplete="off" className={inputClass} />
-            </Field>
-            <Field label="Email">
-              <input name="email" type="email" maxLength={254} required placeholder="rachael@example.com" autoComplete="off" className={inputClass} />
-            </Field>
-          </div>
-          <ProjectGrantGrid projects={projects} />
-          <div className="flex justify-end">
-            <button type="submit" className="rounded-lg bg-accent px-control-x py-control-y text-body font-semibold text-bg shadow-sm hover:opacity-90">
-              Create invitation
-            </button>
-          </div>
-        </form>
+        <InviteUsersForm projects={projects} canAssignRoles={isOwner} />
       </section>
 
       <section aria-labelledby="accounts-heading" className="space-y-4">
         <div>
           <h2 id="accounts-heading" className="text-heading font-semibold tracking-tight">Accounts</h2>
           <p className="mt-1 text-caption text-text-muted">
-            Workspace access is automatic when at least one granted project belongs to that workspace.
+            {isOwner
+              ? "Workspace access is automatic when at least one granted project belongs to that workspace."
+              : "Only Customers inside your projects are listed. Profiles, passwords, and account status stay with the Owner."}
           </p>
         </div>
         {users.map((user) => {
           const grantedIds = new Set(user.projectMembers.map((membership) => membership.projectId));
           const removalStatus = removalStatuses.get(user.id);
-          const protectedAccount = user.isOwner || user.id === viewer.id;
+          const isImmutableOwner = hasImmutableOwnerCapability(user);
+          const protectedAccount = isImmutableOwner || user.id === viewer.id;
+          const userRole = user.isOwner ? "owner" : user.rolePermission?.name === "admin" ? "admin" : "customer";
           return (
             <article key={user.id} className="rounded-panel border border-line bg-panel p-card-lg shadow-sm">
               <div className="flex flex-wrap items-start gap-card">
@@ -161,61 +181,89 @@ export default async function SystemUsersPage({
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <h3 className="text-base font-semibold tracking-tight">{user.name ?? user.username}</h3>
-                    {user.isOwner ? <Badge tone="owner">Owner</Badge> : null}
+                    {isImmutableOwner ? <Badge tone="owner">Owner</Badge> : null}
+                    {userRole === "admin" ? <Badge tone="owner">Admin</Badge> : null}
                     <Badge tone={user.status === "active" ? "active" : user.status === "deactivated" ? "disabled" : "pending"}>{user.status}</Badge>
                   </div>
                   <p className="mt-1 truncate text-caption text-text-muted">@{user.username} · {user.email}</p>
                 </div>
-                {user.status === "active" ? (
-                  <form action={resetHumanPassword}>
-                    <input type="hidden" name="userId" value={user.id} />
-                    <button type="submit" className="rounded-lg border border-line bg-bg px-control-x py-control-y text-body font-medium hover:border-accent hover:text-accent">
-                      Create password reset link
-                    </button>
-                  </form>
+                {isOwner && user.status === "active" ? (
+                  <div className="flex flex-wrap gap-2">
+                    {!isImmutableOwner ? (
+                      <form action="/api/preview" method="post">
+                        <input type="hidden" name="userId" value={user.id} />
+                        <button
+                          type="submit"
+                          data-owner-preview-trigger
+                          className="rounded-lg border border-amber-500/50 bg-amber-50 px-control-x py-control-y text-body font-semibold text-amber-900 hover:border-amber-700"
+                        >
+                          Preview as {userRole === "admin" ? "Admin" : "Customer"}
+                        </button>
+                      </form>
+                    ) : null}
+                    <form action={resetHumanPassword}>
+                      <input type="hidden" name="userId" value={user.id} />
+                      <button type="submit" className="rounded-lg border border-line bg-bg px-control-x py-control-y text-body font-medium hover:border-accent hover:text-accent">
+                        Create password reset link
+                      </button>
+                    </form>
+                  </div>
                 ) : null}
               </div>
 
               <div className="my-5 border-t border-line" />
 
               <div className="grid gap-6 xl:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
-                <form action={updateHumanProfile} encType="multipart/form-data" className="space-y-3">
-                  <input type="hidden" name="userId" value={user.id} />
-                  <Field label="Display name">
-                    <input name="name" defaultValue={user.name ?? ""} maxLength={120} className={inputClass} />
-                  </Field>
-                  <Field label="Avatar image">
-                    <input type="file" name="avatar" accept="image/png,image/jpeg,image/webp,image/gif" className="block w-full text-caption file:mr-2 file:rounded file:border-0 file:bg-accent file:px-3 file:py-1.5 file:text-caption file:font-medium file:text-bg hover:file:opacity-90" />
-                  </Field>
-                  {user.avatarUpdatedAt ? (
-                    <label className="flex items-center gap-2 text-caption text-text-muted">
-                      <input type="checkbox" name="removeAvatar" />
-                      Remove current avatar
-                    </label>
-                  ) : null}
-                  <button type="submit" className="rounded-lg border border-line bg-bg px-control-x py-control-y text-body font-medium hover:border-accent hover:text-accent">Save profile</button>
-                </form>
-
-                {user.isOwner ? (
+                {isOwner ? (
+                  <form action={updateHumanProfile} encType="multipart/form-data" className="space-y-3">
+                    <input type="hidden" name="userId" value={user.id} />
+                    <Field label="Display name">
+                      <input name="name" defaultValue={user.name ?? ""} maxLength={120} className={inputClass} />
+                    </Field>
+                    <Field label="Avatar image">
+                      <input type="file" name="avatar" accept="image/png,image/jpeg,image/webp,image/gif" className="block w-full text-caption file:mr-2 file:rounded file:border-0 file:bg-accent file:px-3 file:py-1.5 file:text-caption file:font-medium file:text-bg hover:file:opacity-90" />
+                    </Field>
+                    {user.avatarUpdatedAt ? (
+                      <label className="flex items-center gap-2 text-caption text-text-muted">
+                        <input type="checkbox" name="removeAvatar" />
+                        Remove current avatar
+                      </label>
+                    ) : null}
+                    <button type="submit" className="rounded-lg border border-line bg-bg px-control-x py-control-y text-body font-medium hover:border-accent hover:text-accent">Save profile</button>
+                  </form>
+                ) : (
+                  <p className="rounded-lg border border-dashed border-line px-4 py-3 text-caption text-text-muted">
+                    Profiles, passwords, and account status are managed by the Mission Control owner.
+                  </p>
+                )}
+                {isImmutableOwner ? (
                   <div className="rounded-lg border border-dashed border-line px-4 py-3 text-body text-text-muted">
                     The Mission Control owner automatically has access to every project and workspace.
                   </div>
                 ) : (
-                  <form action={updateHumanProjectAccess} className="space-y-3">
-                    <input type="hidden" name="userId" value={user.id} />
-                    <ProjectGrantGrid projects={projects} grantedIds={grantedIds} />
-                    <button type="submit" className="rounded-lg border border-line bg-bg px-control-x py-control-y text-body font-medium hover:border-accent hover:text-accent">Save project access</button>
-                  </form>
+                  <EditAccessForm
+                    user={{
+                      id: user.id,
+                      username: user.username,
+                      displayName: user.name,
+                      role: userRole === "admin" ? "admin" : "customer",
+                      projectIds: [...grantedIds],
+                    }}
+                    projects={projects}
+                    canAssignRoles={isOwner}
+                  />
                 )}
               </div>
 
-              <UserLifecycleControls
-                userId={user.id}
-                username={user.username}
-                status={user.status}
-                protectedAccount={protectedAccount}
-                removable={Boolean(removalStatus?.removable) && !protectedAccount}
-              />
+              {isOwner ? (
+                <UserLifecycleControls
+                  userId={user.id}
+                  username={user.username}
+                  status={user.status}
+                  protectedAccount={protectedAccount}
+                  removable={Boolean(removalStatus?.removable) && !protectedAccount}
+                />
+              ) : null}
             </article>
           );
         })}
@@ -232,35 +280,6 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       <span className="block text-nano font-semibold uppercase tracking-wider text-text-muted">{label}</span>
       {children}
     </label>
-  );
-}
-
-function ProjectGrantGrid({
-  projects,
-  grantedIds = new Set<string>(),
-}: {
-  projects: Array<{ id: string; name: string; slug: string; archivedAt: Date | null }>;
-  grantedIds?: Set<string>;
-}) {
-  return (
-    <fieldset>
-      <legend className="text-nano font-semibold uppercase tracking-wider text-text-muted">Visible projects</legend>
-      {projects.length === 0 ? (
-        <p className="mt-2 text-caption text-text-muted">No projects are available.</p>
-      ) : (
-        <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-          {projects.map((project) => (
-            <label key={project.id} className="flex min-w-0 items-center gap-3 rounded-lg border border-line bg-bg px-3 py-2 text-body hover:border-accent">
-              <input type="checkbox" name="projectId" value={project.id} defaultChecked={grantedIds.has(project.id)} className="h-4 w-4 shrink-0 accent-accent" />
-              <span className="min-w-0">
-                <span className="block truncate font-medium">{project.name}</span>
-                <span className="block truncate text-caption text-text-muted">/{project.slug}{project.archivedAt ? " · archived" : ""}</span>
-              </span>
-            </label>
-          ))}
-        </div>
-      )}
-    </fieldset>
   );
 }
 

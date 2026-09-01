@@ -88,7 +88,14 @@ async function main() {
     const project = await db.project.create({
       data: { slug: "phasee-09-browser", name: "Phase E browser adapters" },
     });
-    const actor = { id: human.id, username: human.username, kind: "human" as const, isOwner: true };
+    const actor = {
+      id: human.id,
+      username: human.username,
+      kind: "human" as const,
+      role: "owner" as const,
+      agentVisibility: "full" as const,
+      canAccessOwnerFeatures: true,
+    };
 
     const overrideTask = await db.task.create({
       data: {

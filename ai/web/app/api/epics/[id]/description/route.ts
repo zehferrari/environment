@@ -6,6 +6,7 @@
 
 import { NextResponse, type NextRequest } from "next/server";
 import { verifyEpicDescriptionWriteToken } from "@/lib/agents/workflow/chat/epic/token";
+import { isActiveOwnerPrincipal } from "@/lib/auth/roles";
 import { db } from "@/lib/db";
 
 export const runtime = "nodejs";
@@ -61,7 +62,7 @@ export async function POST(
       { status: 403 },
     );
   }
-  if (grant.sender?.kind !== "human" || grant.sender.status !== "active" || !grant.sender.isOwner) {
+  if (!isActiveOwnerPrincipal(grant.sender)) {
     return NextResponse.json(
       { error: "Description edit grants must originate from the Mission Control owner" },
       { status: 403 },

@@ -11,7 +11,7 @@ export const dynamic = "force-dynamic";
 // caller must say which one it wants.
 export async function GET(req: NextRequest) {
   const viewer = await getViewer();
-  if (!viewer?.isOwner) {
+  if (!viewer?.canAccessOwnerFeatures) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const repoKey = req.nextUrl.searchParams.get("repoKey");

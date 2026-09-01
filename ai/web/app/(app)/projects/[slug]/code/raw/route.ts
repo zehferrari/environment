@@ -22,7 +22,7 @@ export async function GET(
   try { viewer = await requireViewer(); } catch {
     return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
   }
-  if (!viewer.isOwner) {
+  if (!viewer.canAccessOwnerFeatures) {
     return NextResponse.json({ error: "not_found" }, { status: 404 });
   }
 

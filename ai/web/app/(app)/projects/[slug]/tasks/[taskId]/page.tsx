@@ -49,7 +49,6 @@ import {
 import { validateBlockedBy } from "@/lib/tasks/blocking";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import {
-  canApproveActionPlanForActor,
   isActionableEpicStatus,
 } from "@/lib/tasks/workflow-actors";
 import { syncEpicOnHumanTaskStatus } from "@/lib/epics/sync-on-human-task-move";
@@ -83,6 +82,9 @@ import AutoRefresh from "@/components/auto-refresh";
 import AutoScrollToLatest from "@/components/auto-scroll-to-latest";
 import FocusTaskComment from "@/components/focus-task-comment";
 import TaskCommentStreams from "@/components/task-comment-streams";
+import { PublishedUpdatesPanel } from "@/components/published-updates";
+import { listPublishedForTask, listPublishableSources } from "@/lib/publishing/service";
+import { hasAdminRole, hasOwnerRole } from "@/lib/auth/permissions";
 import ChatRoom from "@/components/chat-room";
 import ActivityTimeline, { type ActivityTimelineRow } from "@/components/activity-timeline";
 import TaskChangesPanel from "@/components/task-changes-panel";
@@ -100,6 +102,7 @@ import {
 import DescriptionField from "@/components/description-field";
 import PrivateToggle from "@/components/private-toggle";
 import { TabsProvider, TabsNav, TabPanel } from "@/components/task-tabs";
+import RoleVisibleTabPanel from "@/components/role-visible-tab-panel";
 import StickyViewportSurface from "@/components/sticky-viewport-surface";
 import PmOptions from "@/components/pm-options";
 import { findPmOptionResolution, parsePmOptions, isPmOptionsTargetedAtCurrentUser } from "@/lib/pm-options";
@@ -109,20 +112,26 @@ import { TaskPrerequisiteEditor } from "./task-prerequisite-editor";
 import DeploymentTab, { DeploymentStatusSelect, canShowDeploymentAction, canShowDeploymentTab, type DeploymentPrRow } from "@/components/deployment-tab";
 import { checkDeploymentStatusWrite, isDeploymentStatus } from "@/lib/deploy/deployment-status";
 import {
+  accessibleActivityWhere,
   accessibleEpicWhere,
   accessibleTaskWhere,
+  accessibleUserWhere,
   assertAgentAssignmentAllowed,
   canAccessTask,
+  customerSafeWorkflowLabel,
   requireProjectAccess,
   requireTaskAccess,
   requireViewer,
+  taskDetailTabsForRole,
   type Viewer,
+  viewerExperienceForRole,
 } from "@/lib/auth/permissions";
 import {
   getActorVisibility,
   serializeVisibleActor,
   serializeVisibleActorAs,
   visibleActivityRows,
+  visibleActivityWhere,
   type ActorVisibility,
 } from "@/lib/users/actor-visibility";
 import { buildAgentRedactor } from "@/lib/users/redact-agents";
@@ -180,8 +189,10 @@ async function updateTask(formData: FormData) {
   const newEpicId = epicRaw === "" ? null : epicRaw;
   const branchRaw = String(formData.get("branchName") ?? "").trim();
   const newBranch = branchRaw === "" ? null : branchRaw;
+  const hasBranchField = formData.has("branchName");
   const commitRaw = String(formData.get("commitPrefix") ?? "").trim();
   const newCommitPrefix = commitRaw === "" ? null : commitRaw;
+  const hasCommitPrefixField = formData.has("commitPrefix");
   const hasAssigneeField = formData.has("assigneeId");
   const assigneeRaw = String(formData.get("assigneeId") ?? "");
   const newAssigneeId = assigneeRaw === "" ? null : assigneeRaw;
@@ -196,10 +207,10 @@ async function updateTask(formData: FormData) {
   const newBlockedById = blockedRaw === "" ? null : blockedRaw;
   const deploymentRaw = String(formData.get("deploymentStatus") ?? "");
   const hasPrivateField = formData.has("privateSubmitted");
-  if (!actor.isOwner && (hasAssigneeField || hasReviewerField || hasReporterField)) {
+  if (!actor.canAccessOwnerFeatures && (hasAssigneeField || hasReviewerField || hasReporterField)) {
     throw new Error("Only the Mission Control owner can change task roles.");
   }
-  if ((hasPrivateField || formData.has("private")) && !actor.isOwner) throw new Error("Not authorized");
+  if ((hasPrivateField || formData.has("private")) && !actor.canAccessOwnerFeatures) throw new Error("Not authorized");
   const newPrivate = formData.get("private") === "on";
 
   if (newStatus !== "" && !COLUMN_IDS.includes(newStatus)) return;
@@ -249,7 +260,7 @@ async function updateTask(formData: FormData) {
 
   const data: Prisma.TaskUpdateInput = {};
   const activity: { kind: string; payload: string }[] = [];
-  const canTriggerAgents = actor.isOwner;
+  const canTriggerAgents = actor.canAccessOwnerFeatures;
   let assignmentTarget: { id: string; kind: string; username: string } | null =
     null;
   let assignmentChanged = false;
@@ -340,7 +351,7 @@ async function updateTask(formData: FormData) {
 
   // Null is intentional: it means inherit the current Epic override or fall
   // back to this Task's work-item key at read/use time.
-  if ((task.branchName ?? null) !== newBranch) {
+  if (actor.agentVisibility !== "hidden" && hasBranchField && (task.branchName ?? null) !== newBranch) {
     data.branchName = newBranch;
     activity.push({
       kind: "task.branch",
@@ -349,7 +360,7 @@ async function updateTask(formData: FormData) {
   }
 
   // Commit prefix (HOMELAB task-form redesign)
-  if ((task.commitPrefix ?? null) !== newCommitPrefix) {
+  if (actor.agentVisibility !== "hidden" && hasCommitPrefixField && (task.commitPrefix ?? null) !== newCommitPrefix) {
     data.commitPrefix = newCommitPrefix;
     activity.push({
       kind: "task.commit_prefix",
@@ -662,7 +673,7 @@ async function approveTaskActionPlan(formData: FormData) {
   });
   if (!task || task.deletedAt || task.project.slug !== slug) return;
   await requireProjectAccess(actor, { id: task.projectId });
-  if (!actor.isOwner || actor.kind !== "human") throw new Error("Not authorized");
+  if (!actor.canAccessOwnerFeatures || actor.kind !== "human") throw new Error("Not authorized");
 
   if (task.approvedOn) return;
   if (task.status !== "Backlog" && task.status !== "To Do") {
@@ -697,7 +708,7 @@ async function approveTaskActionPlan(formData: FormData) {
 async function deleteComment(formData: FormData) {
   "use server";
   const actor = await requireActor();
-  if (!actor.isOwner) return;
+  if (!actor.canAccessOwnerFeatures) return;
   const commentId = String(formData.get("commentId") ?? "");
   const slug = String(formData.get("projectSlug") ?? "");
   const taskId = String(formData.get("taskId") ?? "");
@@ -757,7 +768,7 @@ async function deleteComment(formData: FormData) {
 async function restoreComment(formData: FormData) {
   "use server";
   const actor = await requireActor();
-  if (!actor.isOwner) return;
+  if (!actor.canAccessOwnerFeatures) return;
   const commentId = String(formData.get("commentId") ?? "");
   const slug = String(formData.get("projectSlug") ?? "");
   const taskId = String(formData.get("taskId") ?? "");
@@ -876,7 +887,7 @@ async function grantBlockerPermission(formData: FormData) {
   const request = activeBlocker.permissionRequest;
   let body: string;
   if (request.kind === "publish_checkpoint") {
-    if (!actor.isOwner) {
+    if (!actor.canAccessOwnerFeatures) {
       throw new Error("Checkpoint publication still requires the active Mission Control owner.");
     }
     const taskBranch = effectiveTaskBranchName(task);
@@ -938,7 +949,7 @@ async function grantBlockerPermission(formData: FormData) {
   // reporter's generic approval is delivered as a PM-validated workflow
   // capability, so it can wake the assignee without weakening the global rule
   // that arbitrary member comments are informational only.
-  if (actor.isOwner) {
+  if (actor.canAccessOwnerFeatures) {
     await sendTaskCommentNotifications({
       taskId: task.id,
       commentId: authorization.id,
@@ -1294,7 +1305,6 @@ function discussionTargetValue(
 
 const DEVELOPMENT_TAB = "Development";
 const TASK_TABS = ["Description", "Action Plan", "Sub-Tasks", "Attachments", "Comments", "Activities", DEVELOPMENT_TAB, "Changes"] as const;
-const OWNER_ONLY_TASK_TABS = new Set(["Action Plan", "Activities", DEVELOPMENT_TAB, "Changes"]);
 
 function tabParam(tab: string) {
   return tab
@@ -1337,18 +1347,20 @@ export default async function TaskDetailPage({
 
   const viewer = await requireActor();
   if (!(await canAccessTask(viewer, taskId))) notFound();
+  const experience = viewerExperienceForRole(viewer.role);
+  const canSeeAgentContent = viewer.agentVisibility !== "hidden";
 
   const [taskShell, comments, attachments] = await Promise.all([
-    getCachedTaskDetailShell(taskId),
-    getCachedTaskComments(taskId),
-    getCachedTaskAttachments(taskId),
+    getCachedTaskDetailShell(taskId, viewer),
+    getCachedTaskComments(taskId, viewer),
+    getCachedTaskAttachments(taskId, viewer),
   ]);
   const task = taskShell ? { ...taskShell, comments, attachments } : null;
   if (!task || task.project.slug !== slug || task.deletedAt) notFound();
   const actorVisibility = await getActorVisibility(viewer);
   const visibleAttachments = task.attachments.map((attachment) => ({
     ...attachment,
-    uploader: !viewer.isOwner && attachment.uploader?.kind === "agent"
+    uploader: !viewer.canAccessOwnerFeatures && attachment.uploader?.kind === "agent"
       ? (actorVisibility.owner ? { username: actorVisibility.owner.username } : null)
       : attachment.uploader,
   }));
@@ -1356,28 +1368,37 @@ export default async function TaskDetailPage({
   // for standalone tasks (no epic parent — an epic owns its tasks' deploy gate).
   const hasDeploymentTab =
     canShowDeploymentTab(task) && Boolean(task.project.repositoryPath) && task.status === "Done";
-  const showDeploymentTab = viewer.isOwner && hasDeploymentTab;
-  const taskTabs = (hasDeploymentTab ? [...TASK_TABS] : TASK_TABS.filter((name) => name !== DEVELOPMENT_TAB))
-    .filter((name) => viewer.isOwner || !OWNER_ONLY_TASK_TABS.has(name));
+  const showDeploymentTab = experience.canViewProjectWorkflow && hasDeploymentTab;
+  const taskTabs = taskDetailTabsForRole(viewer.role, hasDeploymentTab);
   if (!taskTabs.some((name) => name === selectedTab)) selectedTab = "Description";
 
   // Comment moderation is exclusive to the Mission Control owner.
-  const canDeleteComments = viewer.isOwner;
+  const canDeleteComments = viewer.canAccessOwnerFeatures;
+  // ENV-166 — Customer-safe published updates: visible to every human role
+  // via the Comments tab; the publish entry point is owner/admin-only.
+  const viewerCanPublish =
+    viewer.kind === "human" && (hasOwnerRole(viewer) || hasAdminRole(viewer));
+  const publishedUpdates =
+    viewer.kind === "human" ? await listPublishedForTask(viewer, taskId) : [];
+  const publishSourceOptions = viewerCanPublish
+    ? await listPublishableSources(viewer, taskId)
+    : null;
   // Recompute blocked-by edit permission in the page component scope;
   // the value in updateTask() lives in a different function.
   const canEditBlockedBy = !task.blockedById || await canAccessTask(viewer, task.blockedById);
 
+  const taskActivityWhere = await accessibleActivityWhere(viewer, { taskId: task.id });
   const [principals, cachedProjectEpics, mentionableUsers, recentTaskChatMessages, recentReplyActivity, latestRepoVerify, allActivity, targetedCommentRows, taskWorkflowActions] = await Promise.all([
-    viewer.isOwner ? listAssignablePrincipals(viewer) : Promise.resolve([]),
-    getCachedProjectEpics(task.project.id),
-    db.user.findMany({ select: { username: true, kind: true } }),
-    getCachedRecentTaskChatMessages(task.id),
-    getCachedTaskActivity(task.id),
+    viewer.canAccessOwnerFeatures ? listAssignablePrincipals(viewer) : Promise.resolve([]),
+    getCachedProjectEpics(task.project.id, viewer),
+    db.user.findMany({ where: accessibleUserWhere(viewer), select: { username: true, kind: true } }),
+    canSeeAgentContent ? getCachedRecentTaskChatMessages(task.id) : Promise.resolve([]),
+    canSeeAgentContent ? getCachedTaskActivity(task.id) : Promise.resolve([]),
     // Latest monitor-verifier branch row, if any. Used by the Review-state
     // Repo verification panel below.
-    getCachedLatestRepoVerifyActivity(task.id),
+    canSeeAgentContent ? getCachedLatestRepoVerifyActivity(task.id) : Promise.resolve(null),
     db.activityLog.findMany({
-      where: { taskId: task.id },
+      where: { AND: [taskActivityWhere, visibleActivityWhere(viewer)] },
       orderBy: { createdAt: "desc" },
       include: {
         user: {
@@ -1392,16 +1413,24 @@ export default async function TaskDetailPage({
         },
       },
     }) as Promise<ActivityTimelineRow[]>,
-    viewer.isOwner || task.comments.length === 0
+    viewer.canAccessOwnerFeatures || task.comments.length === 0
       ? Promise.resolve([])
       : db.agentChatMessage.findMany({
           where: { originCommentId: { in: task.comments.map((comment) => comment.id) } },
           distinct: ["originCommentId"],
           select: { originCommentId: true },
         }),
-    getBrowserTaskWorkflowActions({ actor: viewer, taskId: task.id }),
+    canSeeAgentContent
+      ? getBrowserTaskWorkflowActions({ actor: viewer, taskId: task.id })
+      : Promise.resolve({
+          status: task.status,
+          reviewStatus: null,
+          canReset: false,
+          canCancel: false,
+          canAccept: false,
+        }),
   ]);
-  const projectEpics = cachedProjectEpics.filter((epic) => viewer.isOwner || !epic.private);
+  const projectEpics = cachedProjectEpics.filter((epic) => viewer.canAccessOwnerFeatures || !epic.private);
   const visibleActivity = visibleActivityRows(allActivity, actorVisibility);
   const activeFormalBlocker = activeFormalBlockersByTask(
     allActivity.map((row) => ({ taskId: task.id, kind: row.kind, payload: row.payload, createdAt: row.createdAt })),
@@ -1411,10 +1440,10 @@ export default async function TaskDetailPage({
     ? blockerPermissionGrantForComment(allActivity, activeFormalBlocker.commentId)
     : null;
 
-  const agentUsernames = mentionableUsers.filter((user) => user.kind === "agent").map((user) => user.username);
+  const agentUsernames = actorVisibility.agentIdentities.map((identity) => identity.username);
   const targetedCommentIds = new Set(targetedCommentRows.map((row) => row.originCommentId).filter(Boolean));
   const mentionables = mentionableUsers
-    .filter((user) => viewer.isOwner || user.kind !== "agent")
+    .filter((user) => viewer.canAccessOwnerFeatures || user.kind !== "agent")
     .map((user) => ({ username: user.username }));
   // Resolved reviewer for role-aware comment identity: the task's acting
   // manager, or the epic's acting manager when the task has none.
@@ -1422,10 +1451,11 @@ export default async function TaskDetailPage({
   // Body redactor: strips real agent slugs/usernames/names out of member-
   // visible comment bodies (agent comments name each other verbatim, which the
   // author-avatar mask alone does not cover). No-op for the owner.
-  const redactBody = buildAgentRedactor(actorVisibility.agentIdentities, actorVisibility.maskAgents);
-  const visibleTaskComments = viewer.isOwner
+  const redactBody = buildAgentRedactor(actorVisibility.agentIdentities, actorVisibility.redactAgentReferences);
+  const visibleTaskComments = viewer.canAccessOwnerFeatures
     ? task.comments
     : task.comments.filter((comment) => {
+        if (experience.customerSafe && comment.user.kind === "agent") return false;
         // Deleted agent comments were fully hidden from members before this
         // change; keep them hidden (the deleted-divider reveal would expose the
         // raw body and the deleting agent's slug).
@@ -1475,7 +1505,7 @@ export default async function TaskDetailPage({
         include: { task: { select: { workItemKey: true, title: true } } },
       })
     : [];
-  const chatMessages = await getCachedTaskRoomMessages(task.id);
+  const chatMessages = canSeeAgentContent ? await getCachedTaskRoomMessages(task.id) : [];
   const taskChatCursorKey = `task:${task.id}`;
   const taskChatReadCursor = await db.chatReadCursor.findUnique({
     where: { userId_agentSlug: { userId: viewer.id, agentSlug: taskChatCursorKey } },
@@ -1492,7 +1522,7 @@ export default async function TaskDetailPage({
     && (taskChatReadCursorMs === null || createdAtMs(message.createdAt) > taskChatReadCursorMs)
   ));
   const firstUnreadMessageId = unreadActionPlanMessages[0]?.id ?? null;
-  if (selectedTab === "Action Plan" && !chatArchive) {
+  if (!viewer.preview && selectedTab === "Action Plan" && !chatArchive) {
     await db.chatReadCursor.upsert({
       where: { userId_agentSlug: { userId: viewer.id, agentSlug: taskChatCursorKey } },
       create: { userId: viewer.id, agentSlug: taskChatCursorKey },
@@ -1531,16 +1561,17 @@ export default async function TaskDetailPage({
   // getDescriptionDraft() also returns null for stale drafts
   // (lastSeenAt > 60s ago) so a closed-tab requester doesn't leak
   // their draft into a later session.
-  const { getDescriptionDraft } = await import("@/lib/description-drafts");
-  const draftDescription = await getDescriptionDraft({
-    scope: "task",
-    targetId: task.id,
-    requesterUserId: viewer.id,
-  });
+  const draftDescription = viewer.preview
+    ? null
+    : await (await import("@/lib/description-drafts")).getDescriptionDraft({
+        scope: "task",
+        targetId: task.id,
+        requesterUserId: viewer.id,
+      });
 
   const [[chatArchives, binChatArchives], selectedChatArchive] = await Promise.all([
-    getCachedTaskChatArchives(task.project.id, task.id),
-    chatArchive
+    canSeeAgentContent ? getCachedTaskChatArchives(task.project.id, task.id) : Promise.resolve([[], []]),
+    canSeeAgentContent && chatArchive
       ? db.agentChatRoomArchive.findFirst({
           where: { id: chatArchive, projectId: task.project.id, taskId: task.id },
           include: {
@@ -1746,9 +1777,9 @@ export default async function TaskDetailPage({
     ?? aiTargetOptions[0]?.value
     ?? "";
   const canApproveActionPlan =
+    viewer.canAccessOwnerFeatures &&
     !task.approvedOn &&
-    task.actionPlan?.status === "draft" &&
-    (viewer.kind === "human" || canApproveActionPlanForActor(task, viewer.id));
+    task.actionPlan?.status === "draft";
   const doneActivity = allActivity.find((row) =>
     row.kind === "task.move" && payloadValue(row.payload, "to") === "Done"
   );
@@ -1861,13 +1892,13 @@ export default async function TaskDetailPage({
                 </time>
               </span>
               <div className="flex items-center gap-2">
-                <TaskHeaderWorkflowActions
+                {!experience.customerSafe ? <TaskHeaderWorkflowActions
                   taskId={task.id}
                   projectSlug={slug}
                   canReset={taskWorkflowActions.canReset}
                   canCancel={taskWorkflowActions.canCancel}
                   canAccept={taskWorkflowActions.canAccept}
-                />
+                /> : null}
                 <button
                   form="taskMain"
                   type="submit"
@@ -1882,7 +1913,7 @@ export default async function TaskDetailPage({
               </div>
             </div>
           </div>
-          {task.repositoryRun ? (
+          {canSeeAgentContent && task.repositoryRun ? (
             <div className="flex flex-wrap items-center gap-2 text-caption text-text-muted">
               <span className="rounded-full border border-line bg-surface-muted px-2 py-1 font-semibold uppercase tracking-wide text-text">
                 Repository: {task.repositoryRun.phase.replaceAll("_", " ")}
@@ -1898,7 +1929,7 @@ export default async function TaskDetailPage({
 
           {/* Review verification panel. Status changes only after the monitor
               gate, while repositoryRun exposes validating/finalizing errors. */}
-          {task.status === "Review" && taskBranchName ? (() => {
+          {canSeeAgentContent && task.status === "Review" && taskBranchName ? (() => {
             const branchName = taskBranchName;
             const commitPrefix = taskCommitPrefix;
             let kind: string | null = latestRepoVerify?.kind ?? null;
@@ -1978,7 +2009,7 @@ export default async function TaskDetailPage({
             <TabsNav
               tabs={taskTabs}
               sticky
-              badges={viewer.isOwner ? { "Action Plan": unreadActionPlanMessages.length } : undefined}
+              badges={experience.canViewProjectWorkflow ? { "Action Plan": unreadActionPlanMessages.length } : undefined}
             />
             <div className="pt-4">
               <TabPanel name="Description">
@@ -1989,13 +2020,14 @@ export default async function TaskDetailPage({
                     defaultValue={task.description ?? ""}
                     projectSlug={slug}
                     taskId={task.id}
-                    aiTargets={viewer.isOwner ? aiTargetOptions : []}
-                    defaultAiTarget={viewer.isOwner ? defaultAiTarget : ""}
+                    aiTargets={viewer.canAccessOwnerFeatures ? aiTargetOptions : []}
+                    defaultAiTarget={viewer.canAccessOwnerFeatures ? defaultAiTarget : ""}
                     descriptionLabel="Task"
                     draftDescription={draftDescription}
-                    aiRunning={viewer.isOwner && isAiDescriptionRunning}
-                    runningMessageId={viewer.isOwner ? runningDescriptionRun?.messageId ?? null : null}
-                    runningAgentSlug={viewer.isOwner ? runningDescriptionRun?.agentSlug ?? null : null}
+                    aiRunning={viewer.canAccessOwnerFeatures && isAiDescriptionRunning}
+                    runningMessageId={viewer.canAccessOwnerFeatures ? runningDescriptionRun?.messageId ?? null : null}
+                    runningAgentSlug={viewer.canAccessOwnerFeatures ? runningDescriptionRun?.agentSlug ?? null : null}
+                    readOnlyPreview={Boolean(viewer.preview)}
                     // Sub-tasks (parentTaskId !== null) get a taller editor —
                     // they're where most of the day-to-day work detail lands,
                     // so the larger box matches actual use (HOMELAB-48).
@@ -2018,12 +2050,12 @@ export default async function TaskDetailPage({
                         >
                           {COLUMN_IDS.map((id) => (
                             <option key={id} value={id}>
-                              {id}
+                              {customerSafeWorkflowLabel(id, experience.customerSafe)}
                             </option>
                           ))}
                         </select>
                       </label>
-                      {viewer.isOwner ? (
+                      {viewer.canAccessOwnerFeatures ? (
                         <PrivateToggle
                           formId="taskMain"
                           defaultChecked={task.private}
@@ -2032,13 +2064,13 @@ export default async function TaskDetailPage({
                       ) : null}
                     </div>
 
-                    <div
+                    {canSeeAgentContent ? <div
                       data-task-roles
                       className="grid grid-cols-2 gap-3 rounded-card border border-line bg-panel-soft p-card"
                     >
-                      <div data-task-role className="min-w-0">
+                      {canSeeAgentContent ? <div data-task-role className="min-w-0">
                         <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Reported by</span>
-                        {viewer.isOwner ? (
+                        {viewer.canAccessOwnerFeatures ? (
                           <AvatarCombobox formId="taskMain" name="reporterId" defaultValue={task.reporterId ?? ""} options={reporterOptions} emptyLabel="No reporter" ariaLabel="Reported by" />
                         ) : (
                           <div className="flex min-h-9 items-center gap-2 rounded-lg border border-line bg-bg px-2 text-caption">
@@ -2046,10 +2078,10 @@ export default async function TaskDetailPage({
                             <span className="truncate">{visibleReporter ? actorDisplayName(visibleReporter) : "No reporter"}</span>
                           </div>
                         )}
-                      </div>
-                      <div data-task-role className="min-w-0">
+                      </div> : null}
+                      {canSeeAgentContent ? <div data-task-role className="min-w-0">
                         <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Assignee</span>
-                        {viewer.isOwner ? (
+                        {viewer.canAccessOwnerFeatures ? (
                           <AvatarCombobox formId="taskMain" name="assigneeId" defaultValue={task.assigneeId ?? ""} options={principalOptions} emptyLabel="Unassigned" ariaLabel="Assignee" />
                         ) : (
                           <div className="flex min-h-9 items-center gap-2 rounded-lg border border-line bg-bg px-2 text-caption">
@@ -2057,10 +2089,10 @@ export default async function TaskDetailPage({
                             <span className="truncate">{visibleAssignee ? actorDisplayName(visibleAssignee) : "Unassigned"}</span>
                           </div>
                         )}
-                      </div>
-                      <div data-task-role className="min-w-0">
+                      </div> : null}
+                      {canSeeAgentContent ? <div data-task-role className="min-w-0">
                         <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Reviewer</span>
-                        {viewer.isOwner ? (
+                        {viewer.canAccessOwnerFeatures ? (
                           <AvatarCombobox formId="taskMain" name="actingManagerId" defaultValue={task.actingManagerId ?? ""} options={principalOptions} emptyLabel="No reviewer" ariaLabel="Reviewer" />
                         ) : (
                           <div className="flex min-h-9 items-center gap-2 rounded-lg border border-line bg-bg px-2 text-caption">
@@ -2068,7 +2100,7 @@ export default async function TaskDetailPage({
                             <span className="truncate">{visibleReviewer ? actorDisplayName(visibleReviewer) : "No reviewer"}</span>
                           </div>
                         )}
-                      </div>
+                      </div> : null}
                       <div data-task-role className="min-w-0">
                         <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Approved date</span>
                         <div data-task-approved className="flex min-h-9 items-center gap-2 rounded-lg border border-line bg-bg px-2 text-caption">
@@ -2084,10 +2116,10 @@ export default async function TaskDetailPage({
                           </time>
                         </div>
                       </div>
-                    </div>
+                    </div> : null}
 
                     {/* Branch, commit prefix, and deployment — persisted by the card's single Save. */}
-                    <div data-task-source-control className="space-y-3 rounded-card border border-line bg-panel-soft p-card">
+                    {canSeeAgentContent ? <div data-task-source-control className="space-y-3 rounded-card border border-line bg-panel-soft p-card">
                       <label className="block">
                         <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">
                           Branch
@@ -2130,7 +2162,7 @@ export default async function TaskDetailPage({
                           )}
                         </div>
                       </div>
-                    </div>
+                    </div> : null}
 
                     {/* Epic picker moved from header to sidebar */}
                     <div className="min-w-0">
@@ -2150,7 +2182,7 @@ export default async function TaskDetailPage({
                         happening on this task right now, and what the watchdog
                         did about it. Sits above "Blocked by" because a blocked
                         task is a subset of "not executing". */}
-                    <TaskExecutionStrip executionState={task.executionState} />
+                    {canSeeAgentContent ? <TaskExecutionStrip executionState={task.executionState} /> : null}
 
                     {/* Multi-prerequisite editor (ENV-159 step 8).
                         Replaces the legacy single-value blockedById panel.
@@ -2287,7 +2319,7 @@ export default async function TaskDetailPage({
               </TabPanel>
 
 
-              {viewer.isOwner ? <TabPanel name="Action Plan">
+              {experience.canViewProjectWorkflow ? <TabPanel name="Action Plan">
                 <div className="space-y-3 pt-2">
                   <div
                     data-structured-action-plan-status
@@ -2402,6 +2434,7 @@ export default async function TaskDetailPage({
                   <ChatRoom
                     projectSlug={slug}
                     taskId={task.id}
+                    readOnly={!viewer.canAccessOwnerFeatures}
                     messages={visibleActionPlanMessages}
                     activeMessageCount={activeActionPlanMessageCount}
                     archives={chatArchives}
@@ -2421,7 +2454,10 @@ export default async function TaskDetailPage({
                 </div>
               </TabPanel> : null}
 
-              <TabPanel name="Sub-Tasks">
+              <RoleVisibleTabPanel
+                name="Sub-Tasks"
+                visible={experience.canViewProjectWorkflow}
+              >
                 <TaskChecklist
                   taskId={task.id}
                   projectSlug={slug}
@@ -2440,7 +2476,7 @@ export default async function TaskDetailPage({
                   removeAction={removeSubTaskItem}
                   reorderAction={reorderChecklist}
                 />
-              </TabPanel>
+              </RoleVisibleTabPanel>
 
               <TabPanel name="Attachments">
                 <div>
@@ -2507,12 +2543,14 @@ export default async function TaskDetailPage({
                     </li>
                   );
                 }
-                const commentAuthor = serializeVisibleActorAs(
-                  c.user,
-                  c.user.id === resolvedReviewerId ? "reviewer" : "assignee",
-                  actorVisibility,
-                )!;
-                const authorRole = syntheticRoleMeta(commentAuthor);
+                const commentAuthor = experience.customerSafe
+                  ? serializeActor(c.user, actorVisibility)!
+                  : serializeVisibleActorAs(
+                      c.user,
+                      c.user.id === resolvedReviewerId ? "reviewer" : "assignee",
+                      actorVisibility,
+                    )!;
+                const authorRole = experience.customerSafe ? null : syntheticRoleMeta(commentAuthor);
                 return (
                   <li
                     key={c.id}
@@ -2564,7 +2602,7 @@ export default async function TaskDetailPage({
                           surface="task-comment"
                           options={parsedPmOptions.options}
                           resolvedOption={resolvedPmOption}
-                          interactive={viewer.isOwner && isPmOptionsTargetedAtCurrentUser({ currentUserId: viewer.id })}
+                          interactive={viewer.canAccessOwnerFeatures && isPmOptionsTargetedAtCurrentUser({ currentUserId: viewer.id })}
                         />
                       ) : null}
                       {activeFormalBlocker?.commentId === c.id && activeFormalBlocker.permissionRequest ? (
@@ -2581,7 +2619,7 @@ export default async function TaskDetailPage({
                               Permission granted — the assignee has been notified.
                             </p>
                           ) : viewer.id === task.reporterId && (
-                            activeFormalBlocker.permissionRequest.kind !== "publish_checkpoint" || viewer.isOwner
+                            activeFormalBlocker.permissionRequest.kind !== "publish_checkpoint" || viewer.canAccessOwnerFeatures
                           ) ? (
                             <form action={grantBlockerPermission} className="mt-2">
                               <input type="hidden" name="taskId" value={task.id} />
@@ -2612,26 +2650,33 @@ export default async function TaskDetailPage({
 
           <TaskCommentStreams
             taskId={task.id}
-            messages={(viewer.isOwner ? pendingCommentMessages : []).map((message) => ({
+            messages={(viewer.canAccessOwnerFeatures ? pendingCommentMessages : []).map((message) => ({
               id: message.id,
               agentSlug: message.agentSlug,
             }))}
           />
-          {!focusedCommentId && (visibleTaskComments.length > 0 || (viewer.isOwner && pendingCommentMessages.length > 0)) ? (
+          {!focusedCommentId && (visibleTaskComments.length > 0 || (viewer.canAccessOwnerFeatures && pendingCommentMessages.length > 0)) ? (
             <AutoScrollToLatest
               whenTab="Comments"
               watchKey={[
                 visibleTaskComments.length,
                 visibleTaskComments.at(-1)?.id ?? "",
-                viewer.isOwner ? pendingCommentMessages.map((message) => message.id).join(",") : "",
+                viewer.canAccessOwnerFeatures ? pendingCommentMessages.map((message) => message.id).join(",") : "",
               ].join(":")}
             />
           ) : null}
                   </div>
+                  <PublishedUpdatesPanel
+                    projectId={task.project.id}
+                    taskId={task.id}
+                    canPublish={viewerCanPublish}
+                    published={publishedUpdates}
+                    sourceOptions={publishSourceOptions}
+                  />
                 </div>
               </TabPanel>
 
-              {viewer.isOwner ? <TabPanel name="Activities">
+              {experience.canViewProjectWorkflow ? <TabPanel name="Activities">
                 <div className="pt-2">
                   <ActivityTimeline rows={visibleActivity} />
                 </div>
@@ -2661,7 +2706,7 @@ export default async function TaskDetailPage({
                 </TabPanel>
               ) : null}
 
-              {viewer.isOwner ? <TabPanel name="Changes">
+              {experience.canViewProjectWorkflow ? <TabPanel name="Changes">
                 <TaskChangesPanel
                   changes={taskChanges}
                   branchName={taskBranchName}

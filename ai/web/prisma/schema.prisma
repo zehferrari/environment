@@ -34,6 +34,15 @@ model User {
   // The first human account owns Mission Control. This is an explicit,
   // immutable capability rather than a username convention.
   isOwner            Boolean         @default(false) @map("is_owner")
+  // Access-policy epoch (ENV-168): bumped in-transaction by every
+  // access-management mutation. Viewer-scoped streams compare it against the
+  // durable database value to detect missed policy changes — the in-process
+  // access-change hub is only an accelerator (see
+  // lib/users/access-change-hub.ts).
+  policyVersion      Int             @default(0)
+  // Canonical human role. Owner authority still comes exclusively from
+  // isOwner; the relation makes owner/admin/customer explicit for policy and
+  // presentation without allowing a role row to manufacture ownership.
   rolePermissionId   String?
   rolePermission     RolePermission? @relation(fields: [rolePermissionId], references: [id])
   agentId            String?         @unique
@@ -59,6 +68,8 @@ model User {
   comments                       Comment[]
   deletedComments                Comment[]                       @relation("CommentDeletedBy")
   activity                       ActivityLog[]
+  accessAuditsAsActor            AccessAuditLog[]               @relation("AccessAuditActor")
+  accessAuditsAsAffected         AccessAuditLog[]               @relation("AccessAuditAffected")
   uploadedAttachments            Attachment[]
   agentChatMessages              AgentChatMessage[]              @relation("AgentChatSender")
   deletedAgentChatMessages       AgentChatMessage[]              @relation("AgentChatMessageDeletedBy")
@@ -87,13 +98,13 @@ model User {
   @@index([kind])
   @@index([status])
   @@index([isOwner])
+  @@index([rolePermissionId])
 }
 
 model RolePermission {
   id          String   @id @default(cuid())
-  name        String   @unique // e.g. "developer", "manager", "admin"
+  name        String   @unique // canonical human role: "owner" | "admin" | "customer"
   description String?
-  // Stage 2 (HOMELAB-44) will hang permission JSON / policy here.
   users       User[]
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -1244,6 +1255,28 @@ model ActivityLog {
   @@unique([dedupeKey])
 }
 
+// ENV-164 — Owner-visible audit trail for every scoped access/role change:
+// the invitation grant, each project grant/revoke, and each promote/demote.
+// Required relations keep the history intact: an account with audit entries
+// is not removable (see lib/users/removal.ts).
+model AccessAuditLog {
+  id             String   @id @default(cuid())
+  actorUserId    String
+  actor          User     @relation("AccessAuditActor", fields: [actorUserId], references: [id])
+  affectedUserId String
+  affectedUser   User     @relation("AccessAuditAffected", fields: [affectedUserId], references: [id])
+  action         String // "grant" | "revoke" | "promote" | "demote"
+  oldRole        String?
+  newRole        String?
+  oldProjectIds  String   @default("[]") // JSON string array
+  newProjectIds  String   @default("[]")
+  createdAt      DateTime @default(now())
+
+  @@index([actorUserId])
+  @@index([affectedUserId])
+  @@index([createdAt])
+}
+
 model DeploymentPullRequest {
   id                      String    @id @default(cuid())
   projectId               String
@@ -1924,4 +1957,44 @@ model WebPushSubscription {
   lastUsedAt DateTime?
 
   @@index([userId])
+}
+
+// ------------------------------------------------------------------
+// ENV-166 — Customer-safe publishing of internally produced results
+// ------------------------------------------------------------------
+
+// A PublishedItem is the deliberate route from internal-only content to
+// Customer-visible project content. Rows are created exclusively by the
+// publishing service: title/body are redacted *before* persist (real agent
+// slugs/usernames/display names never reach the row), the author is always
+// the publishing human, and source references are plain string columns (no
+// relations) so internal sources can be pruned without cascading published
+// history. Serialization is a strict whitelist; the internal-only source
+// columns are never exposed to any viewer role.
+model PublishedItem {
+  id                 String    @id @default(cuid())
+  projectId          String
+  // Optional task scope: a published update can also be project-level.
+  taskId             String?
+  // Publishing human (User.id); enforced server-side by the publishing
+  // service — only owner/admin humans may publish.
+  authorId           String
+  title              String
+  // Redacted snapshot at publish time. Never the live internal source.
+  body               String
+  publishedAt        DateTime  @default(now())
+  // Non-null = private again. Active reads filter this to null.
+  unpublishedAt      DateTime?
+  // Internal-only provenance (never serialized): originating comment row.
+  sourceCommentId    String?   @map("source_comment_id")
+  // Internal-only provenance (never serialized): originating attachment row.
+  sourceAttachmentId String?   @map("source_attachment_id")
+  // JSON string array of re-hosted Attachment ids (human-uploader copies).
+  attachmentIds      String?   @map("attachment_ids")
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@index([projectId, unpublishedAt])
+  @@index([taskId, unpublishedAt])
+  @@index([authorId])
 }

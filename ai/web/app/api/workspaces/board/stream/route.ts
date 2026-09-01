@@ -5,6 +5,7 @@ import {
   requireViewer,
   workspaceAccessWhere,
 } from "@/lib/auth/permissions";
+import { attachRevocationGuard } from "@/lib/users/access-revocation-guard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -45,15 +46,19 @@ export async function GET(req: Request) {
 
       send("hello", { workspaceIds, projectIds });
 
-      const unsubs = projectIds.map((projectId) =>
-        subscribeBoardTouch(projectId, (event) => send("board.touch", event)),
-      );
+      const unsubs = viewer.agentVisibility === "hidden"
+        ? []
+        : projectIds.map((projectId) =>
+            subscribeBoardTouch(projectId, (event) => send("board.touch", event)),
+          );
 
       const heartbeat = setInterval(() => {
         controller.enqueue(encoder.encode(`: hb\n\n`));
       }, HEARTBEAT_MS);
 
+      let revocationGuard: { stop: () => void } | null = null;
       const cleanup = () => {
+        revocationGuard?.stop();
         clearInterval(heartbeat);
         for (const unsub of unsubs) unsub();
         try {
@@ -62,6 +67,22 @@ export async function GET(req: Request) {
           // already closed
         }
       };
+
+      // ENV-168: the aggregate landing-board stream is only meaningful while
+      // the viewer can still reach at least one active workspace; losing
+      // the last one revokes the connection explicitly.
+      revocationGuard = attachRevocationGuard({
+        userId: viewer.id,
+        send,
+        close: cleanup,
+        stillAuthorized: async (fresh) => {
+          if (!fresh) return false;
+          const count = await db.workspace.count({
+            where: { AND: [{ archivedAt: null }, workspaceAccessWhere(fresh)] },
+          });
+          return count > 0;
+        },
+      });
 
       req.signal.addEventListener("abort", cleanup);
     },

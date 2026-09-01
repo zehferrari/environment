@@ -1,4 +1,5 @@
 import { db } from "@/lib/db";
+import { isActiveOwnerPrincipal } from "@/lib/auth/roles";
 import {
   getLegacyDrainInventory,
   getLegacyInvocationSummary,
@@ -89,7 +90,7 @@ export async function runLegacyDefaultCutover(args: {
     where: { id: args.operatorUserId },
     select: { id: true, username: true, kind: true, status: true, isOwner: true },
   });
-  if (!operator || operator.kind !== "human" || operator.status !== "active" || !operator.isOwner) {
+  if (!isActiveOwnerPrincipal(operator)) {
     throw new Error("V2 default cutover requires the active Mission Control owner.");
   }
   const before = await getLegacyDefaultCutoverReport();

@@ -38,6 +38,12 @@ function readBootstrapOwnerConfig(): BootstrapOwnerConfig | null {
  * Existing installations already have an owner and are never changed here.
  */
 export async function bootstrapOwner(): Promise<BootstrapOwnerResult> {
+  const ownerRole = {
+    connectOrCreate: {
+      where: { name: "owner" },
+      create: { name: "owner", description: "Mission Control Owner" },
+    },
+  } as const;
   const ownerExists = await db.user.findFirst({
     where: { kind: "human", isOwner: true },
     select: { id: true },
@@ -52,7 +58,10 @@ export async function bootstrapOwner(): Promise<BootstrapOwnerResult> {
     if (existing.kind !== "human") {
       throw new Error(`Initial owner username @${config.username} belongs to an agent account.`);
     }
-    await db.user.update({ where: { id: existing.id }, data: { isOwner: true } });
+    await db.user.update({
+      where: { id: existing.id },
+      data: { isOwner: true, rolePermission: ownerRole },
+    });
     return { status: "promoted-existing-user", username: config.username };
   }
 
@@ -65,6 +74,7 @@ export async function bootstrapOwner(): Promise<BootstrapOwnerResult> {
       passwordSetAt: new Date(),
       mustRotatePassword: false,
       isOwner: true,
+      rolePermission: ownerRole,
     },
   });
   return { status: "created", username: config.username };

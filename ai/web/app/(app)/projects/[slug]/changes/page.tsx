@@ -32,7 +32,7 @@ export default async function ProjectChangesPage({
 }) {
   const [{ slug }, sp] = await Promise.all([params, searchParams]);
   const viewer = await requireViewer();
-  if (!viewer.isOwner) notFound();
+  if (!viewer.canAccessOwnerFeatures) notFound();
   const project = await db.project.findUnique({
     where: { slug, deletedAt: null },
     select: { repositoryPath: true },

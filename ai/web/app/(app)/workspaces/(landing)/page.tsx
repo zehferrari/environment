@@ -12,12 +12,15 @@ import Board from "../../projects/[slug]/board-client";
 import { COLUMNS } from "../../projects/[slug]/columns";
 import {
   accessibleProjectWhere,
+  accessibleCommentWhere,
   accessibleTaskWhere,
   requireOwner,
   requireViewer,
   workspaceAccessWhere,
   type Viewer,
+  viewerExperienceForRole,
 } from "@/lib/auth/permissions";
+import { visibleActivityRecordWhere } from "@/lib/users/agent-content-policy";
 import {
   getActorVisibility,
   serializeVisibleActor,
@@ -127,6 +130,7 @@ export default async function WorkspacesLandingPage({ searchParams }: { searchPa
   const params = await searchParams;
   const showingArchived = params?.archived === "1";
   const viewer = await requireViewer();
+  const experience = viewerExperienceForRole(viewer.role);
 
   if (showingArchived) {
     return <ArchivedWorkspaces viewer={viewer} restoreAction={restoreWorkspaceAction} />;
@@ -206,12 +210,12 @@ export default async function WorkspacesLandingPage({ searchParams }: { searchPa
   const [taskActivityRows, busyAgentSlugs, actorVisibility, visibleBlockers, legacyBlockerComments] = await Promise.all([
     taskIds.length > 0
       ? db.activityLog.findMany({
-          where: { taskId: { in: taskIds } },
+          where: { AND: [{ taskId: { in: taskIds } }, visibleActivityRecordWhere(viewer)] },
           orderBy: { createdAt: "desc" },
           select: { taskId: true, kind: true, payload: true, createdAt: true, user: { select: actorSelect } },
         })
       : Promise.resolve([]),
-    viewer.isOwner ? readBusyAgentSlugs() : Promise.resolve(new Set<string>()),
+    viewer.canAccessOwnerFeatures ? readBusyAgentSlugs() : Promise.resolve(new Set<string>()),
     getActorVisibility(viewer),
     blockerIds.length > 0
       ? db.task.findMany({
@@ -221,11 +225,11 @@ export default async function WorkspacesLandingPage({ searchParams }: { searchPa
       : Promise.resolve([]),
     taskIds.length > 0
       ? db.comment.findMany({
-          where: {
+          where: accessibleCommentWhere(viewer, {
             taskId: { in: taskIds },
             deletedAt: null,
             body: { startsWith: "**Blocker raised**" },
-          },
+          }),
           select: { id: true, taskId: true, createdAt: true },
         })
       : Promise.resolve([]),
@@ -240,7 +244,9 @@ export default async function WorkspacesLandingPage({ searchParams }: { searchPa
     <div data-board-focus-root>
       {workspaces.length === 0 ? (
         <div className="rounded-panel border border-dashed border-line bg-panel p-card text-body text-text-muted">
-          No active workspaces yet. Use the (+) button to create one, then manage projects, boards, and agents here.
+          {experience.customerSafe
+            ? "No project access has been shared with you yet."
+            : "No active workspaces yet. Use the (+) button to create one, then manage projects and boards here."}
         </div>
       ) : (
         <Board
@@ -253,7 +259,7 @@ export default async function WorkspacesLandingPage({ searchParams }: { searchPa
               ...(t.blockedById && t.blockedBy?.status !== "Done" ? [t.blockedById] : []),
               ...t.dependencies.filter((edge) => edge.prerequisite.status !== "Done").map((edge) => edge.prerequisite.id),
             ])];
-            const blockedByKeys = unresolvedIds.map((id) => visibleBlockerById.get(id)?.workItemKey ?? "another task");
+            const blockedByKeys = experience.customerSafe ? [] : unresolvedIds.map((id) => visibleBlockerById.get(id)?.workItemKey ?? "another task");
             const project = projectById.get(t.projectId) ?? null;
             return {
               id: t.id,
@@ -262,32 +268,32 @@ export default async function WorkspacesLandingPage({ searchParams }: { searchPa
               status: t.status,
               rank: t.rank,
               createdAt: t.createdAt.toISOString(),
-              updatedAt: t.updatedAt.toISOString(),
-              statusChangedAt: t.statusChangedAt?.toISOString() ?? null,
-              approvedOn: t.approvedOn?.toISOString() ?? null,
+              updatedAt: (actorVisibility.excludeAgentRecords ? t.createdAt : t.updatedAt).toISOString(),
+              statusChangedAt: actorVisibility.excludeAgentRecords ? null : t.statusChangedAt?.toISOString() ?? null,
+              approvedOn: actorVisibility.excludeAgentRecords ? null : t.approvedOn?.toISOString() ?? null,
               deploymentStatus: t.epic?.deploymentStatus ?? t.deploymentStatus,
               epicId: t.epicId,
               reporter: serializeActor(t.reporter, actorVisibility),
               // Role-driven non-owner board identity (see project board page).
-              assignee: serializeVisibleActorAs(t.assignee, "assignee", actorVisibility),
-              reviewer: serializeVisibleActorAs(t.actingManager, "reviewer", actorVisibility),
-              manager: serializeVisibleActorAs(t.epic?.actingManager ?? null, "reviewer", actorVisibility),
+              assignee: actorVisibility.excludeAgentRecords ? null : serializeVisibleActorAs(t.assignee, "assignee", actorVisibility),
+              reviewer: actorVisibility.excludeAgentRecords ? null : serializeVisibleActorAs(t.actingManager, "reviewer", actorVisibility),
+              manager: actorVisibility.excludeAgentRecords ? null : serializeVisibleActorAs(t.epic?.actingManager ?? null, "reviewer", actorVisibility),
               createdBy: taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter, actorVisibility),
               updatedBy: taskActivityActors.updatedBy.get(t.id) ?? taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter, actorVisibility),
               epicTitle: t.epic?.title ?? null,
-              subtaskImplTotal: t.checklist.filter((c) => c.kind !== "review").length,
-              subtaskImplDone: t.checklist.filter((c) => c.kind !== "review" && c.completedAt !== null).length,
-              subtaskReviewTotal: t.checklist.filter((c) => c.kind === "review").length,
-              subtaskReviewDone: t.checklist.filter((c) => c.kind === "review" && c.completedAt !== null).length,
-              subtaskMinutes: t.checklist.reduce((sum, c) => sum + (c.minutesSpent ?? 0), 0),
+              subtaskImplTotal: actorVisibility.excludeAgentRecords ? 0 : t.checklist.filter((c) => c.kind !== "review").length,
+              subtaskImplDone: actorVisibility.excludeAgentRecords ? 0 : t.checklist.filter((c) => c.kind !== "review" && c.completedAt !== null).length,
+              subtaskReviewTotal: actorVisibility.excludeAgentRecords ? 0 : t.checklist.filter((c) => c.kind === "review").length,
+              subtaskReviewDone: actorVisibility.excludeAgentRecords ? 0 : t.checklist.filter((c) => c.kind === "review" && c.completedAt !== null).length,
+              subtaskMinutes: actorVisibility.excludeAgentRecords ? 0 : t.checklist.reduce((sum, c) => sum + (c.minutesSpent ?? 0), 0),
               blockedByKeys,
-              hasActiveBlocker: activeFormalBlockers.has(t.id),
-            executionState: t.executionState?.state ?? null,
-            executionReason: t.executionState?.reasonDetail ?? null,
-              activeBlockerCommentId: activeFormalBlockers.get(t.id)?.commentId ?? null,
-              activeWorking:
+              hasActiveBlocker: actorVisibility.excludeAgentRecords ? false : activeFormalBlockers.has(t.id),
+              executionState: actorVisibility.excludeAgentRecords ? null : t.executionState?.state ?? null,
+              executionReason: actorVisibility.excludeAgentRecords ? null : t.executionState?.reasonDetail ?? null,
+              activeBlockerCommentId: actorVisibility.excludeAgentRecords ? null : activeFormalBlockers.get(t.id)?.commentId ?? null,
+              activeWorking: actorVisibility.excludeAgentRecords ? false : (
                 (t.status === "In Progress" && Boolean(t.assignee?.agent?.slug && busyAgentSlugs.has(t.assignee.agent.slug))) ||
-                (t.status === "Review" && Boolean(t.actingManager?.agent?.slug && busyAgentSlugs.has(t.actingManager.agent.slug))),
+                (t.status === "Review" && Boolean(t.actingManager?.agent?.slug && busyAgentSlugs.has(t.actingManager.agent.slug)))),
               project: {
                 slug: t.project.slug,
                 name: t.project.name,
@@ -295,8 +301,10 @@ export default async function WorkspacesLandingPage({ searchParams }: { searchPa
               },
               workspaceColor: workspaceColorById.get(t.projectId) ?? null,
               projectColor: project?.backgroundColor ?? null,
+              hideInternalActors: actorVisibility.excludeAgentRecords,
             };
           })}
+          customerSafe={experience.customerSafe}
           deleteTaskAction={binTask}
         />
       )}
@@ -370,7 +378,7 @@ async function ArchivedWorkspaces({
                   <dt className="text-nano uppercase tracking-wider">Projects</dt>
                   <dd className="text-body font-semibold text-text">{workspace.projects.length}</dd>
                 </div>
-                {viewer.isOwner ? (
+                {viewer.canAccessOwnerFeatures ? (
                   <div className="rounded-xl border border-line bg-bg px-3 py-2">
                     <dt className="text-nano uppercase tracking-wider">Agent pool</dt>
                     <dd className="text-body font-semibold text-text">{workspace.agentPool.length}</dd>
@@ -378,7 +386,7 @@ async function ArchivedWorkspaces({
                 ) : null}
               </dl>
             </Link>
-            {viewer.isOwner ? (
+            {viewer.canAccessOwnerFeatures ? (
               <form action={restoreAction}>
                 <input type="hidden" name="slug" value={workspace.slug} />
                 <button type="submit" className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-caption font-medium text-text-muted hover:border-accent hover:text-accent">

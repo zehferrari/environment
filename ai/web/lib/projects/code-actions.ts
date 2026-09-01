@@ -161,7 +161,7 @@ export async function mergeCodeSource(input: MergeCodeSourceInput): Promise<Code
 
 async function requireHumanActor() {
   const viewer = await requireViewer();
-  if (!viewer.isOwner) throw new Error("Forbidden");
+  if (!viewer.canAccessOwnerFeatures) throw new Error("Forbidden");
   const user = await db.user.findUnique({
     where: { id: viewer.id },
     select: { name: true, email: true },

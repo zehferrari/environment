@@ -6,6 +6,7 @@ import {
   accessibleTaskWhere,
   getViewer,
   workspaceAccessWhere,
+  viewerExperienceForRole,
 } from "@/lib/auth/permissions";
 import { workspaceLogoPublicUrl } from "@/lib/workspaces/storage";
 import SidebarNav, {
@@ -24,10 +25,11 @@ function avatarUrl(name: string) {
 export default async function Sidebar() {
   const viewer = await getViewer();
   if (!viewer) redirect("/login");
+  const experience = viewerExperienceForRole(viewer.role);
   const projectWhere = accessibleProjectWhere(viewer, { archivedAt: null, deletedAt: null });
   const workspaceWhere = workspaceAccessWhere(viewer);
   const [agents, snapshot, projects, workspaces, latestAgentMsgs] = await Promise.all([
-    viewer.isOwner ? db.agent.findMany({
+    experience.canViewGlobalAgentOperations ? db.agent.findMany({
       where: {
         deactivatedAt: null,
         user: { is: { status: "active" } },
@@ -42,7 +44,7 @@ export default async function Sidebar() {
         user: { select: { username: true, status: true } },
       },
     }) : Promise.resolve([]),
-    viewer.isOwner ? readAtlasSnapshot() : Promise.resolve(null),
+    experience.canViewGlobalAgentOperations ? readAtlasSnapshot() : Promise.resolve(null),
     db.project.findMany({
       where: projectWhere,
       orderBy: { name: "asc" },
@@ -81,13 +83,13 @@ export default async function Sidebar() {
     }),
     // Newest agent-authored direct-chat message per agent — paired with the
     // viewer's read cursor below to decide the unread red dot.
-    viewer.isOwner ? db.directAgentChatMessage.groupBy({
+    experience.canViewGlobalAgentOperations ? db.directAgentChatMessage.groupBy({
       by: ["agentSlug"],
       where: { deletedAt: null, sender: { is: { kind: "agent" } } },
       _max: { createdAt: true },
     }) : Promise.resolve([]),
   ]);
-  const readCursors = viewer.isOwner
+  const readCursors = experience.canViewGlobalAgentOperations
     ? await db.chatReadCursor.findMany({
         where: { userId: viewer.id },
         select: { agentSlug: true, lastReadAt: true },
@@ -182,7 +184,7 @@ export default async function Sidebar() {
         color: project.backgroundColor,
         completion: completionOf([project.id]),
       })),
-      agentSlugs: viewer.isOwner ? workspace.agentPool.map(({ agent }) => agent.slug) : [],
+      agentSlugs: experience.canViewGlobalAgentOperations ? workspace.agentPool.map(({ agent }) => agent.slug) : [],
     };
   });
 
@@ -193,8 +195,10 @@ export default async function Sidebar() {
 
   return (
     <SidebarNav
-      isOwner={viewer.isOwner}
-      canViewAgents={viewer.isOwner}
+      isOwner={viewer.canAccessOwnerFeatures}
+      canViewAgents={experience.canViewGlobalAgentOperations}
+      canManageCustomerAccess={experience.canManageCustomerAccess}
+      customerSafe={experience.customerSafe}
       agents={navAgents}
       projects={navProjects}
       workspaces={navWorkspaces}
@@ -203,6 +207,7 @@ export default async function Sidebar() {
       userId={viewer.id}
       userAvatarVersion={me?.avatarUpdatedAt ? me.avatarUpdatedAt.getTime() : null}
       signOutAction={signOutAction}
+      previewActive={Boolean(viewer.preview)}
     />
   );
 }

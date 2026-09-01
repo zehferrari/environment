@@ -83,13 +83,13 @@ export default async function EpicsListPage({
   // through one GET form. Board narrows to the actively-moving statuses unless a
   // single Status is chosen; Archive shows archived epics.
   const view = parseEpicView(sp.view);
-  const reporterIds = viewer.isOwner ? multi(sp.reporterId) : [];
-  const managerIds = viewer.isOwner ? multi(sp.managerId) : [];
+  const reporterIds = viewer.canAccessOwnerFeatures ? multi(sp.reporterId) : [];
+  const managerIds = viewer.canAccessOwnerFeatures ? multi(sp.managerId) : [];
   const status = single(sp.status) ?? "";
   const pageSize = parsePageSize(sp.pageSize);
   const take = pageSize === "all" ? undefined : Number(pageSize);
 
-  const principals = viewer.isOwner ? await listAssignablePrincipals(viewer) : [];
+  const principals = viewer.canAccessOwnerFeatures ? await listAssignablePrincipals(viewer) : [];
   const principalFilterOptions: AvatarComboboxOption[] = principals.map((p) => ({
     value: p.id,
     label: p.name,
@@ -108,7 +108,7 @@ export default async function EpicsListPage({
   // Column widths mirror the Tasks tab's grid one-for-one on the shared
   // columns (flexible title, 6rem status, 4rem deploy, minmax people cells,
   // 5.5rem metric/date), so the two grids line up visually.
-  const epicGridClass = viewer.isOwner
+  const epicGridClass = viewer.canAccessOwnerFeatures
     ? "grid min-w-[62rem] grid-cols-[minmax(14rem,1.6fr)_6rem_4rem_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_5.5rem_5.5rem_2.5rem] items-center gap-3 xl:min-w-0"
     : "grid min-w-[42rem] grid-cols-[minmax(14rem,1.6fr)_6rem_4rem_5.5rem_5.5rem_2.5rem] items-center gap-3 xl:min-w-0";
 
@@ -162,7 +162,7 @@ export default async function EpicsListPage({
 
       <EpicFilters
         slug={slug}
-        isOwner={viewer.isOwner}
+        isOwner={viewer.canAccessOwnerFeatures}
         view={view}
         reporterIds={reporterIds}
         managerIds={managerIds}
@@ -182,8 +182,8 @@ export default async function EpicsListPage({
             <span>Epic</span>
             <span>Status</span>
             <span>Deploy</span>
-            {viewer.isOwner ? <span>Report by</span> : null}
-            {viewer.isOwner ? <span>Acting mgr</span> : null}
+            {viewer.canAccessOwnerFeatures ? <span>Report by</span> : null}
+            {viewer.canAccessOwnerFeatures ? <span>Acting mgr</span> : null}
             <span className="text-right">Tasks</span>
             <span className="text-right">Created At</span>
             <span className="sr-only">Bin</span>
@@ -210,8 +210,8 @@ export default async function EpicsListPage({
                   </Link>
                   <StatusPill status={e.status} />
                   <DeploymentIndicator status={e.deploymentStatus} />
-                  {viewer.isOwner ? <PersonCell actor={reporter} emptyLabel="none" /> : null}
-                  {viewer.isOwner ? <PersonCell actor={manager} emptyLabel="none" /> : null}
+                  {viewer.canAccessOwnerFeatures ? <PersonCell actor={reporter} emptyLabel="none" /> : null}
+                  {viewer.canAccessOwnerFeatures ? <PersonCell actor={manager} emptyLabel="none" /> : null}
                   <span className="text-right text-caption tabular-nums text-text-muted">{e._count.tasks}</span>
                   <DateActorCell iso={e.createdAt.toISOString()} actor={null} dateOnly />
                   <form action={binEpic} className="text-right">
@@ -238,9 +238,9 @@ export default async function EpicsListPage({
           ?newEpic=1 auto-open working for deep links into the epic-create modal. */}
       <NewEpicFab
         projectSlug={slug}
-        principals={viewer.isOwner ? principals : []}
-        canManageAssignments={viewer.isOwner}
-        canSetPrivate={viewer.isOwner}
+        principals={viewer.canAccessOwnerFeatures ? principals : []}
+        canManageAssignments={viewer.canAccessOwnerFeatures}
+        canSetPrivate={viewer.canAccessOwnerFeatures}
         createEpicAction={createEpic}
         hideTrigger
       />

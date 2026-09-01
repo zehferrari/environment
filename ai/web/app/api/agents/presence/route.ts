@@ -1,6 +1,7 @@
 import { db } from "@/lib/db";
 import { readAtlasSnapshot } from "@/lib/atlas-snapshot";
-import { requireViewer } from "@/lib/auth/permissions";
+import { hasOwnerRole, requireViewer } from "@/lib/auth/permissions";
+import { attachRevocationGuard } from "@/lib/users/access-revocation-guard";
 import { agentStatusFor, type AgentPresenceStatus } from "@/lib/agents/presence";
 
 export const runtime = "nodejs";
@@ -84,15 +85,16 @@ export async function GET(req: Request) {
   let viewer;
   try { viewer = await requireViewer(); } catch { return new Response("Unauthorized", { status: 401 }); }
   // Live busy state is owner-only everywhere else in the app (sidebar, boards,
-  // task lists all gate on viewer.isOwner) — keep the stream to the same
+  // task lists all gate on viewer.canAccessOwnerFeatures) — keep the stream to the same
   // audience so presence never widens what a non-owner can see.
-  if (!viewer.isOwner) return new Response("Forbidden", { status: 403 });
+  if (!viewer.canAccessOwnerFeatures) return new Response("Forbidden", { status: 403 });
 
   const initial = await readPresenceMap();
   lastMap = initial;
 
   const encoder = new TextEncoder();
   let cleanup = () => {};
+  let revocationGuard: { stop: () => void } | null = null;
 
   const stream = new ReadableStream({
     start(controller) {
@@ -122,6 +124,7 @@ export async function GET(req: Request) {
       cleanup = () => {
         if (closed) return;
         closed = true;
+        revocationGuard?.stop();
         unsubscribe();
         clearInterval(heartbeat);
         req.signal.removeEventListener("abort", cleanup);
@@ -131,6 +134,18 @@ export async function GET(req: Request) {
           // already closed
         }
       };
+
+      // ENV-168: this stream authenticated as owner at connect. A
+      // mid-session demote must revoke the live connection too, not just
+      // future requests — the guard sends one terminal access-revoked
+      // message (as a default-channel payload, matching this route's
+      // message shape) and closes.
+      revocationGuard = attachRevocationGuard({
+        userId: viewer.id,
+        send: (_event, data) => send(data),
+        close: () => cleanup(),
+        stillAuthorized: (fresh) => Boolean(fresh && hasOwnerRole(fresh)),
+      });
 
       // Two teardown paths: fetch abort (client navigates away) and stream
       // cancel (consumer releases the reader). Wiring only one leaked the

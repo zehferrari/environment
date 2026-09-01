@@ -50,22 +50,30 @@ import { effectiveCommitPrefix, effectiveTaskCommitPrefix } from "@/lib/work-ite
 import { effectiveEpicBranchName } from "@/lib/work-items/branches";
 import DeploymentTab, { DeploymentStatusSelect, canShowDeploymentAction, type DeploymentPrRow } from "@/components/deployment-tab";
 import {
+  accessibleActivityWhere,
+  accessibleAttachmentWhere,
+  accessibleCommentWhere,
   accessibleEpicWhere,
   accessibleTaskWhere,
+  customerSafeWorkflowLabel,
+  epicDetailTabsForRole,
   requireEpicAccess,
   requireOwner,
   requireTaskAccess,
   requireViewer,
   type Viewer,
+  viewerExperienceForRole,
 } from "@/lib/auth/permissions";
 import {
   getActorVisibility,
   serializeVisibleActor,
   serializeVisibleActorAs,
   visibleActivityRows,
+  visibleActivityWhere,
   type ActorVisibility,
 } from "@/lib/users/actor-visibility";
 import { buildAgentRedactor } from "@/lib/users/redact-agents";
+import { visibleActivityRecordWhere } from "@/lib/users/agent-content-policy";
 
 type ActorRow = {
   id: string;
@@ -357,7 +365,6 @@ function settledAgentSlugsForMessage(
 
 const DEVELOPMENT_TAB = "Development";
 const EPIC_TABS = ["Description", "Action Plan", "Tasks", "Attachments", "Comments", "Activities", DEVELOPMENT_TAB, "Changes"] as const;
-const OWNER_ONLY_EPIC_TABS = new Set(["Action Plan", "Activities", DEVELOPMENT_TAB, "Changes"]);
 
 function tabParam(tab: string) {
   return tab
@@ -403,6 +410,7 @@ export default async function EpicDetailPage({
     : tabFromSearchParam(tab, EPIC_TABS) ?? "Description";
 
   const viewer = await requireActor();
+  const experience = viewerExperienceForRole(viewer.role);
 
   const epic = await db.epic.findFirst({
     where: accessibleEpicWhere(viewer, { id: epicId }),
@@ -536,10 +544,12 @@ export default async function EpicDetailPage({
         },
       },
       attachments: {
+        where: accessibleAttachmentWhere(viewer, { epicId }),
         orderBy: { createdAt: "desc" },
         include: { uploader: { select: { username: true, kind: true } } },
       },
       comments: {
+        where: accessibleCommentWhere(viewer, { epicId }),
         // Soft-deleted comments (HOMELAB-41 / item 2) stay on the
         // human-facing page so the dotted divider can render; agent
         // context filters deletedAt: null upstream.
@@ -574,18 +584,18 @@ export default async function EpicDetailPage({
     },
   });
   if (!epic || epic.project.slug !== slug || epic.deletedAt) notFound();
+  const canSeeAgentContent = viewer.agentVisibility !== "hidden";
 
-  const canDeleteComments = viewer.isOwner;
+  const canDeleteComments = viewer.canAccessOwnerFeatures;
   // Deployment is an optional post-Done step, only for repo-backed projects.
   const epicHasDeployment = Boolean(epic.project.repositoryPath) && epic.status === "Done";
-  const epicTabs = EPIC_TABS
-    .filter((name) => name !== DEVELOPMENT_TAB || epicHasDeployment)
-    .filter((name) => viewer.isOwner || !OWNER_ONLY_EPIC_TABS.has(name));
+  const epicTabs = epicDetailTabsForRole(viewer.role, epicHasDeployment);
   if (!epicTabs.some((name) => name === selectedTab)) selectedTab = "Description";
   const taskIds = epic.tasks.map((task) => task.id);
-  const [principals, recentReplyActivity, allActivity, taskActivityRows, deploymentPullRequests, busyAgentSlugs, actorVisibility, agentUsers] = await Promise.all([
-    viewer.isOwner ? listAssignablePrincipals(viewer) : Promise.resolve([]),
-    db.activityLog.findMany({
+  const epicActivityWhere = await accessibleActivityWhere(viewer, { projectId: epic.project.id });
+  const [principals, recentReplyActivity, allActivity, taskActivityRows, deploymentPullRequests, busyAgentSlugs, actorVisibility] = await Promise.all([
+    viewer.canAccessOwnerFeatures ? listAssignablePrincipals(viewer) : Promise.resolve([]),
+    canSeeAgentContent ? db.activityLog.findMany({
       where: {
         projectId: epic.project.id,
         kind: {
@@ -598,12 +608,9 @@ export default async function EpicDetailPage({
       orderBy: { createdAt: "desc" },
       take: 160,
       select: { kind: true, payload: true, targetAgent: true },
-    }),
+    }) : Promise.resolve([]),
     db.activityLog.findMany({
-      where: {
-        projectId: epic.project.id,
-        payload: { contains: epic.id },
-      },
+      where: { AND: [epicActivityWhere, visibleActivityWhere(viewer), { payload: { contains: epic.id } }] },
       orderBy: { createdAt: "desc" },
       include: {
         user: {
@@ -620,7 +627,7 @@ export default async function EpicDetailPage({
     }) as Promise<Array<ActivityTimelineRow & { taskId: string | null }>>,
     taskIds.length > 0
       ? db.activityLog.findMany({
-          where: { taskId: { in: taskIds } },
+          where: { AND: [{ taskId: { in: taskIds } }, visibleActivityRecordWhere(viewer)] },
           orderBy: { createdAt: "desc" },
           select: {
             taskId: true,
@@ -629,53 +636,55 @@ export default async function EpicDetailPage({
           },
         })
       : Promise.resolve([]),
-    viewer.isOwner && selectedTab === DEVELOPMENT_TAB
+    viewer.canAccessOwnerFeatures && selectedTab === DEVELOPMENT_TAB
       ? db.deploymentPullRequest.findMany({
           where: { OR: [{ epicId: epic.id }, ...(taskIds.length ? [{ taskId: { in: taskIds } }] : [])] },
           orderBy: [{ taskId: "asc" }, { updatedAt: "desc" }],
           include: { task: { select: { workItemKey: true, title: true } } },
         }) as Promise<DeploymentPrRow[]>
       : Promise.resolve([]),
-    viewer.isOwner ? readBusyAgentSlugs() : Promise.resolve(new Set<string>()),
+    viewer.canAccessOwnerFeatures ? readBusyAgentSlugs() : Promise.resolve(new Set<string>()),
     getActorVisibility(viewer),
-    viewer.isOwner
-      ? Promise.resolve([])
-      : db.user.findMany({ where: { kind: "agent" }, select: { username: true } }),
   ]);
   const visibleTaskIds = new Set(taskIds);
   const visibleAttachments = epic.attachments.map((attachment) => ({
     ...attachment,
-    uploader: !viewer.isOwner && attachment.uploader?.kind === "agent"
+    uploader: !viewer.canAccessOwnerFeatures && attachment.uploader?.kind === "agent"
       ? (actorVisibility.owner ? { username: actorVisibility.owner.username } : null)
       : attachment.uploader,
   }));
   const visibleActivity = visibleActivityRows(
     allActivity.filter((row) => (
-      viewer.isOwner || (row.taskId ? visibleTaskIds.has(row.taskId) : !row.kind.startsWith("task."))
+      viewer.canAccessOwnerFeatures || (row.taskId ? visibleTaskIds.has(row.taskId) : !row.kind.startsWith("task."))
     )),
     actorVisibility,
   );
   const taskActivityActors = buildTaskActivityActorMaps(taskActivityRows, actorVisibility);
-  const selectedAgentSlug = viewer.isOwner ? chat || epic.actingManager?.agent?.slug || null : null;
+  const selectedAgentSlug = viewer.canAccessOwnerFeatures ? chat || epic.actingManager?.agent?.slug || null : null;
   // Resolved reviewer for role-aware comment identity on an epic.
   const resolvedReviewerId = epic.actingManagerId ?? null;
   // Body redactor: strips real agent slugs/usernames/names from member-visible
   // comment bodies. No-op for the owner.
-  const redactBody = buildAgentRedactor(actorVisibility.agentIdentities, actorVisibility.maskAgents);
-  const visibleEpicComments = viewer.isOwner
+  const redactBody = buildAgentRedactor(actorVisibility.agentIdentities, actorVisibility.redactAgentReferences);
+  const visibleEpicComments = (viewer.canAccessOwnerFeatures
     ? epic.comments
     : epic.comments.filter((comment) => {
+        if (experience.customerSafe && comment.user.kind === "agent") return false;
         // Deleted agent comments stay hidden from members (the deleted-divider
         // reveal would expose the raw body + deleting agent's slug).
         if (comment.user.kind === "agent") return !comment.deletedAt;
         // Owner's @agent-mention notes stay hidden (they embed real slugs).
         return !(
           comment.user.id === actorVisibility.owner?.id &&
-          extractMentions(comment.body, agentUsers).length > 0
+          extractMentions(comment.body, actorVisibility.agentIdentities.map(({ username }) => ({ username }))).length > 0
         );
-      });
+      })).map((comment) => (
+        actorVisibility.excludeAgentRecords && comment.deletedBy?.kind === "agent"
+          ? { ...comment, deletedById: null, deletedBy: null }
+          : comment
+      ));
 
-  const chatMessages = await db.agentChatMessage.findMany({
+  const chatMessages = canSeeAgentContent ? await db.agentChatMessage.findMany({
     where: {
       epicId: epic.id,
       agentSlug: "room",
@@ -698,7 +707,7 @@ export default async function EpicDetailPage({
       },
       deletedBy: { select: { username: true, name: true, kind: true } },
     },
-  });
+  }) : [];
   const currentUserId = viewer.id;
   const epicChatCursorKey = `epic:${epic.id}`;
   const epicChatReadCursor = currentUserId
@@ -720,7 +729,7 @@ export default async function EpicDetailPage({
       ))
     : [];
   const firstUnreadMessageId = unreadActionPlanMessages[0]?.id ?? null;
-  if (currentUserId && selectedTab === "Action Plan" && !chatArchive) {
+  if (!viewer.preview && currentUserId && selectedTab === "Action Plan" && !chatArchive) {
     await db.chatReadCursor.upsert({
       where: { userId_agentSlug: { userId: currentUserId, agentSlug: epicChatCursorKey } },
       create: { userId: currentUserId, agentSlug: epicChatCursorKey },
@@ -761,9 +770,8 @@ export default async function EpicDetailPage({
 
   // Draft is requester-bound — only the human who clicked "Ask AI" sees
   // it, and only while their page heartbeats. See lib/description-drafts.ts.
-  const { getDescriptionDraft } = await import("@/lib/description-drafts");
-  const draftDescription = viewer.id
-    ? await getDescriptionDraft({
+  const draftDescription = viewer.id && !viewer.preview
+    ? await (await import("@/lib/description-drafts")).getDescriptionDraft({
         scope: "epic",
         targetId: epic.id,
         requesterUserId: viewer.id,
@@ -771,7 +779,7 @@ export default async function EpicDetailPage({
     : null;
 
   const [chatArchives, binChatArchives, selectedChatArchive] = await Promise.all([
-    db.agentChatRoomArchive.findMany({
+    canSeeAgentContent ? db.agentChatRoomArchive.findMany({
       where: { projectId: epic.project.id, epicId: epic.id, deletedAt: null },
       orderBy: { createdAt: "desc" },
       take: 20,
@@ -782,8 +790,8 @@ export default async function EpicDetailPage({
         endedAt: true,
         messageCount: true,
       },
-    }),
-    db.agentChatRoomArchive.findMany({
+    }) : Promise.resolve([]),
+    canSeeAgentContent ? db.agentChatRoomArchive.findMany({
       where: { projectId: epic.project.id, epicId: epic.id, deletedAt: { not: null } },
       orderBy: { deletedAt: "desc" },
       take: 20,
@@ -795,8 +803,8 @@ export default async function EpicDetailPage({
         messageCount: true,
         deletedAt: true,
       },
-    }),
-    chatArchive
+    }) : Promise.resolve([]),
+    canSeeAgentContent && chatArchive
       ? db.agentChatRoomArchive.findFirst({
           where: { id: chatArchive, projectId: epic.project.id, epicId: epic.id },
           include: {
@@ -1013,13 +1021,9 @@ export default async function EpicDetailPage({
     Boolean(value?.startsWith("agent:") && aiTargetOptions.some((option) => option.value === value)),
   ) ?? aiTargetOptions[0]?.value ?? "";
   const canApproveActionPlan =
+    viewer.canAccessOwnerFeatures &&
     !epic.approvedOn &&
-    Boolean(viewer.id && (
-      viewer.kind !== "agent" ||
-      (epic.project.onlyReportersCanApproveActionPlans
-        ? viewer.id === epic.reporterId
-        : viewer.id === epic.reporterId || viewer.id === epic.actingManagerId)
-    ));
+    Boolean(viewer.id);
   const doneActivity = visibleActivity.find((row) =>
     row.kind === "epic.status" && payloadValue(row.payload, "to") === "Done"
   );
@@ -1029,6 +1033,9 @@ export default async function EpicDetailPage({
     row.kind === "epic.status" ||
     row.kind === "epic.action_plan.approve"
   )) ?? createdActivity;
+  const visibleEpicUpdatedAt = actorVisibility.excludeAgentRecords
+    ? new Date(createdAtMs(updatedActivity?.createdAt ?? epic.createdAt))
+    : epic.updatedAt;
 
   const tasksByStatus = new Map<string, typeof epic.tasks>();
   for (const s of TASK_STATUS_ORDER) tasksByStatus.set(s, []);
@@ -1090,10 +1097,10 @@ export default async function EpicDetailPage({
               <span className="text-nano font-semibold uppercase tracking-wider text-text-muted">
                 Updated{" "}
                 <time
-                  dateTime={epic.updatedAt.toISOString()}
-                  title={epic.updatedAt.toISOString()}
+                  dateTime={visibleEpicUpdatedAt.toISOString()}
+                  title={visibleEpicUpdatedAt.toISOString()}
                 >
-                  {timeAgo(epic.updatedAt)}
+                  {timeAgo(visibleEpicUpdatedAt)}
                 </time>
               </span>
               <button
@@ -1124,7 +1131,7 @@ export default async function EpicDetailPage({
             <TabsNav
               tabs={epicTabs}
               sticky
-              badges={viewer.isOwner ? { "Action Plan": unreadActionPlanMessages.length } : undefined}
+              badges={experience.canViewProjectWorkflow ? { "Action Plan": unreadActionPlanMessages.length } : undefined}
             />
             <div className="pt-4">
               <TabPanel name="Description">
@@ -1135,13 +1142,14 @@ export default async function EpicDetailPage({
                     defaultValue={epic.description ?? ""}
                     projectSlug={slug}
                     epicId={epic.id}
-                    aiTargets={viewer.isOwner ? aiTargetOptions : []}
-                    defaultAiTarget={viewer.isOwner ? defaultAiTarget : ""}
+                    aiTargets={viewer.canAccessOwnerFeatures ? aiTargetOptions : []}
+                    defaultAiTarget={viewer.canAccessOwnerFeatures ? defaultAiTarget : ""}
                     descriptionLabel="Epic"
                     draftDescription={draftDescription}
-                    aiRunning={viewer.isOwner && isAiDescriptionRunning}
-                    runningMessageId={viewer.isOwner ? runningDescriptionRun?.messageId ?? null : null}
-                    runningAgentSlug={viewer.isOwner ? runningDescriptionRun?.agentSlug ?? null : null}
+                    aiRunning={viewer.canAccessOwnerFeatures && isAiDescriptionRunning}
+                    runningMessageId={viewer.canAccessOwnerFeatures ? runningDescriptionRun?.messageId ?? null : null}
+                    runningAgentSlug={viewer.canAccessOwnerFeatures ? runningDescriptionRun?.agentSlug ?? null : null}
+                    readOnlyPreview={Boolean(viewer.preview)}
                     rows={12}
                   />
 
@@ -1163,11 +1171,11 @@ export default async function EpicDetailPage({
                           <option value="Backlog">Backlog</option>
                           <option value="To Do">To Do</option>
                           <option value="In Progress">In Progress</option>
-                          <option value="Review" disabled={epic.status !== "Review"}>Review</option>
+                          <option value="Review" disabled={epic.status !== "Review"}>{customerSafeWorkflowLabel("Review", experience.customerSafe)}</option>
                           <option value="Done">Done</option>
                         </select>
                       </label>
-                      {viewer.isOwner ? (
+                      {viewer.canAccessOwnerFeatures ? (
                         <PrivateToggle
                           formId="epicMain"
                           defaultChecked={epic.private}
@@ -1176,7 +1184,7 @@ export default async function EpicDetailPage({
                       ) : null}
                     </div>
 
-                    {viewer.isOwner ? (
+                    {viewer.canAccessOwnerFeatures ? (
                       <div className="grid grid-cols-2 gap-3 rounded-card border border-line bg-panel-soft p-card">
                         <div className="min-w-0">
                           <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Report by</span>
@@ -1199,7 +1207,7 @@ export default async function EpicDetailPage({
                     ) : null}
 
                     {/* Branch, commit prefix, and deployment — persisted by the card's single Save. */}
-                    <div className="space-y-3 rounded-card border border-line bg-panel-soft p-card">
+                    {canSeeAgentContent ? <div className="space-y-3 rounded-card border border-line bg-panel-soft p-card">
                       <label className="block">
                         <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">
                           Branch
@@ -1242,9 +1250,9 @@ export default async function EpicDetailPage({
                           )}
                         </div>
                       </div>
-                    </div>
+                    </div> : null}
 
-                    {epic.status === "Review" || epic.completionReviewStatus !== "Not Required" ? (
+                    {canSeeAgentContent && (epic.status === "Review" || epic.completionReviewStatus !== "Not Required") ? (
                       <div className="space-y-1 rounded-card border border-amber-500/40 bg-amber-500/[0.08] p-card text-caption">
                         <div className="text-micro font-semibold uppercase tracking-wider text-text-muted">Whole-Epic acceptance</div>
                         <div className="font-semibold text-text">{epic.completionReviewStatus}</div>
@@ -1338,18 +1346,18 @@ export default async function EpicDetailPage({
                           <dt className="text-text-muted">Updated</dt>
                           <dd className="flex items-center gap-2">
                             <time
-                              dateTime={epic.updatedAt.toISOString()}
-                              title={epic.updatedAt.toISOString()}
+                              dateTime={visibleEpicUpdatedAt.toISOString()}
+                              title={visibleEpicUpdatedAt.toISOString()}
                               className="tabular-nums"
                             >
-                              {timeAgo(epic.updatedAt)}
+                              {timeAgo(visibleEpicUpdatedAt)}
                             </time>
                             {updatedActivity?.user ? (
                               <MessageAvatar actor={updatedActivity.user} size="sm" />
                             ) : null}
                           </dd>
                         </div>
-                        {epic.approvedOn ? (
+                        {canSeeAgentContent && epic.approvedOn ? (
                           <div className="flex items-center justify-between gap-3">
                             <dt className="text-text-muted">Approved</dt>
                             <dd className="flex items-center gap-2">
@@ -1364,7 +1372,7 @@ export default async function EpicDetailPage({
                             </dd>
                           </div>
                         ) : null}
-                        {epic.status === "Done" && epic.statusChangedAt ? (
+                        {canSeeAgentContent && epic.status === "Done" && epic.statusChangedAt ? (
                           <div className="flex items-center justify-between gap-3">
                             <dt className="text-text-muted">Done</dt>
                             <dd className="flex items-center gap-2">
@@ -1400,7 +1408,7 @@ export default async function EpicDetailPage({
                 </div>
               </TabPanel>
 
-              {viewer.isOwner ? <TabPanel name="Action Plan">
+              {experience.canViewProjectWorkflow ? <TabPanel name="Action Plan">
                 <div className="space-y-3 pt-2">
                   {canApproveActionPlan ? (
                     <form action={approveEpicActionPlan} className="flex justify-end">
@@ -1417,6 +1425,7 @@ export default async function EpicDetailPage({
                   <ChatRoom
                     projectSlug={slug}
                     epicId={epic.id}
+                    readOnly={!viewer.canAccessOwnerFeatures}
                     messages={visibleActionPlanMessages}
                     activeMessageCount={activeActionPlanMessageCount}
                     archives={chatArchives}
@@ -1456,11 +1465,11 @@ export default async function EpicDetailPage({
           {epic.tasks.length === 0 ? (
             <>
               <p className="text-caption text-text-muted">
-                {viewer.isOwner
+                {viewer.canAccessOwnerFeatures
                   ? "No tasks linked to this epic yet. Add one manually or ask AI to propose the first task breakdown."
                   : "No tasks linked to this epic yet."}
               </p>
-              {viewer.isOwner ? (
+              {viewer.canAccessOwnerFeatures ? (
                 <EpicTasksAiPrompt
                   projectSlug={slug}
                   epicId={epic.id}
@@ -1478,31 +1487,31 @@ export default async function EpicDetailPage({
                 workItemKey: t.workItemKey,
                 title: t.title,
                 status: t.status,
-                alertReporter: t.alertReporter,
+                alertReporter: actorVisibility.excludeAgentRecords ? false : t.alertReporter,
                 href: `/projects/${slug}/tasks/${t.id}`,
                 createdAt: t.createdAt.toISOString(),
-                statusChangedAt: t.statusChangedAt?.toISOString() ?? null,
-                approvedOn: t.approvedOn?.toISOString() ?? null,
+                statusChangedAt: actorVisibility.excludeAgentRecords ? null : t.statusChangedAt?.toISOString() ?? null,
+                approvedOn: actorVisibility.excludeAgentRecords ? null : t.approvedOn?.toISOString() ?? null,
                 archivedAt: t.archivedAt?.toISOString() ?? null,
-                reporter: viewer.isOwner ? serializeActor(t.reporter, actorVisibility) : null,
-                assignee: viewer.isOwner ? serializeActor(t.assignee, actorVisibility) : null,
-                reviewer: viewer.isOwner ? serializeActor(t.actingManager, actorVisibility) : null,
-                createdBy: viewer.isOwner ? (taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter, actorVisibility)) : null,
-                updatedBy: viewer.isOwner ? (taskActivityActors.updatedBy.get(t.id) ?? taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter, actorVisibility)) : null,
-                assigneeName: viewer.isOwner ? (serializeActor(t.assignee, actorVisibility)?.username ?? null) : null,
-                reviewerName: viewer.isOwner ? (serializeActor(t.actingManager, actorVisibility)?.username ?? null) : null,
-                updatedAt: t.updatedAt.toISOString(),
-                activeWorking:
+                reporter: viewer.canAccessOwnerFeatures ? serializeActor(t.reporter, actorVisibility) : null,
+                assignee: viewer.canAccessOwnerFeatures ? serializeActor(t.assignee, actorVisibility) : null,
+                reviewer: viewer.canAccessOwnerFeatures ? serializeActor(t.actingManager, actorVisibility) : null,
+                createdBy: viewer.canAccessOwnerFeatures ? (taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter, actorVisibility)) : null,
+                updatedBy: viewer.canAccessOwnerFeatures ? (taskActivityActors.updatedBy.get(t.id) ?? taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter, actorVisibility)) : null,
+                assigneeName: viewer.canAccessOwnerFeatures ? (serializeActor(t.assignee, actorVisibility)?.username ?? null) : null,
+                reviewerName: viewer.canAccessOwnerFeatures ? (serializeActor(t.actingManager, actorVisibility)?.username ?? null) : null,
+                updatedAt: (actorVisibility.excludeAgentRecords ? t.createdAt : t.updatedAt).toISOString(),
+                activeWorking: actorVisibility.excludeAgentRecords ? false : (
                   (t.status === "In Progress" &&
                     Boolean(t.assignee?.agent?.slug && busyAgentSlugs.has(t.assignee.agent.slug))) ||
                   (t.status === "Review" &&
-                    Boolean(t.actingManager?.agent?.slug && busyAgentSlugs.has(t.actingManager.agent.slug))),
+                    Boolean(t.actingManager?.agent?.slug && busyAgentSlugs.has(t.actingManager.agent.slug)))),
               }))}
               projectSlug={slug}
               reorderEpicTasks={reorderEpicTasks}
               epicId={epic.id}
-              showTaskRoles={viewer.isOwner}
-              roleOptions={viewer.isOwner ? principalOptions : []}
+              showTaskRoles={viewer.canAccessOwnerFeatures}
+              roleOptions={viewer.canAccessOwnerFeatures ? principalOptions : []}
             />
           )}
 
@@ -1560,12 +1569,14 @@ export default async function EpicDetailPage({
                               </li>
                             );
                           }
-                          const commentAuthor = serializeVisibleActorAs(
-                            c.user,
-                            c.user.id === resolvedReviewerId ? "reviewer" : "assignee",
-                            actorVisibility,
-                          )!;
-                          const authorRole = syntheticRoleMeta(commentAuthor);
+                          const commentAuthor = experience.customerSafe
+                            ? serializeActor(c.user, actorVisibility)!
+                            : serializeVisibleActorAs(
+                                c.user,
+                                c.user.id === resolvedReviewerId ? "reviewer" : "assignee",
+                                actorVisibility,
+                              )!;
+                          const authorRole = experience.customerSafe ? null : syntheticRoleMeta(commentAuthor);
                           return (
                             <li
                               key={c.id}
@@ -1628,13 +1639,13 @@ export default async function EpicDetailPage({
                 </div>
               </TabPanel>
 
-              {viewer.isOwner ? <TabPanel name="Activities">
+              {experience.canViewProjectWorkflow ? <TabPanel name="Activities">
                 <div className="pt-2">
                   <ActivityTimeline rows={visibleActivity} />
                 </div>
               </TabPanel> : null}
 
-              {viewer.isOwner && epicHasDeployment ? <TabPanel name={DEVELOPMENT_TAB}>
+              {experience.canViewProjectWorkflow && epicHasDeployment ? <TabPanel name={DEVELOPMENT_TAB}>
                 <DeploymentTab
                   mode="epic"
                   title={epic.title}
@@ -1656,7 +1667,7 @@ export default async function EpicDetailPage({
                 />
               </TabPanel> : null}
 
-              {viewer.isOwner ? <TabPanel name="Changes">
+              {experience.canViewProjectWorkflow ? <TabPanel name="Changes">
                 <TaskChangesPanel
                   changes={epicChanges}
                   branchName={epicChangeBranchName}

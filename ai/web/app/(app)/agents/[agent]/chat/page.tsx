@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
 import { auth } from "@/lib/auth";
+import { getViewer } from "@/lib/auth/permissions";
 import { renderFullMarkdown } from "@/lib/markdown";
 import {
   archiveDirectAgentChat,
@@ -224,8 +225,9 @@ export default async function DirectAgentChatPage({
   const { agent: slug } = await params;
   const { archive: selectedArchiveId = "", embedded: embeddedParam } = await searchParams;
   const embedded = embeddedParam === "1";
-  const session = await auth();
-  const currentUserId = session?.user?.id ?? null;
+  const viewer = await getViewer();
+  if (!viewer?.canAccessOwnerFeatures) notFound();
+  const currentUserId = viewer.id;
   const agent = await db.agent.findUnique({
     where: { slug },
     include: { user: { select: { username: true, status: true } } },

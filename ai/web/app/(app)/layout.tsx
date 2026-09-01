@@ -2,9 +2,11 @@ import { AgentPresenceProvider } from "@/components/agent-presence-provider";
 import CommandDeck from "@/components/command-deck";
 import CreateFabServer from "@/components/create-fab-server";
 import { PersistentPmStreamProvider } from "@/components/persistent-pm-stream-provider";
+import { ViewerPolicyProvider } from "@/components/viewer-policy-provider";
+import PreviewBanner from "@/components/preview-banner";
 import Sidebar from "@/components/sidebar";
 import ToastProvider from "@/components/toast";
-import { requireViewer } from "@/lib/auth/permissions";
+import { requireViewer, viewerExperienceForRole } from "@/lib/auth/permissions";
 
 export default async function AppLayout({
   children,
@@ -19,21 +21,30 @@ export default async function AppLayout({
   // provider for non-owners would loop it through 403 reconnects forever, so
   // only owners get the live stream; everyone else keeps the SSR status hint.
   const viewer = await requireViewer();
-  return (
-    <PersistentPmStreamProvider>
+  const experience = viewerExperienceForRole(viewer.role);
+  const shell = (
+    <ViewerPolicyProvider>
       <ToastProvider>
-        {viewer.isOwner ? <AgentPresenceProvider /> : null}
+        {viewer.preview ? (
+          <PreviewBanner username={viewer.username} role={viewer.role as "admin" | "customer"} />
+        ) : null}
+        {experience.canViewGlobalAgentOperations ? <AgentPresenceProvider /> : null}
         <div className="relative flex min-h-screen text-text">
           <Sidebar />
           <main className="relative min-w-0 flex-1 px-4 pt-4 pb-[calc(env(safe-area-inset-bottom)+6.5rem)] sm:px-page-x md:pt-page-y md:pb-24 lg:px-page-x-lg">
             <div className="mx-auto w-full min-w-0 max-w-[1480px] 3xl:max-w-[1780px] 4xl:max-w-[5000px]">{children}</div>
           </main>
-          <CommandDeck />
+          {experience.canViewProjectWorkflow ? <CommandDeck /> : null}
         </div>
-        {/* The one app-wide create (+). Context-aware, in-place, no redirects. */}
-        <CreateFabServer />
-        {chatpane}
+        {experience.canViewProjectWorkflow ? <CreateFabServer /> : null}
+        {experience.canViewGlobalAgentOperations ? chatpane : null}
       </ToastProvider>
+    </ViewerPolicyProvider>
+  );
+  if (viewer.role !== "owner") return shell;
+  return (
+    <PersistentPmStreamProvider>
+      {shell}
     </PersistentPmStreamProvider>
   );
 }

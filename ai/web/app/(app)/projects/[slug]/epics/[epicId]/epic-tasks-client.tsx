@@ -73,10 +73,37 @@ export default function EpicTasksClient({
       source.addEventListener("board.touch", () => {
         scheduleRefresh();
       });
+      source.addEventListener("access-revoked", () => {
+        // ENV-168: the server re-checked our access and revoked this stream.
+        // Terminal — close the connection, cancel all reconnect retries, and
+        // refresh so this route re-renders into its safe denied/not-found
+        // state instead of looping on 401/403.
+        source?.close();
+        source = null;
+        closed = true;
+        if (retryTimer) {
+          clearTimeout(retryTimer);
+          retryTimer = null;
+        }
+        if (!document.hidden) router.refresh();
+      });
       source.addEventListener("error", () => {
+        // ENV-168: readyState CLOSED means the server answered a
+        // (re)connect attempt with a terminal 401/403 — the browser already
+        // gave up. Stop retrying and settle into the safe denied state.
+        const terminal = source?.readyState === EventSource.CLOSED;
         source?.close();
         source = null;
         if (closed) return;
+        if (terminal) {
+          closed = true;
+          if (retryTimer) {
+            clearTimeout(retryTimer);
+            retryTimer = null;
+          }
+          if (!document.hidden) router.refresh();
+          return;
+        }
         retryTimer = setTimeout(connect, retryMs);
         retryMs = Math.min(retryMs * 2, 30_000);
       });

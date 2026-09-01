@@ -22,6 +22,7 @@ import { isProtectedBranch } from "@/lib/projects/protected-branches";
 import { effectiveEpicBranchName, effectiveTaskBranchName } from "@/lib/work-items/branches";
 import { enqueueWorkflowEffects } from "@/lib/tasks/transition-kernel";
 import { assignOpenEpicTasks } from "@/lib/epics/assignment";
+import { isActiveOwnerPrincipal } from "@/lib/auth/roles";
 import type { Prisma } from "@prisma/client";
 
 async function executeRegisteredIntent<I extends TaskWorkflowIntent>(
@@ -836,9 +837,7 @@ const publishCheckpointExecutor: IntentExecutor<"publish_checkpoint"> = async (c
     authorization.taskId !== context.command.taskId ||
     authorization.deletedAt ||
     authorization.createdAt < task.approvedOn ||
-    authorization.user.kind !== "human" ||
-    authorization.user.status !== "active" ||
-    !authorization.user.isOwner
+    !isActiveOwnerPrincipal(authorization.user)
   ) {
     return {
       status: "forbidden",
