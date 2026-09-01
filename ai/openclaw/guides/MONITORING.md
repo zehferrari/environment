@@ -404,7 +404,7 @@ payloads gain `_transient: true` and `_consecutive_seen` when graduated.
 ### Self-healing scheduled tasks (no triage needed)
 
 Some "alerts" are predictable token expiries that should be auto-renewed
-by cron, not handed to the monitor agent:
+by host systemd timers, not handed to the monitor agent:
 
 - **Gmail watch tokens** expire every 7 days. Renewed daily at 04:00 by
   `gmail-watch-renew.timer` → `gmail-watch-renew.service` →

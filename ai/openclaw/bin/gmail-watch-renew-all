@@ -14,14 +14,21 @@
 # setup gap (someone enabled gmail but never ran the initial gmail-watch.js).
 
 set -u
+set -o pipefail
 
 REGISTRY="${OPENCLAW_AGENTS_JSON:-/etc/openclaw/agents.json}"
 LOG_TAG="gmail-watch-renew"
+NODE_BIN="${GMAIL_WATCH_NODE_BIN:-/usr/bin/node}"
 
 log() { logger -t "$LOG_TAG" -- "$*"; echo "$*"; }
 
 if [ ! -r "$REGISTRY" ]; then
     log "FATAL: cannot read registry $REGISTRY"
+    exit 2
+fi
+
+if [ ! -x "$NODE_BIN" ]; then
+    log "FATAL: node runtime is not executable at $NODE_BIN"
     exit 2
 fi
 
@@ -66,20 +73,28 @@ for entry in "${entries[@]}"; do
     fi
 
     topic=$(jq -r '.topicName // empty' "$state" 2>/dev/null)
-    labels=$(jq -r '(.labelIds // []) | join(" ")' "$state" 2>/dev/null)
+    mapfile -t labels < <(jq -r '(.labelIds // [])[] | select(type == "string")' "$state" 2>/dev/null)
     if [ -z "$topic" ]; then
         log "skip $user: watch-state.json has no topicName"
         exit_rc=1
         continue
     fi
+    if [ ${#labels[@]} -eq 0 ]; then
+        labels=(INBOX)
+    fi
 
-    log "renew $user: topic=$topic labels=${labels:-INBOX}"
-    if sudo -n -u "$user" bash -lc "cd $google_dir && node gmail-watch.js $topic ${labels:-INBOX}" >/tmp/gmail-watch-renew-$user.out 2>&1; then
+    output=$(mktemp "/tmp/gmail-watch-renew-${user}.XXXXXX")
+    log "renew $user: topic=$topic labels=${labels[*]}"
+    # The system service runs as root only to discover private per-user state.
+    # Execute the actual Google call as the owning user, with argv kept out of
+    # a shell so topics, paths, and labels cannot be reinterpreted as code.
+    if sudo -n -u "$user" env HOME="$home" "$NODE_BIN" "$script" "$topic" "${labels[@]}" >"$output" 2>&1; then
         new_exp=$(jq -r '.expiration // "?"' "$state" 2>/dev/null)
         log "renew $user: ok (new expiration=$new_exp)"
     else
-        log "renew $user: FAILED ($(tail -1 /tmp/gmail-watch-renew-$user.out 2>/dev/null))"
+        log "renew $user: FAILED ($(tail -1 "$output" 2>/dev/null))"
         exit_rc=1
     fi
+    rm -f -- "$output"
 done
 exit $exit_rc

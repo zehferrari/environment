@@ -77,11 +77,11 @@ The action you take depends on **kind** and **tier**. Look up your kind in this 
 
 ### Scheduled / token-renewal kinds
 
-These are predictable, time-driven, and **should be auto-renewed by cron** — not by you reacting to an alert. If you see one:
+These are predictable, time-driven, and **should be auto-renewed by the host systemd timer** — not by you reacting to an alert. If you see one:
 
 | Kind | What it really is | Action |
 |---|---|---|
-| `gmail-watch-expiring` | Gmail watch tokens expire every 7 days. Renewal is `node <openclaw-root>/skills/google-workspace/gmail-watch.js <topic> [labels]` run as the affected agent, where `<openclaw-root>` is the active OpenClaw checkout (thinkpad: under `/srv/Code/environment.worktrees/<branch>/ai/openclaw`). | Normally **self-healing**: `gmail-watch-renew.timer` runs `/usr/local/sbin/gmail-watch-renew-all` daily at 04:00 and renews every agent's watch from `~/.openclaw/workspace/google/watch-state.json`. If this timer is healthy you never see this incident. If it fires, the timer is broken — Tier 1: manually renew with `sudo -u <agent> node <openclaw-root>/skills/google-workspace/gmail-watch.js <topic> <labels>`, suppress on success, and escalate to zeh in the `reason` that the `gmail-watch-renew.timer` needs investigation. Do **not** recommend "add a daily timer" — it already exists in this repo at `ai/openclaw/systemd/gmail-watch-renew.{service,timer}`. |
+| `gmail-watch-expiring` | Gmail watch tokens expire every 7 days. | Normally **self-healing**: root's `gmail-watch-renew.timer` runs `/usr/local/sbin/gmail-watch-renew-all` daily at 04:00 and executes each renewal as the owning agent. Re-probe `systemctl status gmail-watch-renew.timer gmail-watch-renew.service`. If the latest service run succeeded and the integrity warning has cleared, suppress quietly. If the service failed or the warning remains after a successful run, escalate with that service state; it needs host-level investigation. **Do not** read another agent's `watch-state.json`, run commands in their home, request broader home-directory access, or recommend another cron/timer. The monitor role intentionally lacks those privileges, and the systemd timer already owns this recurring job. |
 
 ### Resource / observe-only kinds
 
