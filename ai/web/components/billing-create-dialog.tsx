@@ -7,6 +7,10 @@ import { runBillingReport, runWorkspaceBillingReports } from "@/lib/billing/acti
 type ProjectOption = { id: string; slug: string; name: string };
 type AgentOption = { slug: string; name: string; role: string };
 type PeriodKind = "first" | "second" | "custom";
+const MONTHS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
 
 function brisbaneToday() {
   return new Intl.DateTimeFormat("en-CA", {
@@ -17,8 +21,12 @@ function brisbaneToday() {
   }).format(new Date());
 }
 
-function halfMonth(month: string, kind: Exclude<PeriodKind, "custom">) {
-  const [year, monthNumber] = month.split("-").map(Number);
+function halfMonth(yearInput: string, monthInput: string, kind: Exclude<PeriodKind, "custom">) {
+  if (!/^\d{4}$/.test(yearInput) || !/^\d{2}$/.test(monthInput)) return { from: "", to: "" };
+  const year = Number(yearInput);
+  const monthNumber = Number(monthInput);
+  if (monthNumber < 1 || monthNumber > 12) return { from: "", to: "" };
+  const month = `${yearInput}-${monthInput}`;
   const last = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
   return kind === "first"
     ? { from: `${month}-01`, to: `${month}-15` }
@@ -42,14 +50,26 @@ export default function BillingCreateDialog({
   const today = useMemo(brisbaneToday, []);
   const [open, setOpen] = useState(false);
   const [periodKind, setPeriodKind] = useState<PeriodKind>(today.slice(8, 10) <= "15" ? "first" : "second");
-  const [month, setMonth] = useState(today.slice(0, 7));
+  const [year, setYear] = useState(today.slice(0, 4));
+  const [month, setMonth] = useState(today.slice(5, 7));
   const [customFrom, setCustomFrom] = useState(today);
   const [customTo, setCustomTo] = useState(today);
   const [agentSlug, setAgentSlug] = useState(defaultAgent);
   const [selectedProjects, setSelectedProjects] = useState(() => new Set(projects.map((project) => project.id)));
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
-  const period = periodKind === "custom" ? { from: customFrom, to: customTo } : halfMonth(month, periodKind);
+  const period = periodKind === "custom" ? { from: customFrom, to: customTo } : halfMonth(year, month, periodKind);
+
+  function openDialog() {
+    const current = brisbaneToday();
+    setPeriodKind(current.slice(8, 10) <= "15" ? "first" : "second");
+    setYear(current.slice(0, 4));
+    setMonth(current.slice(5, 7));
+    setCustomFrom(current);
+    setCustomTo(current);
+    setError(null);
+    setOpen(true);
+  }
 
   function toggleProject(id: string) {
     setSelectedProjects((current) => {
@@ -97,7 +117,7 @@ export default function BillingCreateDialog({
     <>
       <button
         type="button"
-        onClick={() => setOpen(true)}
+        onClick={openDialog}
         aria-label="Create billing summary"
         title="Create billing summary"
         className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-accent text-3xl font-light leading-none text-bg shadow-lg transition hover:scale-105 hover:opacity-95"
@@ -136,7 +156,26 @@ export default function BillingCreateDialog({
                     <label className="text-caption text-text-muted">To<input type="date" value={customTo} onChange={(event) => setCustomTo(event.target.value)} className="mt-1 block h-10 w-full rounded-lg border border-line bg-bg px-3 text-body text-text outline-none focus:border-accent" /></label>
                   </div>
                 ) : (
-                  <label className="block max-w-xs text-caption text-text-muted">Month<input type="month" value={month} onChange={(event) => setMonth(event.target.value)} className="mt-1 block h-10 w-full rounded-lg border border-line bg-bg px-3 text-body text-text outline-none focus:border-accent" /></label>
+                  <div className="grid max-w-lg gap-3 sm:grid-cols-2">
+                    <label className="block text-caption text-text-muted">Year
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        maxLength={4}
+                        value={year}
+                        onChange={(event) => setYear(event.target.value.replace(/\D/g, "").slice(0, 4))}
+                        className="mt-1 block h-10 w-full rounded-lg border border-line bg-bg px-3 text-body text-text outline-none focus:border-accent"
+                      />
+                    </label>
+                    <label className="block text-caption text-text-muted">Month
+                      <select value={month} onChange={(event) => setMonth(event.target.value)} className="mt-1 block h-10 w-full rounded-lg border border-line bg-bg px-3 text-body text-text outline-none focus:border-accent">
+                        {MONTHS.map((label, index) => {
+                          const value = String(index + 1).padStart(2, "0");
+                          return <option key={value} value={value}>{label}</option>;
+                        })}
+                      </select>
+                    </label>
+                  </div>
                 )}
                 <p className="text-caption font-medium text-accent">{period.from} → {period.to}</p>
               </fieldset>
