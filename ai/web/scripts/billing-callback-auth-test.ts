@@ -10,6 +10,7 @@ import {
 import { clampMinutes } from "@/lib/billing/report";
 import { compactLedger, buildBillingDispatchBody, resolveBillingPromptValue, DEFAULT_BILLING_PROMPT } from "@/lib/billing/prompt";
 import type { BillingLedger, BillingLedgerDay } from "@/lib/billing/git-ledger";
+import { publicOriginFromHeaders } from "@/lib/http/public-origin";
 import { middleware } from "@/middleware";
 
 function ledgerDay(day: string, commitCount: number): BillingLedgerDay {
@@ -108,6 +109,23 @@ async function main() {
     assert.ok(body.includes(day.day), `every day must survive trimming: ${day.day}`);
   }
   assert.ok(body.includes(token), "the agent needs the token to answer");
+
+  // The public HTTPS configuration wins over a final-hop HTTP proxy header;
+  // otherwise POST callbacks receive nginx's 301 and may be replayed as GET.
+  const originalAppUrl = process.env.APP_URL;
+  try {
+    process.env.APP_URL = "https://agents.example.test";
+    assert.equal(
+      publicOriginFromHeaders(new Headers({
+        host: "agents.example.test",
+        "x-forwarded-proto": "http",
+      })),
+      "https://agents.example.test",
+    );
+  } finally {
+    if (originalAppUrl === undefined) delete process.env.APP_URL;
+    else process.env.APP_URL = originalAppUrl;
+  }
 
   // The route owns HMAC authorization. Middleware must let its exact GET/POST
   // shape through without a browser session, while nearby and unsupported

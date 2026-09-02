@@ -148,6 +148,9 @@ and trust boundary:
 The middleware deliberately lets token-scoped callbacks reach their route
 handlers without a browser session. Each handler must therefore perform its
 own complete authentication, scope, active-agent, privacy, and replay checks.
+Generated callback URLs prefer the configured `APP_URL`/Auth.js public origin
+over final-hop proxy headers so multi-hop HTTP forwarding cannot downgrade an
+HTTPS POST callback into a redirect.
 
 ## Trust and authorization model
 
