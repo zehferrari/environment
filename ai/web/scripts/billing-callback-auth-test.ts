@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { NextRequest } from "next/server";
 
 process.env.AUTH_SECRET = process.env.AUTH_SECRET ?? "billing-callback-test-secret";
 
@@ -9,6 +10,7 @@ import {
 import { clampMinutes } from "@/lib/billing/report";
 import { compactLedger, buildBillingDispatchBody, resolveBillingPromptValue, DEFAULT_BILLING_PROMPT } from "@/lib/billing/prompt";
 import type { BillingLedger, BillingLedgerDay } from "@/lib/billing/git-ledger";
+import { middleware } from "@/middleware";
 
 function ledgerDay(day: string, commitCount: number): BillingLedgerDay {
   return {
@@ -33,7 +35,7 @@ function ledgerDay(day: string, commitCount: number): BillingLedgerDay {
   };
 }
 
-function main() {
+async function main() {
   const token = createBillingCallbackToken("proj_1", "rep_1", "karen");
 
   // --- the token is bound to all three parts of the tuple ---
@@ -107,6 +109,23 @@ function main() {
   }
   assert.ok(body.includes(token), "the agent needs the token to answer");
 
+  // The route owns HMAC authorization. Middleware must let its exact GET/POST
+  // shape through without a browser session, while nearby and unsupported
+  // paths remain session-protected.
+  const billingUrl = "http://127.0.0.1:3000/api/agent/projects/proj_1/billing/rep_1";
+  for (const method of ["GET", "POST"]) {
+    const response = await middleware(new NextRequest(billingUrl, { method }));
+    assert.equal(response.headers.get("x-middleware-next"), "1", `${method} billing callback reaches route auth`);
+  }
+  for (const request of [
+    new NextRequest(billingUrl, { method: "DELETE" }),
+    new NextRequest("http://127.0.0.1:3000/api/agent/projects/proj_1/billing"),
+    new NextRequest(`${billingUrl}/extra`),
+  ]) {
+    const response = await middleware(request);
+    assert.equal(response.status, 307, `${request.method} ${request.nextUrl.pathname} stays browser-session protected`);
+  }
+
   // The compact ledger degrades subject detail, not day coverage.
   const tiny = compactLedger(ledger, 400);
   for (const day of days) {
@@ -116,4 +135,7 @@ function main() {
   console.log("billing-callback-auth-test ok");
 }
 
-main();
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

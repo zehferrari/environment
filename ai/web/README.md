@@ -139,6 +139,7 @@ and trust boundary:
 | Agent context reads | `/api/agents/context/{task,epic,project}/[id]` | Direct-loopback request plus short-lived context grant; legacy bearer only when configured |
 | Agent workflow | `/api/agent/tasks/[id]/workflow`, Epic workflow, workflow-turn request | Target-bound PM workflow token or scoped channel bearer |
 | Agent proposals | `/api/agent/projects/[id]/proposals` | One-shot project/message/agent grant; human approval is still required |
+| Agent billing report | `/api/agent/projects/[projectId]/billing/[reportId]` | Report-scoped HMAC bearer bound to project, report, and active agent; GET reads the ledger and POST submits the result |
 | Description drafts | Task/Epic description endpoints | One-shot message grant; writes a requester-bound draft, not the canonical description |
 | Native PM callbacks | reply, stream, events, cancel | Per-agent PM-channel bearer and target validation |
 | Attachment reads | `/api/attachments/[id]` | Browser session or scoped grant/bearer |

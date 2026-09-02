@@ -40,6 +40,16 @@ function isTokenScopedProjectProposal(path: string) {
   return /^\/api\/agent\/projects\/[^/]+\/proposals$/.test(path);
 }
 
+// Billing report reads/results use a report-scoped HMAC bearer that is bound
+// to (project, report, agent) and verified by the route handler. Restrict the
+// middleware bypass to the route's two supported methods and exact shape.
+function isTokenScopedBillingRoute(req: NextRequest, path: string) {
+  return (
+    (req.method === "GET" || req.method === "POST") &&
+    /^\/api\/agent\/projects\/[^/]+\/billing\/[^/]+$/.test(path)
+  );
+}
+
 function isTokenScopedTaskWorkflow(path: string) {
   return /^\/api\/agent\/tasks\/[^/]+\/workflow$/.test(path);
 }
@@ -88,6 +98,7 @@ function isTokenScopedAgentCallback(req: NextRequest, path: string) {
     isTokenScopedTaskDescription(path) ||
     isTokenScopedEpicDescription(path) ||
     isTokenScopedProjectProposal(path) ||
+    isTokenScopedBillingRoute(req, path) ||
     isTokenScopedTaskWorkflow(path) ||
     isTokenScopedTaskWorkflowTurnRequest(path) ||
     isTokenScopedEpicWorkflow(path) ||
