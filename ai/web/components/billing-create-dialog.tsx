@@ -1,8 +1,9 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { runBillingReport, runWorkspaceBillingReports } from "@/lib/billing/actions";
+import { OPEN_BILLING_CREATE_DIALOG_EVENT } from "@/lib/billing/ui-events";
 
 type ProjectOption = { id: string; slug: string; name: string };
 type AgentOption = { slug: string; name: string; role: string };
@@ -60,7 +61,7 @@ export default function BillingCreateDialog({
   const [error, setError] = useState<string | null>(null);
   const period = periodKind === "custom" ? { from: customFrom, to: customTo } : halfMonth(year, month, periodKind);
 
-  function openDialog() {
+  const openDialog = useCallback(() => {
     const current = brisbaneToday();
     setPeriodKind(current.slice(8, 10) <= "15" ? "first" : "second");
     setYear(current.slice(0, 4));
@@ -69,7 +70,12 @@ export default function BillingCreateDialog({
     setCustomTo(current);
     setError(null);
     setOpen(true);
-  }
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener(OPEN_BILLING_CREATE_DIALOG_EVENT, openDialog);
+    return () => window.removeEventListener(OPEN_BILLING_CREATE_DIALOG_EVENT, openDialog);
+  }, [openDialog]);
 
   function toggleProject(id: string) {
     setSelectedProjects((current) => {
@@ -115,15 +121,6 @@ export default function BillingCreateDialog({
 
   return (
     <>
-      <button
-        type="button"
-        onClick={openDialog}
-        aria-label="Create billing summary"
-        title="Create billing summary"
-        className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-accent text-3xl font-light leading-none text-bg shadow-lg transition hover:scale-105 hover:opacity-95"
-      >
-        +
-      </button>
       {open ? (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/45 p-0 sm:items-center sm:p-4" role="dialog" aria-modal="true" aria-labelledby="new-billing-title">
           <div className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-t-panel border border-line bg-panel p-5 shadow-2xl sm:rounded-panel">

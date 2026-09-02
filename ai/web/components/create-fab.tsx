@@ -27,6 +27,7 @@ import {
   searchProjectEpics,
 } from "@/lib/create/pickers";
 import type { BrowserTaskWorkflowActions } from "@/lib/tasks/orchestrator/browser-review-adapter";
+import { OPEN_BILLING_CREATE_DIALOG_EVENT } from "@/lib/billing/ui-events";
 
 export type CreateFabWorkspace = { id: string; slug: string; name: string };
 export type CreateFabProject = {
@@ -51,7 +52,7 @@ const FORM_TITLES: Record<FormKind, string> = {
 
 // A menu row is either a form (opens a modal) or the special "plan" action
 // (delegates to the on-page action-plan composer). `kind` is the discriminator.
-type MenuKind = FormKind | "plan";
+type MenuKind = FormKind | "plan" | "billing";
 
 export default function CreateFab({
   isOwner,
@@ -70,8 +71,8 @@ export default function CreateFab({
   const toast = useToast();
   const route = useRouteContext();
   const pathname = usePathname();
-  // The create FAB is a work-item affordance; agent chat pages are not board
-  // context, and Billing supplies its own summary-specific FAB.
+  // Agent chat pages are not create-menu context, so the shared FAB stays out
+  // of the way there. Billing uses this same menu for its summary action.
   const onAgentsRoute = pathname?.startsWith("/agents") ?? false;
   const onBillingRoute = pathname?.endsWith("/billing") ?? false;
 
@@ -307,6 +308,13 @@ export default function CreateFab({
   // or epic is the current context.
   const menuItems: { kind: MenuKind; label: string; detail: string; icon: React.ReactNode; show: boolean }[] = [
     {
+      kind: "billing",
+      label: "Billing summary",
+      detail: routeProjectName ?? (route.workspaceSlug ? "For workspace projects" : "Choose period and projects"),
+      icon: <BillingIcon />,
+      show: onBillingRoute && isOwner,
+    },
+    {
       kind: "workspace",
       label: "New workspace",
       detail: "Top-level workspace",
@@ -461,7 +469,16 @@ export default function CreateFab({
                   key={item.kind}
                   type="button"
                   role="menuitem"
-                  onClick={() => (item.kind === "plan" ? openActionPlan() : void openForm(item.kind))}
+                  onClick={() => {
+                    if (item.kind === "billing") {
+                      setMenuOpen(false);
+                      window.dispatchEvent(new Event(OPEN_BILLING_CREATE_DIALOG_EVENT));
+                    } else if (item.kind === "plan") {
+                      openActionPlan();
+                    } else {
+                      void openForm(item.kind);
+                    }
+                  }}
                   className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition hover:bg-accent-soft hover:text-accent"
                 >
                   <span
@@ -481,7 +498,7 @@ export default function CreateFab({
         )
       : null;
 
-  if (onAgentsRoute || onBillingRoute) return null;
+  if (onAgentsRoute) return null;
 
   return (
     <>
@@ -1191,6 +1208,15 @@ function CommentIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+    </svg>
+  );
+}
+
+function BillingIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <path d="M8 8h8M8 12h8M8 16h5" />
     </svg>
   );
 }
