@@ -36,7 +36,7 @@ export async function POST(
   const [original, agent] = await Promise.all([
     db.directAgentChatMessage.findUnique({
       where: { id: messageId },
-      select: { id: true, agentSlug: true, senderUserId: true, archiveId: true, baseArchiveId: true },
+      select: { id: true, agentSlug: true, senderUserId: true, archiveId: true, baseArchiveId: true, billingRunId: true },
     }),
     db.agent.findUnique({
       where: { slug: agentId },
@@ -65,6 +65,7 @@ export async function POST(
         senderUserId: agent.user!.id,
         archiveId: original.archiveId,
         baseArchiveId: original.baseArchiveId,
+        billingRunId: original.billingRunId,
         body,
       },
       select: { id: true, archiveId: true, createdAt: true },
@@ -90,9 +91,15 @@ export async function POST(
         }),
       },
     });
+    if (original.billingRunId) {
+      await tx.billingRun.update({
+        where: { id: original.billingRunId },
+        data: { response: body.slice(0, 40000) },
+      });
+    }
     return created;
   });
 
-  revalidatePath(`/agents/${agentId}/chat`);
+  if (!original.billingRunId) revalidatePath(`/agents/${agentId}/chat`);
   return NextResponse.json({ ok: true, messageId: reply.id });
 }

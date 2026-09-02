@@ -127,6 +127,35 @@ export default async function SystemSettingsPage({
             />
           </SettingsRow>
 
+          <div className="grid grid-cols-1 gap-card sm:grid-cols-2">
+            <SettingsRow
+              label="Default hourly rate"
+              hint="Global Billing fallback. A workspace or project rate overrides it. Leave blank for hours-only when no lower-level rate exists."
+            >
+              <input
+                type="text"
+                inputMode="decimal"
+                name="hourlyRate"
+                defaultValue={settings.hourlyRateCents ? (settings.hourlyRateCents / 100).toFixed(2) : ""}
+                placeholder="150.00"
+                className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent"
+              />
+            </SettingsRow>
+            <SettingsRow
+              label="Default billing currency"
+              hint="Three-letter global currency. A workspace currency overrides it; blank falls back to AUD."
+            >
+              <input
+                type="text"
+                name="billingCurrency"
+                maxLength={3}
+                defaultValue={settings.billingCurrency ?? ""}
+                placeholder="AUD"
+                className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y uppercase text-body outline-none focus:border-accent"
+              />
+            </SettingsRow>
+          </div>
+
           <SettingsRow
             label="Integration defaults JSON"
             hint="Provider-agnostic, non-secret integration defaults used when workspace and project settings leave values blank."

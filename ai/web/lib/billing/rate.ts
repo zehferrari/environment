@@ -1,10 +1,7 @@
-// Hourly rates. A workspace sets the rate for its client; a project may carry
-// its own, which wins. There is deliberately no system-wide fallback — unlike
-// doneTtlDays, an unset rate must LOOK unset. A global default would price an
-// invoice at a number nobody remembers setting, so a report with no rate
-// anywhere renders hours only.
+// Hourly-rate precedence is explicit and visible in the Billing UI:
+// project override → workspace override → global default → hours only.
 
-export type BillingRateSource = "project" | "workspace";
+export type BillingRateSource = "project" | "workspace" | "global";
 
 export type BillingRate = {
   rateCents: number;
@@ -17,14 +14,19 @@ export const DEFAULT_BILLING_CURRENCY = "AUD";
 type RateInputs = {
   project: { hourlyRateCents: number | null | undefined };
   workspace: { hourlyRateCents: number | null | undefined; billingCurrency: string | null | undefined } | null;
+  global?: { hourlyRateCents: number | null | undefined; billingCurrency: string | null | undefined } | null;
 };
 
 export function resolveBillingRate(inputs: RateInputs): BillingRate | null {
-  const currency = normalizeCurrency(inputs.workspace?.billingCurrency) ?? DEFAULT_BILLING_CURRENCY;
+  const currency = normalizeCurrency(inputs.workspace?.billingCurrency)
+    ?? normalizeCurrency(inputs.global?.billingCurrency)
+    ?? DEFAULT_BILLING_CURRENCY;
   const projectRate = normalizeRateCents(inputs.project.hourlyRateCents);
   if (projectRate !== null) return { rateCents: projectRate, currency, source: "project" };
   const workspaceRate = normalizeRateCents(inputs.workspace?.hourlyRateCents);
   if (workspaceRate !== null) return { rateCents: workspaceRate, currency, source: "workspace" };
+  const globalRate = normalizeRateCents(inputs.global?.hourlyRateCents);
+  if (globalRate !== null) return { rateCents: globalRate, currency, source: "global" };
   return null;
 }
 

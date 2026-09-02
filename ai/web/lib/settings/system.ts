@@ -13,6 +13,7 @@
 import { db } from "@/lib/db";
 import { DEFAULT_PROFILE_IMAGE_PROMPT, normalizeProfileImagePrompt } from "@/lib/agents/management/profile-image-options";
 import { DEFAULT_DEPLOY_REVIEW_PROMPT, normalizeDeployReviewPrompt } from "@/lib/epics/deploy-review";
+import { normalizeCurrency } from "@/lib/billing/rate";
 
 export const DONE_TTL_FALLBACK_DAYS = 5;
 
@@ -29,6 +30,8 @@ export interface SystemSettingsValues {
   profileImagePrompt: string;
   deployReviewPrompt: string;
   integrationDefaults: string | null;
+  hourlyRateCents: number | null;
+  billingCurrency: string | null;
 }
 
 export type SystemTheme = "light" | "dark";
@@ -46,6 +49,8 @@ const EMPTY: SystemSettingsValues = {
   profileImagePrompt: DEFAULT_PROFILE_IMAGE_PROMPT,
   deployReviewPrompt: DEFAULT_DEPLOY_REVIEW_PROMPT,
   integrationDefaults: null,
+  hourlyRateCents: null,
+  billingCurrency: null,
 };
 
 export async function getSystemSettings(): Promise<SystemSettingsValues> {
@@ -63,6 +68,8 @@ export async function getSystemSettings(): Promise<SystemSettingsValues> {
       profileImagePrompt: true,
       deployReviewPrompt: true,
       integrationDefaults: true,
+      hourlyRateCents: true,
+      billingCurrency: true,
     },
   });
   if (!row) return EMPTY;
@@ -72,6 +79,7 @@ export async function getSystemSettings(): Promise<SystemSettingsValues> {
     hasOpenRouterApiKey: Boolean(row.openRouterApiKey),
     profileImagePrompt: normalizeProfileImagePrompt(row.profileImagePrompt),
     deployReviewPrompt: normalizeDeployReviewPrompt(row.deployReviewPrompt),
+    billingCurrency: normalizeCurrency(row.billingCurrency),
   };
 }
 

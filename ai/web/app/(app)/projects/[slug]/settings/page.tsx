@@ -105,7 +105,9 @@ export default async function ProjectSettingsPage({
   // inherited rate is visible without opening workspace settings.
   const workspaceRateHint = workspaceRate?.hourlyRateCents
     ? `Inherits ${formatCents(workspaceRate.hourlyRateCents, workspaceRate.billingCurrency)}`
-    : "No workspace rate set";
+    : billingRate?.source === "global"
+      ? `Inherits ${formatRate(billingRate)} from global settings`
+      : "No inherited rate set";
   const protectedBranches = parseProtectedBranches(project.agentChangeBlockedBranches);
   const worktreeProtectedBranches = localWorktreeProtectedBranches(project);
   const branchOptions = [...new Set([
@@ -366,8 +368,8 @@ export default async function ProjectSettingsPage({
               label="Hourly rate"
               hint={
                 billingRate
-                  ? `Billing tab rate. Blank inherits the workspace. Effective: ${formatRate(billingRate)} (${billingRate.source === "project" ? "project override" : "inherited from workspace"}).`
-                  : "Billing tab rate. Blank inherits the workspace. No rate is set anywhere, so billing reports show hours only."
+                  ? `Billing tab rate. Blank inherits workspace/global defaults. Effective: ${formatRate(billingRate)} (${billingRate.source === "project" ? "project override" : billingRate.source === "workspace" ? "inherited from workspace" : "inherited from global settings"}).`
+                  : "Billing tab rate. Blank inherits workspace/global defaults. No rate is set anywhere, so billing reports show hours only."
               }
             >
               <input

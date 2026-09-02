@@ -247,7 +247,7 @@ export default async function DirectAgentChatPage({
 
   const [activeMessages, archives, binArchives, selectedArchive] = await Promise.all([
     db.directAgentChatMessage.findMany({
-      where: { agentSlug: slug, archiveId: null },
+      where: { agentSlug: slug, archiveId: null, billingRunId: null },
       // Soft-deleted bubbles (HOMELAB-41 / item 2) stay in this list so
       // chat-messages-container can render the collapsed dotted divider.
       // Take the NEWEST 120 (desc) and restore ascending order after the
@@ -474,6 +474,7 @@ export default async function DirectAgentChatPage({
     where: {
       agentSlug: slug,
       archiveId: { in: allArchives.map((a) => a.id) },
+      billingRunId: null,
     },
     select: {
       archiveId: true,

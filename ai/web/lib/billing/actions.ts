@@ -6,7 +6,14 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { publicOriginFromHeaders } from "@/lib/http/public-origin";
 import { normalizeBillingPeriod } from "@/lib/billing/period";
-import { createOrReplaceBillingReport, clampMinutes, isBillingReportLocked } from "@/lib/billing/report";
+import {
+  acceptBillingRun,
+  createBillingGeneration,
+  createOrReplaceBillingReport,
+  discardBillingRun,
+  clampMinutes,
+  isBillingReportLocked,
+} from "@/lib/billing/report";
 import { selectBillingAgentSlug, triggerBillingRun } from "@/lib/billing/run";
 
 async function requireUserId() {
@@ -51,7 +58,7 @@ export async function runBillingReport(formData: FormData) {
     throw new Error("No active monitor agent is available to run this report.");
   }
 
-  const created = await createOrReplaceBillingReport({
+  const created = await createBillingGeneration({
     projectId: project.id,
     period,
     authorEmails: emailList(formData),
@@ -64,12 +71,96 @@ export async function runBillingReport(formData: FormData) {
   const origin = publicOriginFromHeaders(await headers());
   const dispatched = await triggerBillingRun({
     reportId: created.reportId,
+    runId: created.runId,
     actorId: userId,
     origin,
   });
   if (!dispatched.ok) throw new Error(dispatched.error);
 
   revalidatePath(`/projects/${slug}/billing`);
+}
+
+export async function runWorkspaceBillingReports(formData: FormData) {
+  const userId = await requireUserId();
+  const workspaceSlug = String(formData.get("workspaceSlug") ?? "").trim();
+  const selectedIds = [...new Set(formData.getAll("projectId").map(String).filter(Boolean))];
+  if (selectedIds.length === 0) throw new Error("Select at least one project.");
+
+  const workspace = await db.workspace.findFirst({
+    where: { slug: workspaceSlug, archivedAt: null },
+    select: {
+      id: true,
+      projects: {
+        where: { projectId: { in: selectedIds } },
+        select: { project: { select: { id: true, deletedAt: true, repositoryPath: true } } },
+      },
+    },
+  });
+  if (!workspace) throw new Error("Workspace not found");
+  const projects = workspace.projects
+    .map((link) => link.project)
+    .filter((project) => !project.deletedAt && project.repositoryPath && selectedIds.includes(project.id));
+  if (projects.length === 0) throw new Error("None of the selected projects has a repository configured.");
+
+  const period = normalizeBillingPeriod(formData.get("from"), formData.get("to"));
+  const agentSlug = await selectBillingAgentSlug(String(formData.get("agentSlug") ?? ""));
+  if (!agentSlug) throw new Error("No active agent is available.");
+  const origin = publicOriginFromHeaders(await headers());
+  let dispatchedCount = 0;
+  const errors: string[] = [];
+  for (const project of projects) {
+    const created = await createBillingGeneration({
+      projectId: project.id,
+      period,
+      // Workspace runs deliberately cover the entire repository. Fine-grained
+      // author/branch questions remain available on the project Billing tab.
+      authorEmails: [],
+      branchFilter: null,
+      agentSlug,
+      requestedById: userId,
+      workspaceId: workspace.id,
+    });
+    if (!created.ok) {
+      errors.push(created.error);
+      continue;
+    }
+    const dispatched = await triggerBillingRun({
+      reportId: created.reportId,
+      runId: created.runId,
+      actorId: userId,
+      origin,
+    });
+    if (dispatched.ok) dispatchedCount += 1;
+    else errors.push(dispatched.error);
+  }
+  revalidatePath(`/workspaces/${workspaceSlug}/billing`);
+  if (dispatchedCount === 0) throw new Error(errors[0] ?? "No summaries could be started.");
+}
+
+export async function reviewBillingRun(formData: FormData) {
+  await requireUserId();
+  const runId = String(formData.get("runId") ?? "").trim();
+  const decision = String(formData.get("decision") ?? "").trim();
+  const run = await db.billingRun.findUnique({
+    where: { id: runId },
+    select: {
+      id: true,
+      report: {
+        select: {
+          requestedById: true,
+          project: { select: { slug: true, workspaces: { select: { workspace: { select: { slug: true } } } } } },
+        },
+      },
+    },
+  });
+  const userId = (await auth())?.user?.id;
+  if (!run || !userId || run.report.requestedById !== userId) throw new Error("Billing run not found");
+  const result = decision === "accept" ? await acceptBillingRun(run.id) : await discardBillingRun(run.id);
+  if (!result.ok) throw new Error(result.error);
+  revalidatePath(`/projects/${run.report.project.slug}/billing`);
+  for (const link of run.report.project.workspaces) {
+    revalidatePath(`/workspaces/${link.workspace.slug}/billing`);
+  }
 }
 
 // The ledger without the agent — useful on its own, and the fast path when you

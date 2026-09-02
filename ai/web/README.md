@@ -139,7 +139,7 @@ and trust boundary:
 | Agent context reads | `/api/agents/context/{task,epic,project}/[id]` | Direct-loopback request plus short-lived context grant; legacy bearer only when configured |
 | Agent workflow | `/api/agent/tasks/[id]/workflow`, Epic workflow, workflow-turn request | Target-bound PM workflow token or scoped channel bearer |
 | Agent proposals | `/api/agent/projects/[id]/proposals` | One-shot project/message/agent grant; human approval is still required |
-| Agent billing report | `/api/agent/projects/[projectId]/billing/[reportId]` | Report-scoped HMAC bearer bound to project, report, and active agent; GET reads the ledger and POST submits the result |
+| Agent billing report | `/api/agent/projects/[projectId]/billing/[reportId]/runs/[runId]` (legacy report route retained) | Generation-scoped HMAC bearer bound to project, run, and active agent; GET reads that run's immutable ledger and POST submits its candidate result |
 | Description drafts | Task/Epic description endpoints | One-shot message grant; writes a requester-bound draft, not the canonical description |
 | Native PM callbacks | reply, stream, events, cancel | Per-agent PM-channel bearer and target validation |
 | Attachment reads | `/api/attachments/[id]` | Browser session or scoped grant/bearer |
@@ -151,6 +151,16 @@ own complete authentication, scope, active-agent, privacy, and replay checks.
 Generated callback URLs prefer the configured `APP_URL`/Auth.js public origin
 over final-hop proxy headers so multi-hop HTTP forwarding cannot downgrade an
 HTTPS POST callback into a redirect.
+
+Billing summaries run through private PM-channel turns: visible progress,
+emitted reasoning, and the final response are persisted on `BillingRun` and
+shown on the project/workspace Billing tabs, never in direct agent chat. The
+first result is accepted automatically; later generations remain candidates
+until the owner accepts or discards them. Workspace Billing can launch one run
+per checkbox-selected project for a shared period (all authors/all branches).
+Rates resolve project override → workspace override → system default; each
+level is edited in its corresponding Settings page and the effective source is
+labelled on Billing totals.
 
 ## Trust and authorization model
 

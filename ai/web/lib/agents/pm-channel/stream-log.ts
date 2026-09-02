@@ -175,6 +175,32 @@ export async function appendPmChannelStreamEvent(args: {
       },
       select: { id: true, runId: true, seq: true, kind: true, payload: true, createdAt: true },
     });
+    // Billing reuses the PM-channel transport but owns its presentation. Copy
+    // every visible frame to the Billing generation before the generic replay
+    // ledger compacts token partials on final, so leaving and returning to the
+    // tab restores the complete emitted progress and response.
+    const pmRun = await tx.pmChannelRun.findUnique({
+      where: { id: args.runId },
+      select: { kind: true, messageId: true },
+    });
+    if (pmRun?.kind === "direct") {
+      const message = await tx.directAgentChatMessage.findUnique({
+        where: { id: pmRun.messageId },
+        select: { billingRunId: true },
+      });
+      if (message?.billingRunId) {
+        await tx.billingRunEvent.upsert({
+          where: { runId_seq: { runId: message.billingRunId, seq: run.streamSeq } },
+          create: {
+            runId: message.billingRunId,
+            seq: run.streamSeq,
+            kind: args.event,
+            payload: created.payload,
+          },
+          update: { kind: args.event, payload: created.payload },
+        });
+      }
+    }
     // A `final` carrying replace+full-text is a self-contained terminal frame:
     // replay can reconstruct the complete reply from it alone. Drop the now-
     // redundant per-token/partial rows so this append-only ledger doesn't grow

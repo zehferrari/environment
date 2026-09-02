@@ -22,6 +22,7 @@ import {
   setBillingReportFinalized,
 } from "@/lib/billing/actions";
 import BillingCopyButton from "@/components/billing-copy-button";
+import BillingRunPanel from "@/components/billing-run-panel";
 
 export const dynamic = "force-dynamic";
 
@@ -94,7 +95,7 @@ export default async function ProjectBillingPage({
       ? {
           rateCents: report.rateCents,
           currency: report.currency,
-          source: report.rateSource as "project" | "workspace",
+          source: report.rateSource as "project" | "workspace" | "global",
         }
       : null;
   const rate = storedRate ?? rateInfo.rate;
@@ -194,12 +195,13 @@ export default async function ProjectBillingPage({
         <div className="text-caption text-text-muted">
           {rate ? (
             <>
-              {formatRate(rate)} · {rate.source === "project" ? "project override" : "workspace rate"}
+              {formatRate(rate)} · {rate.source === "project" ? "project override" : rate.source === "workspace" ? "workspace rate" : "global default"}
               {rateInfo.workspace ? ` (${rateInfo.workspace.name})` : ""}
             </>
           ) : (
             <>No hourly rate set — hours only. Add one in project or workspace settings.</>
           )}
+          {" · "}<Link href={`/projects/${slug}/settings`} className="text-accent hover:underline">Edit rate</Link>
         </div>
 
         <div className="ml-auto flex flex-wrap items-center gap-2">
@@ -237,7 +239,7 @@ export default async function ProjectBillingPage({
               disabled={locked}
               className="h-9 rounded-lg bg-accent px-4 text-caption font-semibold text-bg hover:opacity-90 disabled:opacity-50"
             >
-              Run
+              {report?.acceptedRunId ? "Regenerate" : "Run"}
             </button>
           </form>
 
@@ -262,15 +264,20 @@ export default async function ProjectBillingPage({
         </p>
       ) : null}
 
-      {report && report.status === "running" ? (
+      {report && report.status === "running" && report.runs.length === 0 ? (
         <p className="rounded-card border border-line bg-panel-soft px-4 py-3 text-body text-text-muted">
-          Sent to <span className="font-medium text-text">{report.agentSlug}</span>. The summary and
-          estimates appear here when it answers —{" "}
-          <Link href={`/agents/${report.agentSlug}/chat`} className="text-accent hover:underline">
-            follow the run
-          </Link>
-          , then reload.
+          Sent to <span className="font-medium text-text">{report.agentSlug}</span>. This legacy run
+          predates the embedded Billing transcript; regenerate it to track future output here.
         </p>
+      ) : null}
+
+      {report?.runs.some((run) => !["discarded", "superseded"].includes(run.status)) ? (
+        <div className="space-y-2">
+          <h2 className="text-body font-semibold text-text">Summary runs</h2>
+          {report.runs
+            .filter((run) => !["discarded", "superseded"].includes(run.status))
+            .map((run) => <BillingRunPanel key={run.id} run={run} />)}
+        </div>
       ) : null}
 
       {report && reportAuthors.length > 0 ? (

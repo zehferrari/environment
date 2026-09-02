@@ -135,10 +135,15 @@ async function main() {
     const response = await middleware(new NextRequest(billingUrl, { method }));
     assert.equal(response.headers.get("x-middleware-next"), "1", `${method} billing callback reaches route auth`);
   }
+  const generationUrl = `${billingUrl}/runs/run_1`;
+  for (const method of ["GET", "POST"]) {
+    const response = await middleware(new NextRequest(generationUrl, { method }));
+    assert.equal(response.headers.get("x-middleware-next"), "1", `${method} billing generation callback reaches route auth`);
+  }
   for (const request of [
     new NextRequest(billingUrl, { method: "DELETE" }),
     new NextRequest("http://127.0.0.1:3000/api/agent/projects/proj_1/billing"),
-    new NextRequest(`${billingUrl}/extra`),
+    new NextRequest(`${generationUrl}/extra`),
   ]) {
     const response = await middleware(request);
     assert.equal(response.status, 307, `${request.method} ${request.nextUrl.pathname} stays browser-session protected`);

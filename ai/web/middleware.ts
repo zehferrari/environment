@@ -41,12 +41,12 @@ function isTokenScopedProjectProposal(path: string) {
 }
 
 // Billing report reads/results use a report-scoped HMAC bearer that is bound
-// to (project, report, agent) and verified by the route handler. Restrict the
+// to (project, generation, agent) and verified by the route handler. Restrict the
 // middleware bypass to the route's two supported methods and exact shape.
 function isTokenScopedBillingRoute(req: NextRequest, path: string) {
   return (
     (req.method === "GET" || req.method === "POST") &&
-    /^\/api\/agent\/projects\/[^/]+\/billing\/[^/]+$/.test(path)
+    /^\/api\/agent\/projects\/[^/]+\/billing\/[^/]+(?:\/runs\/[^/]+)?$/.test(path)
   );
 }
 

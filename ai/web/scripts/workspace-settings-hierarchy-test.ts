@@ -17,6 +17,8 @@ const system: SystemSettingsValues = {
   profileImagePrompt: DEFAULT_PROFILE_IMAGE_PROMPT,
   deployReviewPrompt: "system deploy review",
   integrationDefaults: JSON.stringify({ jira: { host: "system" }, shared: "system" }),
+  hourlyRateCents: null,
+  billingCurrency: null,
 };
 
 const workspace: WorkspaceDefaults = {

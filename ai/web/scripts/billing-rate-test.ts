@@ -30,8 +30,9 @@ function day(partial: Partial<BillingDayRow> & { id: string; day: string }): Bil
 }
 
 function main() {
-  // --- resolution: project over workspace, else nothing ---
+  // --- resolution: project over workspace over global, else nothing ---
   const workspace = { hourlyRateCents: 15000, billingCurrency: "AUD" };
+  const global = { hourlyRateCents: 12000, billingCurrency: "NZD" };
 
   assert.deepEqual(resolveBillingRate({ project: { hourlyRateCents: 20000 }, workspace }), {
     rateCents: 20000,
@@ -43,8 +44,11 @@ function main() {
     currency: "AUD",
     source: "workspace",
   });
-  // No system fallback by design: an unset rate must look unset, not bill at
-  // some global number nobody remembers setting.
+  assert.deepEqual(resolveBillingRate({ project: { hourlyRateCents: null }, workspace: null, global }), {
+    rateCents: 12000,
+    currency: "NZD",
+    source: "global",
+  });
   assert.equal(resolveBillingRate({ project: { hourlyRateCents: null }, workspace: null }), null);
   // A project override still applies when the project sits in no workspace.
   assert.deepEqual(resolveBillingRate({ project: { hourlyRateCents: 9900 }, workspace: null }), {
@@ -59,6 +63,14 @@ function main() {
       workspace: { hourlyRateCents: 15000, billingCurrency: "GBP" },
     })?.currency,
     "GBP",
+  );
+  assert.equal(
+    resolveBillingRate({
+      project: { hourlyRateCents: null },
+      workspace: { hourlyRateCents: 15000, billingCurrency: null },
+      global,
+    })?.currency,
+    "NZD",
   );
 
   // --- zero is an empty field, not "free" ---

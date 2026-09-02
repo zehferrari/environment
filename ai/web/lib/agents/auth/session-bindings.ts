@@ -1,7 +1,7 @@
 import { db } from "@/lib/db";
 import { randomUUID } from "node:crypto";
 
-export type AgentSessionScopeType = "task" | "epic" | "direct";
+export type AgentSessionScopeType = "task" | "epic" | "direct" | "billing";
 
 export type AgentSessionBinding = {
   id: string;

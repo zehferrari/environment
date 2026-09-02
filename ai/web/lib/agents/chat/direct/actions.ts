@@ -159,7 +159,7 @@ async function buildBaseArchiveContext(agentSlug: string, baseArchiveId: string 
   ];
   for (const archive of chain) {
     const messages = await db.directAgentChatMessage.findMany({
-      where: { agentSlug, archiveId: archive.id },
+      where: { agentSlug, archiveId: archive.id, billingRunId: null },
       orderBy: { createdAt: "desc" },
       take: archiveContextMessages(),
       include: { sender: { select: { username: true, kind: true } } },
@@ -182,10 +182,11 @@ async function buildDirectSessionContext(args: {
   messageId: string;
   actorName: string;
   body: string;
+  billingRunId?: string | null;
 }) {
   const original = await db.directAgentChatMessage.findUnique({
     where: { id: args.messageId },
-    select: { archiveId: true, baseArchiveId: true },
+    select: { archiveId: true, baseArchiveId: true, billingRunId: true },
   });
   const archive = original?.archiveId
     ? await db.directAgentChatArchive.findFirst({
@@ -200,6 +201,7 @@ async function buildDirectSessionContext(args: {
       agentSlug: args.agentSlug,
       archiveId: original?.archiveId ?? null,
       baseArchiveId,
+      billingRunId: original?.billingRunId ?? null,
     },
     orderBy: { createdAt: "desc" },
     take: activeContextMessages(),
@@ -214,7 +216,9 @@ async function buildDirectSessionContext(args: {
         "",
       ];
   return [
-    `Direct PM chat with @${args.agentSlug}.`,
+    args.billingRunId
+      ? `Private Billing workflow with @${args.agentSlug}. This is not an agent-chat conversation.`
+      : `Direct PM chat with @${args.agentSlug}.`,
     original?.archiveId
       ? `Archive id: ${original.archiveId}.`
       : baseArchiveId
@@ -674,6 +678,7 @@ async function handleDirectAgentMessage(args: {
   allowWorkItemManagement: boolean;
   attachmentCount: number;
   publicOrigin: string | null;
+  billingRunId?: string | null;
 }) {
   const timingStartedAt = Date.now();
   const timings: Record<string, number> = {};
@@ -710,10 +715,14 @@ async function handleDirectAgentMessage(args: {
   // live-context grant URLs and (when explicitly requested) independent
   // one-shot work-item proposal token bound to this message.
   const systemPromptParts = [
-    `Direct PM chat message for @${args.agentSlug} from ${args.actorName}.`,
+    args.billingRunId
+      ? `Private Billing workflow for @${args.agentSlug}, requested by ${args.actorName}.`
+      : `Direct PM chat message for @${args.agentSlug} from ${args.actorName}.`,
     `OpenClaw session key: ${args.sessionBinding.openclawSessionKey}`,
     "This turn arrived through the native OpenClaw PM channel.",
-    "Reply normally; OpenClaw will deliver your visible response back to the PM chat window.",
+    args.billingRunId
+      ? "Reply normally; OpenClaw will deliver visible progress and the response to the Billing tab."
+      : "Reply normally; OpenClaw will deliver your visible response back to the PM chat window.",
     "Keep the answer useful and concise unless the user asked for detail.",
   ];
   if (args.agentRole === "monitor") {
@@ -859,6 +868,7 @@ export async function sendDirectAgentMessage(formData: FormData) {
   // The client supplies the message id so the optimistic echo can reconcile by
   // id (not fragile body matching) and a double-fire is idempotent.
   const requestedMessageId = String(formData.get("clientMessageId") ?? "").trim() || null;
+  const requestedBillingRunId = String(formData.get("billingRunId") ?? "").trim() || null;
   if (!agentSlug || (!bodyRaw && attachments.length === 0) || body.length > 8000) return;
   if (requestedMessageId && !isValidClientMessageId(requestedMessageId)) {
     throw new Error("Invalid client messageId");
@@ -875,6 +885,17 @@ export async function sendDirectAgentMessage(formData: FormData) {
     },
   });
   if (!agent?.user || agent.deactivatedAt || agent.user.status !== "active") return;
+
+  const billingRun = requestedBillingRunId
+    ? await db.billingRun.findFirst({
+        where: {
+          id: requestedBillingRunId,
+          report: { requestedById: userId, agentSlug, projectId: requestedProjectIds[0] },
+        },
+        select: { id: true },
+      })
+    : null;
+  if (requestedBillingRunId && !billingRun) throw new Error("Billing run not found or not authorized");
 
   // Optional project attachment for planning. Project context may be useful for
   // ordinary Q&A, but the one-shot proposal capability is only attached when
@@ -895,7 +916,7 @@ export async function sendDirectAgentMessage(formData: FormData) {
   const projectId = projectIds[0] ?? null;
   const grantWorkItems = userKind === "human" && projectIds.length > 0 && directlyRequestsWorkItemManagement(bodyRaw);
 
-  let baseArchiveId = requestedBaseArchiveId;
+  let baseArchiveId = billingRun ? null : requestedBaseArchiveId;
   if (baseArchiveId) {
     const archive = await db.directAgentChatArchive.findFirst({
       where: { id: baseArchiveId, agentSlug, deletedAt: null },
@@ -904,7 +925,7 @@ export async function sendDirectAgentMessage(formData: FormData) {
     if (!archive) return;
   } else {
     const latestActive = await db.directAgentChatMessage.findFirst({
-      where: { agentSlug, archiveId: null },
+      where: { agentSlug, archiveId: null, billingRunId: null },
       orderBy: { createdAt: "desc" },
       select: { baseArchiveId: true },
     });
@@ -935,6 +956,7 @@ export async function sendDirectAgentMessage(formData: FormData) {
         body,
         projectId,
         allowWorkItemManagement: grantWorkItems,
+        billingRunId: billingRun?.id ?? null,
         projects: projectIds.length > 0 ? {
           create: projectIds.map((linkedProjectId) => ({
             projectId: linkedProjectId,
@@ -963,14 +985,16 @@ export async function sendDirectAgentMessage(formData: FormData) {
     return created;
   });
 
-  const activeAnchor = await db.directAgentChatMessage.findFirst({
-    where: { agentSlug, archiveId: null, baseArchiveId },
-    orderBy: { createdAt: "asc" },
-    select: { id: true },
-  });
+  const activeAnchor = billingRun
+    ? { id: msg.id }
+    : await db.directAgentChatMessage.findFirst({
+        where: { agentSlug, archiveId: null, baseArchiveId, billingRunId: null },
+        orderBy: { createdAt: "asc" },
+        select: { id: true },
+      });
   const sessionBinding = await getOrCreateAgentSessionBinding({
-    scopeType: "direct",
-    scopeId: activeAnchor?.id ?? msg.id,
+    scopeType: billingRun ? "billing" : "direct",
+    scopeId: billingRun?.id ?? activeAnchor?.id ?? msg.id,
     agentSlug,
   });
 
@@ -1042,6 +1066,7 @@ export async function sendDirectAgentMessage(formData: FormData) {
     allowWorkItemManagement: grantWorkItems,
     attachmentCount: attachments.length,
     publicOrigin,
+    billingRunId: billingRun?.id ?? null,
   };
   const recordDispatchFailure = async (err: unknown) => {
     const error = err instanceof Error ? err.message : String(err);
@@ -1100,7 +1125,7 @@ export async function archiveDirectAgentChat(formData: FormData) {
   if (!agentSlug) return;
 
   const messages = await db.directAgentChatMessage.findMany({
-    where: { agentSlug, archiveId: null },
+    where: { agentSlug, archiveId: null, billingRunId: null },
     orderBy: { createdAt: "asc" },
     include: { sender: { select: { kind: true } } },
   });
@@ -1126,7 +1151,7 @@ export async function archiveDirectAgentChat(formData: FormData) {
       select: { id: true },
     });
     await tx.directAgentChatMessage.updateMany({
-      where: { agentSlug, archiveId: null },
+      where: { agentSlug, archiveId: null, billingRunId: null },
       data: { archiveId: created.id },
     });
     await tx.activityLog.create({

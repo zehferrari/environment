@@ -43,6 +43,7 @@ export async function GET(
     where: {
       agentSlug,
       archiveId: null,
+      billingRunId: null,
       ...directChatCursorWhere(cursor),
     },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],

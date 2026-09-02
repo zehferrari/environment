@@ -98,7 +98,7 @@ async function persistDirectReply(target: Extract<PmChannelReplyTarget, { kind: 
   const [original, agentUser] = await Promise.all([
     db.directAgentChatMessage.findUnique({
       where: { id: target.messageId },
-      select: { id: true, agentSlug: true, archiveId: true, baseArchiveId: true },
+      select: { id: true, agentSlug: true, archiveId: true, baseArchiveId: true, billingRunId: true },
     }),
     activeAgentUser(target.agentSlug),
   ]);
@@ -117,6 +117,7 @@ async function persistDirectReply(target: Extract<PmChannelReplyTarget, { kind: 
         senderUserId: agentUser.id,
         archiveId: original.archiveId,
         baseArchiveId: original.baseArchiveId,
+        billingRunId: original.billingRunId,
         body,
       },
       select: { id: true, archiveId: true, createdAt: true },
@@ -143,10 +144,16 @@ async function persistDirectReply(target: Extract<PmChannelReplyTarget, { kind: 
         }),
       },
     });
+    if (original.billingRunId) {
+      await tx.billingRun.update({
+        where: { id: original.billingRunId },
+        data: { response: body.slice(0, 40000) },
+      });
+    }
     return created;
   });
 
-  revalidatePath(`/agents/${target.agentSlug}/chat`);
+  if (!original.billingRunId) revalidatePath(`/agents/${target.agentSlug}/chat`);
   return { status: 200, body: { ok: true, id: reply.id, channel: "direct" }, streamText: body };
 }
 

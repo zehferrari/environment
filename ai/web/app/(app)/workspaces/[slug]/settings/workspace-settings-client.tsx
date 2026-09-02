@@ -345,10 +345,10 @@ export default function WorkspaceSettingsClient({
           <p className="mt-1 text-caption text-text-muted">Optional middle-layer defaults. Projects inherit these only when their matching project setting is blank; otherwise system settings remain the fallback.</p>
         </div>
         <div className="grid gap-card md:grid-cols-2">
-          <SettingsField label="Hourly rate" hint="Billing rate for every project in this workspace. A project may override it.">
-            <input inputMode="decimal" value={defaults.hourlyRate} onChange={(event) => setDefaults((cur) => ({ ...cur, hourlyRate: event.target.value }))} className={inputClass} placeholder="No rate — billing shows hours only" />
+          <SettingsField label="Hourly rate" hint="Billing rate for every project in this workspace. A project may override it; blank inherits the global default.">
+            <input inputMode="decimal" value={defaults.hourlyRate} onChange={(event) => setDefaults((cur) => ({ ...cur, hourlyRate: event.target.value }))} className={inputClass} placeholder="Inherit global rate" />
           </SettingsField>
-          <SettingsField label="Billing currency" hint="Three-letter code shown on billing totals. Blank uses AUD.">
+          <SettingsField label="Billing currency" hint="Three-letter code shown on billing totals. Blank inherits the global currency, then AUD.">
             <input value={defaults.billingCurrency ?? ""} onChange={(event) => setDefaults((cur) => ({ ...cur, billingCurrency: event.target.value.toUpperCase() }))} maxLength={3} className={inputClass} placeholder="AUD" />
           </SettingsField>
           <SettingsField label="Default git user (name)" hint="Inherited by projects that leave git author name blank.">

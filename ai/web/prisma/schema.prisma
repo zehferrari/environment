@@ -1361,7 +1361,7 @@ model PmEventDelivery {
 // reply metadata.
 model AgentSessionBinding {
   id                      String    @id @default(cuid())
-  scopeType               String // "task" | "epic" | "direct"
+  scopeType               String // "task" | "epic" | "direct" | "billing"
   scopeId                 String
   agentSlug               String
   openclawSessionKey      String    @unique
@@ -1774,6 +1774,11 @@ model DirectAgentChatMessage {
   deletedAt               DateTime?
   deletedById             String?
   deletedBy               User?                           @relation("DirectAgentChatMessageDeletedBy", fields: [deletedById], references: [id])
+  // Internal workflow turns reuse the durable PM-channel transport without
+  // becoming part of the human-facing direct-chat transcript. Billing output
+  // is rendered on the Billing tab from the related run instead.
+  billingRunId            String?                         @map("billing_run_id")
+  billingRun              BillingRun?                     @relation(fields: [billingRunId], references: [id], onDelete: Cascade)
 
   @@index([agentSlug, createdAt])
   @@index([agentSlug, archiveId, createdAt])
@@ -1783,6 +1788,7 @@ model DirectAgentChatMessage {
   @@index([projectId])
   @@index([deletedAt])
   @@index([deletedById])
+  @@index([billingRunId])
 }
 
 // Multi-project context attached to one direct-chat turn. projectId on the
@@ -1891,6 +1897,10 @@ model SystemSettings {
   profileImagePrompt  String?
   deployReviewPrompt  String?  @map("deploy_review_prompt")
   billingPrompt       String?  @map("billing_prompt")
+  // Global Billing fallback. Workspaces and projects may override the rate;
+  // workspaces may also override the display currency.
+  hourlyRateCents     Int?     @map("hourly_rate_cents")
+  billingCurrency    String?  @map("billing_currency")
   integrationDefaults String?  @map("integration_defaults")
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
@@ -2045,15 +2055,87 @@ model BillingReport {
   rateSource    String?   @map("rate_source")
   requestedById String    @map("requested_by_id")
   finalizedAt   DateTime? @map("finalized_at")
+  acceptedRunId String?   @map("accepted_run_id")
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
   days BillingReportDay[]
+  runs BillingRun[]
 
   @@unique([projectId, fromDate, toDate, agentSlug, requestedById])
   @@index([projectId, fromDate, toDate])
   @@index([workspaceId])
   @@index([status])
+}
+
+// One immutable attempt at generating a report. The accepted BillingReportDay
+// rows remain the invoice draft; a regeneration lands here as a candidate until
+// the operator accepts or discards it.
+model BillingRun {
+  id            String        @id @default(cuid())
+  reportId      String        @map("report_id")
+  report        BillingReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  generation    Int
+  // queued | running | ready | accepted | superseded | discarded | failed
+  status        String        @default("queued")
+  messageId     String?       @unique @map("message_id")
+  authorEmails  String        @map("author_emails")
+  branchFilter  String?       @map("branch_filter")
+  ledger        String
+  notes         String?
+  response      String?
+  error         String?
+  workspaceId   String?       @map("workspace_id")
+  rateCents     Int?          @map("rate_cents")
+  currency      String?
+  rateSource    String?       @map("rate_source")
+  completedAt   DateTime?     @map("completed_at")
+  acceptedAt    DateTime?     @map("accepted_at")
+  discardedAt   DateTime?     @map("discarded_at")
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  days     BillingRunDay[]
+  events   BillingRunEvent[]
+  messages DirectAgentChatMessage[]
+
+  @@unique([reportId, generation])
+  @@index([reportId, status, createdAt])
+  @@index([workspaceId])
+}
+
+model BillingRunDay {
+  id               String     @id @default(cuid())
+  runId            String     @map("run_id")
+  run              BillingRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  day              String
+  summary          String
+  estimatedMinutes Int        @map("estimated_minutes")
+  rationale        String?
+  commitCount      Int        @map("commit_count")
+  insertions       Int
+  deletions        Int
+  filesTouched     Int        @map("files_touched")
+  firstCommitAt    String?    @map("first_commit_at")
+  lastCommitAt     String?    @map("last_commit_at")
+
+  @@unique([runId, day])
+  @@index([runId])
+}
+
+// Visible PM-channel frames for this Billing run. This deliberately stores
+// emitted progress/reasoning text, never model-private chain-of-thought.
+model BillingRunEvent {
+  id        String     @id @default(cuid())
+  runId     String     @map("run_id")
+  run       BillingRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  seq       Int
+  kind      String
+  payload   String
+  createdAt DateTime   @default(now())
+
+  @@unique([runId, seq])
+  @@index([runId, createdAt])
 }
 
 model BillingReportDay {
