@@ -3,6 +3,8 @@ import { notFound } from "next/navigation";
 import { getViewer } from "@/lib/auth/permissions";
 import { getSystemSettings } from "@/lib/settings/system";
 import { setSystemSettings } from "@/lib/settings/actions";
+import { db } from "@/lib/db";
+import BillingRateScheduleEditor from "@/components/billing-rate-schedule-editor";
 
 export const dynamic = "force-dynamic";
 
@@ -34,7 +36,14 @@ export default async function SystemSettingsPage({
 
   const sp = await (searchParams ?? Promise.resolve({} as { tab?: string | string[] }));
   const activeTab = parseSettingsTab(sp.tab);
-  const settings = await getSystemSettings();
+  const [settings, rateSchedule] = await Promise.all([
+    getSystemSettings(),
+    db.billingRateSchedule.findMany({
+      where: { scopeKey: "global" },
+      orderBy: { startOn: "desc" },
+      select: { id: true, startOn: true, amountCents: true },
+    }),
+  ]);
 
   return (
     <div className="space-y-6">
@@ -129,19 +138,6 @@ export default async function SystemSettingsPage({
 
           <div className="grid grid-cols-1 gap-card sm:grid-cols-2">
             <SettingsRow
-              label="Default hourly rate"
-              hint="Global Billing fallback. A workspace or project rate overrides it. Leave blank for hours-only when no lower-level rate exists."
-            >
-              <input
-                type="text"
-                inputMode="decimal"
-                name="hourlyRate"
-                defaultValue={settings.hourlyRateCents ? (settings.hourlyRateCents / 100).toFixed(2) : ""}
-                placeholder="150.00"
-                className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent"
-              />
-            </SettingsRow>
-            <SettingsRow
               label="Default billing currency"
               hint="Three-letter global currency. A workspace currency overrides it; blank falls back to AUD."
             >
@@ -155,6 +151,13 @@ export default async function SystemSettingsPage({
               />
             </SettingsRow>
           </div>
+
+          <SettingsRow
+            label="Default hourly rates"
+            hint="Effective-dated global fallback. Workspace and project schedules take precedence."
+          >
+            <BillingRateScheduleEditor scopeType="global" rows={rateSchedule} />
+          </SettingsRow>
 
           <SettingsRow
             label="Integration defaults JSON"

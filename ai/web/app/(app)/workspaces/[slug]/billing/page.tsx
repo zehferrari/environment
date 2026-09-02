@@ -4,24 +4,21 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { normalizeWorkspaceSlug } from "@/lib/workspaces/service";
 import { normalizeBillingPeriod, formatBillingPeriod, formatBillingDay } from "@/lib/billing/period";
-import { formatCents, resolveBillingRate } from "@/lib/billing/rate";
+import { formatCents } from "@/lib/billing/rate";
+import { resolveProjectBillingRate } from "@/lib/billing/report";
 import { buildWorkspaceRollup, type BillingRollupInput } from "@/lib/billing/rollup";
 import type { BillingDayRow } from "@/lib/billing/view";
 import { selectBillingAgentSlug, listBillingAgents } from "@/lib/billing/run";
-import { runWorkspaceBillingReports } from "@/lib/billing/actions";
-import BillingProjectSelection from "@/components/billing-project-selection";
 import BillingRunPanel from "@/components/billing-run-panel";
 import BillingHistory from "@/components/billing-history";
 import { listBillingHistory } from "@/lib/billing/history";
+import BillingCreateDialog from "@/components/billing-create-dialog";
 
 export const dynamic = "force-dynamic";
 
 function single(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] : value;
 }
-
-const inputClass =
-  "h-9 rounded-lg border border-line bg-bg px-2 text-caption outline-none focus:border-accent";
 
 // Workspace Billing launches one independently persisted run per selected
 // project, then rolls up each accepted project report.
@@ -64,18 +61,18 @@ export default async function WorkspaceBillingPage({
 
   const period = normalizeBillingPeriod(single(sp.from), single(sp.to));
   const requestedAgent = single(sp.agent)?.trim() || "";
-  const [agents, agentSlug, globalRate] = await Promise.all([
+  const [agents, agentSlug] = await Promise.all([
     listBillingAgents(),
     selectBillingAgentSlug(requestedAgent),
-    db.systemSettings.findUnique({
-      where: { id: "system" },
-      select: { hourlyRateCents: true, billingCurrency: true },
-    }),
   ]);
 
   const projects = workspace.projects
     .map((link) => link.project)
     .filter((project) => !project.deletedAt && project.repositoryPath);
+  const resolvedRates = new Map((await Promise.all(projects.map(async (project) => [
+    project.id,
+    (await resolveProjectBillingRate(project.id, period.from)).rate,
+  ] as const))));
 
   const reports = userId && agentSlug && projects.length > 0
     ? await db.billingReport.findMany({
@@ -120,14 +117,7 @@ export default async function WorkspaceBillingPage({
             currency: report.currency,
             source: report.rateSource as "project" | "workspace" | "global",
           }
-        : resolveBillingRate({
-            project: { hourlyRateCents: project.hourlyRateCents },
-            workspace: {
-              hourlyRateCents: workspace.hourlyRateCents,
-              billingCurrency: workspace.billingCurrency,
-            },
-            global: globalRate,
-          });
+        : resolvedRates.get(project.id) ?? null;
 
     const days: BillingDayRow[] = (report?.days ?? []).map((day) => ({
       id: day.id,
@@ -161,43 +151,6 @@ export default async function WorkspaceBillingPage({
 
   return (
     <div className="space-y-section-gap">
-      <form className="flex flex-wrap items-end gap-3 rounded-card border border-line bg-panel p-3 text-body">
-        <label className="block">
-          <span className="mb-1 block text-nano font-semibold uppercase tracking-wider text-text-muted">From</span>
-          <input type="date" name="from" defaultValue={period.from} className={inputClass} />
-        </label>
-        <label className="block">
-          <span className="mb-1 block text-nano font-semibold uppercase tracking-wider text-text-muted">To</span>
-          <input type="date" name="to" defaultValue={period.to} className={inputClass} />
-        </label>
-        <label className="block">
-          <span className="mb-1 block text-nano font-semibold uppercase tracking-wider text-text-muted">Agent</span>
-          <select name="agent" defaultValue={agentSlug ?? ""} className={`${inputClass} min-w-[12rem]`}>
-            {agents.map((agent) => (
-              <option key={agent.slug} value={agent.slug}>
-                {agent.name} · {agent.role}
-              </option>
-            ))}
-          </select>
-        </label>
-        <button
-          type="submit"
-          className="h-9 rounded-lg border border-line bg-panel px-3 text-caption font-semibold text-text hover:border-accent"
-        >
-          Apply
-        </button>
-        <span className="ml-auto self-center text-caption text-text-muted">
-          {formatBillingPeriod(period)}
-        </span>
-      </form>
-
-      <form id="workspace-billing-run" action={runWorkspaceBillingReports}>
-        <input type="hidden" name="workspaceSlug" value={workspace.slug} />
-        <input type="hidden" name="from" value={period.from} />
-        <input type="hidden" name="to" value={period.to} />
-        <input type="hidden" name="agentSlug" value={agentSlug ?? ""} />
-      </form>
-      {projects.length > 0 ? <BillingProjectSelection formId="workspace-billing-run" total={projects.length} /> : null}
       <p className="text-caption text-text-muted">
         Rate precedence: project → workspace → global. Edit the{" "}
         <Link href={`/workspaces/${workspace.slug}/settings`} className="text-accent hover:underline">workspace rate</Link>
@@ -207,7 +160,7 @@ export default async function WorkspaceBillingPage({
 
       <div className="flex flex-wrap items-baseline gap-4 rounded-card border border-line bg-panel-soft px-4 py-3">
         <div>
-          <div className="text-caption text-text-muted">Total</div>
+          <div className="text-caption text-text-muted">{formatBillingPeriod(period)}</div>
           <div className="text-body font-semibold text-text">{rollup.totalHours} h</div>
         </div>
         {rollup.currencyTotals.map((total) => (
@@ -235,7 +188,6 @@ export default async function WorkspaceBillingPage({
           <table className="w-full min-w-[46rem] border-collapse text-body">
             <thead>
               <tr className="border-b border-line bg-panel-soft text-nano uppercase tracking-wider text-text-muted">
-                <th className="w-10 px-3 py-2 text-left font-semibold"><span className="sr-only">Select</span></th>
                 <th className="px-4 py-2 text-left font-semibold">Project</th>
                 <th className="px-4 py-2 text-left font-semibold">Rate</th>
                 <th className="px-4 py-2 text-left font-semibold">Status</th>
@@ -247,16 +199,6 @@ export default async function WorkspaceBillingPage({
             <tbody>
               {rollup.projects.map((project) => (
                 <tr key={project.projectId} className="border-b border-line last:border-b-0">
-                  <td className="px-3 py-2">
-                    <input
-                      type="checkbox"
-                      form="workspace-billing-run"
-                      name="projectId"
-                      value={project.projectId}
-                      aria-label={`Select ${project.name}`}
-                      className="h-4 w-4 rounded border-line accent-accent"
-                    />
-                  </td>
                   <td className="px-4 py-2">
                     <Link
                       href={`/projects/${project.slug}/billing?from=${period.from}&to=${period.to}`}
@@ -286,7 +228,9 @@ export default async function WorkspaceBillingPage({
                     {project.hours}
                   </td>
                   <td className="px-4 py-2 text-right font-mono tabular-nums text-caption text-text">
-                    {project.amountCents !== null ? formatCents(project.amountCents) : "—"}
+                    {project.amountCents !== null && project.rate
+                      ? formatCents(project.amountCents, project.rate.currency)
+                      : "—"}
                   </td>
                 </tr>
               ))}
@@ -330,11 +274,18 @@ export default async function WorkspaceBillingPage({
         </div>
       ) : (
         <p className="text-caption text-text-muted">
-          Nothing to roll up yet. Select projects above and request their summaries for this period.
+          Nothing to roll up yet. Use the <span className="font-medium text-text">+</span> button to create summaries for this workspace.
         </p>
       )}
 
       <BillingHistory entries={history} showProject />
+      <BillingCreateDialog
+        mode="workspace"
+        workspaceSlug={workspace.slug}
+        projects={projects.map((project) => ({ id: project.id, slug: project.slug, name: project.name }))}
+        agents={agents}
+        defaultAgent={agentSlug ?? ""}
+      />
     </div>
   );
 }

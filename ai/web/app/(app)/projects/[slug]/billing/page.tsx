@@ -2,21 +2,16 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
 import { auth } from "@/lib/auth";
-import { listRepoBranches } from "@/lib/tasks/git-changes";
-import { listRepoAuthors } from "@/lib/billing/git-ledger";
 import { normalizeBillingPeriod, formatBillingPeriod } from "@/lib/billing/period";
 import { formatCents, formatRate } from "@/lib/billing/rate";
 import {
   findBillingReport,
-  parseAuthorEmails,
   parseLedger,
   resolveProjectBillingRate,
 } from "@/lib/billing/report";
 import { listBillingAgents, selectBillingAgentSlug } from "@/lib/billing/run";
 import { buildBillingView, billingInvoiceText, factsLine, type BillingDayRow } from "@/lib/billing/view";
 import {
-  runBillingReport,
-  refreshBillingLedger,
   setBillingDayOverride,
   toggleBillingDayExcluded,
   setBillingReportFinalized,
@@ -25,15 +20,13 @@ import BillingCopyButton from "@/components/billing-copy-button";
 import BillingRunPanel from "@/components/billing-run-panel";
 import BillingHistory from "@/components/billing-history";
 import { listBillingHistory } from "@/lib/billing/history";
+import BillingCreateDialog from "@/components/billing-create-dialog";
 
 export const dynamic = "force-dynamic";
 
 function single(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] : value;
 }
-
-const inputClass =
-  "h-9 rounded-lg border border-line bg-bg px-2 text-caption outline-none focus:border-accent";
 
 export default async function ProjectBillingPage({
   params,
@@ -48,40 +41,20 @@ export default async function ProjectBillingPage({
 
   const project = await db.project.findFirst({
     where: { slug, deletedAt: null },
-    select: { id: true, name: true, repositoryPath: true, defaultGitUserEmail: true },
+    select: { id: true, name: true, slug: true, repositoryPath: true },
   });
   if (!project) notFound();
   if (!project.repositoryPath) notFound();
 
   const period = normalizeBillingPeriod(single(sp.from), single(sp.to));
-  const requestedBranch = single(sp.branch)?.trim() || "";
   const requestedAgent = single(sp.agent)?.trim() || "";
 
-  const [branches, authors, agents, rateInfo] = await Promise.all([
-    listRepoBranches(project.repositoryPath),
-    listRepoAuthors({
-      repositoryPath: project.repositoryPath,
-      from: period.from,
-      to: period.to,
-      branchName: requestedBranch || null,
-    }),
+  const [agents, rateInfo] = await Promise.all([
     listBillingAgents(),
-    resolveProjectBillingRate(project.id),
+    resolveProjectBillingRate(project.id, period.from),
   ]);
 
-  const selectedBranch = branches.some((b) => b.name === requestedBranch) ? requestedBranch : "";
   const agentSlug = (await selectBillingAgentSlug(requestedAgent)) ?? "";
-
-  // Default the author to the project's git identity when it is someone who
-  // actually committed in this period; otherwise leave it on everyone, because a
-  // silent filter that matches nobody looks identical to a quiet fortnight.
-  const requestedAuthors = sp.authorEmail
-    ? (Array.isArray(sp.authorEmail) ? sp.authorEmail : [sp.authorEmail]).map((v) => v.toLowerCase())
-    : null;
-  const projectEmail = project.defaultGitUserEmail?.toLowerCase() ?? null;
-  const selectedAuthors =
-    requestedAuthors ??
-    (projectEmail && authors.some((a) => a.email.toLowerCase() === projectEmail) ? [projectEmail] : []);
 
   const report = userId && agentSlug
     ? await findBillingReport({
@@ -127,7 +100,8 @@ export default async function ProjectBillingPage({
   }));
   const view = buildBillingView(rows, rate);
   const locked = report?.status === "final";
-  const reportAuthors = parseAuthorEmails(report?.authorEmails);
+  const overview = report?.notes?.trim()
+    || rows.slice(0, 2).map((row) => row.summary).join(" ");
 
   const invoiceText =
     rows.length > 0
@@ -141,56 +115,6 @@ export default async function ProjectBillingPage({
 
   return (
     <div className="space-y-section-gap">
-      <form className="flex flex-wrap items-end gap-3 rounded-card border border-line bg-panel p-3 text-body">
-        <label className="block">
-          <span className="mb-1 block text-nano font-semibold uppercase tracking-wider text-text-muted">From</span>
-          <input type="date" name="from" defaultValue={period.from} className={inputClass} />
-        </label>
-        <label className="block">
-          <span className="mb-1 block text-nano font-semibold uppercase tracking-wider text-text-muted">To</span>
-          <input type="date" name="to" defaultValue={period.to} className={inputClass} />
-        </label>
-        <label className="block">
-          <span className="mb-1 block text-nano font-semibold uppercase tracking-wider text-text-muted">Author</span>
-          <select name="authorEmail" defaultValue={selectedAuthors[0] ?? ""} className={`${inputClass} min-w-[14rem]`}>
-            <option value="">Everyone</option>
-            {authors.map((author) => (
-              <option key={author.email} value={author.email}>
-                {author.email} ({author.commits})
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="block">
-          <span className="mb-1 block text-nano font-semibold uppercase tracking-wider text-text-muted">Branch</span>
-          <select name="branch" defaultValue={selectedBranch} className={`${inputClass} min-w-[12rem]`}>
-            <option value="">All branches</option>
-            {branches.map((b) => (
-              <option key={b.name} value={b.name}>
-                {b.name}
-                {b.isCurrent ? " (current)" : ""}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="block">
-          <span className="mb-1 block text-nano font-semibold uppercase tracking-wider text-text-muted">Agent</span>
-          <select name="agent" defaultValue={agentSlug} className={`${inputClass} min-w-[12rem]`}>
-            {agents.map((agent) => (
-              <option key={agent.slug} value={agent.slug}>
-                {agent.name} · {agent.role}
-              </option>
-            ))}
-          </select>
-        </label>
-        <button
-          type="submit"
-          className="h-9 rounded-lg border border-line bg-panel px-3 text-caption font-semibold text-text hover:border-accent"
-        >
-          Apply
-        </button>
-      </form>
-
       <div className="flex flex-wrap items-center gap-3 rounded-card border border-line bg-panel-soft px-4 py-3 text-body">
         <div className="min-w-0">
           <div className="text-caption text-text-muted">{formatBillingPeriod(period)}</div>
@@ -215,42 +139,6 @@ export default async function ProjectBillingPage({
 
         <div className="ml-auto flex flex-wrap items-center gap-2">
           {invoiceText ? <BillingCopyButton text={invoiceText} /> : null}
-
-          <form action={refreshBillingLedger}>
-            <input type="hidden" name="projectSlug" value={slug} />
-            <input type="hidden" name="from" value={period.from} />
-            <input type="hidden" name="to" value={period.to} />
-            <input type="hidden" name="branch" value={selectedBranch} />
-            <input type="hidden" name="agentSlug" value={agentSlug} />
-            {selectedAuthors.map((email) => (
-              <input key={email} type="hidden" name="authorEmail" value={email} />
-            ))}
-            <button
-              type="submit"
-              disabled={locked}
-              className="h-9 rounded-lg border border-line bg-panel px-3 text-caption font-semibold text-text hover:border-accent disabled:opacity-50"
-            >
-              Read commits
-            </button>
-          </form>
-
-          <form action={runBillingReport}>
-            <input type="hidden" name="projectSlug" value={slug} />
-            <input type="hidden" name="from" value={period.from} />
-            <input type="hidden" name="to" value={period.to} />
-            <input type="hidden" name="branch" value={selectedBranch} />
-            <input type="hidden" name="agentSlug" value={agentSlug} />
-            {selectedAuthors.map((email) => (
-              <input key={email} type="hidden" name="authorEmail" value={email} />
-            ))}
-            <button
-              type="submit"
-              disabled={locked}
-              className="h-9 rounded-lg bg-accent px-4 text-caption font-semibold text-bg hover:opacity-90 disabled:opacity-50"
-            >
-              {rows.length > 0 ? "Regenerate" : "Run"}
-            </button>
-          </form>
 
           {report && (report.status === "ready" || report.status === "final") ? (
             <form action={setBillingReportFinalized}>
@@ -289,18 +177,9 @@ export default async function ProjectBillingPage({
         </div>
       ) : null}
 
-      {report && reportAuthors.length > 0 ? (
-        <p className="text-caption text-text-muted">
-          Filtered to {reportAuthors.join(", ")}
-          {report.branchFilter ? ` on ${report.branchFilter}` : " across all branches"}.
-        </p>
-      ) : null}
-
       {!report ? (
         <p className="rounded-card border border-dashed border-line bg-panel-soft/30 px-4 py-6 text-center text-body text-text-muted">
-          Choose a period and press <span className="font-medium text-text">Read commits</span> to see
-          what was committed, or <span className="font-medium text-text">Run</span> to have{" "}
-          {agentSlug || "an agent"} summarise it and estimate the time.
+          No saved summary for {formatBillingPeriod(period)}. Use the <span className="font-medium text-text">+</span> button to create one.
         </p>
       ) : null}
 
@@ -331,69 +210,51 @@ export default async function ProjectBillingPage({
       ) : null}
 
       {rows.length > 0 ? (
-        <ol className="space-y-2">
-          {view.days.map((day) => (
-            <li
-              key={day.id}
-              className={`rounded-card border px-4 py-3 ${
-                day.excluded ? "border-dashed border-line bg-panel-soft/40 opacity-60" : "border-line bg-panel-soft"
-              }`}
-            >
-              <div className="flex flex-wrap items-start gap-3">
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-baseline gap-2">
-                    <span className="font-mono text-caption font-medium text-text">{day.label}</span>
-                    <span className="font-mono text-micro text-text-muted">{day.factsLine}</span>
-                  </div>
-                  <p className="mt-1 break-words text-body text-text">{day.summary}</p>
-                  {day.rationale ? (
-                    <p className="mt-1 break-words text-caption text-text-muted">{day.rationale}</p>
-                  ) : null}
-                </div>
-
-                <div className="flex shrink-0 items-center gap-2">
-                  <span className="font-mono text-caption font-semibold text-accent">{day.hours} h</span>
-                  {day.amountCents !== null ? (
-                    <span className="font-mono text-caption text-text">{formatCents(day.amountCents)}</span>
-                  ) : null}
-                </div>
+        <details className="rounded-card border border-line bg-panel">
+          <summary className="cursor-pointer list-none px-4 py-4 marker:hidden">
+            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+              <div>
+                <div className="text-caption font-semibold text-text">Main updates</div>
+                <p className="mt-1 line-clamp-3 text-body leading-6 text-text-muted">{overview}</p>
               </div>
-
-              {!locked ? (
-                <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-line pt-2">
-                  <form action={setBillingDayOverride} className="flex items-center gap-2">
-                    <input type="hidden" name="dayId" value={day.id} />
-                    <label className="text-micro uppercase tracking-wider text-text-muted">Override h</label>
-                    <input
-                      type="number"
-                      step="0.25"
-                      min="0"
-                      name="overrideHours"
-                      defaultValue={day.overrideMinutes !== null ? (day.overrideMinutes / 60).toFixed(2) : ""}
-                      placeholder={(day.estimatedMinutes / 60).toFixed(1)}
-                      className="h-8 w-24 rounded-lg border border-line bg-bg px-2 text-caption outline-none focus:border-accent"
-                    />
-                    <button type="submit" className="text-micro font-semibold text-accent hover:underline">
-                      Save
-                    </button>
-                  </form>
-                  <form action={toggleBillingDayExcluded}>
-                    <input type="hidden" name="dayId" value={day.id} />
-                    <button type="submit" className="text-micro text-text-muted hover:text-text hover:underline">
-                      {day.excluded ? "Include" : "Exclude"}
-                    </button>
-                  </form>
-                </div>
-              ) : null}
-            </li>
-          ))}
-        </ol>
-      ) : null}
-
-      {report?.notes ? (
-        <p className="rounded-card border border-line bg-panel px-4 py-3 text-body text-text-muted">
-          {report.notes}
-        </p>
+              <div className="flex items-baseline gap-3 md:text-right">
+                <span className="font-mono text-body font-semibold text-accent">{view.totalHours} h</span>
+                {view.totalAmountCents !== null && rate ? <span className="font-mono text-body font-semibold text-text">{formatCents(view.totalAmountCents, rate.currency)}</span> : null}
+              </div>
+            </div>
+          </summary>
+          <div className="border-t border-line">
+            <div className="hidden grid-cols-[10rem_minmax(0,1fr)_6rem_9rem] gap-3 bg-panel-soft px-4 py-2 text-nano font-semibold uppercase tracking-wider text-text-muted md:grid">
+              <span>Date</span><span>Description</span><span className="text-right">Hours</span><span className="text-right">Amount</span>
+            </div>
+            <ol>
+              {view.days.map((day) => (
+                <li key={day.id} className={`border-t border-line px-4 py-3 first:border-t-0 ${day.excluded ? "bg-panel-soft/40 opacity-60" : ""}`}>
+                  <div className="grid gap-2 md:grid-cols-[10rem_minmax(0,1fr)_6rem_9rem] md:gap-3">
+                    <div><div className="font-mono text-caption font-medium text-text">{day.label}</div><div className="mt-0.5 font-mono text-micro text-text-muted">{day.factsLine}</div></div>
+                    <div><p className="break-words text-body text-text">{day.summary}</p>{day.rationale ? <p className="mt-1 break-words text-caption text-text-muted">{day.rationale}</p> : null}</div>
+                    <div className="font-mono text-caption font-semibold text-accent md:text-right">{day.excluded ? "—" : `${day.hours} h`}</div>
+                    <div className="font-mono text-caption text-text md:text-right">{!day.excluded && day.amountCents !== null && rate ? formatCents(day.amountCents, rate.currency) : "—"}</div>
+                  </div>
+                  {!locked ? (
+                    <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-line pt-2 md:ml-[10.75rem]">
+                      <form action={setBillingDayOverride} className="flex items-center gap-2">
+                        <input type="hidden" name="dayId" value={day.id} />
+                        <label className="text-micro uppercase tracking-wider text-text-muted">Override h</label>
+                        <input type="number" step="0.25" min="0" name="overrideHours" defaultValue={day.overrideMinutes !== null ? (day.overrideMinutes / 60).toFixed(2) : ""} placeholder={(day.estimatedMinutes / 60).toFixed(1)} className="h-8 w-24 rounded-lg border border-line bg-bg px-2 text-caption outline-none focus:border-accent" />
+                        <button type="submit" className="text-micro font-semibold text-accent hover:underline">Save</button>
+                      </form>
+                      <form action={toggleBillingDayExcluded}>
+                        <input type="hidden" name="dayId" value={day.id} />
+                        <button type="submit" className="text-micro text-text-muted hover:text-text hover:underline">{day.excluded ? "Include" : "Exclude"}</button>
+                      </form>
+                    </div>
+                  ) : null}
+                </li>
+              ))}
+            </ol>
+          </div>
+        </details>
       ) : null}
 
       {invoiceText ? (
@@ -408,6 +269,12 @@ export default async function ProjectBillingPage({
       ) : null}
 
       <BillingHistory entries={history} showProject={false} />
+      <BillingCreateDialog
+        mode="project"
+        projects={[{ id: project.id, slug: project.slug, name: project.name }]}
+        agents={agents}
+        defaultAgent={agentSlug}
+      />
     </div>
   );
 }

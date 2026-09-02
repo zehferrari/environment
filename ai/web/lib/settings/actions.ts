@@ -9,7 +9,7 @@ import { db } from "@/lib/db";
 import { requireOwner } from "@/lib/auth/permissions";
 import { normalizeTheme } from "@/lib/settings/system";
 import { normalizeDeployReviewPrompt } from "@/lib/epics/deploy-review";
-import { normalizeCurrency, parseRateInputToCents } from "@/lib/billing/rate";
+import { normalizeCurrency } from "@/lib/billing/rate";
 
 function trimOrNull(v: unknown): string | null {
   if (typeof v !== "string") return null;
@@ -67,7 +67,6 @@ export async function setSystemSettings(formData: FormData) {
     data.theme = normalizeTheme(formData.get("theme"));
     data.integrationDefaults = jsonObjectTextOrNull(formData.get("integrationDefaults"));
     data.deployReviewPrompt = normalizeDeployReviewPrompt(formData.get("deployReviewPrompt"));
-    data.hourlyRateCents = parseRateInputToCents(formData.get("hourlyRate"));
     data.billingCurrency = normalizeCurrency(formData.get("billingCurrency"));
     Object.assign(payload, { ...data, integrationDefaults: data.integrationDefaults ? "set" : null });
   } else {

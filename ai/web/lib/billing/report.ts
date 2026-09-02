@@ -49,7 +49,7 @@ export function parseLedger(raw: string | null | undefined): BillingLedger | nul
 // "Primary" follows getPrimaryWorkspaceDefaults — the oldest non-archived link —
 // which is the convention every other inherited setting in this app already uses,
 // so a project in two workspaces resolves the same way here as everywhere else.
-export async function resolveProjectBillingRate(projectId: string): Promise<{
+export async function resolveProjectBillingRate(projectId: string, effectiveOn = new Date().toISOString().slice(0, 10)): Promise<{
   rate: BillingRate | null;
   workspace: { id: string; slug: string; name: string } | null;
 }> {
@@ -70,12 +70,33 @@ export async function resolveProjectBillingRate(projectId: string): Promise<{
   ]);
   if (!project) return { rate: null, workspace: null };
 
+  const scopeKeys = [
+    `project:${projectId}`,
+    ...(workspace ? [`workspace:${workspace.id}`] : []),
+    "global",
+  ];
+  const scheduled = await db.billingRateSchedule.findMany({
+    where: { scopeKey: { in: scopeKeys }, startOn: { lte: effectiveOn } },
+    orderBy: [{ startOn: "desc" }, { createdAt: "desc" }],
+    select: { scopeKey: true, amountCents: true },
+  });
+  const effective = new Map<string, number>();
+  for (const row of scheduled) {
+    if (!effective.has(row.scopeKey)) effective.set(row.scopeKey, row.amountCents);
+  }
+
   const rate = resolveBillingRate({
-    project: { hourlyRateCents: project.hourlyRateCents },
+    project: { hourlyRateCents: effective.get(`project:${projectId}`) ?? project.hourlyRateCents },
     workspace: workspace
-      ? { hourlyRateCents: workspace.hourlyRateCents, billingCurrency: workspace.billingCurrency }
+      ? {
+          hourlyRateCents: effective.get(`workspace:${workspace.id}`) ?? workspace.hourlyRateCents,
+          billingCurrency: workspace.billingCurrency,
+        }
       : null,
-    global,
+    global: {
+      hourlyRateCents: effective.get("global") ?? global?.hourlyRateCents,
+      billingCurrency: global?.billingCurrency,
+    },
   });
   return {
     rate,
@@ -119,7 +140,7 @@ async function readBillingInputs(args: CreateBillingReportArgs) {
     branchName: args.branchFilter,
   });
   if (ledger.error) return { ok: false as const, error: ledger.error };
-  const { rate, workspace } = await resolveProjectBillingRate(args.projectId);
+  const { rate, workspace } = await resolveProjectBillingRate(args.projectId, args.period.from);
   return { ok: true as const, ledger, rate, workspace };
 }
 

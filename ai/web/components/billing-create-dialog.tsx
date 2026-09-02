@@ -1,0 +1,176 @@
+"use client";
+
+import { useMemo, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
+import { runBillingReport, runWorkspaceBillingReports } from "@/lib/billing/actions";
+
+type ProjectOption = { id: string; slug: string; name: string };
+type AgentOption = { slug: string; name: string; role: string };
+type PeriodKind = "first" | "second" | "custom";
+
+function brisbaneToday() {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Australia/Brisbane",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
+
+function halfMonth(month: string, kind: Exclude<PeriodKind, "custom">) {
+  const [year, monthNumber] = month.split("-").map(Number);
+  const last = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
+  return kind === "first"
+    ? { from: `${month}-01`, to: `${month}-15` }
+    : { from: `${month}-16`, to: `${month}-${String(last).padStart(2, "0")}` };
+}
+
+export default function BillingCreateDialog({
+  mode,
+  workspaceSlug,
+  projects,
+  agents,
+  defaultAgent,
+}: {
+  mode: "project" | "workspace";
+  workspaceSlug?: string;
+  projects: ProjectOption[];
+  agents: AgentOption[];
+  defaultAgent: string;
+}) {
+  const router = useRouter();
+  const today = useMemo(brisbaneToday, []);
+  const [open, setOpen] = useState(false);
+  const [periodKind, setPeriodKind] = useState<PeriodKind>(today.slice(8, 10) <= "15" ? "first" : "second");
+  const [month, setMonth] = useState(today.slice(0, 7));
+  const [customFrom, setCustomFrom] = useState(today);
+  const [customTo, setCustomTo] = useState(today);
+  const [agentSlug, setAgentSlug] = useState(defaultAgent);
+  const [selectedProjects, setSelectedProjects] = useState(() => new Set(projects.map((project) => project.id)));
+  const [pending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  const period = periodKind === "custom" ? { from: customFrom, to: customTo } : halfMonth(month, periodKind);
+
+  function toggleProject(id: string) {
+    setSelectedProjects((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function submit() {
+    setError(null);
+    if (!period.from || !period.to || period.from > period.to) {
+      setError("Choose a valid billing period.");
+      return;
+    }
+    if (selectedProjects.size === 0) {
+      setError("Select at least one project.");
+      return;
+    }
+    startTransition(async () => {
+      try {
+        const form = new FormData();
+        form.set("from", period.from);
+        form.set("to", period.to);
+        form.set("agentSlug", agentSlug);
+        if (mode === "workspace") {
+          form.set("workspaceSlug", workspaceSlug ?? "");
+          for (const id of selectedProjects) form.append("projectId", id);
+          await runWorkspaceBillingReports(form);
+          router.push(`/workspaces/${workspaceSlug}/billing?from=${period.from}&to=${period.to}&agent=${encodeURIComponent(agentSlug)}`);
+        } else {
+          form.set("projectSlug", projects[0]?.slug ?? "");
+          await runBillingReport(form);
+          router.push(`/projects/${projects[0]?.slug}/billing?from=${period.from}&to=${period.to}&agent=${encodeURIComponent(agentSlug)}`);
+        }
+        setOpen(false);
+        router.refresh();
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : "Unable to start the summary.");
+      }
+    });
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        aria-label="Create billing summary"
+        title="Create billing summary"
+        className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-accent text-3xl font-light leading-none text-bg shadow-lg transition hover:scale-105 hover:opacity-95"
+      >
+        +
+      </button>
+      {open ? (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/45 p-0 sm:items-center sm:p-4" role="dialog" aria-modal="true" aria-labelledby="new-billing-title">
+          <div className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-t-panel border border-line bg-panel p-5 shadow-2xl sm:rounded-panel">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 id="new-billing-title" className="text-heading font-semibold text-text">New billing summary</h2>
+                <p className="mt-1 text-caption text-text-muted">Choose the period, projects, and agent. Commit authors and branches are included automatically.</p>
+              </div>
+              <button type="button" onClick={() => setOpen(false)} className="text-2xl leading-none text-text-muted hover:text-text" aria-label="Close">×</button>
+            </div>
+
+            <div className="mt-5 space-y-5">
+              <fieldset className="space-y-2">
+                <legend className="text-caption font-semibold text-text">Period</legend>
+                <div className="grid gap-2 sm:grid-cols-3">
+                  {([
+                    ["first", "1–15"],
+                    ["second", "16–month end"],
+                    ["custom", "Custom Date"],
+                  ] as const).map(([value, label]) => (
+                    <label key={value} className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-body ${periodKind === value ? "border-accent bg-accent/[0.06]" : "border-line bg-bg"}`}>
+                      <input type="radio" name="billingPeriodKind" value={value} checked={periodKind === value} onChange={() => setPeriodKind(value)} className="accent-accent" />
+                      {label}
+                    </label>
+                  ))}
+                </div>
+                {periodKind === "custom" ? (
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="text-caption text-text-muted">From<input type="date" value={customFrom} onChange={(event) => setCustomFrom(event.target.value)} className="mt-1 block h-10 w-full rounded-lg border border-line bg-bg px-3 text-body text-text outline-none focus:border-accent" /></label>
+                    <label className="text-caption text-text-muted">To<input type="date" value={customTo} onChange={(event) => setCustomTo(event.target.value)} className="mt-1 block h-10 w-full rounded-lg border border-line bg-bg px-3 text-body text-text outline-none focus:border-accent" /></label>
+                  </div>
+                ) : (
+                  <label className="block max-w-xs text-caption text-text-muted">Month<input type="month" value={month} onChange={(event) => setMonth(event.target.value)} className="mt-1 block h-10 w-full rounded-lg border border-line bg-bg px-3 text-body text-text outline-none focus:border-accent" /></label>
+                )}
+                <p className="text-caption font-medium text-accent">{period.from} → {period.to}</p>
+              </fieldset>
+
+              <fieldset className="space-y-2">
+                <legend className="text-caption font-semibold text-text">Projects</legend>
+                {mode === "project" ? (
+                  <div className="rounded-lg border border-line bg-bg px-3 py-2 text-body text-text">{projects[0]?.name}</div>
+                ) : (
+                  <div className="max-h-52 space-y-1 overflow-y-auto rounded-lg border border-line bg-bg p-2">
+                    {projects.map((project) => (
+                      <label key={project.id} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-body hover:bg-panel-soft">
+                        <input type="checkbox" checked={selectedProjects.has(project.id)} onChange={() => toggleProject(project.id)} className="h-4 w-4 accent-accent" />
+                        {project.name}
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </fieldset>
+
+              <label className="block text-caption font-semibold text-text">Agent
+                <select value={agentSlug} onChange={(event) => setAgentSlug(event.target.value)} className="mt-1 block h-10 w-full rounded-lg border border-line bg-bg px-3 text-body text-text outline-none focus:border-accent">
+                  {agents.map((agent) => <option key={agent.slug} value={agent.slug}>{agent.name} · {agent.role}</option>)}
+                </select>
+              </label>
+              {error ? <p className="rounded-lg border border-warn/30 bg-warn/[0.06] px-3 py-2 text-caption text-warn">{error}</p> : null}
+            </div>
+            <div className="mt-6 flex justify-end gap-2 border-t border-line pt-4">
+              <button type="button" onClick={() => setOpen(false)} disabled={pending} className="h-10 rounded-lg border border-line px-4 text-body font-semibold text-text hover:border-accent disabled:opacity-50">Cancel</button>
+              <button type="button" onClick={submit} disabled={pending} className="h-10 rounded-lg bg-accent px-5 text-body font-semibold text-bg hover:opacity-90 disabled:opacity-50">{pending ? "Starting…" : "Create summary"}</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
+}

@@ -18,7 +18,8 @@ import WorktreeSwitcher from "@/components/worktree-switcher";
 import BranchMultiCombobox from "@/components/branch-multi-combobox";
 import { parseProtectedBranches } from "@/lib/projects/protected-branches";
 import { resolveEffectiveProjectSettings, settingSourceLabel } from "@/lib/settings/effective";
-import { formatCents, formatRate } from "@/lib/billing/rate";
+import { formatRate } from "@/lib/billing/rate";
+import BillingRateScheduleEditor from "@/components/billing-rate-schedule-editor";
 import { DEFAULT_BILLING_PROMPT } from "@/lib/billing/prompt";
 import { resolveProjectBillingRate } from "@/lib/billing/report";
 import { fallbackBoardColor } from "@/lib/board-colors";
@@ -83,14 +84,9 @@ export default async function ProjectSettingsPage({
   const switchState = switchProject ? await readSwitchState(switchProject.spoolDir) : null;
   const showSwitcher = Boolean(switchProject) && switchState !== null;
 
-  const [effectiveSettings, billingRateInfo, workspaceRate, projectTasks] = await Promise.all([
+  const [effectiveSettings, billingRateInfo, projectTasks, rateSchedule] = await Promise.all([
     resolveEffectiveProjectSettings(project),
     resolveProjectBillingRate(project.id),
-    db.workspace.findFirst({
-      where: { projects: { some: { projectId: project.id } }, archivedAt: null },
-      orderBy: { createdAt: "asc" },
-      select: { hourlyRateCents: true, billingCurrency: true },
-    }),
     db.task.findMany({
       where: accessibleTaskWhere(viewer, { projectId: project.id, deletedAt: null }),
       select: {
@@ -99,15 +95,13 @@ export default async function ProjectSettingsPage({
         epic: { select: { workItemKey: true, branchName: true } },
       },
     }),
+    db.billingRateSchedule.findMany({
+      where: { scopeKey: `project:${project.id}` },
+      orderBy: { startOn: "desc" },
+      select: { id: true, startOn: true, amountCents: true },
+    }),
   ]);
   const billingRate = billingRateInfo.rate;
-  // The placeholder shows what leaving the field blank actually means, so the
-  // inherited rate is visible without opening workspace settings.
-  const workspaceRateHint = workspaceRate?.hourlyRateCents
-    ? `Inherits ${formatCents(workspaceRate.hourlyRateCents, workspaceRate.billingCurrency)}`
-    : billingRate?.source === "global"
-      ? `Inherits ${formatRate(billingRate)} from global settings`
-      : "No inherited rate set";
   const protectedBranches = parseProtectedBranches(project.agentChangeBlockedBranches);
   const worktreeProtectedBranches = localWorktreeProtectedBranches(project);
   const branchOptions = [...new Set([
@@ -365,21 +359,14 @@ export default async function ProjectSettingsPage({
               />
             </SettingsRow>
             <SettingsRow
-              label="Hourly rate"
+              label="Hourly rates"
               hint={
                 billingRate
-                  ? `Billing tab rate. Blank inherits workspace/global defaults. Effective: ${formatRate(billingRate)} (${billingRate.source === "project" ? "project override" : billingRate.source === "workspace" ? "inherited from workspace" : "inherited from global settings"}).`
-                  : "Billing tab rate. Blank inherits workspace/global defaults. No rate is set anywhere, so billing reports show hours only."
+                  ? `Effective today: ${formatRate(billingRate)} (${billingRate.source === "project" ? "project schedule" : billingRate.source === "workspace" ? "inherited from workspace" : "inherited from global settings"}).`
+                  : "No project, workspace, or global rate applies today, so billing reports show hours only."
               }
             >
-              <input
-                type="text"
-                inputMode="decimal"
-                name="hourlyRate"
-                defaultValue={project.hourlyRateCents ? (project.hourlyRateCents / 100).toFixed(2) : ""}
-                placeholder={workspaceRateHint}
-                className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent"
-              />
+              <BillingRateScheduleEditor scopeType="project" scopeId={project.id} rows={rateSchedule} />
             </SettingsRow>
             <SettingsRow
               label="Billing prompt"

@@ -1,6 +1,7 @@
 import { renderFullMarkdown } from "@/lib/markdown";
 import { reviewBillingRun } from "@/lib/billing/actions";
 import BillingRunRefresh from "@/components/billing-run-refresh";
+import { formatCents, priceDayCents } from "@/lib/billing/rate";
 
 type RunEvent = { seq: number; kind: string; payload: string };
 type RunDay = { day: string; summary: string; estimatedMinutes: number };
@@ -50,6 +51,9 @@ export default function BillingRunPanel({
     generation: number;
     status: string;
     response: string | null;
+    notes: string | null;
+    rateCents: number | null;
+    currency: string | null;
     error: string | null;
     createdAt: Date;
     events: RunEvent[];
@@ -93,11 +97,17 @@ export default function BillingRunPanel({
       {run.error ? <p className="text-caption text-warn">{run.error}</p> : null}
       {candidate ? (
         <div className="space-y-3 border-t border-line pt-3">
-          <div className="space-y-1">
+          {run.notes ? <p className="text-body leading-6 text-text-muted">{run.notes}</p> : null}
+          <div>
+            <div className="hidden grid-cols-[10rem_minmax(0,1fr)_6rem_9rem] gap-3 border-b border-line px-3 py-2 text-nano font-semibold uppercase tracking-wider text-text-muted md:grid">
+              <span>Date</span><span>Description</span><span className="text-right">Hours</span><span className="text-right">Amount</span>
+            </div>
             {run.days.map((day) => (
-              <div key={day.day} className="flex flex-wrap items-baseline justify-between gap-2 rounded-lg bg-panel-soft px-3 py-2 text-caption">
-                <span><span className="mr-2 font-mono text-text-muted">{day.day}</span>{day.summary}</span>
-                <span className="font-mono font-semibold text-accent">{(day.estimatedMinutes / 60).toFixed(1)} h</span>
+              <div key={day.day} className="grid gap-1 border-b border-line px-3 py-2 text-caption last:border-b-0 md:grid-cols-[10rem_minmax(0,1fr)_6rem_9rem] md:gap-3">
+                <span className="font-mono text-text-muted">{day.day}</span>
+                <span>{day.summary}</span>
+                <span className="font-mono font-semibold text-accent md:text-right">{(day.estimatedMinutes / 60).toFixed(1)} h</span>
+                <span className="font-mono text-text md:text-right">{run.rateCents && run.currency ? formatCents(priceDayCents(day.estimatedMinutes, run.rateCents), run.currency) : "—"}</span>
               </div>
             ))}
           </div>

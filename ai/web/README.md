@@ -156,11 +156,12 @@ Billing summaries run through private PM-channel turns: visible progress,
 emitted reasoning, and the final response are persisted on `BillingRun` and
 shown on the project/workspace Billing tabs, never in direct agent chat. The
 first result is accepted automatically; later generations remain candidates
-until the owner accepts or discards them. Workspace Billing can launch one run
-per checkbox-selected project for a shared period (all authors/all branches).
-Rates resolve project override → workspace override → system default; each
-level is edited in its corresponding Settings page and the effective source is
-labelled on Billing totals.
+until the owner accepts or discards them. The floating add button opens one
+creation dialog for a half-month or custom period, target projects, and agent;
+workspace runs launch one summary per checked project and all runs include the
+whole repository. Rates resolve project → workspace → system schedules. Each
+schedule is an effective-dated Start on / Amount table in its corresponding
+Settings page, while accepted reports retain their original rate snapshot.
 
 ## Trust and authorization model
 

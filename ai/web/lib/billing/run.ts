@@ -85,7 +85,7 @@ export async function triggerBillingRun(args: TriggerBillingRunArgs): Promise<Tr
   if (!ledger) return { ok: false, error: "This report has no readable ledger." };
   if (ledger.days.length === 0) {
     await markBillingRunFailed(run.id, "No commits in this period, so there is nothing to summarise.");
-    return { ok: false, error: "No commits in this period for the selected author and branch." };
+    return { ok: false, error: "No commits were found in this period." };
   }
 
   const agent = await db.agent.findFirst({

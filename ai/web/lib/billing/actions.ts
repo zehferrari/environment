@@ -112,8 +112,8 @@ export async function runWorkspaceBillingReports(formData: FormData) {
     const created = await createBillingGeneration({
       projectId: project.id,
       period,
-      // Workspace runs deliberately cover the entire repository. Fine-grained
-      // author/branch questions remain available on the project Billing tab.
+      // Billing summaries deliberately cover the entire repository. The UI no
+      // longer asks operators to understand git authors or branch topology.
       authorEmails: [],
       branchFilter: null,
       agentSlug,

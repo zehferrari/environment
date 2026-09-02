@@ -9,7 +9,6 @@ import { normalizeWorkItemKeyPrefix } from "@/lib/work-items/keys";
 import { hexColorOrNull } from "@/lib/board-colors";
 import { cleanDeployReviewPrompt } from "@/lib/epics/deploy-review";
 import { cleanBillingPrompt } from "@/lib/billing/prompt";
-import { parseRateInputToCents } from "@/lib/billing/rate";
 import { serializeProtectedBranches } from "@/lib/projects/protected-branches";
 import {
   assertAgentAssignmentAllowed,
@@ -186,8 +185,6 @@ export async function setProjectSettings(formData: FormData) {
     const integrationDefaults = jsonObjectTextOrNull(formData.get("integrationDefaults"));
     const deployReviewPrompt = cleanDeployReviewPrompt(formData.get("deployReviewPrompt"));
     const billingPrompt = cleanBillingPrompt(formData.get("billingPrompt"));
-    // Blank clears the override and falls back to the workspace rate.
-    const hourlyRateCents = parseRateInputToCents(formData.get("hourlyRate"));
     const backgroundColor = hexColorOrNull(formData.get("backgroundColor"));
 
     Object.assign(data, {
@@ -207,7 +204,6 @@ export async function setProjectSettings(formData: FormData) {
       integrationDefaults,
       deployReviewPrompt,
       billingPrompt,
-      hourlyRateCents,
     });
     Object.assign(payload, data);
     if (managerAssignableAgentIds) payload.managerAssignableAgentCount = managerAssignableAgentIds.length;

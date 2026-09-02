@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { formatBillingDay, formatBillingPeriod } from "@/lib/billing/period";
+import { formatCents } from "@/lib/billing/rate";
 import type { BillingHistoryEntry } from "@/lib/billing/history";
 
 export default function BillingHistory({
@@ -20,11 +21,21 @@ export default function BillingHistory({
         {entries.map((entry) => (
           <details key={entry.id} className="rounded-card border border-line bg-panel">
             <summary className="cursor-pointer list-none px-4 py-3 marker:hidden">
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-                {showProject ? <span className="font-semibold text-text">{entry.project.name}</span> : null}
-                <span className="text-body text-text">{formatBillingPeriod({ from: entry.fromDate, to: entry.toDate })}</span>
-                <span className="text-caption text-text-muted">{entry.agentSlug} · {entry.status}</span>
-                <span className="ml-auto font-mono text-caption font-semibold text-accent">{entry.totalHours} h · {entry.days.length} day{entry.days.length === 1 ? "" : "s"}</span>
+              <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                    {showProject ? <span className="font-semibold text-text">{entry.project.name}</span> : null}
+                    <span className="text-body text-text">{formatBillingPeriod({ from: entry.fromDate, to: entry.toDate })}</span>
+                    <span className="text-caption text-text-muted">{entry.agentSlug} · {entry.status}</span>
+                  </div>
+                  <p className="mt-1 line-clamp-2 text-caption leading-5 text-text-muted">{entry.overview}</p>
+                </div>
+                <div className="flex items-baseline gap-3 md:justify-end">
+                  <span className="font-mono text-caption font-semibold text-accent">{entry.totalHours} h</span>
+                  {entry.totalAmountCents !== null && entry.currency ? (
+                    <span className="font-mono text-caption font-semibold text-text">{formatCents(entry.totalAmountCents, entry.currency)}</span>
+                  ) : null}
+                </div>
               </div>
             </summary>
             <div className="space-y-2 border-t border-line px-4 py-3">
@@ -37,19 +48,18 @@ export default function BillingHistory({
                   Open report
                 </Link>
               </div>
-              <ol className="space-y-1">
+              <div className="hidden grid-cols-[10rem_minmax(0,1fr)_6rem_9rem] gap-3 border-b border-line pb-2 text-nano font-semibold uppercase tracking-wider text-text-muted md:grid">
+                <span>Date</span><span>Description</span><span className="text-right">Hours</span><span className="text-right">Amount</span>
+              </div>
+              <ol>
                 {entry.days.map((day) => (
-                  <li key={day.id} className={`rounded-lg bg-panel-soft px-3 py-2 ${day.excluded ? "opacity-60" : ""}`}>
-                    <div className="flex flex-wrap items-baseline justify-between gap-2">
-                      <span className="text-caption text-text">
-                        <span className="mr-2 font-mono text-text-muted">{formatBillingDay(day.day)}</span>
-                        {day.summary}
-                      </span>
-                      <span className="font-mono text-caption font-semibold text-accent">
-                        {day.excluded ? "excluded" : `${(day.minutes / 60).toFixed(1)} h`}
-                      </span>
+                  <li key={day.id} className={`border-b border-line py-2 last:border-b-0 ${day.excluded ? "opacity-60" : ""}`}>
+                    <div className="grid gap-1 md:grid-cols-[10rem_minmax(0,1fr)_6rem_9rem] md:gap-3">
+                      <span className="font-mono text-caption text-text-muted">{formatBillingDay(day.day)}</span>
+                      <div><p className="text-caption text-text">{day.summary}</p>{day.rationale ? <p className="mt-1 text-caption text-text-muted">{day.rationale}</p> : null}</div>
+                      <span className="font-mono text-caption font-semibold text-accent md:text-right">{day.excluded ? "excluded" : `${(day.minutes / 60).toFixed(1)} h`}</span>
+                      <span className="font-mono text-caption text-text md:text-right">{day.amountCents !== null && entry.currency ? formatCents(day.amountCents, entry.currency) : "—"}</span>
                     </div>
-                    {day.rationale ? <p className="mt-1 text-caption text-text-muted">{day.rationale}</p> : null}
                   </li>
                 ))}
               </ol>

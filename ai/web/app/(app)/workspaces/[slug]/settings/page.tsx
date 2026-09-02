@@ -26,6 +26,11 @@ export default async function WorkspaceSettingsPage({ params }: { params: Promis
   ]);
 
   if (!workspaceRow) notFound();
+  const rateSchedule = await db.billingRateSchedule.findMany({
+    where: { scopeKey: `workspace:${workspaceRow.id}` },
+    orderBy: { startOn: "desc" },
+    select: { id: true, startOn: true, amountCents: true },
+  });
 
   return (
     <div className="mx-auto max-w-6xl space-y-5">
@@ -45,6 +50,7 @@ export default async function WorkspaceSettingsPage({ params }: { params: Promis
           archived: project.archivedAt != null,
         }))}
         agents={agents}
+        rateSchedule={rateSchedule}
       />
     </div>
   );

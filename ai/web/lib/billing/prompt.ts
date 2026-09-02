@@ -6,6 +6,7 @@ export const DEFAULT_BILLING_PROMPT = [
   "For each day below, write one or two sentences describing what was actually done,",
   "in terms a paying client would recognise — the feature or defect, not the file names.",
   "Then estimate how long that day's work took.",
+  "Also write a short client-facing paragraph covering the main updates across the whole period; return it in notes.",
   "Commit timestamps are a lower bound: they miss the investigation before the first commit,",
   "so a small diff that took a long hunt should be estimated on the hunt, not the diff.",
 ].join(" ");
@@ -132,7 +133,7 @@ function renderDispatchBody(args: BillingDispatchArgs, ledgerText: string) {
     '      { "day": "YYYY-MM-DD", "summary": "one or two sentences",',
     '        "estimatedMinutes": 120, "rationale": "why that long" }',
     "    ],",
-    '    "notes": "optional remarks about the period as a whole"',
+    '    "notes": "short client-facing paragraph with the main updates across the period"',
     "  }",
     "",
     "One entry per day listed above, using the same YYYY-MM-DD keys. estimatedMinutes",

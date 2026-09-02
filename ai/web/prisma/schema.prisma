@@ -212,6 +212,7 @@ model Project {
 
   members                ProjectMember[]
   workspaces             WorkspaceProject[]
+  billingRateSchedule    BillingRateSchedule[]
   epics                  Epic[]
   tasks                  Task[]
   activity               ActivityLog[]
@@ -271,6 +272,7 @@ model Workspace {
 
   projects  WorkspaceProject[]
   agentPool WorkspaceAgentPool[]
+  billingRateSchedule BillingRateSchedule[]
 
   @@index([archivedAt])
   @@index([type])
@@ -2136,6 +2138,27 @@ model BillingRunEvent {
 
   @@unique([runId, seq])
   @@index([runId, createdAt])
+}
+
+// Effective-dated hourly rates. Reports still snapshot the selected rate, so
+// later schedule edits cannot re-price an accepted historical summary.
+model BillingRateSchedule {
+  id          String     @id @default(cuid())
+  scopeKey    String     @map("scope_key") // global | workspace:<id> | project:<id>
+  scopeType   String     @map("scope_type") // global | workspace | project
+  workspaceId String?    @map("workspace_id")
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  projectId   String?    @map("project_id")
+  project     Project?   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  startOn     String     @map("start_on") // YYYY-MM-DD
+  amountCents Int        @map("amount_cents")
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@unique([scopeKey, startOn])
+  @@index([scopeType, startOn])
+  @@index([workspaceId, startOn])
+  @@index([projectId, startOn])
 }
 
 model BillingReportDay {

@@ -38,6 +38,7 @@
     "test:billing-git-ledger": "tsx scripts/billing-git-ledger-test.ts",
     "test:billing-period": "tsx scripts/billing-period-test.ts",
     "test:billing-rate": "tsx scripts/billing-rate-test.ts",
+    "test:billing-rate-schedule": "tsx scripts/billing-rate-schedule-test.ts",
     "test:billing-callback-auth": "tsx scripts/billing-callback-auth-test.ts",
     "test:add-epic-task-fab": "tsx scripts/add-epic-task-fab-test.tsx",
     "test:epic-status-filter": "tsx scripts/epic-status-filter-test.ts",
