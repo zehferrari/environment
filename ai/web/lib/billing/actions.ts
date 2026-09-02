@@ -15,6 +15,7 @@ import {
   isBillingReportLocked,
 } from "@/lib/billing/report";
 import { selectBillingAgentSlug, triggerBillingRun } from "@/lib/billing/run";
+import { requireOwner } from "@/lib/auth/permissions";
 
 async function requireUserId() {
   const session = await auth();
@@ -134,6 +135,60 @@ export async function runWorkspaceBillingReports(formData: FormData) {
     else errors.push(dispatched.error);
   }
   revalidatePath(`/workspaces/${workspaceSlug}/billing`);
+  if (dispatchedCount === 0) throw new Error(errors[0] ?? "No summaries could be started.");
+}
+
+// App-wide create-menu entry point. Unlike the workspace action, this accepts
+// projects from different workspaces and keeps the authorization boundary at
+// the server action rather than trusting the menu's visibility.
+export async function runSelectedBillingReports(formData: FormData) {
+  const viewer = await requireOwner();
+  const selectedIds = [...new Set(formData.getAll("projectId").map(String).filter(Boolean))];
+  if (selectedIds.length === 0) throw new Error("Select at least one project.");
+
+  const projects = await db.project.findMany({
+    where: { id: { in: selectedIds }, deletedAt: null, repositoryPath: { not: null } },
+    orderBy: { name: "asc" },
+    select: {
+      id: true,
+      slug: true,
+      workspaces: { select: { workspace: { select: { slug: true } } } },
+    },
+  });
+  if (projects.length === 0) throw new Error("None of the selected projects has a repository configured.");
+
+  const period = normalizeBillingPeriod(formData.get("from"), formData.get("to"));
+  const agentSlug = await selectBillingAgentSlug(String(formData.get("agentSlug") ?? ""));
+  if (!agentSlug) throw new Error("No active agent is available.");
+  const origin = publicOriginFromHeaders(await headers());
+  let dispatchedCount = 0;
+  const errors: string[] = [];
+
+  for (const project of projects) {
+    const created = await createBillingGeneration({
+      projectId: project.id,
+      period,
+      authorEmails: [],
+      branchFilter: null,
+      agentSlug,
+      requestedById: viewer.id,
+    });
+    if (!created.ok) {
+      errors.push(created.error);
+      continue;
+    }
+    const dispatched = await triggerBillingRun({
+      reportId: created.reportId,
+      runId: created.runId,
+      actorId: viewer.id,
+      origin,
+    });
+    if (dispatched.ok) dispatchedCount += 1;
+    else errors.push(dispatched.error);
+    revalidatePath(`/projects/${project.slug}/billing`);
+    for (const link of project.workspaces) revalidatePath(`/workspaces/${link.workspace.slug}/billing`);
+  }
+
   if (dispatchedCount === 0) throw new Error(errors[0] ?? "No summaries could be started.");
 }
 

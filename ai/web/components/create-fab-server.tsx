@@ -4,6 +4,8 @@ import { listAssignablePrincipals } from "@/lib/principals";
 import { attachmentMaxBytes } from "@/lib/attachments/storage";
 import CreateFab, { type CreateFabProject, type CreateFabWorkspace } from "@/components/create-fab";
 import type { AvatarComboboxOption } from "@/components/avatar-combobox";
+import BillingCreateDialog from "@/components/billing-create-dialog";
+import { listBillingAgents } from "@/lib/billing/run";
 
 // Server wrapper for the one app-wide create FAB: loads the bounded picker data
 // (accessible workspaces + projects + assignable principals) once for the whole
@@ -18,7 +20,7 @@ export default async function CreateFabServer() {
   const viewer = await getViewer();
   if (!viewer) return null;
 
-  const [workspaceRows, projectRows, principals] = await Promise.all([
+  const [workspaceRows, projectRows, principals, billingAgents] = await Promise.all([
     db.workspace.findMany({
       where: { AND: [{ archivedAt: null }, workspaceAccessWhere(viewer)] },
       orderBy: { name: "asc" },
@@ -31,14 +33,15 @@ export default async function CreateFabServer() {
         id: true,
         slug: true,
         name: true,
+        repositoryPath: true,
         workspaces: {
           orderBy: { createdAt: "asc" },
-          take: 1,
           select: { workspace: { select: { id: true, slug: true, name: true } } },
         },
       },
     }),
     viewer.canAccessOwnerFeatures ? listAssignablePrincipals(viewer) : Promise.resolve([]),
+    viewer.canAccessOwnerFeatures ? listBillingAgents() : Promise.resolve([]),
   ]);
 
   const workspaces: CreateFabWorkspace[] = workspaceRows;
@@ -66,12 +69,28 @@ export default async function CreateFabServer() {
   }));
 
   return (
-    <CreateFab
-      isOwner={viewer.canAccessOwnerFeatures}
-      workspaces={workspaces}
-      projects={projects}
-      principals={principalOptions}
-      maxAttachmentLabel={formatBytes(attachmentMaxBytes())}
-    />
+    <>
+      <CreateFab
+        isOwner={viewer.canAccessOwnerFeatures}
+        workspaces={workspaces}
+        projects={projects}
+        principals={principalOptions}
+        maxAttachmentLabel={formatBytes(attachmentMaxBytes())}
+      />
+      {viewer.canAccessOwnerFeatures ? (
+        <BillingCreateDialog
+          projects={projectRows
+            .filter((project) => Boolean(project.repositoryPath))
+            .map((project) => ({
+              id: project.id,
+              slug: project.slug,
+              name: project.name,
+              workspaceSlugs: project.workspaces.map((link) => link.workspace.slug),
+            }))}
+          agents={billingAgents}
+          defaultAgent={billingAgents.find((agent) => agent.role === "monitor")?.slug ?? billingAgents[0]?.slug ?? ""}
+        />
+      ) : null}
+    </>
   );
 }

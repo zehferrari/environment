@@ -2,10 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { runBillingReport, runWorkspaceBillingReports } from "@/lib/billing/actions";
+import { runSelectedBillingReports } from "@/lib/billing/actions";
 import { OPEN_BILLING_CREATE_DIALOG_EVENT } from "@/lib/billing/ui-events";
+import { useRouteContext } from "@/components/use-route-context";
 
-type ProjectOption = { id: string; slug: string; name: string };
+type ProjectOption = { id: string; slug: string; name: string; workspaceSlugs: string[] };
 type AgentOption = { slug: string; name: string; role: string };
 type PeriodKind = "first" | "second" | "custom";
 const MONTHS = [
@@ -35,19 +36,16 @@ function halfMonth(yearInput: string, monthInput: string, kind: Exclude<PeriodKi
 }
 
 export default function BillingCreateDialog({
-  mode,
-  workspaceSlug,
   projects,
   agents,
   defaultAgent,
 }: {
-  mode: "project" | "workspace";
-  workspaceSlug?: string;
   projects: ProjectOption[];
   agents: AgentOption[];
   defaultAgent: string;
 }) {
   const router = useRouter();
+  const route = useRouteContext();
   const today = useMemo(brisbaneToday, []);
   const [open, setOpen] = useState(false);
   const [periodKind, setPeriodKind] = useState<PeriodKind>(today.slice(8, 10) <= "15" ? "first" : "second");
@@ -68,9 +66,16 @@ export default function BillingCreateDialog({
     setMonth(current.slice(5, 7));
     setCustomFrom(current);
     setCustomTo(current);
+    setSelectedProjects(new Set(
+      route.projectSlug
+        ? projects.filter((project) => project.slug === route.projectSlug).map((project) => project.id)
+        : route.workspaceSlug
+          ? projects.filter((project) => project.workspaceSlugs.includes(route.workspaceSlug!)).map((project) => project.id)
+          : [],
+    ));
     setError(null);
     setOpen(true);
-  }, []);
+  }, [projects, route.projectSlug, route.workspaceSlug]);
 
   useEffect(() => {
     window.addEventListener(OPEN_BILLING_CREATE_DIALOG_EVENT, openDialog);
@@ -101,16 +106,19 @@ export default function BillingCreateDialog({
         form.set("from", period.from);
         form.set("to", period.to);
         form.set("agentSlug", agentSlug);
-        if (mode === "workspace") {
-          form.set("workspaceSlug", workspaceSlug ?? "");
-          for (const id of selectedProjects) form.append("projectId", id);
-          await runWorkspaceBillingReports(form);
-          router.push(`/workspaces/${workspaceSlug}/billing?from=${period.from}&to=${period.to}&agent=${encodeURIComponent(agentSlug)}`);
-        } else {
-          form.set("projectSlug", projects[0]?.slug ?? "");
-          await runBillingReport(form);
-          router.push(`/projects/${projects[0]?.slug}/billing?from=${period.from}&to=${period.to}&agent=${encodeURIComponent(agentSlug)}`);
-        }
+        for (const id of selectedProjects) form.append("projectId", id);
+        await runSelectedBillingReports(form);
+        const selected = projects.filter((project) => selectedProjects.has(project.id));
+        const sharedWorkspace = selected[0]?.workspaceSlugs.find((slug) =>
+          selected.every((project) => project.workspaceSlugs.includes(slug)),
+        ) ?? null;
+        const workspaceTarget = route.workspaceSlug && selected.every((project) => project.workspaceSlugs.includes(route.workspaceSlug!))
+          ? route.workspaceSlug
+          : selected.length > 1 ? sharedWorkspace : null;
+        const target = workspaceTarget
+          ? `/workspaces/${workspaceTarget}/billing`
+          : `/projects/${selected[0].slug}/billing`;
+        router.push(`${target}?from=${period.from}&to=${period.to}&agent=${encodeURIComponent(agentSlug)}`);
         setOpen(false);
         router.refresh();
       } catch (cause) {
@@ -179,18 +187,15 @@ export default function BillingCreateDialog({
 
               <fieldset className="space-y-2">
                 <legend className="text-caption font-semibold text-text">Projects</legend>
-                {mode === "project" ? (
-                  <div className="rounded-lg border border-line bg-bg px-3 py-2 text-body text-text">{projects[0]?.name}</div>
-                ) : (
-                  <div className="max-h-52 space-y-1 overflow-y-auto rounded-lg border border-line bg-bg p-2">
-                    {projects.map((project) => (
-                      <label key={project.id} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-body hover:bg-panel-soft">
-                        <input type="checkbox" checked={selectedProjects.has(project.id)} onChange={() => toggleProject(project.id)} className="h-4 w-4 accent-accent" />
-                        {project.name}
-                      </label>
-                    ))}
-                  </div>
-                )}
+                <div className="max-h-52 space-y-1 overflow-y-auto rounded-lg border border-line bg-bg p-2">
+                  {projects.length > 0 ? projects.map((project) => (
+                    <label key={project.id} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-body hover:bg-panel-soft">
+                      <input type="checkbox" checked={selectedProjects.has(project.id)} onChange={() => toggleProject(project.id)} className="h-4 w-4 accent-accent" />
+                      <span>{project.name}</span>
+                      {project.workspaceSlugs[0] ? <span className="ml-auto text-caption text-text-muted">{project.workspaceSlugs.join(", ")}</span> : null}
+                    </label>
+                  )) : <p className="px-2 py-3 text-caption text-text-muted">No project has a repository configured.</p>}
+                </div>
               </fieldset>
 
               <label className="block text-caption font-semibold text-text">Agent

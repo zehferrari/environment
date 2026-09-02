@@ -8,11 +8,10 @@ import { formatCents } from "@/lib/billing/rate";
 import { resolveProjectBillingRate } from "@/lib/billing/report";
 import { buildWorkspaceRollup, type BillingRollupInput } from "@/lib/billing/rollup";
 import type { BillingDayRow } from "@/lib/billing/view";
-import { selectBillingAgentSlug, listBillingAgents } from "@/lib/billing/run";
+import { selectBillingAgentSlug } from "@/lib/billing/run";
 import BillingRunPanel from "@/components/billing-run-panel";
 import BillingHistory from "@/components/billing-history";
 import { listBillingHistory } from "@/lib/billing/history";
-import BillingCreateDialog from "@/components/billing-create-dialog";
 
 export const dynamic = "force-dynamic";
 
@@ -61,10 +60,7 @@ export default async function WorkspaceBillingPage({
 
   const period = normalizeBillingPeriod(single(sp.from), single(sp.to));
   const requestedAgent = single(sp.agent)?.trim() || "";
-  const [agents, agentSlug] = await Promise.all([
-    listBillingAgents(),
-    selectBillingAgentSlug(requestedAgent),
-  ]);
+  const agentSlug = await selectBillingAgentSlug(requestedAgent);
 
   const projects = workspace.projects
     .map((link) => link.project)
@@ -279,13 +275,6 @@ export default async function WorkspaceBillingPage({
       )}
 
       <BillingHistory entries={history} showProject />
-      <BillingCreateDialog
-        mode="workspace"
-        workspaceSlug={workspace.slug}
-        projects={projects.map((project) => ({ id: project.id, slug: project.slug, name: project.name }))}
-        agents={agents}
-        defaultAgent={agentSlug ?? ""}
-      />
     </div>
   );
 }

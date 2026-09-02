@@ -9,7 +9,7 @@ import {
   parseLedger,
   resolveProjectBillingRate,
 } from "@/lib/billing/report";
-import { listBillingAgents, selectBillingAgentSlug } from "@/lib/billing/run";
+import { selectBillingAgentSlug } from "@/lib/billing/run";
 import { buildBillingView, billingInvoiceText, factsLine, type BillingDayRow } from "@/lib/billing/view";
 import {
   setBillingDayOverride,
@@ -20,7 +20,6 @@ import BillingCopyButton from "@/components/billing-copy-button";
 import BillingRunPanel from "@/components/billing-run-panel";
 import BillingHistory from "@/components/billing-history";
 import { listBillingHistory } from "@/lib/billing/history";
-import BillingCreateDialog from "@/components/billing-create-dialog";
 
 export const dynamic = "force-dynamic";
 
@@ -49,10 +48,7 @@ export default async function ProjectBillingPage({
   const period = normalizeBillingPeriod(single(sp.from), single(sp.to));
   const requestedAgent = single(sp.agent)?.trim() || "";
 
-  const [agents, rateInfo] = await Promise.all([
-    listBillingAgents(),
-    resolveProjectBillingRate(project.id, period.from),
-  ]);
+  const rateInfo = await resolveProjectBillingRate(project.id, period.from);
 
   const agentSlug = (await selectBillingAgentSlug(requestedAgent)) ?? "";
 
@@ -269,12 +265,6 @@ export default async function ProjectBillingPage({
       ) : null}
 
       <BillingHistory entries={history} showProject={false} />
-      <BillingCreateDialog
-        mode="project"
-        projects={[{ id: project.id, slug: project.slug, name: project.name }]}
-        agents={agents}
-        defaultAgent={agentSlug}
-      />
     </div>
   );
 }

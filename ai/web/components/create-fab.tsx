@@ -74,7 +74,6 @@ export default function CreateFab({
   // Agent chat pages are not create-menu context, so the shared FAB stays out
   // of the way there. Billing uses this same menu for its summary action.
   const onAgentsRoute = pathname?.startsWith("/agents") ?? false;
-  const onBillingRoute = pathname?.endsWith("/billing") ?? false;
 
   const [menuOpen, setMenuOpen] = useState(false);
   const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
@@ -303,17 +302,9 @@ export default function CreateFab({
 
   const routeProjectName = route.projectSlug ? projectBySlug.get(route.projectSlug)?.name ?? null : null;
 
-  // Menu rows in the order requested: Workspace, Project, Epic, Task,
-  // Attachment, Plan of Action, Comment. The last two only appear when a task
-  // or epic is the current context.
+  // Global creation rows keep one stable order on every route. Context-only
+  // workflow actions remain at the end when a task or epic is active.
   const menuItems: { kind: MenuKind; label: string; detail: string; icon: React.ReactNode; show: boolean }[] = [
-    {
-      kind: "billing",
-      label: "Billing summary",
-      detail: routeProjectName ?? (route.workspaceSlug ? "For workspace projects" : "Choose period and projects"),
-      icon: <BillingIcon />,
-      show: onBillingRoute && isOwner,
-    },
     {
       kind: "workspace",
       label: "New workspace",
@@ -326,6 +317,13 @@ export default function CreateFab({
       label: "New project",
       detail: route.workspaceSlug ? "In the current workspace" : "Pick a workspace",
       icon: <ProjectIcon />,
+      show: isOwner,
+    },
+    {
+      kind: "billing",
+      label: "Billing summary",
+      detail: routeProjectName ?? (route.workspaceSlug ? "For workspace projects" : "Choose period and projects"),
+      icon: <BillingIcon />,
       show: isOwner,
     },
     {
