@@ -23,6 +23,8 @@ import {
 } from "@/lib/billing/actions";
 import BillingCopyButton from "@/components/billing-copy-button";
 import BillingRunPanel from "@/components/billing-run-panel";
+import BillingHistory from "@/components/billing-history";
+import { listBillingHistory } from "@/lib/billing/history";
 
 export const dynamic = "force-dynamic";
 
@@ -89,6 +91,13 @@ export default async function ProjectBillingPage({
         requestedById: userId,
       })
     : null;
+  const history = userId
+    ? await listBillingHistory({
+        projectIds: [project.id],
+        requestedById: userId,
+        excludeReportIds: report ? [report.id] : [],
+      })
+    : [];
 
   const storedRate =
     report?.rateCents && report.currency && report.rateSource
@@ -397,6 +406,8 @@ export default async function ProjectBillingPage({
           </pre>
         </details>
       ) : null}
+
+      <BillingHistory entries={history} showProject={false} />
     </div>
   );
 }

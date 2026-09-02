@@ -11,6 +11,8 @@ import { selectBillingAgentSlug, listBillingAgents } from "@/lib/billing/run";
 import { runWorkspaceBillingReports } from "@/lib/billing/actions";
 import BillingProjectSelection from "@/components/billing-project-selection";
 import BillingRunPanel from "@/components/billing-run-panel";
+import BillingHistory from "@/components/billing-history";
+import { listBillingHistory } from "@/lib/billing/history";
 
 export const dynamic = "force-dynamic";
 
@@ -98,6 +100,14 @@ export default async function WorkspaceBillingPage({
       })
     : [];
   const byProject = new Map(reports.map((report) => [report.projectId, report]));
+  const history = userId
+    ? await listBillingHistory({
+        projectIds: projects.map((project) => project.id),
+        requestedById: userId,
+        excludeReportIds: reports.map((report) => report.id),
+        take: 100,
+      })
+    : [];
 
   const inputs: BillingRollupInput[] = projects.map((project) => {
     const report = byProject.get(project.id);
@@ -323,6 +333,8 @@ export default async function WorkspaceBillingPage({
           Nothing to roll up yet. Select projects above and request their summaries for this period.
         </p>
       )}
+
+      <BillingHistory entries={history} showProject />
     </div>
   );
 }
