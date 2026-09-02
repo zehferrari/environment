@@ -71,8 +71,9 @@ export default function CreateFab({
   const route = useRouteContext();
   const pathname = usePathname();
   // The create FAB is a work-item affordance; agent chat pages are not board
-  // context, so it stays out of the way there.
+  // context, and Billing supplies its own summary-specific FAB.
   const onAgentsRoute = pathname?.startsWith("/agents") ?? false;
+  const onBillingRoute = pathname?.endsWith("/billing") ?? false;
 
   const [menuOpen, setMenuOpen] = useState(false);
   const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
@@ -480,7 +481,7 @@ export default function CreateFab({
         )
       : null;
 
-  if (onAgentsRoute) return null;
+  if (onAgentsRoute || onBillingRoute) return null;
 
   return (
     <>
