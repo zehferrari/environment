@@ -1,0 +1,9 @@
+[Unit]
+Description=Sync PM-managed OpenClaw configs into agent homes
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/openclaw-doc-sync --config-only
+StandardOutput=journal
+StandardError=journal

@@ -1,18 +1,15 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import {
   chmod,
   chown,
   copyFile,
-  lchown,
-  lstat,
   mkdir,
   rename,
   rm,
   stat,
-  symlink,
 } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
@@ -56,15 +53,6 @@ function hasFlag(name) {
 function readJson(file, fallback) {
   if (!existsSync(file)) return fallback;
   return JSON.parse(readFileSync(file, "utf8"));
-}
-
-function existingRealPath(file) {
-  if (!existsSync(file)) return null;
-  try {
-    return realpathSync(file);
-  } catch {
-    return path.resolve(file);
-  }
 }
 
 async function writeJsonAtomic(file, value, mode, owner = null) {
@@ -215,25 +203,26 @@ function runOpenClawInstall(agent, home, pluginPath, openclawBin) {
   ], { stdio: "inherit" });
 }
 
-async function reconcileAgentConfigLink(agent, home, canonicalConfigPath) {
+async function copyCanonicalConfigToHome(agent, home, canonicalConfigPath) {
+  const homeConfigPath = path.join(home, ".openclaw/openclaw.json");
+  const canonical = readJson(canonicalConfigPath, null);
+  if (!canonical) throw new Error(`Missing or invalid canonical config: ${canonicalConfigPath}`);
+  await writeJsonAtomic(
+    homeConfigPath,
+    canonical,
+    0o600,
+    { uid: Number(uidFor(agent)), gid: Number(gidFor(agent)) },
+  );
+}
+
+async function reconcileAgentConfigCopy(agent, home, canonicalConfigPath) {
   const homeConfigPath = path.join(home, ".openclaw/openclaw.json");
   if (!existsSync(canonicalConfigPath) || !existsSync(homeConfigPath)) return;
 
-  const homeStat = await lstat(homeConfigPath);
-  if (
-    homeStat.isSymbolicLink()
-    && samePath(existingRealPath(homeConfigPath), existingRealPath(canonicalConfigPath))
-  ) {
-    return;
-  }
-  if (!homeStat.isFile()) {
-    throw new Error(`Refusing to replace non-file OpenClaw config: ${homeConfigPath}`);
-  }
-
-  // `openclaw plugins install --link` writes current schema metadata through an
-  // atomic rename, replacing the managed home symlink with a regular file.
-  // Promote that validated runtime result back to the canonical config before
-  // restoring the single-source link.
+  // `openclaw plugins install --link` may add current schema/plugin metadata
+  // through an atomic write to the regular home config. Promote that validated
+  // result back to the PM-owned canonical file, then republish the canonical
+  // bytes as a regular 0600 runtime copy.
   const runtimeConfig = readJson(homeConfigPath, null);
   if (!runtimeConfig) {
     throw new Error(`OpenClaw wrote an invalid config: ${homeConfigPath}`);
@@ -245,9 +234,7 @@ async function reconcileAgentConfigLink(agent, home, canonicalConfigPath) {
     canonicalStat.mode & 0o777,
     { uid: canonicalStat.uid, gid: canonicalStat.gid },
   );
-  await rm(homeConfigPath, { force: true });
-  await symlink(canonicalConfigPath, homeConfigPath);
-  await lchown(homeConfigPath, Number(uidFor(agent)), Number(gidFor(agent)));
+  await copyCanonicalConfigToHome(agent, home, canonicalConfigPath);
 }
 
 function restartGateway(agent, home) {
@@ -331,32 +318,29 @@ await writeJsonAtomic(tokenFile, tokenMap, 0o640, { uid: 0, gid: gidFor(tokenGro
 
 for (const agent of uniqueAgents) {
   const home = registryHomes.get(agent) ?? `/home/${agent}`;
-  const agentConfigPaths = [
-    path.join(agentRoot, agent, "openclaw.json"),
-    path.join(home, ".openclaw/openclaw.json"),
-  ];
-  const uniqueConfigPaths = [...new Set(agentConfigPaths.map(existingRealPath).filter(Boolean))];
-  let configured = false;
-  for (const configPath of uniqueConfigPaths) {
-    if (!existsSync(configPath)) continue;
-    configured = await configureAgentConfig({
-      configPath,
-      token: tokenMap[agent],
-      callbackUrl,
-      sourcePluginPath: pluginPath,
-      installedPluginPath,
-    }) || configured;
-  }
+  const canonicalConfigPath = path.join(agentRoot, agent, "openclaw.json");
+  const homeConfigPath = path.join(home, ".openclaw/openclaw.json");
+  const configPath = existsSync(canonicalConfigPath) ? canonicalConfigPath : homeConfigPath;
+  const configured = existsSync(configPath) && await configureAgentConfig({
+    configPath,
+    token: tokenMap[agent],
+    callbackUrl,
+    sourcePluginPath: pluginPath,
+    installedPluginPath,
+  });
   if (!configured) {
     console.warn(`[pm-channel] skipped ${agent}: missing OpenClaw config`);
     continue;
   }
 
+  if (existsSync(canonicalConfigPath)) {
+    await copyCanonicalConfigToHome(agent, home, canonicalConfigPath);
+  }
   runOpenClawInstall(agent, home, installedPluginPath, openclawBin);
-  await reconcileAgentConfigLink(
+  await reconcileAgentConfigCopy(
     agent,
     home,
-    path.join(agentRoot, agent, "openclaw.json"),
+    canonicalConfigPath,
   );
   if (restart) {
     restartGateway(agent, home);

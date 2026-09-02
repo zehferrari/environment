@@ -65,17 +65,16 @@ the entry-point overview.
   credential expires, and fails immediately if the CLI is logged out or the
   credential can no longer renew. Recovery is `claude auth login`, followed by
   `openclaw models auth login --provider anthropic --method cli --force`.
-- **Agent doc drift**. `probe_agent_symlinks` checks every enabled agent's
-  `~/.openclaw/openclaw.json` resolves to
-  `/srv/agents/openclaw/<agent>/openclaw.json` (the home config stays a
-  symlink to the canonical runtime config) and that the agent-facing docs
+- **Agent file drift**. `probe_agent_files` checks every enabled agent's
+  `~/.openclaw/openclaw.json` is a regular file whose content matches
+  `/srv/agents/openclaw/<agent>/openclaw.json`, and that the agent-facing docs
   in `~/workspace` / `~/.openclaw/workspace` match the active PM worktree's
   `ai/openclaw` docs by content hash (the propagation model copies docs in,
   not symlinks them). `USER.md` resolves to the shared agent file
-  under `/srv/agents/openclaw/_shared` when present. Config drift is `crit`
-  because a stale regular home config can break gateway auth; doc drift is
-  `warn`. Alert kinds: `agent-config-symlink-drift` (the openclaw.json
-  symlink) and `agent-doc-drift` (a workspace doc that is missing or whose
+  under `/srv/agents/openclaw/_shared` when present. Both are `warn`; config
+  drift is normally repaired first by the change-triggered config sync and the
+  five-minute fallback. Alert kinds: `agent-config-drift` (a missing, symlinked,
+  or stale runtime config) and `agent-doc-drift` (a workspace doc that is missing or whose
   content no longer matches the canonical source).
 - **Stalled Jira tickets** for any agent with `role: "coding"` and
   `integrations.jira: true`. Two complementary kinds: `task-stalled-no-agent`

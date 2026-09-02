@@ -99,7 +99,7 @@ reconcile_gateway_hooks() {
     chown "$user:$cfg_group" "$cfg"
     chmod "$cfg_mode" "$cfg"
     
-    link_home_openclaw_config "$user"
+    copy_home_openclaw_config "$user"
   else
     rm -f "$tmp_cfg"
     echo "Warning: failed to parse/update gateway and hooks configuration for $user" >&2
@@ -297,18 +297,27 @@ link_doc() {
   ln -sf "$src" "$dst"
 }
 
-link_home_openclaw_config() {
-  # link_home_openclaw_config <user> — keep the home config a symlink to the
-  # canonical runtime config. `openclaw gateway install` may rewrite this path,
-  # so callers relink after any install/reconcile step that can touch it.
+copy_home_openclaw_config() {
+  # copy_home_openclaw_config <user> — publish the PM-owned canonical config
+  # as a regular 0600 home file. OpenClaw-owned config writers atomically
+  # replace the active path and explicitly do not support symlink layouts.
   local user="$1"
   local home="/home/$user"
   local cfg="/srv/agents/openclaw/$user/openclaw.json"
   local home_cfg="$home/.openclaw/openclaw.json"
+  local tmp
+  [[ -f "$cfg" ]] || return 0
+  jq empty "$cfg" >/dev/null 2>&1 || die "canonical OpenClaw config is invalid: $cfg"
   mkdir -p "$home/.openclaw"
   chown "$user:$user" "$home/.openclaw" 2>/dev/null || true
-  link_doc "$cfg" "$home_cfg"
-  chown -h "$user:$user" "$home_cfg" 2>/dev/null || true
+  [[ ! -d "$home_cfg" ]] || die "refusing to replace directory: $home_cfg"
+  if [[ -L "$home_cfg" || ! -f "$home_cfg" ]] || ! cmp -s "$cfg" "$home_cfg"; then
+    tmp=$(mktemp "$home/.openclaw/.openclaw.json.sync.XXXXXX")
+    install -o "$user" -g "$user" -m 0600 "$cfg" "$tmp"
+    mv -f "$tmp" "$home_cfg"
+  fi
+  chown "$user:$user" "$home_cfg"
+  chmod 0600 "$home_cfg"
 }
 
 write_agent_files() {
@@ -332,10 +341,9 @@ write_agent_files() {
   chown -R "$user:$SHARED_GROUP" "$runtime"
   chmod -R 0770 "$runtime"
 
-  # Per-agent runtime config is single-source in the runtime dir; the home copy
-  # is a symlink (see ai/openclaw/AGENT_FILES.md) so Mission Control and the
-  # gateway runtime share exactly one file.
-  link_home_openclaw_config "$user"
+  # Mission Control owns the canonical runtime config; OpenClaw receives a
+  # regular-file copy because its atomic config writers do not support symlinks.
+  copy_home_openclaw_config "$user"
 }
 
 setup_doc_copies() {
@@ -456,7 +464,7 @@ install_gateway() {
   loginctl enable-linger "$user" || true
   sudo -n -u "$user" env "HOME=/home/$user" "XDG_RUNTIME_DIR=/run/user/$uid" \
     /usr/local/bin/openclaw gateway install --port "$port"
-  link_home_openclaw_config "$user"
+  copy_home_openclaw_config "$user"
 }
 
 reconcile_browser_control() {

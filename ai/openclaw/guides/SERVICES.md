@@ -73,10 +73,10 @@ thinkpad uses systemd timers for active automation. Cron references in old migra
   `/srv/agents/openclaw/<agent>/openclaw.json` so
   `gateway.bind="loopback"`, loopback trusted-proxy config, and
   `hooks.enabled=true`, `hooks.path="/hooks"`, and `hooks.token` are
-  present, then verifies `/home/<agent>/.openclaw/openclaw.json` is a
-  symlink to that canonical file. If a different regular home config
-  exists, the installer leaves it in place and warns instead of replacing
-  possibly newer runtime settings. It also sets
+  present, then publishes `/home/<agent>/.openclaw/openclaw.json` as a regular
+  `0600` copy of that canonical file. A generated `openclaw-config-sync.path`
+  unit republishes changes immediately, PM-triggered restarts sync first, and
+  `openclaw-doc-sync.timer` is the five-minute fallback. It also sets
   `hooks.allowRequestSessionKey=true` and
   `hooks.allowedSessionKeyPrefixes=["hook:","pm:"]`; `hook:` is
   required by OpenClaw when no default hook session key is configured,
@@ -98,6 +98,7 @@ thinkpad uses systemd timers for active automation. Cron references in old migra
 - `openclaw-typing-keepalive.service`: Telegram typing-indicator sidecar for the openclaw `claude-cli` provider (`/usr/local/bin/openclaw-typing-keepalive`). The cli-backend is non-streaming, so openclaw's built-in typing keepalive (60 s TTL refreshed by stream events) lapses mid-turn on long opus runs. This service stats every registered agent's `~/.openclaw/agents/main/sessions/sessions.json` once per second but parses a file only when its inode/size/timestamps change. It keeps just the derived active Telegram chats in memory and re-fires `sendChatAction("typing")` from that cache every 4 s for conversations currently `status=running` on `modelProvider=claude-cli`. Auto-discovers agents from `/etc/openclaw/agents.json`; no per-agent install. Runs as root because each agent's `sessions.json` and `~/.config/openclaw/openclaw-secrets.env` (where `TELEGRAM_BOT_TOKEN` lives) are mode `0600` per-user. Agents on `ollama` / `openai-codex` / other providers are skipped — they emit native streaming events that drive the in-process typing pipeline correctly.
 - `gmail-watch-renew.timer` → `gmail-watch-renew.service`: daily (04:00 ±10 min) auto-renewal of every per-agent Gmail push watch. Runs `/usr/local/sbin/gmail-watch-renew-all`, which discovers enabled Gmail agents from `/etc/openclaw/agents.json`, reads the topic and labels recorded in each private `watch-state.json`, and re-runs the per-user `gmail-watch.js` as the affected agent. Gmail watches expire in 7 days; daily renewal stays well inside the window. This host service is the only scheduler for renewal; do not duplicate it in the monitor agent's OpenClaw cron. Without this timer, `openclaw-integrity-check` raises `gmail-watch-expiring` at <24 h, which used to escalate to the monitor agent and then to Telegram for a known-recurring, deterministic issue.
 - `openclaw-monitor-sync.path` → `openclaw-monitor-sync.service`: watches every per-agent `~/.local/openclaw/monitor.json`; on change (within ~1 s), runs `/usr/local/sbin/openclaw-monitor-sync` which reconciles per-agent project resources — `enabled: true` resources get `systemctl --user enable --now`, `enabled: false` resources get `systemctl --user stop`. Companion `openclaw-monitor-sync.timer` runs every 5 min for drift correction. Triggered manually with `sudo /usr/local/sbin/openclaw-monitor-sync [<user>]`.
+- `openclaw-config-sync.path` → `openclaw-config-sync.service`: watches every PM-owned `/srv/agents/openclaw/<agent>/openclaw.json` and runs `/usr/local/sbin/openclaw-doc-sync --config-only` after a change. This keeps each regular active config current without unsupported cross-home access or symlink behavior. `openclaw-doc-sync.timer` provides the periodic fallback.
 
 ## Operational Commands
 

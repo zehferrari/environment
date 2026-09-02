@@ -1380,43 +1380,7 @@ def _active_agent_docs_root(cfg):
     return os.path.realpath("/srv/Code/environment.worktrees/main/ai/openclaw")
 
 
-def _symlink_probe(path, expected, label):
-    path = str(path)
-    expected = str(expected)
-    item = {
-        "path": path,
-        "expected": expected,
-        "expected_real": os.path.realpath(expected),
-        "label": label,
-        "ok": False,
-    }
-    try:
-        st = os.lstat(path)
-    except FileNotFoundError:
-        item["reason"] = "missing"
-        return item
-    except Exception as e:
-        item["reason"] = f"stat failed: {e}"
-        return item
-    item["is_symlink"] = stat.S_ISLNK(st.st_mode)
-    if not item["is_symlink"]:
-        item["reason"] = "not a symlink"
-        item["resolved"] = os.path.realpath(path)
-        return item
-    try:
-        item["link_target"] = os.readlink(path)
-        item["resolved"] = os.path.realpath(path)
-    except Exception as e:
-        item["reason"] = f"readlink failed: {e}"
-        return item
-    if item["resolved"] != item["expected_real"]:
-        item["reason"] = "wrong target"
-        return item
-    item["ok"] = True
-    return item
-
-
-def _content_match_probe(path, expected, label):
+def _content_match_probe(path, expected, label, require_regular=False):
     """Probe that a workspace doc file matches the canonical source by
     content (hash), not by being a symlink. The propagation model copies
     docs into workspaces (content-diff gated), so this checks the copy is
@@ -1447,6 +1411,18 @@ def _content_match_probe(path, expected, label):
     if not os.path.exists(path):
         item["reason"] = "missing"
         return item
+    if require_regular:
+        try:
+            mode = os.lstat(path).st_mode
+        except Exception as exc:
+            item["reason"] = f"stat failed: {exc}"
+            return item
+        if stat.S_ISLNK(mode):
+            item["reason"] = "symlink unsupported"
+            return item
+        if not stat.S_ISREG(mode):
+            item["reason"] = "not a regular file"
+            return item
     expected_hash = _sha256(expected)
     actual_hash = _sha256(path)
     if expected_hash is None:
@@ -1464,8 +1440,13 @@ def _content_match_probe(path, expected, label):
     return item
 
 
-def probe_agent_symlinks(cfg, registry):
-    sc = (cfg.get("agent_symlinks") or cfg.get("symlink_check") or {})
+def probe_agent_files(cfg, registry):
+    sc = (
+        cfg.get("agent_files")
+        or cfg.get("agent_symlinks")
+        or cfg.get("symlink_check")
+        or {}
+    )
     out = {
         "enabled": sc.get("enabled", True),
         "issues": [],
@@ -1524,11 +1505,13 @@ def probe_agent_symlinks(cfg, registry):
             continue
         home = agent.get("home") or f"/home/{user}"
         expected_config = os.path.join(agent_files_root, user, "openclaw.json")
-        # The openclaw.json home copy stays a symlink to the canonical runtime config.
-        config_probe = _symlink_probe(
+        # OpenClaw requires its active config path to be a regular file. The PM
+        # canonical config is copied into the home path by openclaw-doc-sync.
+        config_probe = _content_match_probe(
             os.path.join(home, ".openclaw", "openclaw.json"),
             expected_config,
             "openclaw-config",
+            require_regular=True,
         )
         out["checked"] += 1
         if not config_probe.get("ok"):
@@ -2798,13 +2781,13 @@ def build_compact_input(probes):
              "required_action": p.get("required_action", "")[:140]}
             for p in probes.get("pm_workflow", {}).get("items", [])
         ],
-        "agent_symlinks": [
+        "agent_files": [
             {"agent": s.get("agent"),
              "label": s.get("label"),
              "path": s.get("path"),
              "reason": s.get("reason"),
              "expected": s.get("expected")}
-            for s in probes.get("agent_symlinks", {}).get("issues", [])[:20]
+            for s in probes.get("agent_files", {}).get("issues", [])[:20]
         ],
     }
 
@@ -2971,17 +2954,16 @@ def deterministic_issues(probes):
             "reason": "agents.json has zero enabled+monitored agents — nothing tenant-side is being watched",
             "suggested_action": "investigate",
         })
-    symlinks = probes.get("agent_symlinks", {})
-    for issue in symlinks.get("issues", []) or []:
+    agent_files = probes.get("agent_files", {})
+    for issue in agent_files.get("issues", []) or []:
         label = issue.get("label", "doc")
         is_config = label == "openclaw-config"
         if is_config:
-            unit = f"agent-config-symlink:{issue.get('agent','?')}"
-            kind = "agent-config-symlink-drift"
-            resolved = issue.get("resolved") or issue.get("link_target") or "none"
+            unit = f"agent-config:{issue.get('agent','?')}"
+            kind = "agent-config-drift"
             reason = (
                 f"{issue.get('path')} is {issue.get('reason','invalid')}; "
-                f"resolved={resolved}; expected={issue.get('expected_real') or issue.get('expected')}"
+                f"expected content from {issue.get('expected')}"
             )
         else:
             unit = f"agent-doc:{issue.get('agent','?')}/{label}"
@@ -2990,7 +2972,7 @@ def deterministic_issues(probes):
                 f"{issue.get('path')} is {issue.get('reason','invalid')}; "
                 f"expected={issue.get('expected')}"
             )
-        severity = "crit" if is_config else "warn"
+        severity = "warn"
         out.append({
             "unit": unit,
             "kind": kind,
@@ -4488,6 +4470,7 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
             "pending-mentions-probe-failed",
             "gmail-pubsub-timeout",
             "telegram-network-unreachable",
+            "agent-config-drift",
         ],
     ))
     transient_threshold = int(triage_cfg_for_init.get(
@@ -5512,7 +5495,7 @@ def gather_probes(cfg):
         "pending_email_tasks": probe_pending_email_tasks(cfg, registry),
         "pending_mentions": probe_pending_mentions(cfg, registry),
         "pm_workflow": probe_pm_workflow(cfg, registry),
-        "agent_symlinks": probe_agent_symlinks(cfg, registry),
+        "agent_files": probe_agent_files(cfg, registry),
     }
     for user, uid, unit in user_units_spec:
         key = f"{user}/{unit}"
@@ -5633,7 +5616,7 @@ def main():
                 probes.get("pending_email_tasks", {}).get("pending", [])
             ),
             "agent_doc_drift": len(
-                probes.get("agent_symlinks", {}).get("issues", [])
+                probes.get("agent_files", {}).get("issues", [])
             ),
             "down_listeners": [
                 k for k, v in probes["listeners"].items() if not v.get("open")

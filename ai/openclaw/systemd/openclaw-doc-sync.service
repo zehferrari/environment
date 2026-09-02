@@ -1,5 +1,5 @@
 [Unit]
-Description=Sync agent workspace docs from the active OpenClaw checkout
+Description=Reconcile PM-managed OpenClaw agent files
 After=network-online.target
 
 [Service]

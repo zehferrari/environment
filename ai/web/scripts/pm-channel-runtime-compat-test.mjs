@@ -54,8 +54,9 @@ const installerSource = readFileSync(
   new URL("../deploy/install-openclaw-pm-channel.mjs", import.meta.url),
   "utf8",
 );
-assert.match(installerSource, /async function reconcileAgentConfigLink/);
-assert.match(installerSource, /await reconcileAgentConfigLink\(/);
+assert.match(installerSource, /async function reconcileAgentConfigCopy/);
+assert.match(installerSource, /await reconcileAgentConfigCopy\(/);
+assert.match(installerSource, /async function copyCanonicalConfigToHome/);
 
 const pluginSource = readFileSync(
   new URL("../openclaw-pm-channel/index.js", import.meta.url),

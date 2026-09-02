@@ -1,7 +1,8 @@
 #!/bin/bash
-# openclaw-doc-sync — copy agent docs from the active OpenClaw checkout
-# into every enabled agent's workspace(s). Content-diff gated: only
-# overwrites when the source differs from the destination.
+# openclaw-doc-sync — reconcile PM-managed agent files into every enabled
+# agent's runtime home. Agent docs come from the active OpenClaw checkout;
+# openclaw.json comes from the PM-owned agent-files root. All writes are
+# content-diff gated.
 #
 # Runs via openclaw-doc-sync.timer every 5 minutes. Source root resolves
 # from /etc/default/pm-active-worktree (the PM-served worktree), falling
@@ -13,8 +14,31 @@
 set -u
 
 REGISTRY="${OPENCLAW_AGENTS_JSON:-/etc/openclaw/agents.json}"
-SHARED_USER_DOC="/srv/agents/openclaw/_shared/USER.md"
-GUIDES_DIR=""  # resolved below
+AGENT_FILES_ROOT="${OPENCLAW_AGENT_FILES_ROOT:-/srv/agents/openclaw}"
+SHARED_USER_DOC="$AGENT_FILES_ROOT/_shared/USER.md"
+DOCS_ROOT="${OPENCLAW_DOCS_ROOT:-}"
+GUIDES_DIR=""
+CONFIG_ONLY=0
+TARGET_USER=""
+
+for arg in "$@"; do
+  case "$arg" in
+    --config-only) CONFIG_ONLY=1 ;;
+    --*) echo "Error: unknown option: $arg" >&2; exit 2 ;;
+    *)
+      if [ -n "$TARGET_USER" ]; then
+        echo "Usage: openclaw-doc-sync [--config-only] [user]" >&2
+        exit 2
+      fi
+      TARGET_USER="$arg"
+      ;;
+  esac
+done
+
+if [ -n "$TARGET_USER" ] && [[ ! "$TARGET_USER" =~ ^[a-z0-9_-]+$ ]]; then
+  echo "Error: invalid user: $TARGET_USER" >&2
+  exit 2
+fi
 
 # --- Resolve the active OpenClaw checkout root ---
 resolve_docs_root() {
@@ -50,12 +74,15 @@ resolve_docs_root() {
   return 1
 }
 
-DOCS_ROOT=$(resolve_docs_root) || exit 1
-GUIDES_DIR="$DOCS_ROOT/guides"
-
-if [ ! -d "$DOCS_ROOT" ] || [ ! -d "$GUIDES_DIR" ]; then
-  echo "Error: docs root or guides dir missing at $DOCS_ROOT" >&2
-  exit 1
+if [ "$CONFIG_ONLY" -eq 0 ]; then
+  if [ -z "$DOCS_ROOT" ]; then
+    DOCS_ROOT=$(resolve_docs_root) || exit 1
+  fi
+  GUIDES_DIR="$DOCS_ROOT/guides"
+  if [ ! -d "$DOCS_ROOT" ] || [ ! -d "$GUIDES_DIR" ]; then
+    echo "Error: docs root or guides dir missing at $DOCS_ROOT" >&2
+    exit 1
+  fi
 fi
 
 if [ ! -r "$REGISTRY" ] || ! command -v jq >/dev/null 2>&1; then
@@ -80,63 +107,94 @@ copy_doc() {
   fi
 }
 
+# --- sync_openclaw_config: canonical PM config -> regular runtime copy ---
+sync_openclaw_config() {
+  local user="$1" home="$2"
+  local canon_cfg="$AGENT_FILES_ROOT/$user/openclaw.json"
+  local home_dir="$home/.openclaw"
+  local home_cfg="$home_dir/openclaw.json"
+  local tmp
+
+  [ -f "$canon_cfg" ] || return 0
+  if ! jq empty "$canon_cfg" >/dev/null 2>&1; then
+    echo "Error: refusing to sync invalid JSON from $canon_cfg" >&2
+    return 1
+  fi
+  if [ -d "$home_cfg" ]; then
+    echo "Error: refusing to replace directory $home_cfg" >&2
+    return 1
+  fi
+
+  mkdir -p "$home_dir"
+  chown "$user:$user" "$home_dir" 2>/dev/null || true
+  if [ -L "$home_cfg" ] || [ ! -f "$home_cfg" ] || ! cmp -s "$canon_cfg" "$home_cfg"; then
+    tmp=$(mktemp "$home_dir/.openclaw.json.sync.XXXXXX") || return 1
+    if ! install -o "$user" -g "$user" -m 0600 "$canon_cfg" "$tmp"; then
+      rm -f -- "$tmp"
+      return 1
+    fi
+    mv -f -- "$tmp" "$home_cfg"
+    chown "$user:$user" "$home_cfg"
+    chmod 0600 "$home_cfg"
+    echo "  synced: openclaw.json (regular PM-managed copy)"
+  fi
+}
+
 # --- Iterate enabled agents from registry ---
-copied=0
+sync_rc=0
 total=0
 
 while IFS=$'\t' read -r user role home; do
   [ -n "$user" ] || continue
+  [ -z "$TARGET_USER" ] || [ "$user" = "$TARGET_USER" ] || continue
   total=$((total + 1))
   echo "==> $user (role=$role, home=$home)"
 
-  ws="$home/workspace"
-  ows="$home/.openclaw/workspace"
-  mkdir -p "$ws/guides" "$ows/guides" 2>/dev/null || true
+  if [ "$CONFIG_ONLY" -eq 0 ]; then
+    ws="$home/workspace"
+    ows="$home/.openclaw/workspace"
+    mkdir -p "$ws/guides" "$ows/guides" 2>/dev/null || true
 
-  # Common docs (every agent)
-  copy_doc "$SHARED_USER_DOC"           "$ws/USER.md"        "$user"
-  copy_doc "$SHARED_USER_DOC"           "$ows/USER.md"       "$user"
-  copy_doc "$DOCS_ROOT/AGENTS.md"       "$ws/AGENTS.md"      "$user"
-  copy_doc "$DOCS_ROOT/AGENTS.md"       "$ows/AGENTS.md"     "$user"
-  copy_doc "$DOCS_ROOT/WORKFLOW.md"     "$ws/WORKFLOW.md"    "$user"
-  copy_doc "$DOCS_ROOT/WORKFLOW.md"     "$ows/WORKFLOW.md"   "$user"
-  copy_doc "$GUIDES_DIR/ROLES.md"       "$ws/ROLES.md"       "$user"
-  copy_doc "$GUIDES_DIR/ROLES.md"       "$ows/ROLES.md"      "$user"
-  copy_doc "$GUIDES_DIR/ROLES.md"       "$ws/guides/ROLES.md"       "$user"
-  copy_doc "$GUIDES_DIR/ROLES.md"       "$ows/guides/ROLES.md"      "$user"
-  copy_doc "$GUIDES_DIR/CODE_REPOS.md"  "$ws/CODE_REPOS.md"  "$user"
-  copy_doc "$GUIDES_DIR/CODE_REPOS.md"  "$ows/CODE_REPOS.md" "$user"
-  copy_doc "$GUIDES_DIR/CODE_REPOS.md"  "$ws/guides/CODE_REPOS.md"  "$user"
-  copy_doc "$GUIDES_DIR/CODE_REPOS.md"  "$ows/guides/CODE_REPOS.md" "$user"
+    # Common docs (every agent)
+    copy_doc "$SHARED_USER_DOC"           "$ws/USER.md"        "$user"
+    copy_doc "$SHARED_USER_DOC"           "$ows/USER.md"       "$user"
+    copy_doc "$DOCS_ROOT/AGENTS.md"       "$ws/AGENTS.md"      "$user"
+    copy_doc "$DOCS_ROOT/AGENTS.md"       "$ows/AGENTS.md"     "$user"
+    copy_doc "$DOCS_ROOT/WORKFLOW.md"     "$ws/WORKFLOW.md"    "$user"
+    copy_doc "$DOCS_ROOT/WORKFLOW.md"     "$ows/WORKFLOW.md"   "$user"
+    copy_doc "$GUIDES_DIR/ROLES.md"       "$ws/ROLES.md"       "$user"
+    copy_doc "$GUIDES_DIR/ROLES.md"       "$ows/ROLES.md"      "$user"
+    copy_doc "$GUIDES_DIR/ROLES.md"       "$ws/guides/ROLES.md"       "$user"
+    copy_doc "$GUIDES_DIR/ROLES.md"       "$ows/guides/ROLES.md"      "$user"
+    copy_doc "$GUIDES_DIR/CODE_REPOS.md"  "$ws/CODE_REPOS.md"  "$user"
+    copy_doc "$GUIDES_DIR/CODE_REPOS.md"  "$ows/CODE_REPOS.md" "$user"
+    copy_doc "$GUIDES_DIR/CODE_REPOS.md"  "$ws/guides/CODE_REPOS.md"  "$user"
+    copy_doc "$GUIDES_DIR/CODE_REPOS.md"  "$ows/guides/CODE_REPOS.md" "$user"
 
-  # Monitor-only docs
-  if [ "$role" = "monitor" ]; then
-    copy_doc "$GUIDES_DIR/INCIDENT_HANDLING.md" "$ows/INCIDENT_HANDLING.md" "$user"
-    copy_doc "$GUIDES_DIR/MONITORING.md"        "$ows/MONITORING.md"        "$user"
-    copy_doc "$GUIDES_DIR/SERVICES.md"          "$ows/SERVICES.md"          "$user"
-    copy_doc "$GUIDES_DIR/INCIDENT_HANDLING.md" "$ows/guides/INCIDENT_HANDLING.md" "$user"
-    copy_doc "$GUIDES_DIR/MONITORING.md"        "$ows/guides/MONITORING.md"        "$user"
-    copy_doc "$GUIDES_DIR/SERVICES.md"          "$ows/guides/SERVICES.md"          "$user"
-  fi
-
-  # Remove stale TEAM_WORKFLOW.md (legacy)
-  for stale in "$ws/TEAM_WORKFLOW.md" "$ows/TEAM_WORKFLOW.md"; do
-    [ -e "$stale" ] && rm -f "$stale" && echo "  removed stale: $(basename "$stale")"
-  done
-
-  # Sync openclaw.json from canonical to home (if diverged)
-  canon_cfg="/srv/agents/openclaw/$user/openclaw.json"
-  home_cfg="$home/.openclaw/openclaw.json"
-  if [ -f "$canon_cfg" ] && [ -f "$home_cfg" ]; then
-    if ! cmp -s "$canon_cfg" "$home_cfg"; then
-      cp "$canon_cfg" "$home_cfg"
-      chown "$user:$user" "$home_cfg"
-      chmod 0600 "$home_cfg"
-      echo "  synced: openclaw.json (was diverged)"
+    # Monitor-only docs
+    if [ "$role" = "monitor" ]; then
+      copy_doc "$GUIDES_DIR/INCIDENT_HANDLING.md" "$ows/INCIDENT_HANDLING.md" "$user"
+      copy_doc "$GUIDES_DIR/MONITORING.md"        "$ows/MONITORING.md"        "$user"
+      copy_doc "$GUIDES_DIR/SERVICES.md"          "$ows/SERVICES.md"          "$user"
+      copy_doc "$GUIDES_DIR/INCIDENT_HANDLING.md" "$ows/guides/INCIDENT_HANDLING.md" "$user"
+      copy_doc "$GUIDES_DIR/MONITORING.md"        "$ows/guides/MONITORING.md"        "$user"
+      copy_doc "$GUIDES_DIR/SERVICES.md"          "$ows/guides/SERVICES.md"          "$user"
     fi
+
+    # Remove stale TEAM_WORKFLOW.md (legacy)
+    for stale in "$ws/TEAM_WORKFLOW.md" "$ows/TEAM_WORKFLOW.md"; do
+      [ -e "$stale" ] && rm -f "$stale" && echo "  removed stale: $(basename "$stale")"
+    done
   fi
+
+  sync_openclaw_config "$user" "$home" || sync_rc=1
 
 done < <(jq -r '.agents[] | select(.enabled == true) | "\(.user)\t\(.role)\t\(.home // "/home/\(.user)")"' "$REGISTRY")
 
 echo
 echo "Done. Processed $total agent(s)."
+if [ -n "$TARGET_USER" ] && [ "$total" -eq 0 ]; then
+  echo "Error: enabled agent not found in registry: $TARGET_USER" >&2
+  exit 1
+fi
+exit "$sync_rc"

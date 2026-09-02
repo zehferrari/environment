@@ -2,6 +2,7 @@
 'use strict';
 
 const assert = require('assert');
+const fs = require('fs');
 const { EventEmitter } = require('events');
 const dashboard = require('../bin/agent-dashboard');
 
@@ -145,5 +146,12 @@ for (const [label, agents] of [
   assert.strictEqual(writes.length, 1, 'broadcast must write once per client');
   assert.match(writes[0], /^data: .*"type":"test_event".*\n\n$/);
 }
+
+const dashboardSource = fs.readFileSync(require.resolve('../bin/agent-dashboard'), 'utf8');
+assert.match(
+  dashboardSource,
+  /openclaw-doc-sync', \['--config-only', user\]/,
+  'OpenClaw service restarts must publish the PM-managed config copy first',
+);
 
 console.log('agent-dashboard tail lifecycle tests passed');

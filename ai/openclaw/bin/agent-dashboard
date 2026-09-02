@@ -1288,16 +1288,30 @@ function restartService(user, service, callback) {
   if (!isUserService && !isSystemService) { const e = new Error('service not in registry or system_services list'); e.statusCode = 404; return callback(e); }
 
   if (isUserService) {
-    const args = [
-      '-n', '-u', user, 'env',
-      `XDG_RUNTIME_DIR=/run/user/${agent.uid}`,
-      `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${agent.uid}/bus`,
-      'systemctl', '--user', 'restart', service,
-    ];
-    execFile('sudo', args, { timeout: 30000 }, (err, stdout, stderr) => {
-      if (err) return callback(new Error(String((stderr || '').trim() || err.message || err)));
-      callback(null, { user_service: true });
-    });
+    const restartUserService = () => {
+      const args = [
+        '-n', '-u', user, 'env',
+        `XDG_RUNTIME_DIR=/run/user/${agent.uid}`,
+        `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${agent.uid}/bus`,
+        'systemctl', '--user', 'restart', service,
+      ];
+      execFile('sudo', args, { timeout: 30000 }, (err, stdout, stderr) => {
+        if (err) return callback(new Error(String((stderr || '').trim() || err.message || err)));
+        callback(null, { user_service: true });
+      });
+    };
+
+    // Mission Control writes the canonical config under /srv/agents. Publish
+    // its regular-file runtime copy before any OpenClaw service restart so the
+    // restarted gateway cannot come up on stale settings.
+    if (service.startsWith('openclaw-')) {
+      execFile('/usr/local/sbin/openclaw-doc-sync', ['--config-only', user], { timeout: 30000 }, (syncErr, _stdout, syncStderr) => {
+        if (syncErr) return callback(new Error(String((syncStderr || '').trim() || syncErr.message || syncErr)));
+        restartUserService();
+      });
+    } else {
+      restartUserService();
+    }
   } else {
     execFile('systemctl', ['restart', service], { timeout: 30000 }, (err, stdout, stderr) => {
       if (err) return callback(new Error(String((stderr || '').trim() || err.message || err)));

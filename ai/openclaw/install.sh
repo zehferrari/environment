@@ -13,7 +13,7 @@
 #      user units, visible to every user's systemd instance — only the
 #      monitor agent enables them based on derived services)
 #   4. generate/sync host-specific assets from agents.json — fans out into
-#      sub-steps [4/7]..[4f/7]: openclaw-monitor-sync.path (4), webhook
+#      sub-steps [4/7]..[4f/7]: OpenClaw config/monitor path units (4), webhook
 #      script symlinks (4b) + agent provisioning runner (4b.2), agent-self
 #      symlinks (4c), codeRoot drift check + per-agent git identity (4d),
 #      gmail helpers (4e), and the host-wide PM web service, PM dispatch
@@ -188,6 +188,7 @@ for u in agent-dashboard.service \
          openclaw-integrity.service openclaw-integrity.timer \
          openclaw-backup.service openclaw-backup.timer \
          openclaw-doc-sync.service openclaw-doc-sync.timer \
+         openclaw-config-sync.service \
          openclaw-monitor-sync.service openclaw-monitor-sync.timer \
          openclaw-typing-keepalive.service \
          gmail-watch-renew.service gmail-watch-renew.timer; do
@@ -209,26 +210,40 @@ if [ -d "$REPO_ROOT/systemd/user" ]; then
     done
 fi
 
-# 4. generate openclaw-monitor-sync.path
-log "[4/7] generate openclaw-monitor-sync.path from $REGISTRY"
+# 4. generate host-specific path units
+log "[4/7] generate OpenClaw path units from $REGISTRY"
 if [ ! -r "$REGISTRY" ]; then
     warn "  $REGISTRY not readable; skipping .path generation"
 else
-    PATH_LINES=""
+    MONITOR_PATH_LINES=""
+    CONFIG_PATH_LINES=""
+    agent_files_root=$(jq -r '.agentFilesRoot // "/srv/agents/openclaw"' "$REGISTRY")
     while IFS=$'\t' read -r user home; do
         [ -z "$user" ] && continue
         mpath="${home:-/home/$user}/.local/openclaw/monitor.json"
-        PATH_LINES+=$'PathChanged='"$mpath"$'\n'
+        MONITOR_PATH_LINES+=$'PathChanged='"$mpath"$'\n'
+        CONFIG_PATH_LINES+=$'PathChanged='"$agent_files_root/$user/openclaw.json"$'\n'
     done < <(jq -r '.agents[] | select(.enabled == true) | "\(.user)\t\(.home // "")"' "$REGISTRY")
 
     TMP=$(mktemp)
-    awk -v lines="$PATH_LINES" '/@PATH_CHANGED_LINES@/{printf "%s", lines; next} {print}' \
+    awk -v lines="$MONITOR_PATH_LINES" '/@PATH_CHANGED_LINES@/{printf "%s", lines; next} {print}' \
         "$REPO_ROOT/systemd/openclaw-monitor-sync.path.in" > "$TMP"
     if [ "$DRY" -eq 1 ]; then
         log "  would install $TMP → /etc/systemd/system/openclaw-monitor-sync.path"
     else
         install -o root -g root -m 644 "$TMP" /etc/systemd/system/openclaw-monitor-sync.path
         ok "/etc/systemd/system/openclaw-monitor-sync.path"
+    fi
+    rm -f "$TMP"
+
+    TMP=$(mktemp)
+    awk -v lines="$CONFIG_PATH_LINES" '/@PATH_CHANGED_LINES@/{printf "%s", lines; next} {print}' \
+        "$REPO_ROOT/systemd/openclaw-config-sync.path.in" > "$TMP"
+    if [ "$DRY" -eq 1 ]; then
+        log "  would install $TMP → /etc/systemd/system/openclaw-config-sync.path"
+    else
+        install -o root -g root -m 644 "$TMP" /etc/systemd/system/openclaw-config-sync.path
+        ok "/etc/systemd/system/openclaw-config-sync.path"
     fi
     rm -f "$TMP"
 fi
@@ -735,32 +750,14 @@ else
                 fi
                 rm -f "$tmp_cfg"
 
-                home_cfg="$home/.openclaw/openclaw.json"
-                cfg_real=$(readlink -f "$cfg" 2>/dev/null || printf '%s' "$cfg")
-                if [ -L "$home_cfg" ]; then
-                    home_real=$(readlink -f "$home_cfg" 2>/dev/null || true)
-                    if [ "$home_real" = "$cfg_real" ]; then
-                        log "  $user: $home_cfg already points at $cfg"
-                    else
-                        ln -snf "$cfg" "$home_cfg"
-                        chown -h "$user:$user" "$home_cfg" 2>/dev/null || true
-                        ok "  $user: repointed $home_cfg -> $cfg"
-                    fi
-                elif [ -e "$home_cfg" ]; then
-                    if cmp -s "$home_cfg" "$cfg"; then
-                        backup="$home_cfg.pre-symlink-$(date +%Y%m%d%H%M%S)"
-                        mv "$home_cfg" "$backup"
-                        ln -s "$cfg" "$home_cfg"
-                        chown -h "$user:$user" "$home_cfg" 2>/dev/null || true
-                        ok "  $user: replaced duplicate $home_cfg with symlink to $cfg (backup: $backup)"
-                    else
-                        warn "  $user: $home_cfg differs from $cfg; leaving regular file in place. Reconcile before symlinking."
-                    fi
+                # OpenClaw's atomic config writers replace the active path and
+                # do not support symlink layouts. Publish the PM canonical
+                # bytes as a regular per-user runtime copy before a restart.
+                if /usr/local/sbin/openclaw-doc-sync --config-only "$user" >/dev/null; then
+                    log "  $user: published PM-managed config as a regular runtime copy"
                 else
-                    install -d -o "$user" -g "$user" -m 0700 "$home/.openclaw" 2>/dev/null || true
-                    ln -s "$cfg" "$home_cfg"
-                    chown -h "$user:$user" "$home_cfg" 2>/dev/null || true
-                    ok "  $user: created $home_cfg -> $cfg"
+                    warn "  $user: failed to publish $cfg into $home/.openclaw/openclaw.json"
+                    continue
                 fi
 
                 next_tokens=$(mktemp)
@@ -911,6 +908,8 @@ else
              ai-monitor.timer \
              openclaw-integrity.timer \
              openclaw-backup.timer \
+             openclaw-doc-sync.timer \
+             openclaw-config-sync.path \
              openclaw-typing-keepalive.service \
              openclaw-monitor-sync.path \
              openclaw-monitor-sync.timer \
@@ -1020,6 +1019,7 @@ fi
 echo
 log "Done. Enable host-level units on first install:"
 log "  sudo systemctl enable --now agent-dashboard.service"
+log "  sudo systemctl enable --now openclaw-config-sync.path openclaw-doc-sync.timer"
 log "  sudo systemctl enable --now openclaw-monitor-sync.path openclaw-monitor-sync.timer"
 log "  sudo systemctl enable --now openclaw-typing-keepalive.service   # claude-cli hosts only"
 log "  sudo systemctl enable --now gmail-watch-renew.timer            # gmail-integrated hosts only"

@@ -260,5 +260,61 @@ class PreviousShutdownProbeTest(unittest.TestCase):
         self.assertEqual(result["evidence"][0]["source"], "pstore")
 
 
+class AgentConfigCopyProbeTest(unittest.TestCase):
+    def setUp(self):
+        self.monitor = load_monitor_module()
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tempdir.cleanup)
+        self.root = Path(self.tempdir.name)
+        self.canonical = self.root / "canonical.json"
+        self.runtime = self.root / "runtime.json"
+        self.canonical.write_text('{"gateway":{"port":18789}}\n')
+
+    def test_matching_regular_runtime_copy_is_healthy(self):
+        self.runtime.write_bytes(self.canonical.read_bytes())
+
+        result = self.monitor._content_match_probe(
+            self.runtime,
+            self.canonical,
+            "openclaw-config",
+            require_regular=True,
+        )
+
+        self.assertTrue(result["ok"])
+
+    def test_symlink_is_rejected_even_when_content_matches(self):
+        self.runtime.symlink_to(self.canonical)
+
+        result = self.monitor._content_match_probe(
+            self.runtime,
+            self.canonical,
+            "openclaw-config",
+            require_regular=True,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "symlink unsupported")
+
+    def test_config_copy_drift_uses_non_symlink_alert_kind(self):
+        issues = self.monitor.deterministic_issues({
+            "agent_files": {
+                "issues": [{
+                    "agent": "example",
+                    "label": "openclaw-config",
+                    "path": "/home/example/.openclaw/openclaw.json",
+                    "expected": "/srv/agents/openclaw/example/openclaw.json",
+                    "reason": "content drift",
+                }],
+            },
+            "integrity_check": {"exit_code": 0},
+            "registry": {"ok": True, "agents_seen": 1},
+            "ollama_probe": {"ok": True},
+        })
+
+        issue = next(i for i in issues if i["kind"] == "agent-config-drift")
+        self.assertEqual(issue["unit"], "agent-config:example")
+        self.assertEqual(issue["severity"], "warn")
+
+
 if __name__ == "__main__":
     unittest.main()

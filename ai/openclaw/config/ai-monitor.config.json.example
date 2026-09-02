@@ -134,7 +134,8 @@
       "telegram-unreachable",
       "telegram-connection-failing",
       "judge-failed",
-      "pending-email-probe-failed"
+      "pending-email-probe-failed",
+      "agent-config-drift"
     ],
     "transient_consecutive_threshold": 5,
     "transient_cooldown_s": 3600,

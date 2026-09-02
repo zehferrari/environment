@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch PM-managed OpenClaw agent configs
+
+[Path]
+@PATH_CHANGED_LINES@
+Unit=openclaw-config-sync.service
+
+[Install]
+WantedBy=multi-user.target

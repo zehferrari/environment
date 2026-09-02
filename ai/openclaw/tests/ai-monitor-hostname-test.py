@@ -51,7 +51,7 @@ class AiMonitorHostnameTest(unittest.TestCase):
             mock.patch.object(monitor, "probe_pending_email_tasks", empty_probe),
             mock.patch.object(monitor, "probe_pending_mentions", empty_probe),
             mock.patch.object(monitor, "probe_pm_workflow", empty_probe),
-            mock.patch.object(monitor, "probe_agent_symlinks", empty_probe),
+            mock.patch.object(monitor, "probe_agent_files", empty_probe),
             mock.patch.object(
                 monitor.socket, "gethostname", return_value="thinkpad-test"
             ),

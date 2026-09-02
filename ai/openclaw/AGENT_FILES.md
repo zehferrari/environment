@@ -6,9 +6,10 @@ These files stay separate for each registered coding agent. Each lives under `/h
 > → `Add Agent`), the root `openclaw-manage-user` helper scaffolds the per-agent
 > files (`SOUL`, `IDENTITY`, `TOOLS`, `MEMORY`, `HEARTBEAT`, `openclaw.json`)
 > into the agent-files root `/srv/agents/openclaw/<user>/` from templates
-> rendered by `ai/web/lib/agents/provisioning.ts`, and points
-> `~/.openclaw/openclaw.json` at the canonical copy by symlink. Editing the
-> agent re-renders them. See [`../THINKPAD.md`](../THINKPAD.md) § Agent Lifecycle Management.
+> rendered by `ai/web/lib/agents/provisioning.ts`. The PM-owned canonical
+> config is copied into `~/.openclaw/openclaw.json` as a regular `0600` file;
+> OpenClaw's atomic config writes do not support a symlink at that active path.
+> Editing the agent re-renders and republishes it. See [`../THINKPAD.md`](../THINKPAD.md) § Agent Lifecycle Management.
 
 ## Identity & persona — `~/workspace/*.md`
 
@@ -41,7 +42,7 @@ The monitor agent only has `~/.openclaw/workspace/`, no user-facing
 | `~/.ssh/id_*` | Per-agent SSH key pair (Bitbucket, optional GitHub). |
 | `~/.config/openclaw/openclaw-secrets.env` | Telegram bot token, OpenClaw gateway token, model-provider API keys (Moonshot, Z.ai). |
 | `~/.config/openclaw/openclaw-webhook.env` | Webhook signing secrets (Jira, Bitbucket). |
-| `/srv/agents/openclaw/<agent>/openclaw.json` | Canonical per-agent OpenClaw runtime config (model defaults, gateway hooks, limits). `/home/<agent>/.openclaw/openclaw.json` should symlink here so Mission Control and the gateway runtime share one file. |
+| `/srv/agents/openclaw/<agent>/openclaw.json` | PM-owned canonical per-agent OpenClaw runtime config (model defaults, gateway hooks, limits). `/home/<agent>/.openclaw/openclaw.json` is a regular `0600` runtime copy, reconciled immediately by `openclaw-config-sync.path`, before PM-triggered restarts, and every five minutes as a fallback. |
 | `~/.local/share/openclaw/...` | OAuth refresh tokens for Gmail, Drive, Calendar, Photos. |
 
 ## Per-agent runtime state — `~/.openclaw/skills/google-workspace/*.json`

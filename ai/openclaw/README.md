@@ -5,7 +5,7 @@ Single source of truth for OpenClaw agent operating rules and shared skill helpe
 The contents of this folder are cloned to the host checkout. On thinkpad, feature
 work happens only in **`/srv/Code/environment.worktrees/<branch>/ai/openclaw/`**;
 do not edit the primary `/srv/Code/environment/` checkout. Every agent reads
-from the active OpenClaw install through symlinks; every edit goes through git.
+from files reconciled from the active OpenClaw install; every edit goes through git.
 
 For broader context:
 - Host inventory (thinkpad / moonlight / x1) → [`../../README.md`](../../README.md)
@@ -77,16 +77,17 @@ worktree checkout, not a stale main checkout.
 | `/etc/openclaw/agents.json` | Live runtime registry, NOT in this repo; historical installs may symlink it to `/srv/agents/index.json`. Enable/disable flips come from the dashboard's `POST /agents/registry/toggle`; **agent create/edit/remove** are written by the root `/usr/local/sbin/openclaw-manage-user` helper ([`bin/openclaw-manage-user`](./bin/openclaw-manage-user)), driven by the PM webapp's `/api/agents/*` routes — see [`../THINKPAD.md`](../THINKPAD.md) § Agent Lifecycle Management. Template: [`index.example.json`](./index.example.json). |
 | `/home/<user>/workspace/{SOUL,USER,MEMORY,IDENTITY,TOOLS,HEARTBEAT}.md` | `<agentFilesRoot>/<user>/...` per-agent private files |
 | `/home/<user>/.openclaw/workspace/{SOUL,USER,MEMORY,IDENTITY,TOOLS,HEARTBEAT}.md` | same |
-| `/home/<user>/.openclaw/openclaw.json` | `<agentFilesRoot>/<user>/openclaw.json` per-agent runtime config, agent-owned and writable by the configured `codeGroup` |
+| `/home/<user>/.openclaw/openclaw.json` | Regular `0600` runtime copy of PM-owned `<agentFilesRoot>/<user>/openclaw.json` |
 
 Note: the monitor agent has only the `~/.openclaw/workspace/` paths. The
 user-facing `~/workspace/` may not exist for monitor users, so
 AGENTS/ROLES/WORKFLOW are symlinked once each there.
 
-Per-agent **identity**, **memory**, and **OpenClaw runtime config** are
-symlinked to the host's private agent-files root, defaulting to
-`/srv/agents/openclaw` and overrideable with `agentFilesRoot` in
-`/etc/openclaw/agents.json`. Per-agent **state** and **tokens** still live
+Per-agent **identity**, **memory**, and the canonical **OpenClaw runtime config**
+live under the host's private agent-files root, defaulting to `/srv/agents/openclaw`
+and overrideable with `agentFilesRoot` in `/etc/openclaw/agents.json`. The active
+OpenClaw config is a reconciled regular copy because OpenClaw's atomic writers
+do not support symlink configs. Per-agent **state** and **tokens** still live
 under each agent's home and are NOT in this repo — see
 [`AGENT_FILES.md`](./AGENT_FILES.md).
 
@@ -152,14 +153,13 @@ detects that implementation and exits successfully without modifying the
 package. Re-run `install.sh` after upgrading, reinstalling, or rolling back
 the global `openclaw` package.
 
-Gateway hook config lives in `/srv/agents/openclaw/<agent>/openclaw.json`;
-`/home/<agent>/.openclaw/openclaw.json` should be a symlink to that
-canonical file so Mission Control writes and the gateway runtime read the
-same config. `install.sh` verifies that link and refuses to replace a
-different regular home file until an operator reconciles the two copies.
-`ai-monitor` also audits this symlink every tick and raises
-`agent-symlink-drift` if the home config or agent-facing docs drift away from
-the active PM worktree.
+Gateway hook config lives canonically in
+`/srv/agents/openclaw/<agent>/openclaw.json`. The active
+`/home/<agent>/.openclaw/openclaw.json` is a regular `0600` copy. PM-triggered
+gateway restarts sync it first; `openclaw-config-sync.path` reacts to every
+canonical change; and `openclaw-doc-sync.timer` provides a five-minute fallback.
+`ai-monitor` checks regular-file content equality and reports
+`agent-config-drift` only when reconciliation has genuinely failed.
 `gateway.bind="loopback"`, `gateway.trustedProxies=["127.0.0.1","::1"]`,
 `gateway.auth.trustedProxy.allowLoopback=true`, `hooks.enabled=true`,
 `hooks.path="/hooks"`, `hooks.token=<secret>`,
