@@ -239,7 +239,7 @@ export default async function ProjectBillingPage({
               disabled={locked}
               className="h-9 rounded-lg bg-accent px-4 text-caption font-semibold text-bg hover:opacity-90 disabled:opacity-50"
             >
-              {report?.acceptedRunId ? "Regenerate" : "Run"}
+              {rows.length > 0 ? "Regenerate" : "Run"}
             </button>
           </form>
 

@@ -472,7 +472,13 @@ export async function applyBillingRunResult(args: {
 }) {
   const run = await db.billingRun.findUnique({
     where: { id: args.runId },
-    select: { id: true, status: true, ledger: true, reportId: true, report: { select: { acceptedRunId: true, status: true } } },
+    select: {
+      id: true,
+      status: true,
+      ledger: true,
+      reportId: true,
+      report: { select: { acceptedRunId: true, status: true, _count: { select: { days: true } } } },
+    },
   });
   if (!run) return { ok: false as const, error: "Billing run not found." };
   if (run.report.status === "final") return { ok: false as const, error: "This report is finalized." };
@@ -493,7 +499,7 @@ export async function applyBillingRunResult(args: {
   });
   // First result has nothing to compare against, so it becomes the accepted
   // draft immediately. Later generations wait for an explicit operator choice.
-  if (!run.report.acceptedRunId) {
+  if (!run.report.acceptedRunId && run.report._count.days === 0) {
     const accepted = await acceptBillingRun(run.id);
     if (!accepted.ok) return accepted;
   }

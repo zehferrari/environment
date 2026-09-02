@@ -113,6 +113,43 @@ async function main() {
   const savedEvents = await db.billingRunEvent.findMany({ where: { runId: run4.id }, orderBy: { seq: "asc" } });
   assert.deepEqual(savedEvents.map((event) => event.kind), ["reasoning", "final"]);
   assert.ok(savedEvents[0]?.payload.includes("Visible reasoning"));
+
+  // Reports accepted before BillingRun existed have day rows but no
+  // acceptedRunId. They must still require an explicit candidate decision.
+  const legacy = await db.billingReport.create({
+    data: {
+      projectId: project.id,
+      fromDate: "2026-08-01",
+      toDate: "2026-08-01",
+      authorEmails: "[]",
+      agentSlug: "karen",
+      ledger: JSON.stringify(ledger),
+      requestedById: user.id,
+      status: "ready",
+      days: {
+        create: {
+          day: ledger.from,
+          summary: "Legacy accepted",
+          estimatedMinutes: 30,
+          commitCount: 1,
+          insertions: 10,
+          deletions: 2,
+          filesTouched: 1,
+        },
+      },
+    },
+  });
+  const legacyCandidate = await db.billingRun.create({
+    data: { reportId: legacy.id, generation: 1, status: "running", authorEmails: "[]", ledger: JSON.stringify(ledger) },
+  });
+  await applyBillingRunResult({
+    runId: legacyCandidate.id,
+    days: [{ day: ledger.from, summary: "Must wait", estimatedMinutes: 45 }],
+  });
+  const legacyAfter = await db.billingReport.findUniqueOrThrow({ where: { id: legacy.id }, include: { days: true } });
+  assert.equal(legacyAfter.acceptedRunId, null);
+  assert.equal(legacyAfter.days[0]?.summary, "Legacy accepted");
+  assert.equal((await db.billingRun.findUniqueOrThrow({ where: { id: legacyCandidate.id } })).status, "ready");
   console.log("billing-generation-test ok");
 }
 
