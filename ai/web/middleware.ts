@@ -54,6 +54,11 @@ function isTokenScopedTaskWorkflow(path: string) {
   return /^\/api\/agent\/tasks\/[^/]+\/workflow$/.test(path);
 }
 
+function isTokenScopedTaskAttachmentUpload(req: NextRequest, path: string) {
+  return req.method === "POST"
+    && /^\/api\/agent\/tasks\/[^/]+\/attachments$/.test(path);
+}
+
 // Bearer-auth self-service turn request (authenticates inside the route
 // handler). Without this the assignee's only token-recovery path 307s to
 // /login — exactly the trap it exists to break (ENV-113, 2026-08-02).
@@ -100,6 +105,7 @@ function isTokenScopedAgentCallback(req: NextRequest, path: string) {
     isTokenScopedProjectProposal(path) ||
     isTokenScopedBillingRoute(req, path) ||
     isTokenScopedTaskWorkflow(path) ||
+    isTokenScopedTaskAttachmentUpload(req, path) ||
     isTokenScopedTaskWorkflowTurnRequest(path) ||
     isTokenScopedEpicWorkflow(path) ||
     isTokenScopedAgentContextRead(path) ||

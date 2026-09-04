@@ -20,6 +20,11 @@ async function main() {
     /\$\{publicProtocol\(req\)\}:\/\/\$\{host\}/,
     "auth redirects retain the configured public protocol",
   );
+  assert.match(
+    middleware,
+    /isTokenScopedTaskAttachmentUpload\(req, path\)/,
+    "task-scoped agent attachment uploads bypass browser login and authenticate in their route",
+  );
 
   console.log("middleware-public-protocol-test: ok");
 }
