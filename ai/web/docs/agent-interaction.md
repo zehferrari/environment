@@ -899,6 +899,17 @@ local worktree/branch is removed; an Epic child is merged locally into the
 Epic branch, only the Epic branch is pushed, and the child worktree/branch is
 removed. PM marks Done only after these operations succeed.
 
+General/artifact projects skip the entire repository contract. `Project.workMode`
+is inherited by every Epic and Task; agents use their private workspace and
+must not create scratch repositories or worktrees. A task workflow notification
+includes a scoped multipart upload capability at
+`POST /api/agent/tasks/<taskId>/attachments`. It accepts the notification's
+`messageId` and `token` plus one `file`, and is limited to the active assignee
+while In Progress or the resolved reviewer while in Review. When
+`Task.reviewAttachmentRequired` is enabled, `ready_for_review` is rejected
+until a task attachment exists; the review lease snapshots attachment IDs,
+filenames, sizes, MIME types, and hashes.
+
 ## Future Agent Actions
 
 Further agent write actions should follow the same shape (typed endpoint,
@@ -908,7 +919,6 @@ mutate the database directly.
 Still future:
 
 - create projects;
-- upload or attach files from an agent turn;
 - direct database mutations or unscoped workflow changes.
 
 Each such action should follow the same shape:

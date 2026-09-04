@@ -175,11 +175,17 @@ export default function AddProjectFab({
                 />
               </label>
               <label className="block">
+                <span className={labelCls}>Working mode</span>
+                <select name="workMode" defaultValue="repository" className={inputCls}>
+                  <option value="repository">Repository</option>
+                  <option value="general">General / artifact-based</option>
+                </select>
+              </label>
+              <label className="block">
                 <span className={labelCls}>Repository folder</span>
                 <input
                   name="repositoryPath"
-                  required
-                  placeholder="/path/to/repository"
+                  placeholder="Required for Repository mode"
                   className={`${inputCls} font-mono`}
                 />
               </label>

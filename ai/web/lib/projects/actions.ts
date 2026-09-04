@@ -10,6 +10,7 @@ import { hexColorOrNull } from "@/lib/board-colors";
 import { cleanDeployReviewPrompt } from "@/lib/epics/deploy-review";
 import { cleanBillingPrompt } from "@/lib/billing/prompt";
 import { serializeProtectedBranches } from "@/lib/projects/protected-branches";
+import { normalizeProjectWorkMode } from "@/lib/projects/work-mode";
 import {
   assertAgentAssignmentAllowed,
   requireProjectAccess,
@@ -124,8 +125,13 @@ export async function setProjectSettings(formData: FormData) {
       }
     }
 
-    const repositoryPath = trimOrNull(formData.get("repositoryPath"));
-    if (!repositoryPath) throw new Error("Repository folder is required");
+    const workMode = normalizeProjectWorkMode(formData.get("workMode"));
+    const repositoryPath = workMode === "repository"
+      ? trimOrNull(formData.get("repositoryPath"))
+      : null;
+    if (workMode === "repository" && !repositoryPath) {
+      throw new Error("Repository folder is required for repository projects");
+    }
     const defaultGitUserName = trimOrNull(formData.get("defaultGitUserName"));
     const defaultGitUserEmail = trimOrNull(formData.get("defaultGitUserEmail"));
     const rawWorkItemKeyPrefix = trimOrNull(formData.get("workItemKeyPrefix"));
@@ -191,6 +197,7 @@ export async function setProjectSettings(formData: FormData) {
       name,
       slug: newSlug,
       repositoryPath,
+      workMode,
       defaultGitUserName,
       defaultGitUserEmail,
       workItemKeyPrefix,

@@ -298,6 +298,7 @@ async function loadTaskAggregateWithClient(
       workflowVersion: true,
       projectId: true,
       epicId: true,
+      reviewAttachmentRequired: true,
       assigneeId: true,
       actingManagerId: true,
       reporterId: true,
@@ -319,6 +320,7 @@ async function loadTaskAggregateWithClient(
           name: true,
           onlyReportersCanApproveActionPlans: true,
           onlyReportersCanSetTasksDone: true,
+          workMode: true,
           repositoryPath: true,
           defaultAssigneeId: true,
           defaultReviewerId: true,
@@ -378,6 +380,7 @@ async function loadTaskAggregateWithClient(
           },
         },
       },
+      _count: { select: { attachments: true } },
     },
   });
 
@@ -597,6 +600,8 @@ async function loadTaskAggregateWithClient(
     workflowVersion: task.workflowVersion,
     projectId: task.projectId,
     epicId: task.epicId,
+    reviewAttachmentRequired: task.reviewAttachmentRequired,
+    attachmentCount: task._count.attachments,
     assigneeId: task.assigneeId,
     actingManagerId: task.actingManagerId,
     reporterId: task.reporterId,
@@ -619,6 +624,7 @@ async function loadTaskAggregateWithClient(
       onlyReportersCanApproveActionPlans:
         task.project.onlyReportersCanApproveActionPlans,
       onlyReportersCanSetTasksDone: task.project.onlyReportersCanSetTasksDone,
+      workMode: task.project.workMode,
       repositoryPath: task.project.repositoryPath,
       slug: task.project.slug,
       name: task.project.name,

@@ -143,6 +143,7 @@ and trust boundary:
 | Description drafts | Task/Epic description endpoints | One-shot message grant; writes a requester-bound draft, not the canonical description |
 | Native PM callbacks | reply, stream, events, cancel | Per-agent PM-channel bearer and target validation |
 | Attachment reads | `/api/attachments/[id]` | Browser session or scoped grant/bearer |
+| Agent task upload | `/api/agent/tasks/[taskId]/attachments` | Task-message/token scoped multipart upload for the active assignee/reviewer |
 | Legacy wake/event seam | task ack and PM dispatch events | Internal transport and consumer-side token map |
 
 The middleware deliberately lets token-scoped callbacks reach their route

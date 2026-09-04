@@ -7,6 +7,7 @@ import { describeActivity } from "@/lib/activity";
 import { listAssignablePrincipals } from "@/lib/principals";
 import { normalizeWorkItemKeyPrefix } from "@/lib/work-items/keys";
 import { randomBoardColor } from "@/lib/board-colors";
+import { normalizeProjectWorkMode } from "@/lib/projects/work-mode";
 import { DEPLOYMENT_STATUSES } from "@/lib/deploy/deployment-status";
 import { emptyDeploymentRollup, getDeploymentRollupsByProject, mergeDeploymentRollup, type DeploymentRollup } from "@/lib/workspaces/deployment-rollup";
 import ActivityAgenda from "@/components/activity-agenda";
@@ -100,8 +101,13 @@ async function createProject(
       : null;
     if (!workspace) throw new Error("Choose an active workspace for this project.");
 
-    const repositoryPath = String(formData.get("repositoryPath") ?? "").trim();
-    if (!repositoryPath) throw new Error("Repository folder is required.");
+    const workMode = normalizeProjectWorkMode(formData.get("workMode"));
+    const repositoryPath = workMode === "repository"
+      ? String(formData.get("repositoryPath") ?? "").trim()
+      : null;
+    if (workMode === "repository" && !repositoryPath) {
+      throw new Error("Repository folder is required for repository projects.");
+    }
     const rawWorkItemKeyPrefix = String(formData.get("workItemKeyPrefix") ?? "").trim();
     const workItemKeyPrefix = normalizeWorkItemKeyPrefix(rawWorkItemKeyPrefix);
     if (!workItemKeyPrefix) {
@@ -132,6 +138,7 @@ async function createProject(
         name,
         description,
         repositoryPath,
+        workMode,
         workItemKeyPrefix,
         defaultGitUserName,
         defaultGitUserEmail,

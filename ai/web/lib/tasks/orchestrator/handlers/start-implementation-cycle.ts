@@ -35,6 +35,7 @@ import { enqueueWorkflowEffects } from "@/lib/tasks/transition-kernel";
 import { registerStepHandler } from "@/lib/tasks/orchestrator/procedure-runner";
 import type { StepHandlerResult, StepHandlerContext } from "@/lib/tasks/orchestrator/procedure-runner";
 import type { TaskProcedureType } from "@/lib/tasks/orchestrator/types";
+import { projectUsesRepository } from "@/lib/projects/work-mode";
 
 const PROCEDURE_TYPE: TaskProcedureType = "start_implementation_cycle";
 
@@ -54,7 +55,7 @@ async function revalidateWorktree(ctx: StepHandlerContext): Promise<StepHandlerR
       approvedById: true,
       assigneeId: true,
       assignee: { select: { id: true, username: true, agent: { select: { slug: true } } } },
-      project: { select: { repositoryPath: true } },
+      project: { select: { workMode: true, repositoryPath: true } },
       repositoryRun: { select: { phase: true, worktreePath: true, branchName: true, baseSha: true } },
     },
   });
@@ -66,7 +67,7 @@ async function revalidateWorktree(ctx: StepHandlerContext): Promise<StepHandlerR
     return { status: "completed", output: { superseded: true, reason: `task_status_${task.status}` } };
   }
   // Non-code tasks skip worktree revalidation.
-  if (!task.project.repositoryPath) {
+  if (!projectUsesRepository(task.project)) {
     return { status: "completed", output: { skipped: true, reason: "non_code_task" } };
   }
   // Re-run the worktree claim helper which revalidates the existing worktree.

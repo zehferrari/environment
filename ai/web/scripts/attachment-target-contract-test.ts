@@ -25,12 +25,14 @@ assert.throws(
 );
 
 const actions = read("lib/attachments/actions.ts");
+const service = read("lib/attachments/service.ts");
 const library = read("app/(app)/projects/[slug]/library/page.tsx");
 const downloadRoute = read("app/api/attachments/[id]/route.ts");
+const agentUploadRoute = read("app/api/agent/tasks/[taskId]/attachments/route.ts");
 const activity = read("lib/activity.ts");
 
-for (const kind of ["project.attachment.add", "project.attachment.delete"] as const) {
-  assert(actions.includes(`"${kind}"`), `attachment actions must emit ${kind}`);
+for (const [kind, source] of [["project.attachment.add", service], ["project.attachment.delete", actions]] as const) {
+  assert(source.includes(`"${kind}"`), `attachment persistence must emit ${kind}`);
   assert(activity.includes(`case "${kind}"`), `activity formatter must describe ${kind}`);
 }
 assert(
@@ -43,8 +45,16 @@ assert(
   "the project Library must include project-owned attachments",
 );
 assert(
-  downloadRoute.includes(": true") && downloadRoute.includes("canAccessProject(viewer, { id: scope.projectId })"),
+  downloadRoute.includes("accessibleAttachmentWhere(viewer, { id: attachmentId })"),
   "signed-in project members must be able to download project-owned attachments",
+);
+assert(
+  agentUploadRoute.includes("verifyTaskWorkflowToken") &&
+    agentUploadRoute.includes("hasAuthorizedTaskAgentOrigin") &&
+    agentUploadRoute.includes('task.status === "In Progress"') &&
+    agentUploadRoute.includes('task.status === "Review"') &&
+    agentUploadRoute.includes("storeAttachment"),
+  "agent upload must be task-token scoped, role/status fenced, and share attachment persistence",
 );
 
 console.log("attachment target contract ok");

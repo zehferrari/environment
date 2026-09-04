@@ -890,8 +890,19 @@ function FabForm(props: {
               <TextInput name="workItemKeyPrefix" required placeholder="ENV" formId={formId} mono />
             </Field>
           </div>
+          <Field label="Working mode">
+            <select
+              name="workMode"
+              form={formId}
+              defaultValue="repository"
+              className="h-9 w-full rounded-lg border border-line bg-bg px-2 text-caption outline-none focus:border-accent"
+            >
+              <option value="repository">Repository</option>
+              <option value="general">General / artifact-based</option>
+            </select>
+          </Field>
           <Field label="Repository folder">
-            <TextInput name="repositoryPath" required placeholder="/srv/Code/…" formId={formId} mono />
+            <TextInput name="repositoryPath" placeholder="Required for Repository mode" formId={formId} mono />
           </Field>
           {isOwner ? (
             <div className="grid grid-cols-2 gap-3">
@@ -968,6 +979,13 @@ function FabForm(props: {
           <Field label="Description (optional)">
             <TextArea name="description" formId={formId} />
           </Field>
+          <label className="flex items-start gap-2 rounded-lg border border-line bg-panel-soft p-3 text-caption">
+            <input form={formId} type="checkbox" name="reviewAttachmentRequired" className="mt-0.5 h-4 w-4 accent-accent" />
+            <span>
+              <span className="block font-medium text-text">Require an attachment for review</span>
+              <span className="text-text-muted">The assignee must upload at least one deliverable before requesting review.</span>
+            </span>
+          </label>
           {isOwner ? (
             <>
               <div className="grid grid-cols-2 gap-3">

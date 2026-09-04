@@ -62,6 +62,7 @@ export type AgentContextPacket = {
       name: string;
       description: string | null;
       readmePath: string | null;
+      workMode: string;
     } | null;
     task: {
       id: string;
@@ -77,6 +78,7 @@ export type AgentContextPacket = {
       assignee: string;
       reviewer: string;
       prerequisites: string[];
+      reviewAttachmentRequired: boolean;
       // ENV-123 — the same four lines the task page renders, so an agent reading
       // its own context sees exactly what the operator sees on the board.
       executionState: string[] | null;
@@ -472,6 +474,7 @@ export async function buildTaskAgentContextPacket(args: {
       branchName: true,
       commitPrefix: true,
       approvedOn: true,
+      reviewAttachmentRequired: true,
       createdAt: true,
       updatedAt: true,
       executionState: {
@@ -490,6 +493,7 @@ export async function buildTaskAgentContextPacket(args: {
           name: true,
           description: true,
           readmePath: true,
+          workMode: true,
         },
       },
       epic: {
@@ -666,6 +670,7 @@ export async function buildTaskAgentContextPacket(args: {
             assignee: actorLabel(task.assignee),
             reviewer: actorLabel(resolvedReviewer),
             prerequisites: visiblePrerequisiteLabels(task),
+            reviewAttachmentRequired: task.reviewAttachmentRequired,
             executionState: task.executionState
               ? executionStateLines(renderExecutionState(task.executionState))
               : null,
@@ -923,6 +928,7 @@ export function renderAgentContextPacket(packet: AgentContextPacket): string {
     `Project: ${project.name} (${project.slug})`,
     `Project id: ${project.id}`,
     `Project README path: ${project.readmePath || "(not set)"}`,
+    `Working mode: ${project.workMode === "general" ? "General / artifact-based" : "Repository"}`,
   );
   pushDescription(lines, "PROJECT DESCRIPTION", project.description, packet.caps.projectDescriptionMax);
 
@@ -937,6 +943,7 @@ export function renderAgentContextPacket(packet: AgentContextPacket): string {
     `Action Plan approved_on: ${task.approvedOn || "(not approved)"}`,
     `Branch: ${task.branchName || "(not set)"}`,
     `Commit prefix: ${task.commitPrefix || "(not set)"}`,
+    `Review attachment required: ${task.reviewAttachmentRequired ? "yes" : "no"}`,
     `Created: ${task.createdAt}`,
     `Updated: ${task.updatedAt}`,
     "",
@@ -1038,12 +1045,16 @@ export function renderAgentContextPacket(packet: AgentContextPacket): string {
     "You can see EVERY comment and EVERY discussion message above, including messages between other people/agents that were not directed at you. Read them as background and use them in your reasoning.",
     "Visible PM comments must be direct and consolidated: put all current issues, blockers, findings, and required questions in one comment whenever possible.",
     "Do not repeat a blocker or decision already present in the recent hot path unless the current turn adds new information or asks for a status update.",
-    "If you are the assignee: before starting a To Do task, make sure your technical Action Plan is posted and approved_on is set. Structure the plan as independent, parallelizable checklist items where that is useful, but do not split small or strictly sequential/dependent work. Then use action=start; PM provisions the worktree and moves the task to In Progress before implementation begins. When implementation is complete, leave repository changes uncommitted and unpushed and call ready_for_review with one concise note. PM keeps repository work In Progress until Monitor Agent validation passes.",
+    project.workMode === "general"
+      ? "If you are the assignee: this is General / artifact-based work. After an approved Action Plan, use action=start and work from your private workspace. Do not create a Git repository or worktree. Upload requested deliverables using the task workflow capability before ready_for_review."
+      : "If you are the assignee: before starting a To Do task, make sure your technical Action Plan is posted and approved_on is set. Then use action=start; PM provisions the worktree. When complete, leave changes uncommitted/unpushed and call ready_for_review; PM owns validation and submission.",
     "For an Epic-child task whose remaining live-verification checklist requires a remotely deployable commit, first check whether the clean task repository baseline is already the current origin Epic-branch tip: PM eagerly pushes the Epic branch after each accepted child, so a following validation task often starts from an already-published SHA. If it is already published, do not request publish_checkpoint; verify deployment for that SHA and use a general external blocker only with observed pipeline/deployed-SHA failure evidence. Only for current unpublished task work, do not manually commit/push or send incomplete work to Review: request the exact permission with flag_blocker permissionKind=publish_checkpoint. After the active owner grants it, call action=publish_checkpoint with that exact single-use authorizationCommentId and a concise reason. PM publishes only the Epic branch, keeps the Task In Progress, and closes that permission round on either success or failure because the grant has been consumed. Fix agent-actionable failure evidence; any later publication requires a fresh blocker/grant. The configured project automation owns deployment of the returned Epic SHA: never SSH to the target, run Git there, or substitute another OS identity as a manual fallback. Verify the automation's actual outcome before live verification continues.",
     "Task execution belongs to the visible assignee. Never hand implementation or evidence collection to another agent through comments or hidden workflow state. If another agent must perform independent work, create and explicitly assign a separate PM task so ownership and dependencies remain visible on the board.",
     "If active implementation is blocked by infrastructure, credentials, access, an external service, or a human decision you cannot resolve, call action=flag_blocker once with one concise comment containing the failure evidence and required intervention, plus a structured blockerReport (blockedOn, requestedActor, requestedAction, evidence, diagnosticsAttempted, resumeCondition, reporterCanResolve). PM validates it and answers 422 naming the rule that fired if the claim is self-directed, undiagnosed, or has no concrete resume condition; a recoverable technical failure becomes an internal incident that keeps the task In Progress instead of a human-blocked state. PM keeps the task In Progress, alerts the decision owners, and suppresses ordinary stale-work nudges only while external input is actually missing. A structured permission grant makes the round agent-actionable immediately. Do not repeat the blocker. For non-checkpoint blockers, when the dependency is actually resolved, call action=clear_blocker with the unblocking evidence and resume.",
     "If you are reviewing an Action Plan that could be safely split into independent sub-tasks, flag that in one consolidated feedback comment; do not require sub-task splitting for small or strictly sequential/dependent work.",
-    "Worktrees ONLY, no exceptions: Action Plan approval reserves the branch contract; start provisions and validates the linked Git worktree at the In Progress boundary. Use the worktreePath returned by PM; never edit a primary checkout and never create/copy an ordinary task folder. If PM rejects provisioning, tag the reporter with the returned error before making changes.",
+    project.workMode === "general"
+      ? "General project rule: artifacts belong on the PM task as attachments; a scratch Git repository is not evidence and is not required."
+      : "Worktrees ONLY, no exceptions: Action Plan approval reserves the branch contract; use the worktreePath returned by PM and never edit a primary checkout or create/copy an ordinary task folder.",
     "Review is reviewer work only. The assignee may answer comments there but cannot resume implementation in place; review_feedback returns the task to To Do for a fresh start.",
     "Sub-tasks are a lightweight progress checklist (text + done + minutes), NOT child tasks. As the assignee, break the task into INDEPENDENT, PARALLELIZABLE steps so you can work multiple fronts at once — dispatch parallel sub-agents to tackle the independent steps concurrently whenever the work allows, instead of doing them one at a time. Keep the checklist current so the board shows how close the task is to done: POST action=add_subtask {subtaskText} to add a step, and action=complete_subtask {subtaskId, completed, minutesSpent} as each step lands (include minutesSpent = the minutes that step took, so the task's total cost rolls up). Use the SUB-TASKS list above for ids. Do not create child Tasks for steps within a single task.",
     "When a task comes back from Review with reviewer feedback, add a new sub-task (add_subtask) for each concrete feedback item BEFORE resuming — your earlier checklist items are already ticked, so without this the progress bar wrongly reads as finished. Tick each new item off (with minutesSpent) as you address it.",

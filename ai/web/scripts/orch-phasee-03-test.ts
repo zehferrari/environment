@@ -178,6 +178,8 @@ const GUARD_MATRIX: GuardTestCase[] = [
 
   // --- submit_for_review guards ---
   { name: "submit_for_review with open checklist", intent: "submit_for_review", stateOverrides: { status: "In Progress", approvedOn: new Date(), activeWorkflowCycleId: "c1", openChecklist: { count: 2, ids: ["s1", "s2"] } }, expectOk: false, expectReasonContains: "checklist_incomplete" },
+  { name: "submit_for_review without required attachment", intent: "submit_for_review", stateOverrides: { status: "In Progress", approvedOn: new Date(), activeWorkflowCycleId: "c1", openChecklist: { count: 0, ids: [] }, reviewAttachmentRequired: true, attachmentCount: 0 }, expectOk: false, expectReasonContains: "attachment_required" },
+  { name: "submit_for_review with required attachment", intent: "submit_for_review", stateOverrides: { status: "In Progress", approvedOn: new Date(), activeWorkflowCycleId: "c1", openChecklist: { count: 0, ids: [] }, reviewAttachmentRequired: true, attachmentCount: 1 }, expectOk: true },
   { name: "submit_for_review with clean checklist", intent: "submit_for_review", stateOverrides: { status: "In Progress", approvedOn: new Date(), activeWorkflowCycleId: "c1", openChecklist: { count: 0, ids: [] } }, expectOk: true },
 
   // --- Callback correlation guards ---

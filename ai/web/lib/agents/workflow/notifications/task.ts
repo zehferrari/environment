@@ -146,6 +146,9 @@ function workflowPrompt(args: {
   branchName: string | null;
   commitPrefix: string | null;
   repositoryPath: string | null;
+  workMode: string;
+  reviewAttachmentRequired: boolean;
+  attachmentCount: number;
   // P6: epic-child tasks work on LOCAL-ONLY branches (never pushed to
   // origin); the epic integration branch is what reaches origin after PM
   // merges each task branch. Standalone tasks still push.
@@ -160,6 +163,10 @@ function workflowPrompt(args: {
   const token = createTaskWorkflowToken(args.messageId, args.taskId, args.agentSlug);
   const workflowUrl = new URL(
     `/api/agent/tasks/${encodeURIComponent(args.taskId)}/workflow`,
+    agentCallbackBaseUrl(),
+  ).toString();
+  const attachmentUrl = new URL(
+    `/api/agent/tasks/${encodeURIComponent(args.taskId)}/attachments`,
     agentCallbackBaseUrl(),
   ).toString();
   const bodyShape = JSON.stringify(
@@ -199,7 +206,7 @@ function workflowPrompt(args: {
     2,
   );
 
-  const codeTouching = Boolean(args.branchName && args.repositoryPath);
+  const codeTouching = args.workMode === "repository" && Boolean(args.branchName && args.repositoryPath);
   const commitHygiene: string[] = [];
   if (codeTouching) {
     const identityConfigured = Boolean(args.expectedGitUserName && args.expectedGitUserEmail);
@@ -265,7 +272,9 @@ function workflowPrompt(args: {
       ? "- Project policy: only the reporter can approve Action Plans. Reviewers and acting managers should comment with feedback or agreement, but must wait for reporter approval."
       : "- Project policy: the reporter or resolved reviewer may approve Action Plans.",
     "- If you are the assigned task reviewer and the task has no assignee, call action=assign_task. PM will choose an eligible coding agent; that assignee then authors the Action Plan.",
-    "- If you are the assignee and the task is in To Do with approved_on set, call the workflow endpoint with action=start, then begin work immediately. start works ONLY from To Do — there is no start/resume from Review.",
+    args.workMode === "repository"
+      ? "- If you are the assignee and the task is in To Do with approved_on set, call action=start. PM provisions the linked worktree before implementation begins. start works ONLY from To Do — there is no start/resume from Review."
+      : "- This is a General / artifact-based project. If you are the assignee and the task is in To Do with approved_on set, call action=start, then work from your own private workspace. Do not create a Git repository, branch, commit, or worktree for this task.",
     "- If a reviewer leaves review_feedback, PM returns the task to the FRONT of To Do. Address the feedback by starting the task from To Do (action=start) — never expect to resume it in place from Review.",
     "- In Progress means active implementation. When implementation is complete, call the workflow endpoint with action=ready_for_review.",
     "- If an Epic-child task cannot complete its remaining checklist until code is deployed, first compare the clean task repository baseline with the current origin Epic-branch tip. PM eagerly pushes the Epic branch after every accepted child; if that SHA is already published, do not request publish_checkpoint—verify the deployment and use a general blocker only with observed pipeline/deployed-SHA failure evidence. For current unpublished task work, do not misuse ready_for_review or commit/push manually. When owner authorization is the sole missing dependency, use flag_blocker with permissionKind=publish_checkpoint so PM can render the scoped grant action. After the reporter/owner grants it, use publish_checkpoint and cite the resulting exact single-use authorization comment id. The permission round is now agent-actionable; success or failure consumes the grant and PM closes that exact round. Diagnose an agent-actionable failure and raise a fresh publish_checkpoint blocker for any retry. Then wait for and verify the configured project deployment automation for the successful SHA. If verification exposes another code fix requiring publication, complete the fix and raise another fresh round; a consumed authorization is never reusable. Never SSH to the target, run Git there, or substitute another OS identity as a manual fallback. Use a general blocker only when the deployment integration or external dependency genuinely needs human intervention. Then continue verification and finish through ready_for_review normally; PM recognizes an unchanged published checkpoint baseline.",
@@ -302,6 +311,15 @@ function workflowPrompt(args: {
         ]
       : []),
     ...commitHygiene,
+    "",
+    "TASK ATTACHMENT UPLOAD:",
+    `- Current task attachments: ${args.attachmentCount}. Review attachment required: ${args.reviewAttachmentRequired ? "yes" : "no"}.`,
+    "- Upload deliverables whenever the task requests or requires them. Use the same task-scoped messageId and token as this workflow turn; do not ask another user to read your home directory.",
+    `- POST multipart/form-data to: ${attachmentUrl}`,
+    `  curl -fsS -X POST -F messageId=${shellQuote(args.messageId)} -F token=${shellQuote(token)} -F file=@/absolute/path/to/deliverable ${shellQuote(attachmentUrl)}`,
+    ...(args.reviewAttachmentRequired
+      ? ["- ready_for_review is rejected until at least one file has uploaded successfully. The review lease snapshots the uploaded files and hashes."]
+      : []),
     ...reviewerVerify,
     "",
     "Workflow endpoint:",
@@ -338,10 +356,13 @@ export async function sendTaskWorkflowNotification(args: {
         commitPrefix: true,
         workItemKey: true,
         approvedOn: true,
+        reviewAttachmentRequired: true,
+        _count: { select: { attachments: true } },
         deletedAt: true,
         project: {
           select: {
             slug: true,
+            workMode: true,
             repositoryPath: true,
             defaultGitUserName: true,
             defaultGitUserEmail: true,
@@ -624,6 +645,9 @@ export async function sendTaskWorkflowNotification(args: {
           branchName,
           commitPrefix,
           repositoryPath: task.project.repositoryPath ?? null,
+          workMode: task.project.workMode,
+          reviewAttachmentRequired: task.reviewAttachmentRequired,
+          attachmentCount: task._count.attachments,
           epicChild: Boolean(task.epic),
           epicBranch: task.epic ? effectiveEpicBranchName(task.epic) : null,
           expectedGitUserName: gitIdentity.name,
@@ -719,10 +743,13 @@ export async function sendTaskCommentNotifications(args: {
       branchName: true,
       commitPrefix: true,
       workItemKey: true,
+      reviewAttachmentRequired: true,
+      _count: { select: { attachments: true } },
       deletedAt: true,
       project: {
         select: {
           slug: true,
+          workMode: true,
           repositoryPath: true,
           defaultGitUserName: true,
           defaultGitUserEmail: true,
@@ -1062,6 +1089,9 @@ export async function sendTaskCommentNotifications(args: {
             branchName,
             commitPrefix,
             repositoryPath: task.project.repositoryPath ?? null,
+            workMode: task.project.workMode,
+            reviewAttachmentRequired: task.reviewAttachmentRequired,
+            attachmentCount: task._count.attachments,
             epicChild: Boolean(task.epic),
             epicBranch: task.epic ? effectiveEpicBranchName(task.epic) : null,
             expectedGitUserName: gitIdentity.name,

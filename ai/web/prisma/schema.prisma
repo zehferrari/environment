@@ -167,6 +167,9 @@ model Project {
   // commits; defaults seed Task pickers; doneTtlDays controls automatic
   // archiving of aged Done tasks.
   repositoryPath                      String?
+  // Project-wide execution contract. "repository" provisions/revalidates a
+  // Git worktree; "general" is artifact/research work with no Git contract.
+  workMode                            String                          @default("repository") @map("work_mode")
   defaultGitUserName                  String?
   defaultGitUserEmail                 String?
   workItemKeyPrefix                   String?                         @unique @map("work_item_key_prefix")
@@ -469,6 +472,9 @@ model Task {
   // authoritative board status mutation increments this value and writes the
   // matching immutable WorkflowTransition row in the same transaction.
   workflowVersion        Int              @default(0) @map("workflow_version")
+  // When enabled, at least one task attachment must exist before the
+  // assignee can submit the task for review.
+  reviewAttachmentRequired Boolean        @default(false) @map("review_attachment_required")
   // Optional free-text override. Null inherits the Epic's effective branch
   // (explicit or human-key fallback), then uses this Task's human key.
   branchName             String?
@@ -742,6 +748,8 @@ model ReviewRun {
   baseSha           String?              @map("base_sha")
   repoTouched       Boolean              @map("repo_touched")
   validationOutcome String               @map("validation_outcome")
+  // Immutable JSON snapshot of task attachments present when review began.
+  attachmentSnapshot String?             @map("attachment_snapshot")
   status            String               @default("awaiting_review")
   reviewerId        String?              @map("reviewer_id")
   reviewedAt        DateTime?            @map("reviewed_at")

@@ -44,6 +44,7 @@ import { registerStepHandler } from "@/lib/tasks/orchestrator/procedure-runner";
 import type { StepHandlerResult, StepHandlerContext } from "@/lib/tasks/orchestrator/procedure-runner";
 import type { TaskProcedureType } from "@/lib/tasks/orchestrator/types";
 import { REPOSITORY_JOB_SCHEMA_V2 } from "@/lib/deploy/branch-verify";
+import { projectUsesRepository } from "@/lib/projects/work-mode";
 
 // =====================================================================
 // return_review_for_changes
@@ -78,12 +79,12 @@ async function invalidateFinalizationEffects(ctx: StepHandlerContext): Promise<S
 async function markWorktreeForRevalidation(ctx: StepHandlerContext): Promise<StepHandlerResult> {
   const task = await db.task.findUnique({
     where: { id: ctx.taskId },
-    select: { id: true, project: { select: { repositoryPath: true } } },
+    select: { id: true, project: { select: { workMode: true, repositoryPath: true } } },
   });
   if (!task) {
     return { status: "completed", output: { skipped: true, reason: "task_not_found" } };
   }
-  if (!task.project.repositoryPath) {
+  if (!projectUsesRepository(task.project)) {
     return { status: "completed", output: { skipped: true, reason: "non_code_task" } };
   }
   // Mark the repository state as action_required so the next start
@@ -170,7 +171,7 @@ async function finalizeRepository(ctx: StepHandlerContext): Promise<StepHandlerR
       activeWorkflowCycleId: true,
       assigneeId: true,
       assignee: { select: { id: true, username: true } },
-      project: { select: { repositoryPath: true } },
+      project: { select: { workMode: true, repositoryPath: true } },
       repositoryRun: { select: { phase: true, candidateSha: true, baseSha: true, reviewedSha: true, repoTouched: true, branchName: true } },
       reviewRuns: { where: { status: "accepted" }, orderBy: { updatedAt: "desc" }, take: 1, select: { id: true, candidateSha: true, reviewerId: true } },
     },
@@ -182,7 +183,7 @@ async function finalizeRepository(ctx: StepHandlerContext): Promise<StepHandlerR
     return { status: "completed", output: { superseded: true, reason: `task_status_${task.status}` } };
   }
   // Non-code task: no repository finalization needed.
-  if (!task.project.repositoryPath) {
+  if (!projectUsesRepository(task.project)) {
     return { status: "completed", output: { skipped: true, reason: "non_code_task" } };
   }
   const acceptedReview = task.reviewRuns[0];
@@ -332,7 +333,7 @@ async function completeReview(ctx: StepHandlerContext): Promise<StepHandlerResul
   }
   const task = await db.task.findUnique({
     where: { id: ctx.taskId },
-    select: { id: true, status: true, workflowVersion: true, activeWorkflowCycleId: true, assigneeId: true, project: { select: { repositoryPath: true } } },
+    select: { id: true, status: true, workflowVersion: true, activeWorkflowCycleId: true, assigneeId: true, project: { select: { workMode: true, repositoryPath: true } } },
   });
   if (!task) {
     return { status: "failed", error: "Task not found.", retryable: false };

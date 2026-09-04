@@ -125,6 +125,7 @@ async function createTask(formData: FormData) {
   const reviewerRaw = String(formData.get("actingManagerId") ?? "");
   if (formData.has("private") && !actor.canAccessOwnerFeatures) throw new Error("Not authorized");
   const isPrivate = actor.canAccessOwnerFeatures && formData.get("private") === "on";
+  const reviewAttachmentRequired = formData.get("reviewAttachmentRequired") === "on";
 
   const maxRank = await db.task.aggregate({
     where: { projectId, status: "Backlog", archivedAt: null, deletedAt: null },
@@ -158,6 +159,7 @@ async function createTask(formData: FormData) {
       title: taskTitle,
       description,
       private: isPrivate,
+      reviewAttachmentRequired,
       status: "Backlog",
       rank: (maxRank._max.rank ?? 0) + 1,
       statusChangedAt: new Date(),

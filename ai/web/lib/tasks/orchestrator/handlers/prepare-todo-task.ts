@@ -41,6 +41,7 @@ import { registerStepHandler } from "@/lib/tasks/orchestrator/procedure-runner";
 import type { StepHandlerResult, StepHandlerContext } from "@/lib/tasks/orchestrator/procedure-runner";
 import type { TaskProcedureType } from "@/lib/tasks/orchestrator/types";
 import { enqueueWorkflowEffects } from "@/lib/tasks/transition-kernel";
+import { projectUsesRepository } from "@/lib/projects/work-mode";
 
 const PROCEDURE_TYPE: TaskProcedureType = "prepare_todo_task";
 
@@ -61,6 +62,7 @@ async function resolveRepositoryContract(ctx: StepHandlerContext): Promise<StepH
       epicId: true,
       project: {
         select: {
+          workMode: true,
           repositoryPath: true,
           defaultGitUserName: true,
           defaultGitUserEmail: true,
@@ -80,7 +82,7 @@ async function resolveRepositoryContract(ctx: StepHandlerContext): Promise<StepH
   }
   const branchName = effectiveTaskBranchName(task);
   const epicBranch = task.epic ? effectiveEpicBranchName(task.epic) : null;
-  const codeTouching = Boolean(branchName && task.project.repositoryPath);
+  const codeTouching = Boolean(branchName && projectUsesRepository(task.project));
   const snapshot = {
     codeTouching,
     repositoryPath: task.project.repositoryPath,

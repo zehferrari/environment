@@ -564,6 +564,7 @@ export const DOMAIN_ERROR_CODES = [
   "wip_conflict",
   "branch_collision",
   "checklist_incomplete",
+  "attachment_required",
   "blocker_unresolved",
   "plan_evidence_invalid",
   "callback_correlation_mismatch",
@@ -726,6 +727,8 @@ export type TaskStateSnapshot = {
   workflowVersion: number;
   projectId: string;
   epicId: string | null;
+  reviewAttachmentRequired?: boolean;
+  attachmentCount?: number;
   assigneeId: string | null;
   actingManagerId: string | null;
   reporterId: string | null;
@@ -776,6 +779,7 @@ export type TaskStateSnapshot = {
     onlyReportersCanApproveActionPlans: boolean;
     onlyReportersCanSetTasksDone: boolean;
     repositoryPath: string | null;
+    workMode?: string;
   };
   epic?: {
     status: string;

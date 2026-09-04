@@ -106,6 +106,7 @@ async function getRawCachedTaskDetailShell(taskId: string) {
             id: true,
             slug: true,
             name: true,
+            workMode: true,
             repositoryPath: true,
             deploymentProductionBranch: true,
             onlyReportersCanApproveActionPlans: true,

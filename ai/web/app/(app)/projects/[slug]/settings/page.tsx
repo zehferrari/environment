@@ -123,8 +123,8 @@ export default async function ProjectSettingsPage({
             <input type="hidden" name="settingsScope" value="general" />
 
           <SettingsCard
-            title="Identity & repository"
-            hint="What this project is called and where its code lives."
+            title="Identity & working mode"
+            hint="The working mode applies to every Epic and Task in this project."
             tone="accent"
           >
           <SettingsRow
@@ -141,7 +141,7 @@ export default async function ProjectSettingsPage({
             />
           </SettingsRow>
 
-          <div className="grid grid-cols-1 gap-card lg:grid-cols-[35fr_15fr_50fr]">
+          <div className="grid grid-cols-1 gap-card lg:grid-cols-[30fr_15fr_25fr_30fr]">
             <SettingsRow
               label="Project slug"
               hint="URL slug, for example my-project."
@@ -175,14 +175,27 @@ export default async function ProjectSettingsPage({
             </SettingsRow>
 
             <SettingsRow
+              label="Working mode"
+              hint="Repository provisions Git; General uses attachments and other deliverables."
+            >
+              <select
+                name="workMode"
+                defaultValue={project.workMode}
+                className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent"
+              >
+                <option value="repository">Repository</option>
+                <option value="general">General / artifact-based</option>
+              </select>
+            </SettingsRow>
+
+            <SettingsRow
               label="Repository folder"
-              hint="Absolute git checkout path on the host."
+              hint="Required only in Repository mode; ignored in General mode."
             >
               <input
                 type="text"
                 name="repositoryPath"
                 defaultValue={project.repositoryPath ?? ""}
-                required
                 placeholder="/path/to/repository"
                 className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y font-mono text-body outline-none focus:border-accent"
               />

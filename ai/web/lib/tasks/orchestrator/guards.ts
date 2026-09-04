@@ -309,6 +309,22 @@ export function guardSubmitForReviewChecklist(
   return { ok: true };
 }
 
+// Required deliverables are a task-level review gate. Agents may attach files
+// throughout implementation, but Review cannot begin until evidence exists.
+export function guardSubmitForReviewAttachment(
+  state: TaskStateSnapshot,
+  intent: TaskWorkflowIntent,
+): GuardResult {
+  if (state.reviewAttachmentRequired && (state.attachmentCount ?? 0) === 0) {
+    return {
+      ok: false,
+      status: "invalid",
+      reason: `[attachment_required] Intent ${intent} requires at least one task attachment before review. Upload the deliverable to this task, then submit again.`,
+    };
+  }
+  return { ok: true };
+}
+
 // --- §10.5: Unresolved blocker guard --------------------------------------
 export function guardNoUnresolvedBlocker(
   state: TaskStateSnapshot,
@@ -561,6 +577,7 @@ export function runGuards(
         guardCyclePrecondition(state, command.intent, command.workflowCycleId),
         guardEpicActionable(state, command.intent),
         guardSubmitForReviewChecklist(state, command.intent),
+        guardSubmitForReviewAttachment(state, command.intent),
         guardNoUnresolvedBlocker(state, command.intent),
         guardRepositoryForSubmit(state),
       ]);

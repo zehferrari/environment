@@ -55,6 +55,7 @@ import { effectiveTaskBranchName, effectiveEpicBranchName } from "@/lib/work-ite
 import { effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
 import type { BranchVerifyJob } from "@/lib/deploy/branch-verify";
 import { REPOSITORY_JOB_SCHEMA_V2 } from "@/lib/deploy/branch-verify";
+import { projectUsesRepository } from "@/lib/projects/work-mode";
 
 const PROCEDURE_TYPE: TaskProcedureType = "submit_candidate_for_review";
 
@@ -112,7 +113,7 @@ async function prepareCandidate(ctx: StepHandlerContext): Promise<StepHandlerRes
       id: true,
       status: true,
       projectId: true,
-      project: { select: { repositoryPath: true } },
+      project: { select: { workMode: true, repositoryPath: true } },
       repositoryRun: { select: { phase: true, candidateSha: true, baseSha: true, worktreePath: true, branchName: true } },
     },
   });
@@ -125,7 +126,7 @@ async function prepareCandidate(ctx: StepHandlerContext): Promise<StepHandlerRes
   // Non-code task: no candidate SHA in the repository run. Use the candidate
   // from the procedure run's input (command payload) or fall back to a
   // no-repo marker.
-  if (!task.project.repositoryPath) {
+  if (!projectUsesRepository(task.project)) {
     // Read the procedure run's input for the candidateSha from the command payload.
     const procRun = await db.taskProcedureRun.findUniqueOrThrow({ where: { id: ctx.procedureRunId }, select: { input: true } });
     let procInput: Record<string, unknown> | null = null;
@@ -204,6 +205,7 @@ async function runValidation(ctx: StepHandlerContext): Promise<StepHandlerResult
       assignee: { select: { id: true, username: true, agent: { select: { slug: true } } } },
       project: {
         select: {
+          workMode: true,
           slug: true,
           repositoryPath: true,
           defaultGitUserName: true,
@@ -215,9 +217,10 @@ async function runValidation(ctx: StepHandlerContext): Promise<StepHandlerResult
       repositoryRun: { select: { branchName: true, baseSha: true, candidateSha: true, worktreePath: true, attempt: true } },
     },
   });
-  if (!task?.project.repositoryPath) {
+  if (!task || !projectUsesRepository(task.project)) {
     return { status: "failed", error: "Task has no repository path for validation.", retryable: false };
   }
+  const repositoryPath = task.project.repositoryPath!;
   const branchName = task.repositoryRun?.branchName ?? effectiveTaskBranchName(task);
   if (!branchName) {
     return { status: "failed", error: "No effective branch name for validation.", retryable: false };
@@ -245,7 +248,7 @@ async function runValidation(ctx: StepHandlerContext): Promise<StepHandlerResult
     taskId: task.id,
     projectId: task.projectId,
     projectSlug: task.project.slug,
-    repositoryPath: task.project.repositoryPath,
+    repositoryPath,
     branchName,
     // PHASEE-07: emit schema-v2 job with mandatory V2 identity fields.
     schemaVersion: REPOSITORY_JOB_SCHEMA_V2,
@@ -456,6 +459,10 @@ async function createReviewLease(ctx: StepHandlerContext): Promise<StepHandlerRe
       reporterId: true,
       epicId: true,
       activeWorkflowCycleId: true,
+      attachments: {
+        orderBy: { createdAt: "asc" },
+        select: { id: true, filename: true, mimeType: true, sizeBytes: true, sha256: true, createdAt: true },
+      },
       repositoryRun: { select: { candidateSha: true, baseSha: true, repoTouched: true } },
       epic: { select: { status: true, actingManagerId: true } },
       project: { select: { onlyReportersCanSetTasksDone: true } },
@@ -485,6 +492,10 @@ async function createReviewLease(ctx: StepHandlerContext): Promise<StepHandlerRe
     epic: task.epic ? { status: task.epic.status, actingManagerId: task.epic.actingManagerId } : null,
   });
   const validationOutcome = (validationOutput?.validationOutcome as string) ?? "valid";
+  const attachmentSnapshot = JSON.stringify(task.attachments.map((attachment) => ({
+    ...attachment,
+    createdAt: attachment.createdAt.toISOString(),
+  })));
   // P1-6: persist the resolved reviewer on the lease so the guard can
   // verify reviewer identity at decision time.
   await db.reviewRun.upsert({
@@ -496,6 +507,7 @@ async function createReviewLease(ctx: StepHandlerContext): Promise<StepHandlerRe
       baseSha: task.repositoryRun?.baseSha ?? null,
       repoTouched: task.repositoryRun?.repoTouched ?? false,
       validationOutcome: validationOutcome as "valid" | "valid_with_warning",
+      attachmentSnapshot,
       status: "awaiting_review",
     },
     update: {
@@ -503,6 +515,7 @@ async function createReviewLease(ctx: StepHandlerContext): Promise<StepHandlerRe
       baseSha: task.repositoryRun?.baseSha ?? null,
       repoTouched: task.repositoryRun?.repoTouched ?? false,
       validationOutcome: validationOutcome as "valid" | "valid_with_warning",
+      attachmentSnapshot,
       status: "awaiting_review",
       reviewerId: null,
       reviewedAt: null,

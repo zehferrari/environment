@@ -208,10 +208,13 @@ async function updateTask(formData: FormData) {
   const newBlockedById = blockedRaw === "" ? null : blockedRaw;
   const deploymentRaw = String(formData.get("deploymentStatus") ?? "");
   const hasPrivateField = formData.has("privateSubmitted");
+  const hasAttachmentRequirementField = formData.has("reviewAttachmentRequiredSubmitted");
+  const newReviewAttachmentRequired = formData.get("reviewAttachmentRequired") === "on";
   if (!actor.canAccessOwnerFeatures && (hasAssigneeField || hasReviewerField || hasReporterField)) {
     throw new Error("Only the Mission Control owner can change task roles.");
   }
   if ((hasPrivateField || formData.has("private")) && !actor.canAccessOwnerFeatures) throw new Error("Not authorized");
+  if (hasAttachmentRequirementField && !actor.canAccessOwnerFeatures) throw new Error("Not authorized");
   const newPrivate = formData.get("private") === "on";
 
   if (newStatus !== "" && !COLUMN_IDS.includes(newStatus)) return;
@@ -227,6 +230,7 @@ async function updateTask(formData: FormData) {
       title: true,
       description: true,
       private: true,
+      reviewAttachmentRequired: true,
       status: true,
       workflowVersion: true,
       activeWorkflowCycleId: true,
@@ -273,6 +277,14 @@ async function updateTask(formData: FormData) {
     activity.push({
       kind: "task.privacy",
       payload: JSON.stringify({ from: task.private, to: newPrivate }),
+    });
+  }
+
+  if (hasAttachmentRequirementField && newReviewAttachmentRequired !== task.reviewAttachmentRequired) {
+    data.reviewAttachmentRequired = newReviewAttachmentRequired;
+    activity.push({
+      kind: "task.review_attachment_requirement",
+      payload: JSON.stringify({ from: task.reviewAttachmentRequired, to: newReviewAttachmentRequired }),
     });
   }
 
@@ -2077,6 +2089,23 @@ export default async function TaskDetailPage({
                       ) : null}
                     </div>
 
+                    {viewer.canAccessOwnerFeatures ? (
+                      <label className="flex items-start gap-2 rounded-card border border-line bg-panel-soft p-card text-caption">
+                        <input form="taskMain" type="hidden" name="reviewAttachmentRequiredSubmitted" value="1" />
+                        <input
+                          form="taskMain"
+                          type="checkbox"
+                          name="reviewAttachmentRequired"
+                          defaultChecked={task.reviewAttachmentRequired}
+                          className="mt-0.5 h-4 w-4 accent-accent"
+                        />
+                        <span>
+                          <span className="block font-medium text-text">Require attachment before Review</span>
+                          <span className="text-text-muted">Agents can upload deliverables while working; Review stays locked until one is attached.</span>
+                        </span>
+                      </label>
+                    ) : null}
+
                     {canSeeAgentContent ? <div
                       data-task-roles
                       className="grid grid-cols-2 gap-3 rounded-card border border-line bg-panel-soft p-card"
@@ -2132,7 +2161,7 @@ export default async function TaskDetailPage({
                     </div> : null}
 
                     {/* Branch, commit prefix, and deployment — persisted by the card's single Save. */}
-                    {canSeeAgentContent ? <div data-task-source-control className="space-y-3 rounded-card border border-line bg-panel-soft p-card">
+                    {canSeeAgentContent && task.project.workMode === "repository" ? <div data-task-source-control className="space-y-3 rounded-card border border-line bg-panel-soft p-card">
                       <label className="block">
                         <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">
                           Branch

@@ -22,6 +22,7 @@ import {
   reserveTaskRepositoryState,
   updateTaskRepositoryState,
 } from "@/lib/tasks/repository-state";
+import { projectUsesRepository } from "@/lib/projects/work-mode";
 
 const exec = promisify(execFile);
 
@@ -358,6 +359,7 @@ export async function ensureTaskCodeWorktree(
       project: {
         select: {
           id: true,
+          workMode: true,
           repositoryPath: true,
           defaultGitUserName: true,
           defaultGitUserEmail: true,
@@ -371,9 +373,10 @@ export async function ensureTaskCodeWorktree(
       },
     },
   });
-  if (!task?.project.repositoryPath) {
+  if (!task || !projectUsesRepository(task.project)) {
     return { required: false, reason: "no_repository" };
   }
+  const repositoryPath = task.project.repositoryPath!;
   const branchName = effectiveTaskBranchName(task);
   if (!branchName) {
     const detail = "project has a repository but the task has no effective branch";
@@ -394,7 +397,7 @@ export async function ensureTaskCodeWorktree(
   const epicBranch = task.epic ? effectiveEpicBranchName(task.epic) : null;
 
   const current = await inspectRegisteredTaskWorktree({
-    repositoryPath: task.project.repositoryPath,
+    repositoryPath,
     branchName,
   });
   if (current.ok && !options.reconcile) {
@@ -427,7 +430,7 @@ export async function ensureTaskCodeWorktree(
     jobId,
     taskId: task.id,
     projectId: task.projectId,
-    repositoryPath: task.project.repositoryPath,
+    repositoryPath,
     branchName,
     epicBranch,
     expectedGitUserName: identity.name,

@@ -138,6 +138,14 @@ export default function AddTaskFab({
               className="w-full rounded-lg border border-line bg-bg px-3 py-2 text-body leading-relaxed outline-none focus:border-accent"
             />
 
+            <label className="flex items-start gap-2 rounded-lg border border-line bg-panel-soft p-3 text-caption">
+              <input type="checkbox" name="reviewAttachmentRequired" className="mt-0.5 h-4 w-4 accent-accent" />
+              <span>
+                <span className="block font-medium text-text">Require an attachment for review</span>
+                <span className="text-text-muted">Review stays locked until an assignee deliverable is uploaded.</span>
+              </span>
+            </label>
+
             {canSetPrivate ? (
               <PrivateToggle />
             ) : null}

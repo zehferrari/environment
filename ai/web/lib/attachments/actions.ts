@@ -21,9 +21,8 @@ import {
   assertOneTarget,
   attachmentMaxBytes,
   deleteAttachmentFile,
-  writeAttachment,
 } from "@/lib/attachments/storage";
-import { normalizeAttachmentMimeType } from "@/lib/attachments/mime";
+import { storeAttachment } from "@/lib/attachments/service";
 import { revalidateTaskAttachments } from "@/lib/tasks/cache";
 
 function uploadedFiles(formData: FormData): File[] {
@@ -84,58 +83,15 @@ export async function uploadAttachment(formData: FormData) {
 
   for (const file of files) {
     const filename = file.name || "attachment";
-    const mimeType = normalizeAttachmentMimeType(filename, file.type);
     const buffer = Buffer.from(await file.arrayBuffer());
-    let written;
-    try {
-      written = await writeAttachment({
-        projectId: project.id,
-        filename,
-        mimeType,
-        data: buffer,
-      });
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code === "EACCES" || code === "EPERM") {
-        throw new Error(
-          `Cannot write attachment "${filename}" — the storage directory is not writable by the server (${code}). Check permissions on the attachment root.`,
-        );
-      }
-      throw err;
-    }
-
-    const row = await db.attachment.create({
-      data: {
-        projectId: project.id,
-        taskId,
-        epicId,
-        uploaderId: actor.id,
-        filename,
-        storagePath: written.storagePath,
-        mimeType: written.mimeType,
-        sizeBytes: written.sizeBytes,
-        sha256: written.sha256,
-      },
-      select: { id: true },
-    });
-
-    await db.activityLog.create({
-      data: {
-        projectId: project.id,
-        taskId,
-        userId: actor.id,
-        kind: taskId
-          ? "task.attachment.add"
-          : epicId
-            ? "epic.attachment.add"
-            : "project.attachment.add",
-        payload: JSON.stringify({
-          attachmentId: row.id,
-          filename,
-          sizeBytes: written.sizeBytes,
-          sha256: written.sha256,
-        }),
-      },
+    await storeAttachment({
+      projectId: project.id,
+      taskId,
+      epicId,
+      uploaderId: actor.id,
+      filename,
+      declaredMimeType: file.type,
+      data: buffer,
     });
   }
 

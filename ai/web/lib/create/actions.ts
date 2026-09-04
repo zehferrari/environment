@@ -13,6 +13,7 @@ import {
 import { allocateWorkItemKey, normalizeWorkItemKeyPrefix } from "@/lib/work-items/keys";
 import { nextEpicTaskTitle } from "@/lib/tasks/epic-numbering";
 import { randomBoardColor } from "@/lib/board-colors";
+import { normalizeProjectWorkMode } from "@/lib/projects/work-mode";
 import {
   sendTaskCommentNotifications,
   sendTaskWorkflowNotification,
@@ -65,6 +66,7 @@ export async function createTaskFromFab(formData: FormData): Promise<CreateResul
   const reviewerRaw = String(formData.get("actingManagerId") ?? "");
   if (formData.has("private") && !actor.canAccessOwnerFeatures) throw new Error("Not authorized");
   const isPrivate = actor.canAccessOwnerFeatures && formData.get("private") === "on";
+  const reviewAttachmentRequired = formData.get("reviewAttachmentRequired") === "on";
 
   const maxRank = await db.task.aggregate({
     where: { projectId, status: "Backlog", archivedAt: null, deletedAt: null },
@@ -94,6 +96,7 @@ export async function createTaskFromFab(formData: FormData): Promise<CreateResul
       title: taskTitle,
       description,
       private: isPrivate,
+      reviewAttachmentRequired,
       status: "Backlog",
       rank: (maxRank._max.rank ?? 0) + 1,
       statusChangedAt: new Date(),
@@ -170,8 +173,13 @@ export async function createProjectFromFab(formData: FormData): Promise<CreateRe
       : null;
     if (!workspace) throw new Error("Choose an active workspace for this project.");
 
-    const repositoryPath = String(formData.get("repositoryPath") ?? "").trim();
-    if (!repositoryPath) throw new Error("Repository folder is required.");
+    const workMode = normalizeProjectWorkMode(formData.get("workMode"));
+    const repositoryPath = workMode === "repository"
+      ? String(formData.get("repositoryPath") ?? "").trim()
+      : null;
+    if (workMode === "repository" && !repositoryPath) {
+      throw new Error("Repository folder is required for repository projects.");
+    }
     const workItemKeyPrefix = normalizeWorkItemKeyPrefix(String(formData.get("workItemKeyPrefix") ?? "").trim());
     if (!workItemKeyPrefix) {
       throw new Error("Project key must start with a letter and contain only 2-10 letters or numbers.");
@@ -196,6 +204,7 @@ export async function createProjectFromFab(formData: FormData): Promise<CreateRe
         name,
         description,
         repositoryPath,
+        workMode,
         workItemKeyPrefix,
         defaultGitUserName,
         defaultGitUserEmail,

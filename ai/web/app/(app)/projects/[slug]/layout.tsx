@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import { db } from "@/lib/db";
 import { repoHasReadme } from "@/lib/projects/repo-readme";
+import { projectUsesRepository } from "@/lib/projects/work-mode";
 import ProjectTabs from "./project-tabs";
 import {
   accessibleEpicWhere,
@@ -29,13 +30,14 @@ export default async function ProjectLayout({
       name: true,
       deletedAt: true,
       repositoryPath: true,
+      workMode: true,
     },
   });
   if (!project || project.deletedAt) notFound();
 
   // Show the Summary tab only when the configured repo folder has a README.
-  const hasSummary = repoHasReadme(project.repositoryPath);
-  const hasCode = Boolean(project.repositoryPath);
+  const hasCode = projectUsesRepository(project);
+  const hasSummary = hasCode && repoHasReadme(project.repositoryPath);
 
   // The Bin tab only appears when something is actually in the bin.
   const [binnedEpics, binnedTasks] = await Promise.all([

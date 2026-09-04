@@ -87,7 +87,7 @@ it holds something.
 | `app/(app)/projects/[slug]/changes` | repo branch/commit activity. |
 | `app/(app)/projects/[slug]/activity` | project activity stream (own tab only when there is no Summary). |
 | `app/(app)/projects/[slug]/library` | every attachment under the project (task + epic) in one list; excludes files whose parent is in the bin. |
-| `app/(app)/projects/[slug]/settings` | repository path, default git identity, default assignee/reviewer pickers, Done-card TTL, deployment settings (provider, target branch, on-merge script, deploy-review prompt, reporter-only PR approval, protected agent branches), project delete, recent-activity agenda. Admin (`zeh`) on git/worktree-exposed projects also sees **Worktree live preview**. |
+| `app/(app)/projects/[slug]/settings` | project-wide working mode (`Repository` or `General / artifact-based`), optional repository path, default git identity, default assignee/reviewer pickers, Done-card TTL, deployment settings, project delete, recent-activity agenda. Admin (`zeh`) on git/worktree-exposed projects also sees **Worktree live preview**. |
 | `app/(app)/projects/[slug]/bin` | soft-delete bin for deleted Epics + Tasks (7-day TTL); per-row Restore + "Restore + N children". |
 
 ### Agents deck
@@ -134,7 +134,9 @@ workspace group.
 
 ## Task and Epic fields agents use
 
-- `Project.repositoryPath` — repo path when configured.
+- `Project.workMode` — inherited execution contract for every Epic and Task: `repository` provisions Git worktrees; `general` uses private workspaces and PM task attachments.
+- `Project.repositoryPath` — repo path required only for Repository mode.
+- `Task.reviewAttachmentRequired` — when true, at least one task attachment is required before `ready_for_review`; agents receive a scoped upload URL in their workflow capability.
 - `Project.defaultGitUserName` / `defaultGitUserEmail` — default project
   git identity for commits.
 - `Project.defaultAssigneeId` / `defaultReviewerId` — seed the pickers.
