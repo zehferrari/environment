@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import AvatarCombobox, { type AvatarComboboxOption } from "@/components/avatar-combobox";
 import AsyncCombobox, { type AsyncOption } from "@/components/async-combobox";
 import PrivateToggle from "@/components/private-toggle";
@@ -28,6 +28,7 @@ import {
 } from "@/lib/create/pickers";
 import type { BrowserTaskWorkflowActions } from "@/lib/tasks/orchestrator/browser-review-adapter";
 import { OPEN_BILLING_CREATE_DIALOG_EVENT } from "@/lib/billing/ui-events";
+import { openVisibleActionPlanComposer } from "@/lib/client/action-plan-composer";
 
 export type CreateFabWorkspace = { id: string; slug: string; name: string };
 export type CreateFabProject = {
@@ -71,6 +72,8 @@ export default function CreateFab({
   const toast = useToast();
   const route = useRouteContext();
   const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const [pendingActionPlanPath, setPendingActionPlanPath] = useState<string | null>(null);
   // Agent chat pages are not create-menu context, so the shared FAB stays out
   // of the way there. Billing uses this same menu for its summary action.
   const onAgentsRoute = pathname?.startsWith("/agents") ?? false;
@@ -169,34 +172,38 @@ export default function CreateFab({
     [seedContext, route.projectSlug, route.epicId, route.taskId],
   );
 
-  // Plan of Action delegates to the on-page action-plan composer (the rich
-  // agent-chat surface). Its trigger is kept mounted but hidden by CSS inside
-  // [data-task-quick-add-context]; clicking it programmatically still fires its
-  // handler. If the Action Plan tab isn't active yet, click the real tab first
-  // (which mounts the trigger), then open the composer.
+  // An already-selected Action Plan opens locally. Re-clicking its tab would
+  // navigate through the intercepted route and replace/hide the editor tree.
+  // From another tab, wait for the URL transition to commit before opening.
   const openActionPlan = useCallback(() => {
     setMenuOpen(false);
-    const clickComposer = () => {
-      const el = document.querySelector<HTMLElement>('[data-task-quick-action="action-plan"]');
-      if (el) {
-        el.click();
-        return true;
-      }
-      return false;
-    };
-    // Always activate the Action Plan tab first (harmless if already active) so
-    // the popup opens with its tab in view; then open the composer once its
-    // trigger mounts.
-    const tabButton = Array.from(document.querySelectorAll<HTMLElement>('[role="tab"]')).find((b) =>
-      (b.textContent ?? "").trim().toLowerCase().startsWith("action plan"),
-    );
-    tabButton?.click();
-    if (clickComposer()) return;
+    if (openVisibleActionPlanComposer()) return;
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("tab", "action-plan");
+    setPendingActionPlanPath(pathname);
+    router.replace(`${pathname}?${params}`, { scroll: false });
+  }, [pathname, router, searchParams]);
+
+  useEffect(() => {
+    if (!pendingActionPlanPath) return;
+    if (pathname !== pendingActionPlanPath) {
+      setPendingActionPlanPath(null);
+      return;
+    }
+    if (searchParams.get("tab") !== "action-plan") return;
+    if (openVisibleActionPlanComposer()) {
+      setPendingActionPlanPath(null);
+      return;
+    }
     let tries = 0;
     const timer = window.setInterval(() => {
-      if (clickComposer() || ++tries > 40) window.clearInterval(timer);
+      if (openVisibleActionPlanComposer() || ++tries > 40) {
+        window.clearInterval(timer);
+        setPendingActionPlanPath(null);
+      }
     }, 50);
-  }, []);
+    return () => window.clearInterval(timer);
+  }, [pathname, pendingActionPlanPath, searchParams]);
 
   const attemptClose = useCallback(() => {
     if (submitting) return;
