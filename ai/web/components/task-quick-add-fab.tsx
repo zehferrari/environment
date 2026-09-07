@@ -7,6 +7,7 @@ import { createPortal } from "react-dom";
 import AttachmentUploadFab, { type AttachmentUploadTarget } from "@/components/attachment-upload-fab";
 import CommentComposerFab from "@/components/comment-composer-fab";
 import { useActiveTab } from "@/components/task-tabs";
+import { openVisibleActionPlanComposer } from "@/lib/client/action-plan-composer";
 
 type TaskQuickAddFabProps = {
   projectSlug: string;
@@ -88,11 +89,8 @@ export default function TaskQuickAddFab({
   const newTaskHref = `/projects/${projectSlug}?newTask=1${epicId ? `&epicId=${encodeURIComponent(epicId)}` : ""}`;
 
   const openActionPlanComposer = () => {
-    const trigger = document.querySelector<HTMLButtonElement>(
-      '[data-task-quick-add-context] [data-task-quick-action="action-plan"]',
-    );
     setMenuOpen(false);
-    trigger?.click();
+    openVisibleActionPlanComposer();
   };
 
   const content = (

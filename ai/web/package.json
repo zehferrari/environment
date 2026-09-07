@@ -129,6 +129,7 @@
     "test:workflow-watchdog-db": "tsx scripts/workflow-watchdog-db-test.ts",
     "test:workflow-watchdog-visibility": "tsx scripts/workflow-watchdog-visibility-test.ts",
     "test:action-plan-structured": "tsx scripts/action-plan-structured-test.ts",
+    "test:action-plan-composer": "tsx scripts/action-plan-composer-test.ts",
     "test:env122-comment-metadata": "tsx scripts/env122-comment-metadata-test.ts",
     "test:env122-comment-provenance": "tsx scripts/env122-comment-provenance-test.ts",
     "test:env159-provider-neutral": "tsx scripts/env159-provider-neutral-test.ts",
