@@ -95,6 +95,16 @@ export function createViewerPolicyStream(
         void sync();
       });
       heartbeat = setInterval(() => {
+        // A database poll alone leaves an unchanged policy silent on the
+        // wire. Send an SSE comment so proxies do not hit their idle read
+        // timeout; comments carry no policy data and trigger no UI refresh.
+        if (!closed) {
+          try {
+            controller.enqueue(encoder.encode(": heartbeat\n\n"));
+          } catch {
+            closeStream();
+          }
+        }
         void sync();
       }, heartbeatMs);
     },

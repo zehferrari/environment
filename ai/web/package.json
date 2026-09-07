@@ -87,6 +87,7 @@
     "test:access-policy": "tsx scripts/access-policy-test.ts",
     "test:access-management": "tsx scripts/access-management-test.ts",
     "test:access-revocation": "tsx scripts/access-revocation-test.ts",
+    "test:viewer-policy-heartbeat": "tsx scripts/viewer-policy-heartbeat-test.ts",
     "test:access-flow": "tsx scripts/access-flow-test.tsx",
     "test:authz-matrix": "tsx scripts/authz-matrix-test.ts",
     "test:authz-negative-space": "tsx scripts/authz-negative-space-test.ts",

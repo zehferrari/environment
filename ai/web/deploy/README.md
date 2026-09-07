@@ -145,6 +145,46 @@ unwritable receipt directory fails preflight before services stop. The receipt
 records worktree, branch, commit, dirty
 path count, exact database selection/path, and last applied migration.
 
+### Navigation stalls while the server is healthy
+
+PM holds several long-lived SSE connections (viewer policy, presence, board,
+and agent replies). With HTTP/1.1 these share the browser's six connections
+per origin across tabs and can leave navigation/refresh queued indefinitely.
+HTTP/2 must be enabled on the **browser-facing TLS ingress**, not just the
+internal thinkpad proxy. Check the negotiated protocol, not only the config:
+
+```sh
+curl -sS -o /dev/null -w 'HTTP %{http_version}, %{time_total}s\n' https://agents.vixi.au/login
+```
+
+On 2026-09-07 moonlight's wildcard `*.vixi.au` ingress negotiated HTTP/1.1,
+while the local PM login answered in about 6ms. The exact-host override in
+[`nginx-mission-control-moonlight.conf`](./nginx-mission-control-moonlight.conf)
+enables HTTP/2 for PM and disables ingress buffering. It uses nginx 1.22's
+`listen ... http2` syntax; `http2 on` is only supported from nginx 1.25.1.
+Install it on moonlight as `/etc/nginx/sites-available/mission-control`, link
+it in `sites-enabled`, run `sudo nginx -t`, and reload nginx. The existing
+wildcard config continues to supply the HTTP-to-HTTPS redirect.
+
+The policy stream must also send comment bytes every 20 seconds: polling its
+epoch without writing bytes causes nginx's 60-second upstream timeout when
+policy is unchanged. `pnpm test:viewer-policy-heartbeat` checks that an idle
+policy stream emits wire keepalives without triggering UI policy events and
+releases its timer/subscription on disconnect. The broader
+`pnpm test:access-revocation` verifies authorization propagation and teardown.
+
+For the temporary `fix-pm-stream-freezes` deployment, retain the operational
+database explicitly using the switcher's existing environment override:
+
+```sh
+PM_BRANCH_DB=/srv/Data/pm/wt-main.db pm-switch fix-pm-stream-freezes
+```
+
+A bare switch or the browser's worktree rebuild selects that feature
+worktree's own database instead. Until the fix is merged, repeat the explicit
+command above for rebuilds. After the human merges the branch and updates the
+`main` worktree, `pm-switch --database=main main` returns to the normal pairing.
+
 ### Live rebuild troubleshooting
 
 For worktree deployments, `pm-switch` is the live-site deployment boundary.
