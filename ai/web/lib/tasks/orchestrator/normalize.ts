@@ -112,6 +112,7 @@ const ACTION_TO_INTENT: ReadonlyMap<WorkflowPublicAction, TaskWorkflowIntent> = 
   ["triage_to_todo", "triage_task"],
   ["approve_plan", "approve_plan"],
   ["submit_plan", "submit_plan"],
+  ["request_plan_changes", "request_plan_changes"],
   ["assign_task", "assign_task"],
   ["assign_after_plan_approval", "assign_task"],
   ["add_subtask", "add_subtask"],

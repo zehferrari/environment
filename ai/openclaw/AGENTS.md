@@ -2,7 +2,9 @@
 
 You are an agent on **thinkpad**. Your runtime identity (display name, email,
 Telegram bot, Jira account ID, capabilities, integrations) is in
-`/etc/openclaw/agents.json` under your `user`. Look it up; never hardcode.
+`/etc/openclaw/agents.json` under your `user`. Native PM task turns supply
+current identity and capability information; use that snapshot. In other
+contexts, look up the registry entry rather than hardcoding it.
 
 ## Always-on rules
 
@@ -40,40 +42,34 @@ Telegram bot, Jira account ID, capabilities, integrations) is in
 
 ## Working in the PM (Project Manager — agents.vixi.au)
 
-When a PM-channel turn lands on a task, epic, or direct-chat conversation,
-your system prompt for that turn includes a `LIVE PM CONTEXT — FETCH BEFORE
-YOU REPLY` block with ready-to-curl URLs.
+PM task turns carrying `PM TASK OPERATING CONTRACT pm-task/2` are already
+oriented: use the supplied identity, role, current snapshot and native `pm_*`
+tools. Start the next task-specific action immediately. The server revalidates
+live permissions and workflow state on every action. Do not look up credentials
+or read generic host/session documents to reconstruct the PM interface.
 
-- **Fetch first, reply second.** Run the curl shown in the block to pull
-  the live JSON for the task (and the epic, if the task lives under one)
-  BEFORE composing any reply. Task context is a bounded recent working set by
-  default; request `history=full` only when a specifically named older fact is
-  absent. Never fetch full history as routine episode startup. PM is reachable only over loopback at
-  `http://127.0.0.1:3000`; never call `agents.vixi.au` or any other URL.
-- **Answer direct owner questions before long work.** If the current owner
-  comment asks for status, a blocker, or whether you are actively working,
-  post one concise, factual reply in that same surface before starting extended
-  investigation. Use the current checkpoint and bounded PM context; do not
-  spend an execution episode reconstructing history before acknowledging it.
-- The Bearer token in the block is your existing `channels.pm.token` from
-  `~/.openclaw/openclaw.json` — same secret OpenClaw already uses to
-  authenticate PM callbacks. There is no new token to provision.
-- Soft-deleted comments and discussion messages are filtered server-side;
-  if a row isn't in the JSON, a human deleted it on purpose — do not
-  reference, infer, or quote it.
-- Before submitting a work-item proposal (`POST /api/agent/projects/<id>/proposals`),
-  fetch the project endpoint so you avoid duplicating an existing epic /
-  task and pick valid assignee / actingManager usernames.
+Use `pm_context` only for a named missing fact. The current structured plan is
+available with `section=plan`; use `section=history` only for a specific older
+fact. Do not refetch the entire environment before every reply. A new contract
+version is supplied in the turn; consume that version rather than rediscovering
+instructions from memory.
 
-Full contract — endpoint shapes, error codes, replication notes, and what
-operators need to do on a fresh box — lives at
-`ai/web/docs/agent-pm-api.md` inside the active OpenClaw/PM checkout (thinkpad: under `/srv/Code/environment.worktrees/<branch>/`). Read it once when you
-first encounter a PM-channel turn on a host; reread when the prompt block
-points you somewhere new.
+Older PM turns provide scoped loopback grant URLs and workflow requests instead
+of native tools. Use the supplied inline context first and fetch only missing
+information. Never read gateway credentials to replace a missing/expired grant;
+report the failed capability through the current surface. The public browser URL
+is not an internal agent API.
+
+Answer direct owner status questions concisely from current state before long
+investigation. Before a work-item proposal, fetch the project grant to check
+existing items and eligible principals. Deleted content is unavailable and must
+not be inferred. API/reference docs are on-demand troubleshooting material,
+not mandatory task-start reading.
 
 ## Every session
 
-Before doing anything else:
+For personal/main, heartbeat, and non-PM sessions (PM task turns use their
+supplied operating contract instead):
 
 1. Read `SOUL.md`, `USER.md`, today's `memory/YYYY-MM-DD.md`.
 2. **Main session only**: also `MEMORY.md` — never in shared or group
@@ -85,7 +81,9 @@ Before doing anything else:
 
 ## On task
 
-Open `WORKFLOW.md` and use its Quick Index at the top to jump to the
+For a PM task, follow the supplied operating contract first. Open a specific
+reference section only when a named rule is missing. For other work, open
+`WORKFLOW.md` and use its Quick Index at the top to jump to the
 section that matches the action you're about to take. You don't need to
 re-read the whole playbook every time.
 

@@ -26,6 +26,8 @@ const PLUGIN_FILES = [
   // index.js or a divergence between the two bricks every agent gateway.
   "session-key.js",
   "runtime-compat.js",
+  "task-tools.js",
+  "task-telemetry.js",
   "openclaw.plugin.json",
   "package.json",
   "README.md",

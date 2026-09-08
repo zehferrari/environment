@@ -311,6 +311,7 @@ function parsePmChannelBusTurn(raw: unknown): ParsedPmChannelBusTurn {
       text,
       contextText: typeof payload.contextText === "string" ? payload.contextText : null,
       systemPrompt: typeof payload.systemPrompt === "string" ? payload.systemPrompt : null,
+      taskRuntime: payload.taskRuntime as import("@/lib/agents/pm-channel/openclaw").PmTaskToolRuntime | undefined,
       actor: {
         id: actorId,
         username: typeof actorRaw.username === "string" ? actorRaw.username : null,

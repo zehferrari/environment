@@ -764,7 +764,7 @@ export function serverGeneratedEpisodeCheckpoint(
   return {
     nextAction:
       episode.checkpoint.nextAction ||
-      `Episode ${episode.episodeNo} was closed by ${episode.closeReason ?? "budget exhaustion"} without an exact next action. First read the task-specific daily-memory checkpoint and the bounded recent task context, then immediately write a concrete workflow checkpoint before using more tools. Continue at the first unfinished checklist item; do not fetch full history or repeat broad repository/browser discovery unless a named missing fact requires it.`,
+      `Episode ${episode.episodeNo} was closed by ${episode.closeReason ?? "budget exhaustion"} without an exact next action. Use the supplied current task snapshot and durable PM checkpoint; retrieve only any missing fact, then write a concrete workflow checkpoint before further investigation. Continue at the first unfinished checklist item; do not fetch full history or repeat broad repository/browser discovery unless a named missing fact requires it.`,
     risks: [...episode.checkpoint.risks, provenance],
   };
 }

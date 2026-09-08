@@ -310,8 +310,15 @@ export async function submitAuthoritativeAgentWorkflowAction(args: {
     idempotencyKey: `${args.action}:${args.messageId}:${createHash("sha256").update(canonicalize(rawBody)).digest("hex").slice(0, 16)}`,
     messageId: args.messageId,
     source: "agent",
-    actionPlanId: aggregate.actionPlan?.id ?? null,
-    actionPlanVersion: aggregate.actionPlan?.version ?? null,
+    // Native tools bind the revision actually shown to the reviewer. The
+    // transactional plan executor rejects a newer revision; exact replay
+    // still resolves through the existing receipt before current-state guards.
+    actionPlanId: "actionPlanId" in rawBody
+      ? typeof rawBody.actionPlanId === "string" ? rawBody.actionPlanId : null
+      : aggregate.actionPlan?.id ?? null,
+    actionPlanVersion: "actionPlanVersion" in rawBody
+      ? typeof rawBody.actionPlanVersion === "number" ? rawBody.actionPlanVersion : null
+      : aggregate.actionPlan?.version ?? null,
     reviewRunId: aggregate.activeReviewRun?.id ?? null,
     candidateSha: aggregate.activeReviewRun?.candidateSha
       ?? aggregate.repositoryRun?.candidateSha

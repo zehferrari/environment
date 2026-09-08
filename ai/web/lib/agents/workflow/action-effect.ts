@@ -131,6 +131,7 @@ const CHECKPOINTS: Readonly<Record<string, string>> = {
   triage_to_todo: "task_triaged",
   approve_plan: "plan_approved",
   submit_plan: "plan_submitted",
+  request_plan_changes: "plan_changes_requested",
   assign_task: "task_assigned",
   assign_after_plan_approval: "task_assigned",
   request_subtask: "subtask_requested",

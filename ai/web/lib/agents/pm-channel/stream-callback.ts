@@ -1,3 +1,4 @@
+import { recordTaskModelUsage } from "./task-metrics";
 import { db } from "@/lib/db";
 import {
   parsePmChannelReplyTarget,
@@ -263,7 +264,7 @@ async function countTaskExecutionToolCycle(
             sessionKey: selectedRun.sessionKey,
             text: [
               `PM execution episode ${outcome.episode.episodeNo} is at ${outcome.episode.toolCycleCount}/${outcome.episode.toolCycleBudget} tool calls.`,
-              "Before any more broad investigation, immediately call the task workflow endpoint with action=checkpoint and this turn's existing workflow token.",
+              "Before any more broad investigation, immediately save a checkpoint using pm_checkpoint when available, otherwise the authenticated workflow endpoint supplied for this turn.",
               "Record concrete completedWork, evidence, openChecklist, one exact nextAction, and risks. Then continue only from that nextAction.",
               "Do not fetch full task history or repeat repository/browser discovery unless the checkpoint identifies a specific missing fact.",
             ].join(" "),
@@ -467,6 +468,7 @@ export async function applyPmChannelStreamCallback(args: {
   // metadata about the execution lifecycle, not agent-visible content.
   if (event === "dispatch:delivered" || event === "turn:waiting_capacity" || event === "turn:admitted" || event === "context:usage") {
     const usage = event === "context:usage" && typeof args.payload.usage === "object" && args.payload.usage ? args.payload.usage as Record<string, unknown> : null;
+    if (usage) await recordTaskModelUsage(target, usage);
     const persisted = await appendPmChannelStreamEventForTarget({ target, event });
     const state = publishPmChannelStreamEvent({ target, event, seq: persisted.seq });
     await recordStreamTransport(target, transportMode);

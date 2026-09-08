@@ -84,6 +84,7 @@ const INTENT_PUBLIC_ACTIONS: Readonly<
   Partial<Record<TaskWorkflowIntent, readonly WorkflowPublicAction[]>>
 > = {
   submit_plan: ["submit_plan"],
+  request_plan_changes: ["request_plan_changes"],
   approve_plan: ["approve_plan"],
   start_implementation: ["start"],
   checkpoint: ["checkpoint"],

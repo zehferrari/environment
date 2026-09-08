@@ -1,3 +1,4 @@
+import { createPmTaskTelemetry } from "./task-telemetry.js";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createConnection } from "node:net";
@@ -14,6 +15,8 @@ import {
 import { createPluginRuntimeStore } from "openclaw/plugin-sdk/runtime-store";
 import { resolvePmInboundRuntime } from "./runtime-compat.js";
 import { canonicalizePmStoreSessionKey } from "./session-key.js";
+
+import { createTaskTools, PM_TASK_TOOL_NAMES, validateTaskRuntime } from "./task-tools.js";
 
 const CHANNEL_ID = "pm";
 const DEFAULT_ACCOUNT_ID = "default";
@@ -625,6 +628,9 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
   // retain both identities or it can acknowledge a no-op abort while the
   // superseded model keeps running.
   registeredTurn.canonicalSessionKey = sessionKey;
+  registeredTurn.replyTarget = payload.replyTarget;
+  registeredTurn.taskRuntime = validateTaskRuntime(payload.taskRuntime, payload.replyTarget);
+  if (payload.taskRuntime && !registeredTurn.taskRuntime) throw new Error("Invalid PM task tool runtime");
   const messageId = typeof payload.messageId === "string" && payload.messageId
     ? payload.messageId
     : payload.replyTarget.messageId ?? randomUUID();
@@ -647,6 +653,7 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
     body: bodyForAgent,
   });
   const stream = createPmStreamPublisher({ account, target, logger, gatewayDispatchId: acceptedId });
+  registeredTurn.stream = stream;
   let visibleReplySent = false;
 
   const ctxPayload = await inbound.buildContext({
@@ -951,6 +958,11 @@ async function handleIngress({ cfg, logger, req, res }) {
     return true;
   }
 
+  if (payload.taskRuntime && !validateTaskRuntime(payload.taskRuntime, payload.replyTarget)) {
+    writeJson(res, 400, { error: "Invalid PM task tool runtime" });
+    return true;
+  }
+
   const rawSessionKey = payload.sessionKey.trim();
   if (activeTurns.has(rawSessionKey)) {
     // Multiple episode notifications can race on the same durable session
@@ -973,6 +985,7 @@ async function handleIngress({ cfg, logger, req, res }) {
   activeTurns.set(rawSessionKey, { acceptedId, abortedAt: null });
   setImmediate(() => {
     runPmTurn({ cfg, payload, accountId, logger, acceptedId }).catch((err) => {
+      if (activeTurns.get(rawSessionKey)?.acceptedId === acceptedId) activeTurns.delete(rawSessionKey);
       logger.error?.(`[pm-channel] turn ${acceptedId} failed: ${String(err)}`);
     });
   });
@@ -1166,6 +1179,27 @@ export default defineChannelPluginEntry({
   },
   setRuntime: setPmRuntime,
   registerFull(api) {
+    const telemetry = createPmTaskTelemetry({
+      findTurn: (key) => [...activeTurns.values()].find((turn) => turn.canonicalSessionKey === key),
+    });
+    api.on("llm_input", telemetry.input);
+    api.on("llm_output", telemetry.output);
+    api.registerTool((context) => createTaskTools({
+      context,
+      findTurn: (key) => [...activeTurns.values()].find((turn) => turn.canonicalSessionKey === key),
+    }), { names: PM_TASK_TOOL_NAMES });
+    api.registerHttpRoute({
+      path: "/pm-channel/capabilities",
+      auth: "plugin",
+      match: "exact",
+      handler: (req, res) => {
+        const account = resolvePmAccount({ cfg: api.config, accountId: "default" });
+        if (!tokensEqual(authHeader(req), account.token)) writeJson(res, 401, { error: "Unauthorized" });
+        else if (req.method !== "GET") writeJson(res, 405, { error: "Method not allowed" });
+        else writeJson(res, 200, { taskRuntimeVersions: [1], taskTools: PM_TASK_TOOL_NAMES });
+        return true;
+      },
+    });
     api.registerHttpRoute({
       path: "/pm-channel/ingest",
       auth: "plugin",

@@ -1,3 +1,4 @@
+import { compactTaskRuntimeEnabled } from "@/lib/agents/pm-channel/runtime-policy";
 import { db } from "@/lib/db";
 import { randomUUID } from "node:crypto";
 
@@ -105,6 +106,13 @@ export async function getOrCreateAgentSessionBinding(args: {
     },
   });
   if (args.scopeType !== "task") return binding;
+
+  // Execution episodes already own context/tool limits and durable handoffs.
+  // Do not independently rotate the task binding underneath a live episode.
+  if (compactTaskRuntimeEnabled() && await db.taskExecutionEpisode.findFirst({
+    where: { taskId: args.scopeId, agentSlug: args.agentSlug, status: "open" },
+    select: { id: true },
+  })) return binding;
 
   // Provider-neutral preventive rotation. Session limits and error strings
   // vary across OpenAI, Anthropic, Ollama, and future backends, but completed

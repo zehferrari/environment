@@ -72,6 +72,7 @@ export const WORKFLOW_PUBLIC_ACTIONS = [
   "triage_to_todo",
   "approve_plan",
   "submit_plan",
+  "request_plan_changes",
   "assign_task",
   "assign_after_plan_approval",
   "add_subtask",

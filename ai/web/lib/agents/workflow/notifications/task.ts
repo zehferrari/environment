@@ -18,6 +18,7 @@ import {
   buildPmChannelDispatchMetrics,
   buildPmTurnSessionKey,
 } from "@/lib/agents/pm-channel/openclaw";
+import { compactTaskRuntimeEnabled } from "@/lib/agents/pm-channel/runtime-policy";
 import { buildUnifiedPmTurnSystemPrompt, nullPmContextText } from "@/lib/agents/pm-channel/context";
 import { sendOrQueueOpenClawPmChannelTurn } from "@/lib/agents/pm-channel/jobs";
 import { PM_SILENT_REPLY_TOKEN } from "@/lib/agents/ops/pm-silence";
@@ -132,6 +133,15 @@ export function usesStableTaskExecutionSession(args: {
   targetUserId: string;
   assigneeId: string | null;
 }) {
+  // Planning feedback is a new authorized message in the SAME task/agent
+  // session. It must not pay a fresh-model startup cost for every revision.
+  if (compactTaskRuntimeEnabled()) {
+    if (["Backlog", "To Do"].includes(args.status) && [
+      "backlog_plan_requested", "action_plan_review_requested", "action_plan_feedback_received",
+      "reviewer_plan_requested", "reviewer_assignment_requested", "todo_start_required",
+    ].includes(args.reason)) return true;
+    if (args.status === "Review" && args.reason === "review_requested") return true;
+  }
   return (args.reason === "monitor_recovery" || args.reason === "blocker_response")
     && args.status === "In Progress"
     && args.targetUserId === args.assigneeId;

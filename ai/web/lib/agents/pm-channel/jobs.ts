@@ -1,4 +1,5 @@
 import { db } from "@/lib/db";
+import { prepareCompactTaskTurn } from "@/lib/agents/pm-channel/task-runtime";
 import { isOwnerUserId } from "@/lib/auth/permissions";
 import {
   dispatchOpenClawPmChannelTurn,
@@ -333,6 +334,7 @@ export async function sendOrQueueOpenClawPmChannelTurn(
       error: `channel down: last ${breaker.failures} runs for ${args.agentSlug} failed; dispatch suppressed (next probe within ${Math.round(BREAKER_PROBE_INTERVAL_MS / 60000)}m)`,
     };
   }
+  args = await prepareCompactTaskTurn(args);
   if (pmAsyncDispatchEnabled()) {
     return enqueueOpenClawPmChannelTurn(args);
   }

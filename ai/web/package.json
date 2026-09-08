@@ -142,6 +142,7 @@
     "test:orch-03-procedure": "tsx scripts/orch-03-procedure-test.ts",
     "test:procedure-versioning-crash": "tsx scripts/procedure-versioning-crash-test.ts",
     "test:orch-04-prepare-todo": "tsx scripts/orch-04-prepare-todo-test.ts",
+    "test:workflow-handoffs": "node --import tsx scripts/workflow-handoffs-test.ts",
     "test:orch-05-start-implementation": "tsx scripts/orch-05-start-implementation-test.ts",
     "test:orch-06-review-submission": "tsx scripts/orch-06-review-submission-test.ts",
     "test:orch-07-review-decisions": "tsx scripts/orch-07-review-decisions-test.ts",
@@ -171,7 +172,10 @@
     "test:phasee-08-agent-route": "tsx scripts/phasee-08-agent-route-test.ts && tsx scripts/phasee-08-agent-route-integration-test.ts",
     "test:phasee-11-admission": "tsx scripts/phasee-11-admission-test.ts",
     "test:phasee-11": "tsx scripts/phasee-11-admission-test.ts && node --import tsx scripts/phasee-transaction-receipt-boundary-test.ts && tsx scripts/procedure-versioning-crash-test.ts && tsx scripts/orch-phasee-05-episode-atomicity-test.ts && tsx scripts/phasee-07-repo-correlation-runner.ts && node --import tsx scripts/pm-channel-lease-lifecycle-test.ts && tsx scripts/workflow-action-effect-test.ts && node --import tsx scripts/workflow-reconciler-test.ts",
-    "test:phasee-12-drain": "node --import tsx scripts/phasee-12-drain-test.ts"
+    "test:phasee-12-drain": "node --import tsx scripts/phasee-12-drain-test.ts",
+    "test:pm-task-tools": "node scripts/pm-task-tools-test.mjs",
+    "test:pm-task-runtime": "node --import tsx scripts/pm-task-runtime-test.ts",
+    "report:pm-task-workflow": "node scripts/pm-task-workflow-report.mjs"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.7.4",

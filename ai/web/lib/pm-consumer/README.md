@@ -1,5 +1,10 @@
 # `lib/pm-consumer`
 
+For the opt-in `pm-task/2` notification path, see the
+[compact task runtime](../../docs/pm-task-runtime.md). Its native tool envelope
+is forwarded unchanged to the gateway; the consumer and PM server must use the
+same `PM_TASK_RUNTIME_V2` setting and a compatible channel plugin.
+
 PM consumer / dispatcher (HOMELAB-46 Slice 4).
 
 Long-running OpenClaw-side service that reads PmEvents from the

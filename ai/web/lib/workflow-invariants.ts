@@ -112,6 +112,7 @@ export const WORKFLOW_ACTION_CLASS: Readonly<
   triage_to_todo: "episode-terminal",
   approve_plan: "episode-terminal",
   submit_plan: "episode-terminal",
+  request_plan_changes: "episode-terminal",
   assign_task: "episode-terminal",
   assign_after_plan_approval: "episode-terminal",
   request_subtask: "episode-terminal",

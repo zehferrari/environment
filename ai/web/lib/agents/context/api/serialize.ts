@@ -19,6 +19,7 @@
 // for explicit historical investigation, but must never be the routine path.
 
 import { db } from "@/lib/db";
+import { parseAcceptanceCriteria } from "@/lib/tasks/action-plan-store";
 import { effectiveCommitPrefix, effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
 import { effectiveEpicBranchName, effectiveTaskBranchName } from "@/lib/work-items/branches";
 import { isActionableEpicStatus } from "@/lib/tasks/workflow-actors";
@@ -145,6 +146,25 @@ export interface TaskContextResponse {
     actingManager: ReturnType<typeof actor>;
     deployReviewer: ReturnType<typeof actor>;
   };
+  // Canonical plan, independent of clipped discussion/history. A fresh
+  // execution episode must be able to retrieve every acceptance criterion.
+  actionPlan: null | {
+    id: string;
+    version: number;
+    status: string;
+    summary: string;
+    approvedOn: string | null;
+    approvedById: string | null;
+    steps: Array<{
+      id: string;
+      stepId: string;
+      title: string;
+      acceptanceCriteria: string[];
+      kind: string;
+      assigneeId: string | null;
+      rank: number;
+    }>;
+  };
   checklist: Array<{ id: string; text: string; done: boolean; minutes: number | null }>;
   comments: Array<{
     id: string;
@@ -254,6 +274,19 @@ export async function buildTaskContextJson(
           },
           actingManager: { select: { username: true, kind: true, isOwner: true } },
           deployReviewer: { select: { username: true, kind: true, isOwner: true } },
+        },
+      },
+      actionPlan: {
+        select: {
+          id: true, version: true, status: true, summary: true,
+          approvedOn: true, approvedById: true,
+          steps: {
+            orderBy: { rank: "asc" },
+            select: {
+              id: true, stepId: true, title: true, acceptanceCriteria: true,
+              kind: true, assigneeId: true, rank: true,
+            },
+          },
         },
       },
       checklist: {
@@ -428,6 +461,16 @@ export async function buildTaskContextJson(
           workers: task.epic.workers.map((worker) => actor(worker.user)),
           actingManager: actor(task.epic.actingManager),
           deployReviewer: actor(task.epic.deployReviewer),
+        }
+      : null,
+    actionPlan: task.actionPlan
+      ? {
+          ...task.actionPlan,
+          approvedOn: task.actionPlan.approvedOn?.toISOString() ?? null,
+          steps: task.actionPlan.steps.map((step) => ({
+            ...step,
+            acceptanceCriteria: parseAcceptanceCriteria(step.acceptanceCriteria),
+          })),
         }
       : null,
     checklist: task.checklist.map((s) => ({
