@@ -31,6 +31,18 @@ export type PmChannelReplyTarget =
 
 export type PmChannelTurnKind = "direct" | "task-chat" | "task-comment" | "epic-chat";
 
+export interface PmTaskToolRuntime {
+  version: 1;
+  actionPlan?: { id: string; version: number } | null;
+  taskId: string;
+  messageId: string;
+  agentSlug: string;
+  workflowUrl: string;
+  contextUrl: string;
+  token: string;
+  actions: string[];
+}
+
 export interface SendPmChannelTurnArgs {
   gatewayPort: number | null;
   agentSlug: string;
@@ -39,6 +51,7 @@ export interface SendPmChannelTurnArgs {
   text: string;
   contextText?: string | null;
   systemPrompt?: string | null;
+  taskRuntime?: PmTaskToolRuntime | null;
   actor: {
     id: string;
     username?: string | null;
@@ -232,6 +245,7 @@ export function buildPmChannelIngressPayload(
     text: args.text,
     contextText: args.contextText ?? null,
     systemPrompt: args.systemPrompt ?? null,
+    ...(args.taskRuntime ? { taskRuntime: args.taskRuntime } : {}),
     actor: args.actor,
     replyTarget: args.replyTarget,
     callbackUrl: new URL(
@@ -346,6 +360,16 @@ export async function dispatchOpenClawPmChannelTurnViaHttp(
   const f = args.fetchImpl ?? fetch;
 
   try {
+    if (args.taskRuntime) {
+      const capabilityResponse = await f(new URL("/pm-channel/capabilities", url), {
+        method: "GET", headers: { authorization: `Bearer ${token}` }, signal: ac.signal, redirect: "error",
+      });
+      const capabilities = capabilityResponse.ok ? await capabilityResponse.json().catch(() => null) : null;
+      if (!capabilities?.taskRuntimeVersions?.includes(1)
+        || !args.taskRuntime.actions.every((action) => capabilities?.taskTools?.includes(`pm_${action}`))) {
+        throw new Error("PM task runtime v2 requires the updated PM channel plugin; compact turn was not delivered.");
+      }
+    }
     const res = await f(url, {
       method: "POST",
       headers: {

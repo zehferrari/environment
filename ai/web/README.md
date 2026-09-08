@@ -1,5 +1,8 @@
 # Mission Control PM web application
 
+Opt-in coding-task workflow optimization: [compact PM task runtime](docs/pm-task-runtime.md)
+(`PM_TASK_RUNTIME_V2`, disabled by default; requires PM channel plugin 0.1.2).
+
 Mission Control is the single-host project-management and agent-control plane
 for the OpenClaw fleet. It combines a human-facing workspace, Kanban boards,
 task and Epic workflows, durable agent conversations, repository lifecycle

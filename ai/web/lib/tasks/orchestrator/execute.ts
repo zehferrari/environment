@@ -4,6 +4,7 @@
 // mutation is reached through exactly one executor in the closed intents
 // registry and receives only the transaction client plus refreshed state.
 
+import { countsAgainstWorkflowEpisodeBudget } from "@/lib/agents/pm-channel/runtime-policy";
 import { db } from "@/lib/db";
 import type { Prisma } from "@prisma/client";
 import {
@@ -130,7 +131,7 @@ export async function executeWorkflowCommandInTransaction(
                 executionContext: command.executionContext!,
                 taskState: decision.toStatus,
                 checkpoint: command.intent === "checkpoint" ? command.payload : null,
-                countsAgainstEpisodeBudget: command.intent !== "checkpoint",
+                countsAgainstEpisodeBudget: countsAgainstWorkflowEpisodeBudget(command.intent),
               });
               await invokeWorkflowCommandCrashHook(
                 "after_execution_bookkeeping_before_receipt_projection",

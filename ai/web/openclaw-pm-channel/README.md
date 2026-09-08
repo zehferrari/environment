@@ -2,6 +2,13 @@
 
 Native local OpenClaw channel for the Mission Control webapp.
 
+Version 0.1.2 adds optional task-scoped native tools and numeric usage telemetry.
+The bundle includes `task-tools.js` and `task-telemetry.js`; they must be staged
+with `index.js`. Authenticated `GET /pm-channel/capabilities` advertises runtime
+version 1. PM gates compact turns behind `PM_TASK_RUNTIME_V2=1` and checks that
+capability before delivery. See [runtime and rollout](../docs/pm-task-runtime.md).
+Existing turns without `taskRuntime` continue to use the legacy channel path.
+
 PM sends direct chat, task chat, task-comment, and epic chat turns to each
 agent's local OpenClaw gateway at `/pm-channel/ingest`. The plugin runs the
 OpenClaw channel turn kernel, so OpenClaw owns session recording and model dispatch. Partial

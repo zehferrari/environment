@@ -41,6 +41,20 @@ and 12 activity rows, with bounded bodies. `meta.historyMode` and `meta.limits`
 state the view actually returned. Use `history=full` only when an identified
 older fact is missing; it is not an episode-startup step.
 
+## Native coding-task turns (`pm-task/2`)
+
+With the opt-in runtime, `pm_context` performs scoped reads without exposing
+URLs or credentials to the model. Use the supplied task snapshot first and
+read `section=plan` or `section=history` only when a specific fact is missing.
+The task JSON includes `actionPlan` with its revision, approval metadata,
+ordered steps and parsed acceptance criteria in both history modes.
+
+Native notifications use `prepareCompactTaskTurn` instead of the legacy final
+prompt renderer; `contextText` remains null. Runtime credentials travel in an
+out-of-prompt plugin envelope. The native contract and activation boundaries
+are documented in [compact PM task runtime](pm-task-runtime.md). The remaining
+surfaces continue to follow the legacy transport contract below.
+
 ## Per-turn context contract
 
 Every PM -> OpenClaw turn is a complete PM turn, not a delta that depends

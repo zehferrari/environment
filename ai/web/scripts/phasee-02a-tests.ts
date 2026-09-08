@@ -146,12 +146,12 @@ test("isOperationalIntent identifies operational intents", () => {
   assert.ok(!isOperationalIntent("accept_review"));
 });
 
-test("WORKFLOW_PUBLIC_ACTIONS includes all 21 cross-transport public actions", () => {
-  assert.equal(WORKFLOW_PUBLIC_ACTIONS.length, 21);
+test("WORKFLOW_PUBLIC_ACTIONS includes all 22 cross-transport public actions", () => {
+  assert.equal(WORKFLOW_PUBLIC_ACTIONS.length, 22);
   const required = [
     "start", "checkpoint", "publish_checkpoint", "ready_for_review",
     "submit_review", "review_feedback", "review_done", "triage_to_todo",
-    "approve_plan", "submit_plan", "assign_task", "assign_after_plan_approval",
+    "approve_plan", "request_plan_changes", "submit_plan", "assign_task", "assign_after_plan_approval",
     "add_subtask", "complete_subtask", "remove_subtask", "request_subtask",
     "request_task", "flag_blocker", "clear_blocker", "flag_extra_work_blocker",
     "override_status",
@@ -603,7 +603,7 @@ test("Cross-transport: oversized strings rejected in all transports", () => {
   }
 });
 
-test("Cross-transport: all 21 public actions map to canonical intents", () => {
+test("Cross-transport: all 22 public actions map to canonical intents", () => {
   const ctx = makeAuthCtx({ candidateSha: "abc", baseSha: "def", reviewRunId: "r1", actionPlanId: "p1", actionPlanVersion: 1 });
   for (const action of WORKFLOW_PUBLIC_ACTIONS) {
     const r = normalizePublicAction(action, getValidRawBodyForAction(action), ctx);
@@ -640,6 +640,7 @@ function getValidRawBodyForAction(action: WorkflowPublicAction): Record<string, 
     case "publish_checkpoint": return { authorizationCommentId: "c1" };
     case "ready_for_review":
     case "submit_review": return { repoTouched: true };
+    case "request_plan_changes":
     case "review_feedback": return { reviewerComment: "Fix this" };
     case "review_done": return {};
     case "triage_to_todo": return {};

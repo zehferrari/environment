@@ -106,6 +106,26 @@ async function main() {
       assert.deepEqual(context.actionPlan.steps.map((step) => [step.stepId, step.title, step.acceptanceCriteria]),
         [["fix", "Implement revision 2", ["Regression passes"]]]);
     }
+    process.env.PM_TASK_RUNTIME_V2 = "1";
+    const checklistItem = await db.subTask.findFirstOrThrow({ where: { taskId: task.id, kind: "implementation" } });
+    const episodeBeforeBookkeeping = await db.taskExecutionEpisode.findUniqueOrThrow({ where: { id: episodesAfter[0].id } });
+    const taskBeforeBookkeeping = await db.task.findUniqueOrThrow({ where: { id: task.id } });
+    const completed = await submitWorkflowCommand({
+      taskId: task.id, intent: "complete_subtask", actor, source: "agent", expectedWorkflowVersion: taskBeforeBookkeeping.workflowVersion,
+      idempotencyKey: "complete-native-checklist", messageId,
+      payload: { subtaskId: checklistItem.id, subtaskKind: "implementation", completed: true },
+      executionContext: { agentSlug: agent.slug, pmChannelRunId: run.id, sourceMessageId: messageId, publicAction: "complete_subtask", expectedEpisodeId: episodeBeforeBookkeeping.id },
+    });
+    assert.equal(completed.status, "accepted", JSON.stringify(completed));
+    const episodeAfterBookkeeping = await db.taskExecutionEpisode.findUniqueOrThrow({ where: { id: episodeBeforeBookkeeping.id } });
+    assert.equal(episodeAfterBookkeeping.cycleCount, episodeBeforeBookkeeping.cycleCount, "native checklist bookkeeping does not spend the workflow budget again");
+    assert.ok((await db.subTask.findUniqueOrThrow({ where: { id: checklistItem.id } })).completedAt);
+    const { recordTaskExecutionToolCycle } = await import("@/lib/agents/episodes/lifecycle");
+    await recordTaskExecutionToolCycle({ taskId: task.id, agentSlug: agent.slug, messageId });
+    assert.equal((await db.taskExecutionEpisode.findUniqueOrThrow({ where: { id: episodeBeforeBookkeeping.id } })).toolCycleCount, episodeBeforeBookkeeping.toolCycleCount + 1, "the tool budget still charges the call");
+    delete process.env.PM_TASK_RUNTIME_V2;
+    console.log("PASS checklist bookkeeping commits without duplicate budgeting; tool limits remain active");
+
     await db.task.update({ where: { id: task.id }, data: { private: true } });
     assert.equal(await buildTaskContextJson(task.id, { agentSlug: agent.slug }), null, "plan respects private-task access");
     console.log("PASS canonical plan context and access fence");

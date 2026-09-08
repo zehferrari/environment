@@ -260,8 +260,8 @@ then awaits that assignee's plan — the reviewer never authors the plan
 themselves.
 
 The approver reviews the Action Plan in the Action Plan tab. If it needs
-adjustment, they reply there with one consolidated feedback comment
-(`request_subtask` for extra implementation scope). If it is acceptable,
+adjustment, they submit one consolidated `request_plan_changes` comment
+(`pm_request_plan_changes` in native task turns). If it is acceptable,
 they approve with `approve_plan` and a concise note explaining why the
 plan is acceptable or naming any constraints; approval stamps
 `approved_on` and `approved_by`.
@@ -269,9 +269,9 @@ plan is acceptable or naming any constraints; approval stamps
 Approval stamps `approved_on` and `approved_by` on the task. Only an
 approved `To Do` task can move to `In Progress`. Do not start
 implementation before the plan is approved unless zeh explicitly
-overrides for that specific task. After approval the assignee **must**
-break the task into implementation subtasks — ideally parallelizable so
-sub-agents can run them.
+overrides for that specific task. After approval, use the implementation checklist PM creates from the
+approved structured plan. Add an item only for a missing deliverable; do
+not recreate the same checklist or decompose routine work again.
 
 When an Action Plan has an explicit `Deliverables`, `Implementation
 steps`, `Checklist`, `Subtasks`, or `Milestones` section and the Task has
@@ -314,13 +314,15 @@ Two distinct decomposition levels, each with its own creator and gate:
 ### Task-local subtasks (created by the task assignee/reviewer)
 
 - The task **assignee** posts the **Task Action Plan** first. The first
-  thing the assignee does on an assigned Task is create a detailed plan
-  of action. (A reviewer never authors the plan; on an unassigned task
+  thing the assignee does on an assigned Task is create a concrete plan
+  proportional to its scope. (A reviewer never authors the plan; on an unassigned task
   the reviewer picks the assignee with `assign_task` and
   awaits that assignee's plan.)
-- Once the Task Action Plan is approved, the assignee **must** divide the
-  task into implementation subtasks — ideally parallelizable so multiple
-  subagents can work the same task in parallel.
+- Once the Task Action Plan is approved, use its generated implementation
+  checklist. For a small task, one implementation step and one meaningful
+  verification step are usually sufficient. Use sequential steps by default.
+  Delegate only independent substantial work whose benefit exceeds the
+  handoff cost; a small task does not need subagents.
 - Subtasks are a **lightweight progress checklist** (`SubTask` model: text
   + `kind` + `completedAt` + optional `minutesSpent`), not child Tasks —
   they have no assignee, reviewer, status, key, or board presence.
@@ -418,11 +420,10 @@ respond, mention them in a task comment or start the appropriate PM chat.
 
 Rules:
 
-- Read the whole PM context packet before answering: task title,
-  description, status, project, assignee, reviewer, parent/subtask
-  context, Epic context, recent comments, full active Task/Epic
-  Action Plan history for the item once invited or mentioned, activity,
-  attachment metadata, and extracted attachment text when available.
+- Use the current task snapshot, role, structured plan and checkpoint supplied
+  by PM. Fetch only named missing facts; do not read the full Action Plan
+  history or repeat host/session onboarding for a PM task turn. Native
+  `pm_*` tools bind credentials and task identity inside the runtime.
 - Golden rule: if there is no new information, concrete action result,
   required plan, review feedback, blocker, or necessary question, stay
   silent. Do not post acknowledgements, restatements, progress filler,
@@ -483,8 +484,8 @@ Latency / PM queue/status names:
    waiting work in `In Progress`.
 4. **Assigned tasks in other non-terminal states.** Act only if the PM
    event or human request clearly asks for your response.
-5. **Assigned `Backlog` tasks**: planning/opinion only. Read the full
-   context and post your implementation plan or perspective in the
+5. **Assigned `Backlog` tasks**: planning/opinion only. Use the current
+   snapshot and post your implementation plan or perspective in the
    Action Plan tab. Do not change status and do not start work.
 6. **Unassigned tasks**: do not claim them. If one looks important,
    report the finding in PM or hand it to the manager / zeh for
@@ -494,13 +495,14 @@ Latency / PM queue/status names:
 
 ### Working a Mission Control task
 
-1. Read the full PM task context: description, comments, task chat,
+1. Read the current PM task snapshot and checkpoint; retrieve only missing
+   facts from description, comments, task chat,
    attachments, activity, parent/subtasks, Epic, assignee, reviewer, and
    current status.
 2. Determine your role from the PM task/Epic context and the latest human
    instruction, not from persona alone.
 3. **`Backlog` means planning/opinion only.** If you are assigned while
-   the task is in Backlog, read all context and comments, then post one
+   the task is in Backlog, inspect the relevant source and current scope, then post one
    structured technical Action Plan with `action=submit_plan`; do not merely
    post the plan as free-form chat text. Do not change status and do not start
    implementation.

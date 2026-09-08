@@ -129,7 +129,7 @@ export async function POST(
     );
   }
   if (matchingRun &&
-    !["queued", "delivered", "accepted", "streaming"].includes(matchingRun.status) &&
+    !["queued", "delivered", "accepted", "admitted", "streaming"].includes(matchingRun.status) &&
     !exactReplay && !rolloverBarrier) {
     return NextResponse.json(
       { error: `Workflow grant belongs to a ${matchingRun.status} run and is fenced from further actions` },

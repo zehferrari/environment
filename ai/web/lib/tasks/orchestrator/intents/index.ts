@@ -154,6 +154,10 @@ const requestPlanChangesExecutor: IntentExecutor<"request_plan_changes"> = async
     data: { status: "revision_required" },
   });
   await createWorkflowComment(context, context.command.payload.reviewerComment);
+  context.decision.effects = context.decision.effects.map((effect) => effect.type === "task_notification"
+    ? { ...effect, key: `${effect.key}:plan:${context.command.payload.actionPlanId}:revision:${context.command.payload.actionPlanVersion}`,
+        payload: { ...effect.payload, reason: "action_plan_feedback_received", body: `Revise the current Action Plan to address this consolidated feedback, then submit the new revision.\n\n${context.command.payload.reviewerComment}` } }
+    : effect);
   return context.helpers.executeDecisionWrites();
 };
 
