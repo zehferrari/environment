@@ -149,22 +149,9 @@ export function decideCommand(
       const effects: WorkflowEffect[] = [
         { type: "board_touch", key: "board-plan-approved", payload: {} },
       ];
-      // Wake the assignee with a todo_start_required notification. The
-      // procedure (ORCH-04) owns the deduplicated wake AFTER worktree
-      // preparation succeeds; the decision only declares the effect.
-      if (state.assigneeId) {
-        effects.push({
-          type: "task_notification",
-          key: `plan-approved:${state.assigneeId}`,
-          payload: {
-            taskId: state.id,
-            targetUserId: state.assigneeId,
-            actor: command.actor,
-            reason: "todo_start_required",
-            body: "The Action Plan was approved. PM will prepare the worktree and wake you.",
-          },
-        });
-      }
+      // prepare_todo_task owns the sole assignee wake after preparation.
+      // An approval-time wake races that procedure and gets canceled by its
+      // replacement, sometimes while the assignee is already calling start.
       return {
         fromStatus: state.status,
         toStatus: "To Do",

@@ -172,6 +172,32 @@ async function openExecutionEpisode(ctx: StepHandlerContext): Promise<StepHandle
   if (!task || !task.assigneeId || !task.assignee?.agent) {
     return { status: "failed", error: "Task has no assignee agent.", retryable: false };
   }
+  // Authenticated start already committed episode + continuation ownership
+  // with the command. Its receipt is durable even if the source turn has
+  // finished, yielded, or been superseded before this procedure runs. Do not
+  // open another episode or dispatch a turn that cancels that continuation.
+  const receipt = await db.taskWorkflowCommandReceipt.findFirst({
+    where: {
+      taskId: ctx.taskId,
+      procedureRunId: ctx.procedureRunId,
+      intent: "start_implementation",
+    },
+    select: { result: true },
+  });
+  if (receipt?.result) {
+    const result = JSON.parse(receipt.result) as { episode?: { episodeNo?: number } | null };
+    if (result.episode) {
+      return {
+        status: "completed",
+        output: {
+          skipped: true,
+          reason: "command_owns_execution_continuation",
+          episodeNo: result.episode.episodeNo,
+          agentSlug: task.assignee.agent.slug,
+        },
+      };
+    }
+  }
   const episode = await db.$transaction((tx) =>
     openTaskExecutionEpisode(tx, {
       taskId: task.id,

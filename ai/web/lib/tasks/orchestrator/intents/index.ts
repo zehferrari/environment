@@ -73,7 +73,7 @@ async function createDomainActivity<I extends TaskWorkflowIntent>(
 }
 
 const submitPlanExecutor: IntentExecutor<"submit_plan"> = async (context) => {
-  await persistActionPlan({
+  const plan = await persistActionPlan({
     taskId: context.command.taskId,
     input: context.command.payload.actionPlan,
     authorId: context.decision.decisionActorId,
@@ -81,6 +81,14 @@ const submitPlanExecutor: IntentExecutor<"submit_plan"> = async (context) => {
     sourceMessageId: context.command.messageId ?? context.command.payload.inReplyToMessageId ?? null,
     client: context.tx,
   });
+  // Plan revisions do not advance workflowVersion. Scope the reviewer wake
+  // to the revision persisted in this transaction, or a delivered first-plan
+  // effect suppresses every subsequent revision while the task is in Backlog.
+  context.decision.effects = context.decision.effects.map((effect) =>
+    effect.type === "task_notification" && effect.payload.reason === "action_plan_review_requested"
+      ? { ...effect, key: `${effect.key}:plan:${plan.id}:revision:${plan.version}` }
+      : effect,
+  );
   return context.helpers.executeDecisionWrites();
 };
 

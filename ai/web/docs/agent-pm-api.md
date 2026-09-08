@@ -856,3 +856,13 @@ prevention, and full-chain cycle prevention. A hidden current blocker cannot
 be replaced or cleared by an agent proposal, and validation errors never
 return private task metadata. Applied changes write the same
 `task.blocked_by` activity kind as the human task editor.
+
+### Canonical Task Action Plan
+
+Task context responses include top-level `actionPlan` (or `null` before a plan
+exists), in both recent and full history modes. It contains `id`, `version`,
+`status`, `summary`, `approvedOn`, `approvedById`, and ordered `steps` with
+`id`, `stepId`, `title`, `acceptanceCriteria` (a string array), `kind`,
+`assigneeId`, and `rank`. This is the current structured plan, independent of
+clipped discussion history. Read it when an inline episode brief omits later
+steps; never reconstruct acceptance criteria from chat excerpts.

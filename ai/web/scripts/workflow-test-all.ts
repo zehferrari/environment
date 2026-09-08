@@ -35,6 +35,7 @@ const SUITES: readonly string[] = [
   "test:procedure-versioning-crash",
   "test:orch-04-prepare-todo",
   "test:orch-05-start-implementation",
+  "test:workflow-handoffs",
   "test:orch-06-review-submission",
   "test:orch-07-review-decisions",
   "test:orch-08-reconciler",
