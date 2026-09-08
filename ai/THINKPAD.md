@@ -144,6 +144,22 @@ Installed on 2026-05-06 for host `thinkpad` (`10.0.0.105`).
   validation + add/delete in a `/tmp` sandbox (`OPENCLAW_SANDBOX_TESTING=true`)
   without touching the live system.
 
+### Compact PM task runtime
+
+Enabled on thinkpad on **2026-09-08** with PM channel plugin **0.1.2** on all
+enabled agents and `PM_TASK_RUNTIME_V2=1` in both the website and consumer.
+Native task tools remove per-turn HTTP/credential reconstruction; the compact
+snapshot and durable checkpoint carry current task context. Planning/review
+sessions persist, while execution episodes own bounded work and handoffs.
+
+Both `/etc/default/pm` and `/etc/default/pm-active-worktree` retain the enabled
+flag. `openclaw-doc-sync` propagates the deployed startup/workflow instructions.
+All four gateways advertised runtime version 1 and 15 native PM tools after
+restart; tool availability still depends on the recipient's task role. Coding
+task notifications without a required review attachment use the compact path;
+other surfaces retain their existing contracts. See
+[runtime configuration and rollback](web/docs/pm-task-runtime.md).
+
 ### Replicating agent lifecycle management on another host
 
 Everything needed to stand the feature up on a fresh server. Adjust the

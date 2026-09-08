@@ -552,6 +552,22 @@ history) and **must not** be used against the production DB.
 
 ## Native OpenClaw PM channel
 
+**Active on thinkpad as of 2026-09-08:** PM channel plugin 0.1.2 is installed on
+Asdrubal, Karen, Barekbaal and Carmen. `PM_TASK_RUNTIME_V2=1` is present in both
+`/etc/default/pm` (persistent base) and `/etc/default/pm-active-worktree`
+(effective service file), and was verified in both running PM processes.
+The website serves `main` at `998dae4` with `wt-main.db`. Gateway capabilities
+and public HTTP/assets were verified after restart. See the
+[compact runtime guide](../docs/pm-task-runtime.md) for eligibility,
+installation, configuration, measurements and rollback.
+
+A website rebuild does not update running gateway plugins. Stage the complete
+bundle, restart gateways, run `sudo /usr/local/sbin/openclaw-doc-sync`, and
+confirm authenticated `/pm-channel/capabilities` before enabling compact turns.
+Changing the runtime flag requires restarting PM and the consumer, not rebuilding
+Next.js. Keep both env files consistent; `pm-switch` regenerates the active file
+from the base configuration.
+
 PM direct chat, task chat, task-comment, and Epic chat replies use the
 native OpenClaw `pm` channel. Each enabled local agent gateway must load the staged plugin
 at `/usr/local/share/openclaw/plugins/pm-channel` and have a channel
@@ -602,11 +618,12 @@ from `/etc/openclaw/agents.json`; `openclaw/install.sh` passes that
 registry explicitly.
 
 When `openclaw-pm-channel/index.js` changes, reinstall the staged plugin and
-restart affected gateways. Running gateways keep the old plugin module in
-memory until restart, so a source-only deploy is not enough:
+restart affected gateways (`karen` below is the thinkpad PM token-file group).
+Running gateways keep the old plugin module in memory until restart, so a
+source-only deploy is not enough:
 
 ```bash
-sudo node deploy/install-openclaw-pm-channel.mjs --registry /etc/openclaw/agents.json --restart
+sudo node deploy/install-openclaw-pm-channel.mjs --registry /etc/openclaw/agents.json --token-group karen --restart
 ```
 
 `openclaw/install.sh` also applies the host runtime patch
@@ -664,12 +681,15 @@ Keep direct HTTP as fallback only: set
 and localhost gateway HTTP should be used as a temporary degraded path.
 Agents execute through per-scope OpenClaw session episodes recorded in
 `AgentSessionBinding`. PM reuses an episode across turns, then rotates it after
-`PM_TASK_SESSION_MAX_COMPLETED_TURNS` completed Task turns (default 8), or
+`PM_TASK_SESSION_MAX_COMPLETED_TURNS` completed Task turns (default 8) when no
+open execution episode owns rotation, or
 immediately when OpenClaw reports an unrecoverable context/compaction failure.
 The retry job and binding move to the fresh key together and the incremental
 baseline resets. This is provider-neutral: current PM state and the worktree
 are durable memory, while OpenAI/Anthropic/Ollama session context is a
-disposable cache. Each turn also caps its aggregate inline working set with
+disposable cache. Compact coding-task turns use the `pm-task/2` snapshot and
+scoped native tools. Remaining legacy turns cap their aggregate inline working
+set with
 `PM_CHANNEL_PRIMARY_CONTEXT_MAX_CHARS` (default 48000 characters) and each
 duplicated recent body with `PM_CHANNEL_RECENT_BODY_MAX_CHARS` (default 2000);
 deeper history remains available through scoped loopback grants. Lower these

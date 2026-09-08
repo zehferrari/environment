@@ -60,7 +60,9 @@ Every Markdown doc in the tree, grouped by folder. Agent-facing files (copied in
 | [`ai/web/README.md`](./ai/web/README.md) | PM workspace: stack, routes, library layout, agent fleet, capability map, agent runtime contract, schema, env vars, deployment. |
 | [`ai/web/deploy/README.md`](./ai/web/deploy/README.md) | PM deployment notes: files, worktree switcher, branch verifier, service model, first-time install. |
 | [`ai/web/deploy/MULTI_AGENT_WORKTREES.md`](./ai/web/deploy/MULTI_AGENT_WORKTREES.md) | Multi-agent worktree + monitor-driven live-preview design. |
-| `ai/web/docs/agent-pm-api.md` | Agent-facing PM API contract (read once on first PM-channel turn). |
+| `ai/web/docs/agent-pm-api.md` | Agent-facing PM read API reference (on-demand; native task turns carry their operating contract). |
+| [`ai/web/docs/pm-task-runtime.md`](./ai/web/docs/pm-task-runtime.md) | Compact task runtime: active thinkpad configuration, native tools, session budgets, measurements and rollback. |
+| [`ai/web/docs/audits/v23-38-workflow-2026-09-08.md`](./ai/web/docs/audits/v23-38-workflow-2026-09-08.md) | V23-38 workflow audit, fixes, deployment and runtime activation record. |
 | `ai/web/docs/agent-interaction.md` | Agent-facing PM interaction contract (chat/comment/proposal). |
 | `ai/web/lib/pm-dispatch/README.md` | Dispatch seam emitter side. |
 | `ai/web/lib/pm-consumer/README.md` | Consumer/dispatcher (OpenClaw-side) service. |

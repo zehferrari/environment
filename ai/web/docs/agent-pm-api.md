@@ -43,7 +43,8 @@ older fact is missing; it is not an episode-startup step.
 
 ## Native coding-task turns (`pm-task/2`)
 
-With the opt-in runtime, `pm_context` performs scoped reads without exposing
+The compact runtime is enabled on thinkpad as of 2026-09-08.
+`pm_context` performs scoped reads without exposing
 URLs or credentials to the model. Use the supplied task snapshot first and
 read `section=plan` or `section=history` only when a specific fact is missing.
 The task JSON includes `actionPlan` with its revision, approval metadata,
