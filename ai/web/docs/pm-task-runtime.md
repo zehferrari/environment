@@ -182,3 +182,18 @@ The 2026-09-08 activation installed/restarted the gateways, synchronized their
 docs, changed the two env files and restarted PM services. The preceding website
 deployment used `pm-switch --database=main main`. No nginx configuration changes
 or manual production task/plan/episode edits were made.
+
+## Native tool discovery repair — 2026-09-09
+
+PH-192 exposed a gap in the initial activation check: plugin 0.1.2's capability
+endpoint advertised tools that OpenClaw did not discover because the manifest
+omitted `contracts.tools`. Plugin 0.1.3 declares all 15 tools and makes the
+capability handshake validate those declarations. It was activated on Asdrubal
+after its current turn finished; other gateways were not restarted in this
+repair. A real compact task turn then invoked `pm_context` and `pm_checkpoint`
+successfully. See the [PH-192 audit](audits/ph-192-workflow-2026-09-09.md) for
+rollout details, the retry-loop evidence and the remaining external blocker.
+
+For future plugin activation, verify actual native-tool invocation and its
+durable PM effect. A successful capabilities request alone does not prove
+that model tool discovery works.

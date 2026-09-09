@@ -104,3 +104,11 @@ export function createTaskTools({ context, findTurn, fetchImpl = fetch }) {
     };
   });
 }
+
+// OpenClaw selects tool-bearing plugins from manifest contracts before it
+// invokes registerTool factories. The handshake must reflect that prerequisite.
+export function taskToolCapabilities(manifest) {
+  const declared = new Set(Array.isArray(manifest?.contracts?.tools) ? manifest.contracts.tools : []);
+  const taskTools = PM_TASK_TOOL_NAMES.filter((name) => declared.has(name));
+  return { taskRuntimeVersions: taskTools.length === PM_TASK_TOOL_NAMES.length ? [1] : [], taskTools };
+}

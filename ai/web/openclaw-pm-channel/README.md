@@ -2,6 +2,13 @@
 
 Native local OpenClaw channel for the Mission Control webapp.
 
+Version 0.1.3 repairs native-tool discovery: all 15 tools are declared in
+`openclaw.plugin.json` → `contracts.tools`. Current OpenClaw selects plugins
+from those declarations before invoking their tool factories; `registerTool`
+alone does not expose tools. The capability handshake checks the declarations
+and refuses to advertise runtime support if any are missing. Validation must
+include a real task turn using `pm_context`, not just the capabilities endpoint.
+
 Version 0.1.2 adds task-scoped native tools and numeric usage telemetry.
 It is installed on all four enabled thinkpad gateways as of 2026-09-08, with
 `PM_TASK_RUNTIME_V2=1` enabled in the PM website and consumer.

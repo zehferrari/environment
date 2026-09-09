@@ -16,7 +16,7 @@ import { createPluginRuntimeStore } from "openclaw/plugin-sdk/runtime-store";
 import { resolvePmInboundRuntime } from "./runtime-compat.js";
 import { canonicalizePmStoreSessionKey } from "./session-key.js";
 
-import { createTaskTools, PM_TASK_TOOL_NAMES, validateTaskRuntime } from "./task-tools.js";
+import { createTaskTools, PM_TASK_TOOL_NAMES, taskToolCapabilities, validateTaskRuntime } from "./task-tools.js";
 
 const CHANNEL_ID = "pm";
 const DEFAULT_ACCOUNT_ID = "default";
@@ -1179,6 +1179,7 @@ export default defineChannelPluginEntry({
   },
   setRuntime: setPmRuntime,
   registerFull(api) {
+    const toolCapabilities = taskToolCapabilities(JSON.parse(readFileSync(new URL("./openclaw.plugin.json", import.meta.url), "utf8")));
     const telemetry = createPmTaskTelemetry({
       findTurn: (key) => [...activeTurns.values()].find((turn) => turn.canonicalSessionKey === key),
     });
@@ -1196,7 +1197,7 @@ export default defineChannelPluginEntry({
         const account = resolvePmAccount({ cfg: api.config, accountId: "default" });
         if (!tokensEqual(authHeader(req), account.token)) writeJson(res, 401, { error: "Unauthorized" });
         else if (req.method !== "GET") writeJson(res, 405, { error: "Method not allowed" });
-        else writeJson(res, 200, { taskRuntimeVersions: [1], taskTools: PM_TASK_TOOL_NAMES });
+        else writeJson(res, 200, toolCapabilities);
         return true;
       },
     });
