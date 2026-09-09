@@ -1,3 +1,4 @@
+import { canRetryAcceptedRepositoryReview } from "@/lib/tasks/repository-finalization";
 import {
   createChecklistAndDelegatableTasksFromPlan,
   markActionPlanRevisionRequired,
@@ -340,6 +341,18 @@ const checkpointExecutor: IntentExecutor<"checkpoint"> = (context) =>
   context.helpers.executeDecisionWrites();
 
 const acceptReviewExecutor: IntentExecutor<"accept_review"> = async (context) => {
+  if (canRetryAcceptedRepositoryReview(context.state) && context.state.activeWorkflowCycleId) {
+    // Retire both terminal failures and historical jobs stranded waiting for
+    // a callback. The new procedure gets a fresh, exact repository identity;
+    // late deliveries from the superseded procedure cannot execute cleanup.
+    await supersedeCycleMechanicalWork(context.tx, {
+      taskId: context.command.taskId,
+      workflowCycleId: context.state.activeWorkflowCycleId,
+      reason: "Accepted candidate finalization explicitly retried by its reviewer.",
+      procedureTypes: ["finalize_accepted_review"],
+      effectTypes: ["review_finalize"],
+    });
+  }
   const reviewerComment = typeof context.command.evidence?.reviewerComment === "string"
     ? context.command.evidence.reviewerComment.trim()
     : "";

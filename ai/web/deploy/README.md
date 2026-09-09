@@ -74,6 +74,12 @@ The installer now verifies the monitor can traverse the repository and write the
 worktree root. If local removal reports a permission-denied preflight, do not
 bypass it or run Git removal as root: rerun `code-tree-perms` for `/srv/Code` so
 a stale named-user ACL cannot override the monitor's `code-agents` membership.
+For an accepted task stuck in finalization after an ACL failure, repair the
+host access before a new reviewer-authorized `review_done` retry. The retry
+preserves the accepted candidate and replaces the failed or stranded procedure;
+it does not reopen implementation. See the
+[V23-38 finalization recovery runbook](../docs/audits/v23-38-finalization-2026-09-09.md).
+
 The installer writes a root-owned, non-secret `/etc/default/pm-deploy` contract
 from its repository/worktree, code-group, database, pnpm, lock, spool, and env
 file options. That contract preserves custom paths across the monitor runner

@@ -44,3 +44,16 @@ export function repositoryFinalizationOwnsTask(
 
 export const REPOSITORY_FINALIZATION_FENCE_MESSAGE =
   "Review is already accepted and repository finalization owns this task. Fix any reported operational problem, then retry review_done for the same immutable candidate; do not reopen implementation or resubmit the branch.";
+
+/** A finalization retry reuses the accepted lease; it is not a new review. */
+export function canRetryAcceptedRepositoryReview(state: {
+  status: string;
+  repositoryRun?: RepositoryFinalizationFence;
+  activeReviewRun?: { status: string; candidateSha: string } | null;
+}): boolean {
+  return state.status === "Review"
+    && state.repositoryRun?.phase === "operational_error"
+    && repositoryFinalizationOwnsTask(state.repositoryRun)
+    && state.activeReviewRun?.status === "accepted"
+    && state.activeReviewRun.candidateSha === state.repositoryRun.reviewedSha;
+}

@@ -403,6 +403,14 @@ resumes a Review-stage task in place. Feedback left only as a comment
 does not move the task; the reviewer must formalize it with
 `review_feedback`.
 
+After review acceptance, an operational repository-finalization failure keeps
+the task in Review and preserves the accepted commit. Once the host problem is
+resolved, the original accepting reviewer (still authorized as the Done owner)
+may issue a new `review_done` for the same lease and candidate. PM retires the
+failed or stranded finalization procedure and creates a fresh one; it does not
+request another code review. Replaying the earlier command receipt does not
+start recovery. See the [finalization recovery runbook](audits/v23-38-finalization-2026-09-09.md).
+
 Workflow mutations ride workflow turns: tokens are delivered only inside
 a workflow turn's system prompt. If you finish work and no workflow turn
 is live, request one —
