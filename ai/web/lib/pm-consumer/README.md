@@ -1,9 +1,11 @@
 # `lib/pm-consumer`
 
-For the opt-in `pm-task/2` notification path, see the
+For the `pm-task/2` notification path (enabled on thinkpad since 2026-09-08), see the
 [compact task runtime](../../docs/pm-task-runtime.md). Its native tool envelope
 is forwarded unchanged to the gateway; the consumer and PM server must use the
-same `PM_TASK_RUNTIME_V2` setting and a compatible channel plugin.
+same `PM_TASK_RUNTIME_V2=1` setting and PM channel plugin 0.1.2. Both services
+read `/etc/default/pm-active-worktree`; persist the flag in `/etc/default/pm`
+as well so the next worktree deployment retains it.
 
 PM consumer / dispatcher (HOMELAB-46 Slice 4).
 
@@ -117,11 +119,15 @@ ends with a recognized unrecoverable context/compaction failure, the webapp
 atomically rotates the scope's `AgentSessionBinding` key and the durable retry
 payload before re-entering the bounded job ladder. Task sessions also rotate
 preventively after `PM_TASK_SESSION_MAX_COMPLETED_TURNS` completed turns
-(default 8). This policy does not depend on provider-specific token accounting;
+(default 8) when no open execution episode owns rotation. With the compact
+runtime enabled, checklist bookkeeping is charged to the observable tool
+budget without also spending the workflow-action budget. This policy does not depend on provider-specific token accounting;
 every retry receives a self-contained PM context packet and reconstructs work
 from canonical task/repository state.
 
-The packet is a working set, not the archive. Its aggregate inline context is
+Compact coding-task notifications use the versioned snapshot and native
+`pm_context` reads described in the runtime guide. The remaining legacy packet
+is a working set, not the archive. Its aggregate inline context is
 capped by `PM_CHANNEL_PRIMARY_CONTEXT_MAX_CHARS` (default 48000), and duplicated
 recent-message bodies are capped by `PM_CHANNEL_RECENT_BODY_MAX_CHARS` (default
 2000 each). Scoped loopback grants retain access to deeper PM history. Operators

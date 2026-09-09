@@ -1,8 +1,22 @@
-# Compact PM task runtime — staged implementation
+# Compact PM task runtime
 
-Implemented in `fix-v23-workflow-handoffs`. Production rollout is separate.
-`PM_TASK_RUNTIME_V2` is off unless explicitly set to `1` in the PM server and
-consumer environment. There are no new database migrations.
+Enabled on **thinkpad on 2026-09-08**, after the workflow changes were merged
+and deployed from `main` at commit `998dae4`. The live website and consumer use
+`/srv/Code/environment.worktrees/main` with `/srv/Data/pm/wt-main.db`.
+
+| Component | Verified active configuration |
+| --- | --- |
+| PM website and consumer | `PM_TASK_RUNTIME_V2=1` in both running processes |
+| Persistent deployment configuration | `/etc/default/pm` contains `PM_TASK_RUNTIME_V2=1` |
+| Active service configuration | `/etc/default/pm-active-worktree` contains the same flag; both services read this file |
+| Gateway plugin | PM channel **0.1.2**, installed under `/usr/local/share/openclaw/plugins/pm-channel` |
+| Enabled gateways | Asdrubal, Karen, Barekbaal and Carmen; each authenticated capabilities response advertised runtime version **1** and **15 PM tools** |
+| Agent instructions | `AGENTS.md` and `WORKFLOW.md` synchronized from the deployed worktree and verified in every internal agent workspace |
+
+The model-facing contract is `pm-task/2`; the plugin envelope/capability version
+is `1`. These version numbers describe different contracts. The feature remains
+disabled by default on a fresh installation until explicitly configured. No new
+database migrations were required for this activation.
 
 ## What changes
 
@@ -24,8 +38,8 @@ the workflow route rejecting a run in the legitimate `admitted` state.
 
 ## Scope and contracts
 
-The opt-in path covers PM-owned task notifications to coding agents without an
-attachment-required review gate. Direct owner chats, interactive work-item
+The enabled compact path covers PM-owned task notifications to coding agents
+without an attachment-required review gate. Direct owner chats, interactive work-item
 proposals, Epics, general/artifact agents and attachment-required tasks retain
 their existing interaction contract. Native attachment upload and project-wide
 proposal tools are not part of this rollout.
@@ -61,6 +75,13 @@ Missing gateway usage is reported as unavailable, never zero cost.
 
 ## Verification
 
+Production activation checks confirmed the installed plugin bundle matched the
+deployed source, all four gateways authenticated successfully, both running PM
+processes had the enabled flag and a valid loopback origin, and the public login
+page and generated CSS returned HTTP 200. nginx, PM and the consumer were active.
+These checks did not create a synthetic live task or invoke an LLM; the
+88–89% reduction below is still an isolated fixture result.
+
 From `ai/web`, run the two self-contained suites and type check:
 
 ```bash
@@ -70,8 +91,8 @@ pnpm exec tsc --noEmit --incremental false
 ```
 
 For `pnpm test:workflow`, select and migrate a disposable `DATABASE_URL` first;
-some existing suites use the caller's database. Validation for this branch used
-only migrated SQLite files under `/tmp`.
+some existing suites use the caller's database. Implementation regression checks
+used only migrated SQLite files under `/tmp`.
 
 The two new suites use injected transport or a migrated disposable SQLite DB.
 They cover credentials, task/session/generation fencing, role refusal, native
@@ -88,8 +109,8 @@ The legacy prompt builder currently runs before compact rendering, so this
 change reduces transmitted context; it does not claim to remove all server-side
 context-construction work.
 
-The plugin was also loaded against the locally installed OpenClaw SDK from a
-copy under `/tmp`, verifying registration, capability authentication and invalid
+Before production activation, the plugin was also loaded against the locally
+installed OpenClaw SDK from a copy under `/tmp`, verifying registration, capability authentication and invalid
 runtime rejection without installing it or contacting a gateway.
 
 ## Read-only comparison
@@ -115,20 +136,49 @@ input/output/cache tokens, tool calls and end-to-end duration. Require correct
 handoffs, independent review and passing acceptance checks before accepting a
 speed gain. Tune model/reasoning settings only after those measurements.
 
-## Future activation and rollback — not executed
+## Installation, configuration and rollback
 
-1. Review/publish the fix branch. Keep the runtime flag off while installing the
-   complete plugin 0.1.2 bundle through the existing PM channel installer and
-   reconciling the shared agent docs. Restart the affected gateways through that
-   controlled installation workflow. Confirm the authenticated capabilities.
-2. Promote the reviewed worktree through `pm-switch` under separate production
-   authorization. Do not run a standalone build against the live checkout.
-3. Enable `PM_TASK_RUNTIME_V2=1` consistently for the PM server and consumer in
-   an isolated/canary environment, then run the matched-task comparison. The
-   flag is deployment-wide, not a per-project allowlist.
-4. To stop new compact turns, unset the flag in both services. Already queued
-   compact turns still require the new plugin: drain/cancel those through the
-   normal PM controls before reverting the gateway plugin or application.
+For subsequent installations, deploy compatible application code through
+`pm-switch`, install the complete plugin bundle, synchronize instructions, and
+verify gateway capabilities before enabling compact turns. On thinkpad, run the
+following from the deployed `ai/web` directory:
 
-No production DB edits, live agent messages, builds, installer calls, service
-restarts, `pm-switch` operations or nginx changes were performed for this work.
+```bash
+sudo node deploy/install-openclaw-pm-channel.mjs --registry /etc/openclaw/agents.json --token-group karen --restart
+sudo /usr/local/sbin/openclaw-doc-sync
+```
+
+The installer preserves existing per-agent tokens, updates canonical and runtime
+config copies, and restarts enabled gateways. The token group must match the PM
+service group (`karen` on thinkpad). It must stage `task-tools.js` and
+`task-telemetry.js` together with `index.js`; a website rebuild alone does not
+reload plugins already running in gateways.
+
+Set `PM_TASK_RUNTIME_V2=1` in **both** `/etc/default/pm` and
+`/etc/default/pm-active-worktree`, preserving their ownership, permissions and
+other values, then restart `pm.service` and `pm-consumer.service`. The base file
+makes the setting survive future `pm-switch` operations; the active file is what
+both installed units currently read. Changing only one file either leaves the
+running services on the old setting or loses activation on the next deployment.
+No website rebuild is needed for this server-side environment flag. Verify the
+value in both running processes after restart. The flag is deployment-wide,
+not a per-project allowlist.
+
+Gateway verification uses authenticated loopback
+`GET /pm-channel/capabilities` with the agent's PM-channel bearer, never its
+gateway operator credentials. Expect `taskRuntimeVersions: [1]` and the 15
+`pm_*` tool names. Keep the endpoint and credentials off public nginx routes and
+out of logs. Capability availability does not grant a task role: tools are
+exposed only in an eligible, authenticated PM turn, and mutations retain their
+server-side authorization checks.
+
+To stop new compact turns, remove the flag or set it to `0` in both env files,
+then restart the website and consumer. Keep plugin 0.1.2 installed while already
+queued compact turns drain, or cancel those turns through normal PM controls
+before reverting the plugin/application. Retaining the new plugin is compatible
+with legacy turns. Rollback does not require changing the database pairing.
+
+The 2026-09-08 activation installed/restarted the gateways, synchronized their
+docs, changed the two env files and restarted PM services. The preceding website
+deployment used `pm-switch --database=main main`. No nginx configuration changes
+or manual production task/plan/episode edits were made.

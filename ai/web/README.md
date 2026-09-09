@@ -1,7 +1,8 @@
 # Mission Control PM web application
 
-Opt-in coding-task workflow optimization: [compact PM task runtime](docs/pm-task-runtime.md)
-(`PM_TASK_RUNTIME_V2`, disabled by default; requires PM channel plugin 0.1.2).
+The [compact PM task runtime](docs/pm-task-runtime.md) is enabled on thinkpad
+as of 2026-09-08: `PM_TASK_RUNTIME_V2=1` in both PM services, with PM channel
+plugin 0.1.2 on all enabled gateways. Fresh installations remain opt-in.
 
 Mission Control is the single-host project-management and agent-control plane
 for the OpenClaw fleet. It combines a human-facing workspace, Kanban boards,
@@ -294,10 +295,17 @@ Important properties:
 
 - `AgentSessionBinding` gives each direct/task/Epic conversation a `pm:...`
   execution-session episode. Task episodes rotate preventively after the
-  configured completed-turn budget and reactively after unrecoverable
-  context/compaction failure. PM/task/repository state is durable memory;
+  configured completed-turn budget when no execution episode owns rotation,
+  and reactively after unrecoverable context/compaction failure. Compact
+  planning/review turns preserve each task/agent session; open execution
+  episodes own their tool/context limits and checkpoint handoffs. PM/task/repository state is durable memory;
   provider session context is disposable.
-- PM-channel turns carry a provider-neutral bounded inline working set:
+- Eligible coding-task notifications use `pm-task/2`: a compact snapshot,
+  durable checkpoint and role-scoped native tools, with credentials bound by
+  the gateway outside the model prompt. `pm_context` retrieves missing facts.
+  Direct/interactive chats, Epics, general/artifact agents and tasks requiring
+  review attachments retain their existing contracts.
+- Legacy PM-channel turns carry a provider-neutral bounded inline working set:
   `PM_CHANNEL_PRIMARY_CONTEXT_MAX_CHARS` defaults to `48000` aggregate
   characters and `PM_CHANNEL_RECENT_BODY_MAX_CHARS` defaults to `2000` per
   duplicated hot-path message. Deeper history remains reachable through the

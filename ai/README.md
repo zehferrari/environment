@@ -460,6 +460,14 @@ installed or enabled as per-agent user services under a coding agent's
 uses service-private `pnpm` home/config/cache directories under
 `/var/lib/pm` so it never probes hidden `/home/karen` config paths.
 
+The compact PM task runtime was enabled on **2026-09-08**. Both PM services
+have `PM_TASK_RUNTIME_V2=1`; the persistent setting is in `/etc/default/pm`
+and the effective copy is in `/etc/default/pm-active-worktree`. PM channel
+plugin 0.1.2 is installed on Asdrubal, Karen, Barekbaal and Carmen. Updated
+shared agent instructions were synchronized and all gateways passed their
+authenticated native-tool capability checks. Scope and operational procedures:
+[compact PM task runtime](web/docs/pm-task-runtime.md).
+
 Expected enabled user services/timers, by role (concrete user → services map is in `/etc/openclaw/agents.json` `services`):
 
 | Role | Services / timers |

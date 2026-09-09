@@ -2,7 +2,9 @@
 
 Native local OpenClaw channel for the Mission Control webapp.
 
-Version 0.1.2 adds optional task-scoped native tools and numeric usage telemetry.
+Version 0.1.2 adds task-scoped native tools and numeric usage telemetry.
+It is installed on all four enabled thinkpad gateways as of 2026-09-08, with
+`PM_TASK_RUNTIME_V2=1` enabled in the PM website and consumer.
 The bundle includes `task-tools.js` and `task-telemetry.js`; they must be staged
 with `index.js`. Authenticated `GET /pm-channel/capabilities` advertises runtime
 version 1. PM gates compact turns behind `PM_TASK_RUNTIME_V2=1` and checks that
@@ -55,10 +57,11 @@ Minimal `openclaw.json` channel config:
 }
 ```
 
-Install and configure all enabled local agent accounts from the PM web root with:
+Install and configure all enabled local agent accounts from the PM web root with
+the PM service group (`karen` on thinkpad):
 
 ```bash
-sudo node deploy/install-openclaw-pm-channel.mjs --registry /etc/openclaw/agents.json --restart
+sudo node deploy/install-openclaw-pm-channel.mjs --registry /etc/openclaw/agents.json --token-group karen --restart
 ```
 
 The installer stages a root-owned copy at
