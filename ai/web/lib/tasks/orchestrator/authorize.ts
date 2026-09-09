@@ -25,6 +25,7 @@
 //  10. No inferred decisions — authorization is a function of (task, actor,
 //      lease); it never infers consent from comments or API success.
 
+import { canRetryAcceptedRepositoryReview } from "@/lib/tasks/repository-finalization";
 import {
   canApproveActionPlanForActor,
   canSetTaskDoneForActor,
@@ -485,7 +486,7 @@ export function authorizeCommand(
     case "accept_review": {
       // Done is a review decision — use the canonical Done-owner resolver.
       const lease = state.activeReviewRun ?? null;
-      if (!lease || lease.status !== "awaiting_review") {
+      if (!lease || (lease.status !== "awaiting_review" && !canRetryAcceptedRepositoryReview(state))) {
         return {
           allowed: false,
           reason: "no_active_lease",
@@ -494,6 +495,7 @@ export function authorizeCommand(
         };
       }
       if (
+        (lease.status === "accepted" && lease.reviewerId !== actor.id) ||
         !canSetTaskDoneForActor(
           {
             actingManagerId: state.actingManagerId,

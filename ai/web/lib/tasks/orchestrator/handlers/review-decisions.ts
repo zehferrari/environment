@@ -296,7 +296,9 @@ async function verifyFinalization(ctx: StepHandlerContext): Promise<StepHandlerR
   const mergeSha = finalizeOutput?.mergeSha as string | undefined;
   if (finalizationOk !== true) {
     const error = (finalizeOutput?.error as string) ?? "Finalization callback did not report success.";
-    return { status: "failed", error, retryable: true };
+    // The repository runner has already exhausted its bounded retries. Reading
+    // the same failed callback again cannot repair the host or rerun cleanup.
+    return { status: "failed", error, retryable: false };
   }
   if (!candidateSha) {
     return { status: "failed", error: "Finalization callback missing candidate SHA.", retryable: false };

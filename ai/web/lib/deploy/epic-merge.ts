@@ -1874,13 +1874,14 @@ async function executeFinalizeJob(
 
   const fail = async (reason: string, operational = false) => {
     if (operational) {
+      const attempt = job.attempt ?? 0;
       await recordTaskReviewOperationalError({
         taskId: task.id,
         actor,
         error: reason,
         preserveValidationOutcome: true,
+        retryPending: attempt < 2,
       });
-      const attempt = job.attempt ?? 0;
       if (attempt < 2) {
         await enqueueEpicMergeJob({
           ...job,
@@ -1913,7 +1914,7 @@ async function executeFinalizeJob(
       data: {
         taskId: task.id,
         userId: actor.id,
-        body: `🚫 Repository finalization failed. The task was returned to To Do and the reviewer was not triggered again.\n\n${reason}`,
+        body: `🚫 Repository finalization failed. The task remains in Review with its accepted candidate preserved. Resolve the reported problem before retrying finalization.\n\n${reason}`,
         commentKind: "workflow_action",
         isGenerated: true,
       },

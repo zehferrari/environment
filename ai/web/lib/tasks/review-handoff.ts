@@ -96,6 +96,9 @@ export async function recordTaskReviewOperationalError(args: {
   actor?: Actor | null;
   error: string;
   preserveValidationOutcome?: boolean;
+  // An in-flight finalization retry still owns the current repository version.
+  // Report the error without invalidating its immutable job identity.
+  retryPending?: boolean;
 }) {
   const task = await db.task.findUnique({
     where: { id: args.taskId },
@@ -110,10 +113,10 @@ export async function recordTaskReviewOperationalError(args: {
         taskId: task.id,
         userId: args.actor?.id ?? null,
         kind: "pm.repo.verify.operational_error",
-        payload: JSON.stringify({ error: args.error }),
+        payload: JSON.stringify({ error: args.error, ...(args.retryPending ? { retryPending: true } : {}) }),
       },
     });
-    await updateTaskRepositoryState(task.id, {
+    if (!args.retryPending) await updateTaskRepositoryState(task.id, {
       phase: "operational_error",
       ...(args.preserveValidationOutcome ? {} : { validationOutcome: "operational_error" as const }),
       lastError: args.error,

@@ -21,6 +21,7 @@
 // No edits to types.ts, command-schema.ts, or normalize.ts (PHASEE-02a owns
 // those).
 
+import { canRetryAcceptedRepositoryReview } from "@/lib/tasks/repository-finalization";
 import type { Prisma } from "@prisma/client";
 import type { TaskWorkflowCommand } from "@/lib/tasks/orchestrator/types";
 import type { TaskStateSnapshot } from "@/lib/tasks/orchestrator/types";
@@ -978,7 +979,7 @@ export async function fenceState(
       };
     }
 
-    const allowedLeaseStatuses = command.intent === "request_review_changes"
+    const allowedLeaseStatuses = command.intent === "request_review_changes" || canRetryAcceptedRepositoryReview(aggregate)
       ? ["awaiting_review", "accepted"]
       : ["awaiting_review"];
     if (!allowedLeaseStatuses.includes(lease.status)) {
@@ -987,6 +988,16 @@ export async function fenceState(
         code: "lease_mismatch",
         expected: `lease status=${allowedLeaseStatuses.join(" or ")}`,
         actual: `lease status=${lease.status}`,
+      };
+    }
+
+    if (command.intent === "accept_review" && lease.status === "accepted"
+      && (command.payload.reviewRunId !== lease.id || command.payload.candidateSha !== lease.candidateSha)) {
+      return {
+        ok: false,
+        code: "lease_mismatch",
+        expected: `accepted lease ${lease.id} at ${lease.candidateSha}`,
+        actual: `lease ${command.payload.reviewRunId} at ${command.payload.candidateSha}`,
       };
     }
 

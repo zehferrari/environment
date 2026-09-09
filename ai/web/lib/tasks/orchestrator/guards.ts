@@ -12,6 +12,7 @@
 // 6 (one active procedure per type/cycle), and the cycle/candidate/lease
 // preconditions for review intents.
 
+import { canRetryAcceptedRepositoryReview } from "@/lib/tasks/repository-finalization";
 import type { TaskWorkflowIntent } from "@/lib/tasks/orchestrator/types";
 import type { TaskStateSnapshot } from "@/lib/tasks/orchestrator/types";
 import { isActionableEpicStatus } from "@/lib/tasks/workflow-actors";
@@ -273,7 +274,7 @@ export function guardReviewLease(
       reason: `Intent ${intent} requires an active review lease, but none exists for the active cycle.`,
     };
   }
-  const allowedStatuses = intent === "request_review_changes"
+  const allowedStatuses = intent === "request_review_changes" || canRetryAcceptedRepositoryReview(state)
     ? ["awaiting_review", "accepted"]
     : ["awaiting_review"];
   if (!allowedStatuses.includes(lease.status)) {
