@@ -321,8 +321,8 @@ export function renderOpenClawJson(args: {
   };
 
   const config = {
-    meta: { lastTouchedVersion: "2026.7.1-2", lastTouchedAt: now },
-    wizard: { lastRunAt: now, lastRunVersion: "2026.7.1-2", lastRunCommand: "configure", lastRunMode: "local" },
+    meta: { lastTouchedVersion: "2026.9.3" },
+    wizard: { lastRunAt: now, lastRunVersion: "2026.9.3", lastRunCommand: "configure", lastRunMode: "local" },
     auth: { profiles },
     models: { mode: "merge", providers },
     browser: {
@@ -339,13 +339,6 @@ export function renderOpenClawJson(args: {
       mode: "local",
       ...(args.gatewayPort ? { port: args.gatewayPort } : {}),
     },
-    diagnostics: {
-      // Preserve a payload-free stability bundle before a gateway reaches its
-      // V8 heap limit. The host has enough storage for the bounded snapshot,
-      // and without it an automatically restarted gateway loses the evidence
-      // needed to distinguish retained session state from a true leak.
-      memoryPressureSnapshot: true,
-    },
     agents: {
       defaults: {
         model: {
@@ -358,10 +351,6 @@ export function renderOpenClawJson(args: {
         workspace: `/home/${args.user}/workspace`,
         compaction: {
           mode: "safeguard",
-          // PM execution sessions are intentionally long-lived. Keep enough
-          // headroom for OpenClaw's recovery pass so a productive task turn
-          // cannot end in an unrecoverable auto-compaction terminal.
-          reserveTokensFloor: 50_000,
         },
         typingIntervalSeconds: 2,
         typingMode: "message",

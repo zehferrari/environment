@@ -125,3 +125,15 @@ assert.equal(aborts.length, 1, "generation rechecked after session resolution");
 for (const text of ["NO_REPLY", "NO_REPLY.NO_REPLY", "PM_SILENT_NO_CONTRIBUTION"]) assert.equal(isProtocolSilentReply(text), true);
 for (const text of ["", "The literal NO_REPLY is part of this explanation.", "Review finished."]) assert.equal(isProtocolSilentReply(text), false);
 console.log("PASS terminal outcomes stop native execution, fence later tools and preserve successor generations");
+
+// A CLI-backed canonical model must not advertise tools owned by the gateway.
+const migratedCliCfg = { agents: { defaults: { model: { primary: "openai/test" }, models: {
+  "anthropic/claude-fable-5-1": { agentRuntime: { id: "claude-cli" } },
+} }, entries: { main: { model: { primary: "anthropic/claude-fable-5-1" } } } } };
+assert.equal(nativeTaskToolsSupported(migratedCliCfg), false);
+assert.deepEqual(taskToolCapabilities(manifest, migratedCliCfg).taskTools, []);
+assert.equal(nativeTaskToolsSupported({ agents: { defaults: apiCfg.agents.defaults, entries: { main: { model: "openai/test" } } } }), true);
+assert.equal(nativeTaskToolsSupported({ agents: { defaults: { model: { primary: "openai/test", fallbacks: ["anthropic/claude-fable-5-1"] }, models: migratedCliCfg.agents.defaults.models } } }), false);
+console.log("PASS OpenClaw 2026.9 entries and canonical CLI runtime capability checks");
+
+assert.equal(nativeTaskToolsSupported({ agents: { defaults: { model: { primary: "openai/gpt-6-astra" }, models: { "openai/gpt-6-astra": { agentRuntime: { id: "codex" } } } } } }), true, "Codex harness bridges native OpenClaw tools");

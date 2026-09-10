@@ -12,7 +12,7 @@ export async function resolvePmTurnEffort({ runtime, cfg, agentId, sessionKey, p
       agentId, search: sessionKey, limit: 1, includeDerivedTitles: false, includeLastMessage: false,
     }, { timeoutMs: 5000 });
     const session = metadata.sessions?.find((row) => row.key === sessionKey);
-    const main = cfg.agents?.list?.find((row) => row.id === agentId);
+    const main = cfg.agents?.entries?.[agentId] ?? cfg.agents?.list?.find((row) => row.id === agentId);
     const mainPrimary = typeof main?.model === "string" ? main.model : main?.model?.primary;
     const defaultPrimary = typeof cfg.agents?.defaults?.model === "string" ? cfg.agents.defaults.model : cfg.agents?.defaults?.model?.primary;
     // Global defaults cannot describe an auxiliary agent with a different model.
@@ -54,5 +54,6 @@ export function withPmHighDefault(cfg, agentId, cliEffort = undefined) {
     "claude-cli": { ...cli, env: { ...cli.env, CLAUDE_CODE_EFFORT_LEVEL: cliEffort ?? "high" } },
   } : undefined;
   return { ...cfg, agents: { ...cfg.agents, defaults: { ...cfg.agents?.defaults, thinkingDefault: "high", ...(cliBackends ? { cliBackends } : {}) },
+    ...(cfg.agents?.entries?.[agentId] ? { entries: { ...cfg.agents.entries, [agentId]: { ...cfg.agents.entries[agentId], thinkingDefault: "high" } } } : {}),
     ...(cfg.agents?.list ? { list: cfg.agents.list.map((row) => row.id === agentId ? { ...row, thinkingDefault: "high" } : row) } : {}) } };
 }

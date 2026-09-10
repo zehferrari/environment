@@ -22,6 +22,11 @@ async function main() {
   assert.equal(cfg.agents.list[0].thinkingDefault, "xhigh");
   assert.equal(cloned.agents.list[0].thinkingDefault, "high");
   assert.equal(cloned.agents.list[1].thinkingDefault, "low");
+  const keyedCfg = { agents: { defaults: { thinkingDefault: "low" }, entries: { main: { thinkingDefault: "xhigh" }, aux: { thinkingDefault: "low" } } } };
+  const keyedClone = withPmHighDefault(keyedCfg, "main");
+  assert.equal(keyedClone.agents.entries.main.thinkingDefault, "high");
+  assert.equal(keyedCfg.agents.entries.main.thinkingDefault, "xhigh");
+  assert.equal(keyedClone.agents.entries.aux.thinkingDefault, "low");
   const sessionKey = "agent:main:pm:test";
   const logs: string[] = [];
   const logger = { info: (s: string) => logs.push(s), warn: (s: string) => logs.push(s) };
