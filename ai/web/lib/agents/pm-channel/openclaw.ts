@@ -1,3 +1,4 @@
+import { resolvePmEffortPolicy, type PmEffortPolicy } from "./turn-effort";
 import { readFile } from "fs/promises";
 import {
   recordPmChannelRunDispatch,
@@ -52,6 +53,7 @@ export interface SendPmChannelTurnArgs {
   contextText?: string | null;
   systemPrompt?: string | null;
   taskRuntime?: PmTaskToolRuntime | null;
+  effortPolicy?: PmEffortPolicy;
   expectedWorkflowAction?: "submit_plan";
   taskContract?: { version: "pm-task/2"; transport: "native-tools" | "scoped-http"; actions: string[] };
   actor: {
@@ -247,6 +249,7 @@ export function buildPmChannelIngressPayload(
     text: args.text,
     contextText: args.contextText ?? null,
     systemPrompt: args.systemPrompt ?? null,
+    ...(args.effortPolicy ? { effortPolicy: args.effortPolicy } : {}),
     ...(args.taskRuntime ? { taskRuntime: args.taskRuntime } : {}),
     actor: args.actor,
     replyTarget: args.replyTarget,
@@ -293,6 +296,7 @@ export async function sendOpenClawPmChannelTurn(
 export async function dispatchOpenClawPmChannelTurn(
   args: SendPmChannelTurnArgs,
 ): Promise<SendPmChannelTurnResult> {
+  args = { ...args, effortPolicy: await resolvePmEffortPolicy(args) };
   const transportMode = resolvePmChannelTransportMode();
   const bus = await publishPmChannelTurnToBus(args);
   if (bus.ok) {

@@ -3,7 +3,7 @@ import { resolveEffectiveAgentConfig } from "@/lib/agents/management/effective-c
 
 async function snapshotServices(agent: string) {
   try {
-    const res = await fetch("http://127.0.0.1:3013/agents/snapshot", { cache: "no-store" });
+    const res = await fetch("http://127.0.0.1:3013/agents/snapshot", { cache: "no-store", signal: AbortSignal.timeout(5000) });
     if (!res.ok) return [];
     const data = await res.json() as {
       agents?: Record<string, { services?: string[] }>;
@@ -22,7 +22,7 @@ async function snapshotServices(agent: string) {
 export type AgentRestartResult = { service: string; ok: boolean; status: number; error?: string };
 export type QueuedAgentRestart = { queued: true; agent: string; reason: string };
 
-export async function requestAgentRestart(agent: string, reason: string): Promise<AgentRestartResult[]> {
+export async function requestAgentRestart(agent: string, reason: string, gatewayOnly = false): Promise<AgentRestartResult[]> {
   const [row, allRows] = await Promise.all([
     db.agent.findUnique({ where: { slug: agent } }),
     db.agent.findMany({ select: { rawJson: true } }),
@@ -30,7 +30,7 @@ export async function requestAgentRestart(agent: string, reason: string): Promis
   const effective = await resolveEffectiveAgentConfig(row?.rawJson ?? null, allRows.map((r) => r.rawJson));
   const services = Array.from(new Set([...effective.services, ...(await snapshotServices(agent))]));
   const targets = services.filter((service) => service.startsWith("openclaw-") && service.endsWith(".service"));
-  const attempted = targets.length > 0 ? targets : ["openclaw-gateway.service"];
+  const attempted = gatewayOnly ? ["openclaw-gateway.service"] : targets.length > 0 ? targets : ["openclaw-gateway.service"];
   const results: AgentRestartResult[] = [];
 
   for (const service of attempted) {
@@ -40,6 +40,7 @@ export async function requestAgentRestart(agent: string, reason: string): Promis
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ user: agent, service }),
         cache: "no-store",
+        signal: AbortSignal.timeout(45000),
       });
       const text = await res.text().catch(() => "");
       results.push({ service, ok: res.ok, status: res.status, error: res.ok ? undefined : text.slice(0, 500) });

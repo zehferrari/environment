@@ -471,3 +471,10 @@ Verify host health and agent status using these tools:
 # Full boot readiness check
 /usr/local/bin/openclaw-boot-readiness
 ```
+
+## Rotating agent models
+
+Use the PM agent Models tab or the two-argument
+[`rotate-agent-model.sh`](web/scripts/rotate-agent-model.sh) command. Both share
+provider-specific fallback rotation and guard against stale configurations and
+active PM work. See the [model upgrade runbook](web/docs/agent-model-upgrades.md).

@@ -33,6 +33,7 @@ export type AgentIndex = {
 };
 
 const INDEX_PATH = process.env.AGENT_INDEX_PATH ?? "/etc/openclaw/agents.json";
+export const DEFAULT_AGENT_THINKING = "high";
 export const DEFAULT_AGENT_REASONING = "stream";
 const AGENT_REASONING_VALUES = new Set(["on", "off", "stream"]);
 const AGENT_THINKING_VALUES = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);

@@ -553,3 +553,10 @@ durable effect or retrying an already-recorded process cancellation fence.
 
 When documentation and code disagree, verify the current implementation before
 acting, then reconcile the authoritative workflow documents in the same change.
+
+### Provider model upgrades
+
+The agent Models tab includes a provider upgrade preview and fallback rotation.
+The same operation is available as `scripts/rotate-agent-model.sh <provider> <model>`
+(with optional `--dry-run`). See [Agent model upgrades](docs/agent-model-upgrades.md)
+for matching rules, model discovery limits, restart behavior, and verification.

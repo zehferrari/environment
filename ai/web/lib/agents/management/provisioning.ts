@@ -1,3 +1,4 @@
+import { DEFAULT_AGENT_THINKING } from "./index-loader";
 /**
  * Agent provisioning helpers — single source of truth for the *content* the
  * privileged helper places on disk when an agent is created or edited.
@@ -353,7 +354,7 @@ export function renderOpenClawJson(args: {
         },
         models: aliases,
         reasoningDefault: args.reasoning,
-        ...(args.thinking ? { thinkingDefault: args.thinking } : {}),
+        thinkingDefault: args.thinking ?? DEFAULT_AGENT_THINKING,
         workspace: `/home/${args.user}/workspace`,
         compaction: {
           mode: "safeguard",

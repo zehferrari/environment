@@ -87,3 +87,19 @@ The installer stages a root-owned copy at
 enabled agent's OpenClaw config. Do not link the worktree path directly for
 multi-user gateways; OpenClaw will block plugin paths owned by another
 non-root user.
+
+## Per-turn effort (0.1.5)
+
+Authenticated PM ingress can carry `effortPolicy` (normal or manager). PM resolves
+that policy from current database roles at dispatch, including queued jobs. The
+plugin queries gateway session metadata and uses a one-shot
+`replyOptions.thinkingLevelOverride`: High for ordinary work; xHigh, then Max,
+then High for manager work, where supported. It never persists a `/think`
+command in the session. The current native Ollama adapter maps Max to High, so
+PM selects High explicitly for that transport. Metadata lookup failure falls
+back to a per-turn High default normalized by OpenClaw and emits a warning.
+For a provisioned Fable 5.1 CLI backend, the plugin instead clones its
+`CLAUDE_CODE_EFFORT_LEVEL` environment per turn, because the installed
+OpenClaw policy advertises Thinking Off for that route. This requires a current
+Claude Code CLI; High/xHigh were verified using its actual effort hook.
+See [the model/effort runbook](../docs/agent-model-upgrades.md).

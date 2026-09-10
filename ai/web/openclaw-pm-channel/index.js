@@ -1,3 +1,4 @@
+import { resolvePmTurnEffort, withPmHighDefault } from "./turn-effort.js";
 import { createPmTaskTelemetry } from "./task-telemetry.js";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -734,9 +735,14 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
     return;
   }
 
+  const { cliEffort, ...effortOptions } = await resolvePmTurnEffort({ runtime, cfg, agentId, sessionKey, policy: payload.effortPolicy, logger });
+  // Capability lookup awaits I/O: recheck cancellation before starting a run.
+  const afterEffortLookup = activeTurns.get(rawSessionKey);
+  if (!afterEffortLookup || afterEffortLookup.acceptedId !== acceptedId) return;
+  if (afterEffortLookup.abortedAt) { activeTurns.delete(rawSessionKey); return; }
   try {
     await inbound.dispatchReply({
-      cfg,
+      cfg: withPmHighDefault(cfg, agentId, cliEffort),
       channel: CHANNEL_ID,
       accountId: account.accountId,
       agentId,
@@ -776,6 +782,7 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
       },
       replyPipeline: {},
       replyOptions: {
+        ...effortOptions,
         sourceReplyDeliveryMode: "automatic",
         allowProgressCallbacksWhenSourceDeliverySuppressed: true,
         // PM's bounded execution episodes count these events. Without this

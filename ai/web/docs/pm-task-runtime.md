@@ -243,3 +243,12 @@ installing the plugin alone does not give the old web service the compact HTTP
 contract. Preserve the current main deployment until this branch is merged
 and promoted, then install/restart gateways when idle. No schema migration is
 introduced by this follow-up.
+
+### Role-based effort
+
+PM channel 0.1.5 adds a one-shot effort policy: High for ordinary work and
+xHigh, otherwise Max, otherwise supported High for planning/manager/review
+turns. Selection uses gateway model metadata and current PM roles at dispatch.
+See [Agent model upgrades](agent-model-upgrades.md#effort-by-pm-role).
+This branch change is pending merge/deployment; the live default configuration
+can be updated independently.
