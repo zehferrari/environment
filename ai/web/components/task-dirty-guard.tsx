@@ -1,81 +1,39 @@
 "use client";
 
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef } from "react";
+import { EDITOR_SAVED_EVENT, registerDirtyEditor, snapshotEditor, sameEditorSnapshot, type EditorSnapshot } from "@/lib/client/editor-state";
 
-export default function TaskDirtyGuard({ children }: { children: React.ReactNode }) {
-  const formRef = useRef<HTMLFormElement | null>(null);
-  const initialValuesRef = useRef<Record<string, string>>({});
-  const isDirtyRef = useRef(false);
-
-  const captureInitialValues = useCallback(() => {
-    const form = document.getElementById("taskMain") as HTMLFormElement | null;
-    if (!form) return;
-    formRef.current = form;
-    const data = new FormData(form);
-    const values: Record<string, string> = {};
-    for (const [key, value] of data.entries()) {
-      if (typeof value === "string") {
-        values[key] = value;
-      }
-    }
-    initialValuesRef.current = values;
-  }, []);
-
-  const checkDirty = useCallback(() => {
-    const form = formRef.current;
-    if (!form) return false;
-    const data = new FormData(form);
-    const current: Record<string, string> = {};
-    for (const [key, value] of data.entries()) {
-      if (typeof value === "string") {
-        current[key] = value;
-      }
-    }
-    const initial = initialValuesRef.current;
-    const keys = new Set([...Object.keys(initial), ...Object.keys(current)]);
-    for (const key of keys) {
-      if ((initial[key] ?? "") !== (current[key] ?? "")) {
-        return true;
-      }
-    }
-    return false;
-  }, []);
-
+export default function TaskDirtyGuard({ formId, children }: { formId: string; children: React.ReactNode }) {
+  const initial = useRef<EditorSnapshot | null>(null);
   useEffect(() => {
-    // Capture initial values after mount
-    const timer = setTimeout(captureInitialValues, 100);
-
-    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (checkDirty()) {
-        e.preventDefault();
-        e.returnValue = "";
-      }
+    const form = document.getElementById(formId) as HTMLFormElement | null;
+    if (!form) return;
+    initial.current = snapshotEditor(new FormData(form));
+    const dirty = () => form.isConnected && initial.current !== null && !sameEditorSnapshot(initial.current, snapshotEditor(new FormData(form)));
+    const unregister = registerDirtyEditor(dirty);
+    const saved = (event: Event) => { initial.current = (event as CustomEvent<EditorSnapshot>).detail; };
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      if (dirty()) { event.preventDefault(); event.returnValue = ""; }
     };
-
-    const handleClick = (e: MouseEvent) => {
-      const target = e.target as HTMLElement;
-      const anchor = target.closest("a");
-      if (!anchor) return;
+    const click = (event: MouseEvent) => {
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const anchor = event.target instanceof Element ? event.target.closest("a") : null;
+      if (!anchor || anchor.target === "_blank" || anchor.hasAttribute("download")) return;
       const href = anchor.getAttribute("href");
       if (!href || href.startsWith("#")) return;
-      if (checkDirty()) {
-        const confirmed = window.confirm("You have unsaved changes. Leave without saving?");
-        if (!confirmed) {
-          e.preventDefault();
-          e.stopPropagation();
-        }
+      const url = new URL(anchor.href, location.href);
+      if (url.origin === location.origin && url.pathname === location.pathname && url.search === location.search) return;
+      if (dirty() && !window.confirm("You have unsaved changes. Leave without saving?")) {
+        event.preventDefault(); event.stopPropagation();
       }
     };
-
-    window.addEventListener("beforeunload", handleBeforeUnload);
-    document.addEventListener("click", handleClick, true);
-
+    form.addEventListener(EDITOR_SAVED_EVENT, saved);
+    window.addEventListener("beforeunload", beforeUnload);
+    document.addEventListener("click", click, true);
     return () => {
-      clearTimeout(timer);
-      window.removeEventListener("beforeunload", handleBeforeUnload);
-      document.removeEventListener("click", handleClick, true);
+      unregister(); form.removeEventListener(EDITOR_SAVED_EVENT, saved);
+      window.removeEventListener("beforeunload", beforeUnload); document.removeEventListener("click", click, true);
     };
-  }, [captureInitialValues, checkDirty]);
-
+  }, [formId]);
   return <>{children}</>;
 }

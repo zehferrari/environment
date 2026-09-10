@@ -1,32 +1,10 @@
 "use client";
 
-// Route-level error boundary for every /(app) page (boards, tasks, epics, …).
-// Two jobs:
-//  1. Recover from stale-build render errors. StaleBuildRecovery + global-error
-//     already reload on chunk 404s / matched dynamic-import failures, but a
-//     render error caused by a stale/removed module often surfaces with generic
-//     text that slips past the detector. Right after a deploy that is almost
-//     always the cause, so we reload ONCE per URL per tab session. A genuine bug
-//     survives that reload (the marker is set) and is shown instead of looping.
-//  2. Make genuine errors diagnosable — log message + digest to the console so a
-//     recurring real bug can be identified from a screenshot of the console.
+// Recover known stale assets once; surface real failures without blindly
+// reloading the page and hiding their cause.
 
 import { useEffect, useState } from "react";
 import { isLikelyStaleBuildError, requestStaleBuildReload } from "@/lib/client/stale-build";
-
-const ONESHOT_PREFIX = "pm:route-error-recover:v1:";
-
-function alreadyRecovered(pathname: string): boolean {
-  try {
-    const key = ONESHOT_PREFIX + pathname;
-    if (window.sessionStorage.getItem(key) === "1") return true;
-    window.sessionStorage.setItem(key, "1");
-    return false;
-  } catch {
-    // No sessionStorage (private mode / blocked) — don't auto-reload, just show.
-    return true;
-  }
-}
 
 export default function AppRouteError({
   error,
@@ -44,12 +22,6 @@ export default function AppRouteError({
     // Known stale-asset errors reload immediately (existing 60s-guarded path).
     if (isLikelyStaleBuildError(error) && requestStaleBuildReload(error)) return;
 
-    // Otherwise treat the first error on this URL as a probable stale module and
-    // reload once; a second occurrence is a real error, so show it.
-    if (!alreadyRecovered(window.location.pathname)) {
-      window.location.reload();
-      return;
-    }
     setSurfaced(true);
   }, [error]);
 

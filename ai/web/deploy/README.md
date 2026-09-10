@@ -742,3 +742,23 @@ After install:
 5. Add a task → drag across columns → reload, position persisted.
 6. `journalctl -u pm.service` shows one `[pm] boot sync` log line and then a
    `[pm] periodic sync` line every 5 min.
+
+### Browser compatibility across builds
+
+`pnpm build` runs `scripts/build.mjs`, which assigns one `PM_DEPLOYMENT_ID`
+to the entire build, including its workers. `next.config.mjs` records that ID
+in the standalone output. Each build gets a new ID, even for the same commit;
+an explicit `PM_DEPLOYMENT_ID` can identify an artifact built elsewhere.
+Do not reuse an override for different artifacts. The running standalone
+server reads its built configuration; no service environment change is needed.
+
+Next uses deployment identity to handle incompatible client navigation after a
+release. Task/Epic editor saves use the authenticated, same-origin
+`POST /api/work-items/{task|epic}/{id}/save` endpoint so those saves no longer
+rely on build-specific Server Action identifiers. Other Server Actions still
+need a current client. Old tabs from before this repair need one reload after
+deployment. Continue to deploy with `pm-switch`; this is not a change to the
+build/restart boundary.
+
+See [editor save/navigation audit](../docs/audits/editor-save-navigation-2026-09-10.md)
+for regression commands and the limits of stale-client recovery.

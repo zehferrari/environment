@@ -1,3 +1,4 @@
+import { hasDirtyEditors } from "./editor-state";
 const RELOAD_MARKER_KEY = "pm:stale-build-reload:v1";
 const RELOAD_GUARD_MS = 60_000;
 const SUCCESS_CLEAR_DELAY_MS = 10_000;
@@ -29,7 +30,7 @@ export function isLikelyStaleBuildError(reason: unknown): boolean {
   const text = reasonText(reason);
   if (!text) return false;
 
-  return /ChunkLoadError|CSS_CHUNK_LOAD_FAILED|Loading chunk \S+ failed|Loading CSS chunk \S+ failed|failed to fetch dynamically imported module|importing a module script failed|error loading dynamically imported module|\/_next\/static\//i.test(text);
+  return /Failed to find Server Action|ChunkLoadError|CSS_CHUNK_LOAD_FAILED|Loading chunk \S+ failed|Loading CSS chunk \S+ failed|failed to fetch dynamically imported module|importing a module script failed|error loading dynamically imported module|\/_next\/static\//i.test(text);
 }
 
 function readMarker(storage: Storage): ReloadMarker | null {
@@ -55,7 +56,7 @@ function writeMarker(storage: Storage, marker: ReloadMarker) {
 }
 
 export function requestStaleBuildReload(reason: unknown): boolean {
-  if (typeof window === "undefined") return false;
+  if (typeof window === "undefined" || hasDirtyEditors()) return false;
 
   let storage: Storage | null = null;
   try {

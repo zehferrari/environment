@@ -1,5 +1,6 @@
 "use client";
 
+import { hasDirtyEditors } from "@/lib/client/editor-state";
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 
@@ -11,7 +12,7 @@ export default function AutoRefresh({ intervalMs = 15_000 }: { intervalMs?: numb
   const router = useRouter();
   useEffect(() => {
     const id = setInterval(() => {
-      if (document.visibilityState === "visible") router.refresh();
+      if (document.visibilityState === "visible" && !hasDirtyEditors()) router.refresh();
     }, intervalMs);
     return () => clearInterval(id);
   }, [intervalMs, router]);
