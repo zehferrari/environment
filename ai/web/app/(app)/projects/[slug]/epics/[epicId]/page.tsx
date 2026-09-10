@@ -1,9 +1,9 @@
+import WorkItemSaveForm from "@/components/work-item-save-form";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
 import {
-  updateEpic,
   deleteEpicComment,
   restoreEpicComment,
 } from "@/lib/epics/actions";
@@ -1062,6 +1062,7 @@ export default async function EpicDetailPage({
     revalidatePath(`/projects/${slug}`);
   }
 
+  const editorFormId = `epicMain-${epic.id}`;
   return (
     <StickyViewportSurface kind="epic-detail">
     <div className="mx-auto w-full max-w-none">
@@ -1084,7 +1085,7 @@ export default async function EpicDetailPage({
                 ) : null}
               </span>
               <input
-                form="epicMain"
+                form={editorFormId}
                 name="title"
                 defaultValue={epic.title}
                 required
@@ -1103,24 +1104,17 @@ export default async function EpicDetailPage({
                   {timeAgo(visibleEpicUpdatedAt)}
                 </time>
               </span>
-              <button
-                form="epicMain"
-                type="submit"
-                className="h-9 rounded-lg bg-accent px-3 text-body font-medium text-bg hover:opacity-90"
-              >
-                Save changes
-              </button>
+              <WorkItemSaveForm key={editorFormId} formId={editorFormId} kind="epic" itemId={epic.id} />
             </div>
           </div>
-          {/* One edit form for the whole card: controls carry form="epicMain"
+          {/* One edit form for the whole card: controls carry form={editorFormId}
               so the single Save persists status, title, description and
               acting manager together. Empty form so the panels' own forms
               (add-task / upload / comment) are never nested inside it. */}
-          <form id="epicMain" action={updateEpic} />
-          <input form="epicMain" type="hidden" name="epicId" value={epic.id} />
-          <input form="epicMain" type="hidden" name="projectSlug" value={slug} />
+          <input form={editorFormId} type="hidden" name="epicId" value={epic.id} />
+          <input form={editorFormId} type="hidden" name="projectSlug" value={slug} />
           <input
-            form="epicMain"
+            form={editorFormId}
             type="hidden"
             name="statusRevision"
             value={epicStatusRevision(epic.statusChangedAt)}
@@ -1137,7 +1131,7 @@ export default async function EpicDetailPage({
               <TabPanel name="Description">
                 <div className="grid gap-card xl:grid-cols-[minmax(0,1fr)_20rem]">
                   <DescriptionField
-                    formId="epicMain"
+                    formId={editorFormId}
                     previewHtml={renderFullMarkdown(epic.description ?? "").__html}
                     defaultValue={epic.description ?? ""}
                     projectSlug={slug}
@@ -1162,7 +1156,7 @@ export default async function EpicDetailPage({
                         </span>
                         <select
                           key={`${epic.status}:${epicStatusRevision(epic.statusChangedAt)}`}
-                          form="epicMain"
+                          form={editorFormId}
                           name="status"
                           defaultValue={epic.status}
                           className="h-9 w-full rounded-lg border border-line bg-bg px-2 text-caption outline-none focus:border-accent"
@@ -1177,7 +1171,7 @@ export default async function EpicDetailPage({
                       </label>
                       {viewer.canAccessOwnerFeatures ? (
                         <PrivateToggle
-                          formId="epicMain"
+                          formId={editorFormId}
                           defaultChecked={epic.private}
                           includeSubmittedField
                         />
@@ -1188,20 +1182,20 @@ export default async function EpicDetailPage({
                       <div className="grid grid-cols-2 gap-3 rounded-card border border-line bg-panel-soft p-card">
                         <div className="min-w-0">
                           <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Report by</span>
-                          <AvatarCombobox formId="epicMain" name="reporterId" defaultValue={epic.reporterId ?? ""} options={reporterOptions} emptyLabel="No reporter" ariaLabel="Report by" />
+                          <AvatarCombobox formId={editorFormId} name="reporterId" defaultValue={epic.reporterId ?? ""} options={reporterOptions} emptyLabel="No reporter" ariaLabel="Report by" />
                         </div>
                         <div className="min-w-0">
                           <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Worker pool</span>
-                          <AvatarCombobox formId="epicMain" name="assigneeId" defaultValues={workerIds} options={workerOptions} emptyLabel="No workers" ariaLabel="Worker pool" multiple />
-                          <input form="epicMain" type="hidden" name="workerPoolSubmitted" value="1" />
+                          <AvatarCombobox formId={editorFormId} name="assigneeId" defaultValues={workerIds} options={workerOptions} emptyLabel="No workers" ariaLabel="Worker pool" multiple />
+                          <input form={editorFormId} type="hidden" name="workerPoolSubmitted" value="1" />
                         </div>
                         <div className="min-w-0">
                           <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Acting manager</span>
-                          <AvatarCombobox formId="epicMain" name="actingManagerId" defaultValue={epic.actingManagerId ?? ""} options={principalOptions} emptyLabel="No acting manager" ariaLabel="Acting manager" />
+                          <AvatarCombobox formId={editorFormId} name="actingManagerId" defaultValue={epic.actingManagerId ?? ""} options={principalOptions} emptyLabel="No acting manager" ariaLabel="Acting manager" />
                         </div>
                         <div className="min-w-0">
                           <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Acceptance / deploy reviewer</span>
-                          <AvatarCombobox formId="epicMain" name="deployReviewerId" defaultValue={epic.deployReviewerId ?? ""} options={workerOptions} emptyLabel="Use Monitor Agent" ariaLabel="Deploy reviewer" />
+                          <AvatarCombobox formId={editorFormId} name="deployReviewerId" defaultValue={epic.deployReviewerId ?? ""} options={workerOptions} emptyLabel="Use Monitor Agent" ariaLabel="Deploy reviewer" />
                         </div>
                       </div>
                     ) : null}
@@ -1213,7 +1207,7 @@ export default async function EpicDetailPage({
                           Branch
                         </span>
                         <input
-                          form="epicMain"
+                          form={editorFormId}
                           name="branchName"
                           defaultValue={epic.branchName ?? ""}
                           maxLength={200}
@@ -1228,7 +1222,7 @@ export default async function EpicDetailPage({
                             Commit prefix
                           </span>
                           <input
-                            form="epicMain"
+                            form={editorFormId}
                             name="commitPrefix"
                             defaultValue={epic.commitPrefix ?? ""}
                             maxLength={200}
@@ -1239,7 +1233,7 @@ export default async function EpicDetailPage({
                         </label>
                         <div className="min-w-0">
                           {epicHasDeployment ? (
-                            <DeploymentStatusSelect formId="epicMain" defaultValue={epic.deploymentStatus} />
+                            <DeploymentStatusSelect formId={editorFormId} defaultValue={epic.deploymentStatus} />
                           ) : (
                             <div>
                               <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Deployment status</span>

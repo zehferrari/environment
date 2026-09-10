@@ -1,25 +1,12 @@
-import { randomUUID } from "crypto";
-import Link from "next/link";
 import { notFound } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
-import { Prisma } from "@prisma/client";
 import {
   renderCommentBody,
   renderFullMarkdown,
   extractMentions,
 } from "@/lib/markdown";
-import {
-  checkAssignment,
-  checkActingManager,
-} from "@/lib/workflow";
 import { COLUMN_IDS } from "../../columns";
-import {
-  buildDeploymentApproved,
-  buildTaskAssigned,
-} from "@/lib/pm-events";
-import { notifyDispatch } from "@/lib/pm-dispatch";
-import { isEffectivelyPublicTask } from "@/lib/pm-events/visibility";
 import {
   sendTaskCommentNotifications,
   sendTaskWorkflowNotification,
@@ -46,17 +33,11 @@ import {
   normalizeSubTaskKind,
   reorderSubTaskItems,
 } from "@/lib/tasks/subtasks";
-import { validateBlockedBy } from "@/lib/tasks/blocking";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import {
   isActionableEpicStatus,
 } from "@/lib/tasks/workflow-actors";
-import { syncEpicOnHumanTaskStatus } from "@/lib/epics/sync-on-human-task-move";
 import { getTaskGitChanges, getTaskGitFileDiff } from "@/lib/tasks/git-changes";
-import {
-  isTaskWorkflowStatus,
-  submitBrowserStatusOverride,
-} from "@/lib/tasks/orchestrator/browser-status-adapter";
 import { submitBrowserPlanApproval } from "@/lib/tasks/orchestrator/browser-plan-adapter";
 import { getBrowserTaskWorkflowActions } from "@/lib/tasks/orchestrator/browser-review-adapter";
 import { effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
@@ -90,7 +71,7 @@ import ProposalReview from "@/app/(app)/agents/[agent]/chat/proposal-review";
 import ActivityTimeline, { type ActivityTimelineRow } from "@/components/activity-timeline";
 import TaskChangesPanel from "@/components/task-changes-panel";
 import CloseTaskButton from "@/components/close-task-button";
-import TaskDirtyGuard from "@/components/task-dirty-guard";
+import WorkItemSaveForm from "@/components/work-item-save-form";
 import TaskHeaderWorkflowActions from "@/components/task-header-workflow-actions";
 import ConfirmedDeleteButton from "@/components/confirmed-delete-button";
 import DeletedMessageDivider from "@/components/deleted-message-divider";
@@ -111,21 +92,15 @@ import AvatarCombobox, { type AvatarComboboxOption } from "@/components/avatar-c
 import TaskEpicPicker from "./task-epic-picker";
 import { TaskPrerequisiteEditor } from "./task-prerequisite-editor";
 import DeploymentTab, { DeploymentStatusSelect, canShowDeploymentAction, canShowDeploymentTab, type DeploymentPrRow } from "@/components/deployment-tab";
-import { checkDeploymentStatusWrite, isDeploymentStatus } from "@/lib/deploy/deployment-status";
 import {
-  accessibleActivityWhere,
-  accessibleEpicWhere,
-  accessibleTaskWhere,
-  accessibleUserWhere,
-  assertAgentAssignmentAllowed,
-  canAccessTask,
+  accessibleActivityWhere, accessibleUserWhere, canAccessTask,
   customerSafeWorkflowLabel,
   requireProjectAccess,
   requireTaskAccess,
   requireViewer,
   taskDetailTabsForRole,
   type Viewer,
-  viewerExperienceForRole,
+  viewerExperienceForRole
 } from "@/lib/auth/permissions";
 import {
   getActorVisibility,
@@ -166,495 +141,6 @@ async function requireActorId(): Promise<string> {
 }
 
 // ---- Server actions -------------------------------------------------
-
-// Single task-form save. Persists title, description, status, epic,
-// branch, commit prefix, assignee and reviewer in one transaction, with
-// each field keeping the validation its standalone action used to do
-// (workflow transition rules, project-scoped epic, no agent self-assign /
-// self-review). Only changed fields are written + activity-logged; a hard
-// rule violation throws (whole save fails) the same way the old per-field
-// actions did. The assignment wake fires after commit, non-throwing.
-async function updateTask(formData: FormData) {
-  "use server";
-  const actor = await requireActor();
-  const taskId = String(formData.get("taskId") ?? "");
-  const slug = String(formData.get("projectSlug") ?? "");
-  if (!taskId || !slug) return;
-
-  const titleRaw = String(formData.get("title") ?? "").trim();
-  if (!titleRaw || titleRaw.length > 200) return;
-  const descriptionRaw = String(formData.get("description") ?? "");
-  const newDescription = descriptionRaw.trim() === "" ? null : descriptionRaw;
-  const newStatus = String(formData.get("status") ?? "");
-  const epicRaw = String(formData.get("epicId") ?? "");
-  const newEpicId = epicRaw === "" ? null : epicRaw;
-  const branchRaw = String(formData.get("branchName") ?? "").trim();
-  const newBranch = branchRaw === "" ? null : branchRaw;
-  const hasBranchField = formData.has("branchName");
-  const commitRaw = String(formData.get("commitPrefix") ?? "").trim();
-  const newCommitPrefix = commitRaw === "" ? null : commitRaw;
-  const hasCommitPrefixField = formData.has("commitPrefix");
-  const hasAssigneeField = formData.has("assigneeId");
-  const assigneeRaw = String(formData.get("assigneeId") ?? "");
-  const newAssigneeId = assigneeRaw === "" ? null : assigneeRaw;
-  const hasReviewerField = formData.has("actingManagerId");
-  const reviewerRaw = String(formData.get("actingManagerId") ?? "");
-  const newActingManagerId = reviewerRaw === "" ? null : reviewerRaw;
-  const hasReporterField = formData.has("reporterId");
-  const reporterRaw = String(formData.get("reporterId") ?? "");
-  const newReporterId = reporterRaw === "" ? null : reporterRaw;
-  const hasBlockedByField = formData.has("blockedById");
-  const blockedRaw = String(formData.get("blockedById") ?? "");
-  const newBlockedById = blockedRaw === "" ? null : blockedRaw;
-  const deploymentRaw = String(formData.get("deploymentStatus") ?? "");
-  const hasPrivateField = formData.has("privateSubmitted");
-  const hasAttachmentRequirementField = formData.has("reviewAttachmentRequiredSubmitted");
-  const newReviewAttachmentRequired = formData.get("reviewAttachmentRequired") === "on";
-  if (!actor.canAccessOwnerFeatures && (hasAssigneeField || hasReviewerField || hasReporterField)) {
-    throw new Error("Only the Mission Control owner can change task roles.");
-  }
-  if ((hasPrivateField || formData.has("private")) && !actor.canAccessOwnerFeatures) throw new Error("Not authorized");
-  if (hasAttachmentRequirementField && !actor.canAccessOwnerFeatures) throw new Error("Not authorized");
-  const newPrivate = formData.get("private") === "on";
-
-  if (newStatus !== "" && !COLUMN_IDS.includes(newStatus)) return;
-  if (deploymentRaw !== "" && !isDeploymentStatus(deploymentRaw)) return;
-  if (newBranch !== null && newBranch.length > 200) return;
-  if (newCommitPrefix !== null && newCommitPrefix.length > 200) return;
-
-  const task = await db.task.findFirst({
-    where: accessibleTaskWhere(actor, { id: taskId }),
-    select: {
-      id: true,
-      projectId: true,
-      title: true,
-      description: true,
-      private: true,
-      reviewAttachmentRequired: true,
-      status: true,
-      workflowVersion: true,
-      activeWorkflowCycleId: true,
-      epicId: true,
-      branchName: true,
-      commitPrefix: true,
-      assigneeId: true,
-      actingManagerId: true,
-      reporterId: true,
-      deploymentStatus: true,
-      parentTaskId: true,
-      blockedById: true,
-      blockedBy: { select: { workItemKey: true } },
-      approvedOn: true,
-      workItemKey: true,
-      project: {
-        select: {
-          slug: true,
-          onlyReportersCanApproveActionPlans: true,
-          onlyReportersCanApprovePullRequests: true,
-          deploymentProductionBranch: true,
-        },
-      },
-      epic: { select: { id: true, title: true, status: true, actingManagerId: true } },
-      assignee: { select: { id: true, username: true, kind: true } },
-      actingManager: { select: { username: true } },
-      reporter: { select: { username: true } },
-    },
-  });
-  if (!task || task.project.slug !== slug) return;
-  await requireProjectAccess(actor, { id: task.projectId });
-
-  const data: Prisma.TaskUpdateInput = {};
-  const activity: { kind: string; payload: string }[] = [];
-  const canTriggerAgents = actor.canAccessOwnerFeatures;
-  let assignmentTarget: { id: string; kind: string; username: string } | null =
-    null;
-  let assignmentChanged = false;
-  let reviewerPlanTargetId: string | null = null;
-  let statusChangedTo: string | null = null;
-
-  if (hasPrivateField && newPrivate !== task.private) {
-    data.private = newPrivate;
-    activity.push({
-      kind: "task.privacy",
-      payload: JSON.stringify({ from: task.private, to: newPrivate }),
-    });
-  }
-
-  if (hasAttachmentRequirementField && newReviewAttachmentRequired !== task.reviewAttachmentRequired) {
-    data.reviewAttachmentRequired = newReviewAttachmentRequired;
-    activity.push({
-      kind: "task.review_attachment_requirement",
-      payload: JSON.stringify({ from: task.reviewAttachmentRequired, to: newReviewAttachmentRequired }),
-    });
-  }
-
-  // Title / description
-  const titleChanged = task.title !== titleRaw;
-  const descChanged = (task.description ?? null) !== newDescription;
-  if (titleChanged || descChanged) {
-    data.title = titleRaw;
-    data.description = newDescription;
-    activity.push({
-      kind: "task.update",
-      payload: JSON.stringify({
-        titleChanged,
-        descChanged,
-        from: { title: task.title, hasDescription: task.description !== null },
-        to: { title: titleRaw, hasDescription: newDescription !== null },
-      }),
-    });
-  }
-
-  // Status (workflow-validated, recomputes rank like the board move)
-  if (newStatus !== "" && newStatus !== task.status) {
-    // The editor is only a transport. The authoritative human override command
-    // owns and audits the workflow transition atomically.
-    statusChangedTo = newStatus;
-  }
-
-  // Epic (must belong to the same project)
-  if (newEpicId !== task.epicId) {
-    let newEpicTitle: string | null = null;
-    if (newEpicId !== null) {
-      const target = await db.epic.findFirst({
-        where: accessibleEpicWhere(actor, { id: newEpicId }),
-        select: { id: true, title: true, projectId: true },
-      });
-      if (!target || target.projectId !== task.projectId) {
-        throw new Error("Epic not found in this project");
-      }
-      newEpicTitle = target.title;
-    }
-    data.epic =
-      newEpicId === null ? { disconnect: true } : { connect: { id: newEpicId } };
-    activity.push({
-      kind: "task.epic",
-      payload: JSON.stringify({
-        from: task.epic?.title ?? null,
-        to: newEpicTitle,
-      }),
-    });
-  }
-
-  // Blocked-by dependency (ENV-62): same-project, cycle-guarded.
-  const canEditBlockedBy = !task.blockedById || await canAccessTask(actor, task.blockedById);
-  if (hasBlockedByField && canEditBlockedBy && newBlockedById !== task.blockedById) {
-    let toKey: string | null = null;
-    if (newBlockedById !== null) {
-      await requireTaskAccess(actor, newBlockedById);
-      const check = await validateBlockedBy({
-        taskId: task.id,
-        projectId: task.projectId,
-        blockerId: newBlockedById,
-      });
-      if (!check.ok) throw new Error(check.message);
-      const blocker = await db.task.findFirst({
-        where: accessibleTaskWhere(actor, { id: newBlockedById }),
-        select: { workItemKey: true },
-      });
-      toKey = blocker?.workItemKey ?? null;
-    }
-    data.blockedBy =
-      newBlockedById === null ? { disconnect: true } : { connect: { id: newBlockedById } };
-    activity.push({
-      kind: "task.blocked_by",
-      payload: JSON.stringify({ from: task.blockedBy?.workItemKey ?? null, to: toKey }),
-    });
-  }
-
-  // Null is intentional: it means inherit the current Epic override or fall
-  // back to this Task's work-item key at read/use time.
-  if (actor.agentVisibility !== "hidden" && hasBranchField && (task.branchName ?? null) !== newBranch) {
-    data.branchName = newBranch;
-    activity.push({
-      kind: "task.branch",
-      payload: JSON.stringify({ from: task.branchName ?? null, to: newBranch }),
-    });
-  }
-
-  // Commit prefix (HOMELAB task-form redesign)
-  if (actor.agentVisibility !== "hidden" && hasCommitPrefixField && (task.commitPrefix ?? null) !== newCommitPrefix) {
-    data.commitPrefix = newCommitPrefix;
-    activity.push({
-      kind: "task.commit_prefix",
-      payload: JSON.stringify({
-        from: task.commitPrefix ?? null,
-        to: newCommitPrefix,
-      }),
-    });
-  }
-
-  // Assignee (no agent self-assign; target must be active)
-  if (hasAssigneeField && newAssigneeId !== task.assigneeId) {
-    await assertAgentAssignmentAllowed(actor, [task.assigneeId, newAssigneeId]);
-    const check = checkAssignment({ actor, newAssigneeId });
-    if (!check.ok) throw new Error(check.message);
-    if (newAssigneeId !== null) {
-      const row = await db.user.findUnique({
-        where: { id: newAssigneeId },
-        select: { id: true, username: true, kind: true, status: true },
-      });
-      if (!row || row.status !== "active") {
-        throw new Error("Assignee not found or inactive");
-      }
-      assignmentTarget = { id: row.id, username: row.username, kind: row.kind };
-    }
-    data.assignee =
-      newAssigneeId === null
-        ? { disconnect: true }
-        : { connect: { id: newAssigneeId } };
-    data.approvedOn = null;
-    data.approvedBy = { disconnect: true };
-    assignmentChanged = true;
-    activity.push({
-      kind: "task.assign",
-      payload: JSON.stringify({
-        from: task.assignee?.username ?? null,
-        to: assignmentTarget?.username ?? null,
-        assignedBy: "human-edit",
-      }),
-    });
-    activity.push({
-      kind: "task.action_plan.reset",
-      payload: JSON.stringify({
-        reason: "assignee_changed",
-        from: task.assignee?.username ?? null,
-        to: assignmentTarget?.username ?? null,
-      }),
-    });
-  }
-
-  // Reviewer / acting manager (no agent self-review; target must be active)
-  if (hasReviewerField && newActingManagerId !== task.actingManagerId) {
-    await assertAgentAssignmentAllowed(actor, [task.actingManagerId, newActingManagerId]);
-    const check = checkActingManager({ actor, newActingManagerId });
-    if (!check.ok) throw new Error(check.message);
-    let toUsername: string | null = null;
-    if (newActingManagerId !== null) {
-      const target = await db.user.findUnique({
-        where: { id: newActingManagerId },
-        select: { username: true, status: true },
-      });
-      if (!target || target.status !== "active") {
-        throw new Error("Reviewer not found or inactive");
-      }
-      toUsername = target.username;
-      reviewerPlanTargetId = newActingManagerId;
-    }
-    data.actingManager =
-      newActingManagerId === null
-        ? { disconnect: true }
-        : { connect: { id: newActingManagerId } };
-    activity.push({
-      kind: "task.acting_manager",
-      payload: JSON.stringify({
-        from: task.actingManager?.username ?? null,
-        to: toUsername,
-      }),
-    });
-  }
-
-  // Deployment status: only top-level Tasks (no Epic / sub-task parent) expose it.
-  const deploymentAllowed = task.epicId == null && task.parentTaskId == null;
-  if (deploymentAllowed && deploymentRaw !== "" && deploymentRaw !== task.deploymentStatus) {
-    const actorAgent = actor.kind === "agent"
-      ? await db.user.findUnique({ where: { id: actor.id }, select: { agent: { select: { role: true } } } })
-      : null;
-    const check = checkDeploymentStatusWrite({
-      actor,
-      actorAgentRole: actorAgent?.agent?.role ?? null,
-      from: task.deploymentStatus,
-      to: deploymentRaw,
-    });
-    if (!check.ok) throw new Error(check.message);
-    data.deploymentStatus = deploymentRaw;
-    activity.push({
-      kind: "task.deployment_status",
-      payload: JSON.stringify({ from: task.deploymentStatus, to: deploymentRaw }),
-    });
-  }
-
-  // Reporter (active User/Agent row; defaults to creator on new tasks)
-  if (hasReporterField && newReporterId !== task.reporterId) {
-    await assertAgentAssignmentAllowed(actor, [task.reporterId, newReporterId]);
-    let toUsername: string | null = null;
-    if (newReporterId !== null) {
-      const target = await db.user.findUnique({
-        where: { id: newReporterId },
-        select: { username: true, status: true },
-      });
-      if (!target || target.status !== "active") {
-        throw new Error("Reporter not found or inactive");
-      }
-      toUsername = target.username;
-    }
-    data.reporter =
-      newReporterId === null
-        ? { disconnect: true }
-        : { connect: { id: newReporterId } };
-    activity.push({
-      kind: "task.reporter",
-      payload: JSON.stringify({
-        from: task.reporter?.username ?? null,
-        to: toUsername,
-      }),
-    });
-  }
-
-  if (activity.length === 0 && !statusChangedTo) return; // nothing changed
-
-  if (activity.length > 0) {
-    await db.$transaction([
-      db.task.update({ where: { id: taskId }, data }),
-      ...activity.map((a) =>
-        db.activityLog.create({
-          data: {
-            projectId: task.projectId,
-            taskId,
-            userId: actor.id,
-            kind: a.kind,
-            payload: a.payload,
-          },
-        }),
-      ),
-    ]);
-  }
-
-  if (statusChangedTo) {
-    if (!isTaskWorkflowStatus(task.status) || !isTaskWorkflowStatus(statusChangedTo)) {
-      throw new Error("Task has an invalid workflow status.");
-    }
-    const moved = await submitBrowserStatusOverride({
-      actor,
-      taskId,
-      currentStatus: task.status,
-      targetStatus: statusChangedTo,
-      expectedWorkflowVersion: task.workflowVersion,
-      activeWorkflowCycleId: task.activeWorkflowCycleId,
-      surface: "task-detail",
-    });
-    if (!moved.ok) throw new Error(moved.message);
-    revalidateTaskReplyScope(taskId, "comment");
-  } else {
-    await syncEpicOnHumanTaskStatus(db, {
-      epicId: newEpicId,
-      projectId: task.projectId,
-      taskId,
-      actorId: actor.id,
-      actorKind: actor.kind,
-      targetStatus: task.status,
-      via: "task-edit",
-    });
-  }
-
-  try {
-    const { deleteDescriptionDraft } = await import("@/lib/description-drafts");
-    // Save applied — clear THIS user's draft (others viewing the same
-    // task with their own drafts keep them).
-    await deleteDescriptionDraft({ scope: "task", targetId: taskId, requesterUserId: actor.id });
-  } catch (e) {
-    console.error("Failed to delete description draft:", e);
-  }
-
-  revalidateTaskShell(taskId);
-  revalidatePath(`/projects/${slug}/tasks/${taskId}`);
-  revalidatePath(`/projects/${slug}`);
-  publishBoardTouch(task.projectId);
-
-  const shouldEmitLegacyTaskEvent = canTriggerAgents && (
-    (deploymentAllowed && deploymentRaw === "Deployment Approved" && task.deploymentStatus !== "Deployment Approved")
-    || assignmentChanged
-  );
-  const canEmitLegacyTaskEvent = shouldEmitLegacyTaskEvent
-    ? await isEffectivelyPublicTask(task.id)
-    : false;
-
-  if (canEmitLegacyTaskEvent && deploymentAllowed && deploymentRaw === "Deployment Approved" && task.deploymentStatus !== "Deployment Approved") {
-    await notifyDispatch(
-      buildDeploymentApproved(
-        {
-          id: randomUUID(),
-          occurredAt: new Date().toISOString(),
-          actor,
-          task: { id: task.id, key: task.workItemKey ?? task.id, projectKey: slug, title: titleRaw },
-        },
-        { scope: "task", scopeId: task.id, deploymentStatus: "Deployment Approved" },
-      ),
-    );
-  }
-
-  // Assignment wake fires after the commit, non-throwing (mirrors the old
-  // standalone assignTask path).
-  if (canEmitLegacyTaskEvent && assignmentChanged) {
-    await notifyDispatch(
-      buildTaskAssigned(
-        {
-          id: randomUUID(),
-          occurredAt: new Date().toISOString(),
-          actor,
-          task: { id: task.id, key: task.workItemKey ?? task.id, projectKey: slug, title: titleRaw },
-        },
-        {
-          assignee: assignmentTarget
-            ? {
-                id: assignmentTarget.id,
-                kind: assignmentTarget.kind === "agent" ? "agent" : "human",
-                name: assignmentTarget.username,
-              }
-            : null,
-          previousAssignee: task.assignee
-            ? {
-                id: task.assignee.id,
-                kind: task.assignee.kind === "agent" ? "agent" : "human",
-                name: task.assignee.username,
-              }
-            : null,
-        },
-      ),
-    );
-  }
-
-  const finalStatus = statusChangedTo ?? task.status;
-  const finalAssigneeId = assignmentChanged ? newAssigneeId : task.assigneeId;
-  if (
-    finalAssigneeId &&
-    (assignmentChanged || statusChangedTo === "To Do") &&
-    (finalStatus === "Backlog" || finalStatus === "To Do")
-  ) {
-    await sendTaskWorkflowNotification({
-      taskId: task.id,
-      targetUserId: finalAssigneeId,
-      actor,
-      reason: finalStatus === "Backlog" ? "backlog_plan_requested" : "todo_start_required",
-      body: finalStatus === "Backlog"
-        ? [
-            `You have been assigned to "${titleRaw}" while it is in Backlog.`,
-            "Read the full task context and existing comments. Call action=submit_plan with one concise structured technical Action Plan; plain chat text is discussion only.",
-            "Do not change task status and do not start work until the task is moved to To Do.",
-          ].join("\n")
-        : [
-            `Task "${titleRaw}" is now in To Do and assigned to you.`,
-            "Before starting work, call action=submit_plan with one structured technical Action Plan and wait for reviewer/reporter approval. Plain chat text is discussion only.",
-            "Do not move it to In Progress until approved_on is set.",
-          ].join("\n"),
-    });
-  }
-
-  if (reviewerPlanTargetId) {
-    await sendTaskWorkflowNotification({
-      taskId: task.id,
-      targetUserId: reviewerPlanTargetId,
-      actor,
-      reason: "reviewer_assignment_requested",
-      body: [
-        `You have been set as Reviewer for "${titleRaw}".`,
-        "If the task has no assignee, call action=assign_task so PM can select an eligible coding agent.",
-        "The assignee authors the implementation plan. Review it after submission; do not start implementation yourself.",
-      ].join("\n"),
-    });
-  }
-
-}
 
 async function approveTaskActionPlan(formData: FormData) {
   "use server";
@@ -1865,9 +1351,10 @@ export default async function TaskDetailPage({
     revalidateChecklist(slug, taskId, ctx.task.projectId);
   }
 
+  const editorFormId = `taskMain-${task.id}-${contained ? "pane" : "page"}`;
   return (
     <StickyViewportSurface kind="task-detail" contained={contained}>
-    <TaskDirtyGuard>
+
     <div data-task-quick-add-context className="mx-auto w-full max-w-none">
       {task.status === "Review" && (
         taskWorkflowActions.reviewStatus === "accepted" ||
@@ -1892,7 +1379,7 @@ export default async function TaskDetailPage({
                 ) : null}
               </span>
               <input
-                form="taskMain"
+                form={editorFormId}
                 name="title"
                 defaultValue={task.title}
                 required
@@ -1919,13 +1406,7 @@ export default async function TaskDetailPage({
                   canCancel={taskWorkflowActions.canCancel}
                   canAccept={taskWorkflowActions.canAccept}
                 /> : null}
-                <button
-                  form="taskMain"
-                  type="submit"
-                  className="h-9 rounded-lg bg-accent px-3 text-body font-medium text-bg hover:opacity-90"
-                >
-                  Save changes
-                </button>
+                <WorkItemSaveForm key={editorFormId} formId={editorFormId} kind="task" itemId={task.id} />
                 {/* Canonical (full-page) task: the form owns its overhang close
                     button. In the split pane the pane owns it (see
                     WorkspacePane), so the form renders none. */}
@@ -2016,14 +1497,13 @@ export default async function TaskDetailPage({
           })() : null}
 
           {/* One edit form for the whole card: every control below carries
-              form="taskMain" so the single "Save changes" button persists
+              form={editorFormId} so the single "Save changes" button persists
               Epic, Status, Title, Description, Branch, Commit Prefix,
               Assignee and Reviewer together. The form element itself is
               empty so the tab panels' own forms (sub-task/comment/upload)
               are never nested inside it. */}
-          <form id="taskMain" action={updateTask} />
-          <input form="taskMain" type="hidden" name="taskId" value={task.id} />
-          <input form="taskMain" type="hidden" name="projectSlug" value={slug} />
+          <input form={editorFormId} type="hidden" name="taskId" value={task.id} />
+          <input form={editorFormId} type="hidden" name="projectSlug" value={slug} />
           {/* Tabbed content */}
           <TabsProvider defaultTab={selectedTab}>
             <TabsNav
@@ -2040,7 +1520,7 @@ export default async function TaskDetailPage({
               <TabPanel name="Description">
                 <div className="grid gap-card xl:grid-cols-[minmax(0,1fr)_20rem] 4xl:grid-cols-[minmax(0,1fr)_24rem]">
                   <DescriptionField
-                    formId="taskMain"
+                    formId={editorFormId}
                     previewHtml={renderFullMarkdown(task.description ?? "").__html}
                     defaultValue={task.description ?? ""}
                     projectSlug={slug}
@@ -2067,7 +1547,7 @@ export default async function TaskDetailPage({
                           Status
                         </span>
                         <select
-                          form="taskMain"
+                          form={editorFormId}
                           name="status"
                           defaultValue={task.status}
                           className="h-9 w-full rounded-lg border border-line bg-bg px-2 text-caption outline-none focus:border-accent"
@@ -2082,7 +1562,7 @@ export default async function TaskDetailPage({
                       </label>
                       {viewer.canAccessOwnerFeatures ? (
                         <PrivateToggle
-                          formId="taskMain"
+                          formId={editorFormId}
                           defaultChecked={task.private}
                           includeSubmittedField
                         />
@@ -2091,9 +1571,9 @@ export default async function TaskDetailPage({
 
                     {viewer.canAccessOwnerFeatures ? (
                       <label className="flex items-start gap-2 rounded-card border border-line bg-panel-soft p-card text-caption">
-                        <input form="taskMain" type="hidden" name="reviewAttachmentRequiredSubmitted" value="1" />
+                        <input form={editorFormId} type="hidden" name="reviewAttachmentRequiredSubmitted" value="1" />
                         <input
-                          form="taskMain"
+                          form={editorFormId}
                           type="checkbox"
                           name="reviewAttachmentRequired"
                           defaultChecked={task.reviewAttachmentRequired}
@@ -2113,7 +1593,7 @@ export default async function TaskDetailPage({
                       {canSeeAgentContent ? <div data-task-role className="min-w-0">
                         <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Reported by</span>
                         {viewer.canAccessOwnerFeatures ? (
-                          <AvatarCombobox formId="taskMain" name="reporterId" defaultValue={task.reporterId ?? ""} options={reporterOptions} emptyLabel="No reporter" ariaLabel="Reported by" />
+                          <AvatarCombobox formId={editorFormId} name="reporterId" defaultValue={task.reporterId ?? ""} options={reporterOptions} emptyLabel="No reporter" ariaLabel="Reported by" />
                         ) : (
                           <div className="flex min-h-9 items-center gap-2 rounded-lg border border-line bg-bg px-2 text-caption">
                             {visibleReporter ? <MessageAvatar actor={visibleReporter} size="sm" /> : null}
@@ -2124,7 +1604,7 @@ export default async function TaskDetailPage({
                       {canSeeAgentContent ? <div data-task-role className="min-w-0">
                         <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Assignee</span>
                         {viewer.canAccessOwnerFeatures ? (
-                          <AvatarCombobox formId="taskMain" name="assigneeId" defaultValue={task.assigneeId ?? ""} options={principalOptions} emptyLabel="Unassigned" ariaLabel="Assignee" />
+                          <AvatarCombobox formId={editorFormId} name="assigneeId" defaultValue={task.assigneeId ?? ""} options={principalOptions} emptyLabel="Unassigned" ariaLabel="Assignee" />
                         ) : (
                           <div className="flex min-h-9 items-center gap-2 rounded-lg border border-line bg-bg px-2 text-caption">
                             {visibleAssignee ? <MessageAvatar actor={visibleAssignee} size="sm" /> : null}
@@ -2135,7 +1615,7 @@ export default async function TaskDetailPage({
                       {canSeeAgentContent ? <div data-task-role className="min-w-0">
                         <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Reviewer</span>
                         {viewer.canAccessOwnerFeatures ? (
-                          <AvatarCombobox formId="taskMain" name="actingManagerId" defaultValue={task.actingManagerId ?? ""} options={principalOptions} emptyLabel="No reviewer" ariaLabel="Reviewer" />
+                          <AvatarCombobox formId={editorFormId} name="actingManagerId" defaultValue={task.actingManagerId ?? ""} options={principalOptions} emptyLabel="No reviewer" ariaLabel="Reviewer" />
                         ) : (
                           <div className="flex min-h-9 items-center gap-2 rounded-lg border border-line bg-bg px-2 text-caption">
                             {visibleReviewer ? <MessageAvatar actor={visibleReviewer} size="sm" /> : null}
@@ -2167,7 +1647,7 @@ export default async function TaskDetailPage({
                           Branch
                         </span>
                         <input
-                          form="taskMain"
+                          form={editorFormId}
                           name="branchName"
                           defaultValue={task.branchName ?? ""}
                           maxLength={200}
@@ -2182,7 +1662,7 @@ export default async function TaskDetailPage({
                             Commit prefix
                           </span>
                           <input
-                            form="taskMain"
+                            form={editorFormId}
                             name="commitPrefix"
                             defaultValue={task.commitPrefix ?? ""}
                             maxLength={200}
@@ -2193,7 +1673,7 @@ export default async function TaskDetailPage({
                         </label>
                         <div className="min-w-0">
                           {hasDeploymentTab ? (
-                            <DeploymentStatusSelect formId="taskMain" defaultValue={task.deploymentStatus} />
+                            <DeploymentStatusSelect formId={editorFormId} defaultValue={task.deploymentStatus} />
                           ) : (
                             <div>
                               <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Deployment status</span>
@@ -2212,7 +1692,7 @@ export default async function TaskDetailPage({
                         Epic
                       </span>
                       <TaskEpicPicker
-                        formId="taskMain"
+                        formId={editorFormId}
                         name="epicId"
                         projectSlug={slug}
                         defaultValue={task.epicId ?? ""}
@@ -2766,7 +2246,7 @@ export default async function TaskDetailPage({
         </section>
       </div>
     </div>
-    </TaskDirtyGuard>
+
     </StickyViewportSurface>
   );
 }

@@ -659,10 +659,10 @@ export async function updateEpic(formData: FormData) {
   const actor = await requireActor();
   const slug = String(formData.get("projectSlug") ?? "");
   const epicId = String(formData.get("epicId") ?? "");
-  if (!slug || !epicId) return;
+  if (!slug || !epicId) throw new Error("Epic and project are required.");
 
   const title = String(formData.get("title") ?? "").trim();
-  if (!title || title.length > 200) return;
+  if (!title || title.length > 200) throw new Error("Title must contain 1–200 characters.");
   const descriptionRaw = String(formData.get("description") ?? "");
   const newDescription = descriptionRaw.trim() === "" ? null : descriptionRaw;
   const status = String(formData.get("status") ?? "");
@@ -699,13 +699,13 @@ export async function updateEpic(formData: FormData) {
   if ((hasPrivateField || formData.has("private")) && !actor.canAccessOwnerFeatures) throw new Error("Not authorized");
   const newPrivate = formData.get("private") === "on";
 
-  if (status !== "" && !isEpicStatus(status)) return;
-  if (deploymentRaw !== "" && !isDeploymentStatus(deploymentRaw)) return;
-  if (newBranchName !== null && newBranchName.length > 200) return;
-  if (newCommitPrefix !== null && newCommitPrefix.length > 200) return;
+  if (status !== "" && !isEpicStatus(status)) throw new Error("Invalid Epic status.");
+  if (deploymentRaw !== "" && !isDeploymentStatus(deploymentRaw)) throw new Error("Invalid deployment status.");
+  if (newBranchName !== null && newBranchName.length > 200) throw new Error("Branch name must be at most 200 characters.");
+  if (newCommitPrefix !== null && newCommitPrefix.length > 200) throw new Error("Commit prefix must be at most 200 characters.");
 
   const epic = await loadEpicScoped(actor, epicId, slug);
-  if (!epic || epic.project.slug !== slug) return;
+  if (!epic || epic.project.slug !== slug) throw new Error("Epic not found or access denied.");
   await requireProjectAccess(actor, { id: epic.project.id });
   const existingWorkerIds = epic.workers.map((worker) => worker.userId);
   const newWorkerIds = hasAssigneeField
@@ -750,7 +750,10 @@ export async function updateEpic(formData: FormData) {
     submittedRevision: submittedStatusRevision,
     currentStatusChangedAt: epic.statusChangedAt,
   });
-  const statusChanged = statusSubmissionIsCurrent && status !== "" && status !== epic.status;
+  if (!statusSubmissionIsCurrent && status !== "" && status !== epic.status) {
+    throw new Error("Epic status changed since this page was opened. Reload before changing its status; your other edits have not been saved.");
+  }
+  const statusChanged = status !== "" && status !== epic.status;
   if (statusChanged && status === "Review") {
     throw new Error("Epic Review is entered automatically after every child Task is accepted.");
   }

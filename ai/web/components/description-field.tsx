@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { sendAgentChatMessage } from "@/lib/agents/chat/actions";
 import { generateClientMessageId } from "@/lib/agents/ops/client-message-id";
@@ -91,21 +91,22 @@ export default function DescriptionField({
     ? `${baseAiInstruction}\n\nAdditional context from the requester:\n${trimmedExtraContext}`
     : baseAiInstruction;
 
+  const previousSource = useRef({ defaultValue, draftDescription, rollbackKey });
+  const currentValue = useRef(value);
+  currentValue.current = value;
   useEffect(() => {
-    if (draftDescription !== null && draftDescription !== undefined) {
-      setValue(draftDescription);
-      setEditing(true);
-      setHasRollback(true);
-    } else {
-      setValue(defaultValue);
-      setEditing(defaultValue.trim() === "");
-      setHasRollback(false);
+    const previous = previousSource.current;
+    const newDraft = draftDescription != null && draftDescription !== previous.draftDescription;
+    const untouched = currentValue.current === previous.defaultValue || currentValue.current === previous.draftDescription;
+    if (rollbackKey !== previous.rollbackKey || newDraft || untouched) {
+      const next = draftDescription ?? defaultValue;
+      setValue(next);
+      setEditing(draftDescription != null || next.trim() === "");
+      setHasRollback(draftDescription != null);
     }
-
+    previousSource.current = { defaultValue, draftDescription, rollbackKey };
     const stored = localStorage.getItem(rollbackKey);
-    if (stored === defaultValue) {
-      localStorage.removeItem(rollbackKey);
-    }
+    if (stored === defaultValue) localStorage.removeItem(rollbackKey);
   }, [defaultValue, draftDescription, rollbackKey]);
 
   // Description-draft heartbeat — bumps lastSeenAt on the requester's

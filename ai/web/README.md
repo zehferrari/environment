@@ -14,6 +14,9 @@ This document describes the codebase and runtime architecture. For the
 end-to-end PM process—assignment, Action Plans, worktrees, validation, review,
 sub-tasks, Done finalization, and Epic roll-up—see [PM.md](./PM.md).
 
+Task/Epic editor save and deployment recovery behavior is documented in
+[the editor reliability audit](docs/audits/editor-save-navigation-2026-09-10.md).
+
 ## Architectural principles
 
 - **PM is the canonical work-state store.** Task, Epic, role, discussion,

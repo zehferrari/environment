@@ -1,6 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: 'standalone',
+  deploymentId: process.env.PM_DEPLOYMENT_ID,
   poweredByHeader: false,
   // @prisma/client + @node-rs/argon2 are node-native; keep them out of the bundle.
   serverExternalPackages: ['@prisma/client', '@node-rs/argon2'],
