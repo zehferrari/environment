@@ -1179,7 +1179,7 @@ export default defineChannelPluginEntry({
   },
   setRuntime: setPmRuntime,
   registerFull(api) {
-    const toolCapabilities = taskToolCapabilities(JSON.parse(readFileSync(new URL("./openclaw.plugin.json", import.meta.url), "utf8")));
+    const toolManifest = JSON.parse(readFileSync(new URL("./openclaw.plugin.json", import.meta.url), "utf8"));
     const telemetry = createPmTaskTelemetry({
       findTurn: (key) => [...activeTurns.values()].find((turn) => turn.canonicalSessionKey === key),
     });
@@ -1197,7 +1197,7 @@ export default defineChannelPluginEntry({
         const account = resolvePmAccount({ cfg: api.config, accountId: "default" });
         if (!tokensEqual(authHeader(req), account.token)) writeJson(res, 401, { error: "Unauthorized" });
         else if (req.method !== "GET") writeJson(res, 405, { error: "Method not allowed" });
-        else writeJson(res, 200, toolCapabilities);
+        else writeJson(res, 200, taskToolCapabilities(toolManifest, api.config, account.agentId));
         return true;
       },
     });

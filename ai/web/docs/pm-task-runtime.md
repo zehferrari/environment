@@ -1,5 +1,9 @@
 # Compact PM task runtime
 
+Deployment note (10 September): live PM remains on `main` at `bb4a0cd`, and
+plugin files are 0.1.3. The 0.1.4 backend-aware changes below are pending merge
+and promotion. The activation table records the original 8 September rollout.
+
 Enabled on **thinkpad on 2026-09-08**, after the workflow changes were merged
 and deployed from `main` at commit `998dae4`. The live website and consumer use
 `/srv/Code/environment.worktrees/main` with `/srv/Data/pm/wt-main.db`.
@@ -197,3 +201,45 @@ rollout details, the retry-loop evidence and the remaining external blocker.
 For future plugin activation, verify actual native-tool invocation and its
 durable PM effect. A successful capabilities request alone does not prove
 that model tool discovery works.
+
+
+## PH-192 reset follow-up — backend compatibility (10 September 2026)
+
+Gateway tool registration does not mean a CLI subprocess inherits those tools.
+Barekbaal's `claude-cli/claude-opus-5` turn received `pm_context` and
+`pm_submit_plan` instructions but only had Claude CLI's own tool registry.
+Resetting the task changed its session/state, not that backend limitation.
+
+The fix on `fix-v23-workflow-handoffs` keeps the compact snapshot and selects
+its interface from the agent's configured primary model and fallback chain:
+
+- Native API backends retain scoped `pm_*` tools.
+- CLI backends, CLI fallbacks, and unreadable/unknown model configuration use
+  the existing scoped HTTP API through Bash/exec. The compact contract supplies
+  the per-message capability and allowed action schemas. It explicitly replaces
+  earlier native-only instructions. No registry search or credential discovery
+  is needed. Endpoint/task validation and the existing API permission,
+  approval, revision, replay and cancellation checks still apply.
+- Plugin 0.1.4 advertises native task tools only for a compatible configured
+  backend. A stale compact/native payload is refused when the gateway backend
+  is CLI, before spending another model turn.
+- Explicit planning notifications carry an expected `submit_plan` outcome.
+  A completed model turn without a durable plan or terminal workflow action
+  raises the task's reporter alert and records a failed workflow disposition
+  and readable activity event. Policy updates, context-only turns and reviewer
+  assignment notices do not owe a new plan. No automatic retry is added.
+- Hard reset still purges work, chat and execution state, but retains previous
+  reset events and small summaries of backend/model, run status/action counts
+  and selected runtime interface. It retains no prompts, credentials or old
+  conversation content in those summaries.
+
+`PM_AGENT_CONFIG_ROOT` defaults to `/srv/agents/openclaw`. The test harness
+points it at temporary model configurations; it must not be set to the fixture
+path in the live service. Both selected interfaces appear in
+`pm.task.runtime.prepared` without exposing HTTP capabilities.
+
+Activation requires the web/consumer source update and the plugin installer;
+installing the plugin alone does not give the old web service the compact HTTP
+contract. Preserve the current main deployment until this branch is merged
+and promoted, then install/restart gateways when idle. No schema migration is
+introduced by this follow-up.

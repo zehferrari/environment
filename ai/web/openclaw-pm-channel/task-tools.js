@@ -1,3 +1,5 @@
+import { nativeTaskToolsSupported } from "./task-backend.js";
+
 // Native tools are bound to one authenticated ingress generation, never tool arguments.
 const string = { type: "string" };
 const strings = { type: "array", items: string };
@@ -107,8 +109,9 @@ export function createTaskTools({ context, findTurn, fetchImpl = fetch }) {
 
 // OpenClaw selects tool-bearing plugins from manifest contracts before it
 // invokes registerTool factories. The handshake must reflect that prerequisite.
-export function taskToolCapabilities(manifest) {
+export function taskToolCapabilities(manifest, cfg, agentId = "main") {
   const declared = new Set(Array.isArray(manifest?.contracts?.tools) ? manifest.contracts.tools : []);
-  const taskTools = PM_TASK_TOOL_NAMES.filter((name) => declared.has(name));
+  const taskTools = cfg !== undefined && !nativeTaskToolsSupported(cfg, agentId)
+    ? [] : PM_TASK_TOOL_NAMES.filter((name) => declared.has(name));
   return { taskRuntimeVersions: taskTools.length === PM_TASK_TOOL_NAMES.length ? [1] : [], taskTools };
 }

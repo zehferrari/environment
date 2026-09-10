@@ -110,6 +110,7 @@ export type ActivityKind =
   | "epic.action_plan.reset"
   | "task.branch"
   | "task.commit_prefix"
+  | "task.workflow.outcome_missing"
   | "task.workflow.notify"
   | "task.workflow.dispatch"
   | "task.workflow.next_assignment_skipped"
@@ -627,6 +628,8 @@ export function describeActivity(row: ActivityRow): string {
         ? `${actor(row.actorName)} set commit prefix ${p.to} on ${task(row.taskTitle)}`
         : `${actor(row.actorName)} updated commit prefix on ${task(row.taskTitle)}`;
     }
+    case "task.workflow.outcome_missing":
+      return "Planning turn ended without an Action Plan; runtime or clarification needs attention";
     case "task.workflow.notify": {
       const p = parsePayload<{ agentSlug?: string; reason?: string }>(row.payload);
       return `PM workflow notified @${p?.agentSlug ?? "?"}${p?.reason ? ` (${p.reason})` : ""}`;

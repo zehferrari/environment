@@ -2,6 +2,17 @@
 
 Native local OpenClaw channel for the Mission Control webapp.
 
+Version 0.1.4 adds backend-aware native capabilities. Claude CLI subprocesses
+cannot use gateway-registered tools; PM sends them the compact scoped HTTP
+contract instead. The backend check includes configured fallbacks and fails
+conservatively when the model is unknown. The bundle now also includes
+`task-backend.js`. Deploy the matching PM web/consumer code before installing
+this plugin: old web code cannot generate the compact HTTP alternative.
+
+The model turn finishing is distinct from the requested workflow outcome.
+Explicit planning turns that finish without a submitted plan now raise a
+reporter alert and record the missing outcome; they do not automatically retry.
+
 Version 0.1.3 repairs native-tool discovery: all 15 tools are declared in
 `openclaw.plugin.json` → `contracts.tools`. Current OpenClaw selects plugins
 from those declarations before invoking their tool factories; `registerTool`

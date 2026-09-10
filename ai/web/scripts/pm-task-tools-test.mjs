@@ -66,3 +66,17 @@ turn.taskRuntime = { ...turn.taskRuntime, actionPlan: null };
 const missingPlan = createTaskTools({ context, findTurn, fetchImpl });
 await assert.rejects(missingPlan[1].execute("missing-plan", {}), /Read the current plan/);
 console.log("PASS plan decisions bind the viewed revision; omitted plans require a read first");
+
+const { nativeTaskToolsSupported } = await import("../openclaw-pm-channel/task-backend.js");
+const apiCfg = { agents: { defaults: { model: { primary: "openai/test", fallbacks: ["ollama/test"] } } } };
+const cliCfg = { agents: { defaults: { model: { primary: "claude-cli/test", fallbacks: [] } } } };
+assert.equal(nativeTaskToolsSupported(apiCfg), true);
+assert.equal(nativeTaskToolsSupported(cliCfg), false);
+assert.equal(nativeTaskToolsSupported({}), false);
+assert.equal(nativeTaskToolsSupported({ agents: { defaults: { model: { primary: "openai/test", fallbacks: ["claude-cli/test"] } } } }), false);
+assert.equal(nativeTaskToolsSupported({ ...apiCfg, models: { providers: { openai: { api: "claude-cli" } } } }), false);
+assert.equal(nativeTaskToolsSupported({ agents: { defaults: apiCfg.agents.defaults, list: [{ id: "main", model: "claude-cli/test" }] } }), false);
+assert.equal(nativeTaskToolsSupported({ agents: { defaults: { ...apiCfg.agents.defaults, cliBackends: { openai: {} } } } }), false);
+assert.deepEqual(taskToolCapabilities(manifest, cliCfg), { taskRuntimeVersions: [], taskTools: [] });
+assert.deepEqual(taskToolCapabilities(manifest, apiCfg).taskTools, PM_TASK_TOOL_NAMES);
+console.log("PASS native capabilities follow the actual configured backend and fallback chain");
