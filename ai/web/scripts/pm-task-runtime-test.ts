@@ -43,6 +43,13 @@ async function main() {
       await db.pmChannelJob.update({ where: { id: job.id }, data: { status: "complete" } });
       return { payload, run };
     };
+    const emptyReview = await sendTaskWorkflowNotification({ taskId: task.id, targetUserId: reviewer.id, actor, reason: "reviewer_assignment_requested", body: "Reviewer assigned.", dedupeKey: "empty-review" });
+    assert.equal(emptyReview, null, "no model wake before an assigned worker submits a plan");
+    assert.equal(await db.agentChatMessage.count({ where: { workflowDedupeKey: "empty-review" } }), 0);
+    await db.task.update({ where: { id: task.id }, data: { assigneeId: null } });
+    await sendTaskWorkflowNotification({ taskId: task.id, targetUserId: reviewer.id, actor, reason: "reviewer_assignment_requested", body: "Select an assignee.", dedupeKey: "needs-assignee" });
+    assert.equal(await db.agentChatMessage.count({ where: { workflowDedupeKey: "needs-assignee" } }), 1, "unassigned task still wakes its reviewer");
+    await db.task.update({ where: { id: task.id }, data: { assigneeId: worker.id } });
     const first = await notify("backlog_plan_requested", worker.id, "Submit a concise plan.", "first");
     const revised = await notify("action_plan_feedback_received", worker.id, "Add an explicit tenant-refusal test.", "revised");
     const review = await notify("action_plan_review_requested", reviewer.id, "Review the structured plan.", "review");
@@ -51,6 +58,8 @@ async function main() {
     assert.notEqual(first.payload.taskRuntime.token, revised.payload.taskRuntime.token, "each message has its own capability");
     for (const { payload } of [first, revised, review]) {
       assert.ok(payload.systemPrompt.includes(PM_TASK_CONTRACT_VERSION));
+      assert.ok(payload.systemPrompt.includes("Use NO_REPLY"));
+      assert.ok(!payload.systemPrompt.includes("PM_SILENT_NO_CONTRIBUTION"));
       assert.ok(payload.systemPrompt.length < 12_000, `compact startup: ${payload.systemPrompt.length}`);
       assert.ok(!payload.systemPrompt.includes(payload.taskRuntime.token));
       assert.ok(!payload.systemPrompt.includes(payload.taskRuntime.contextUrl));

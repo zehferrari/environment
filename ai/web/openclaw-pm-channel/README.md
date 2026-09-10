@@ -105,3 +105,21 @@ For a provisioned Fable 5.1 CLI backend, the plugin instead clones its
 OpenClaw policy advertises Thinking Off for that route. This requires a current
 Claude Code CLI; High/xHigh were verified using its actual effort hook.
 See [the model/effort runbook](../docs/agent-model-upgrades.md).
+
+
+## Terminal turns (0.1.6)
+
+The compact contract uses OpenClaw's `NO_REPLY` token. Legacy
+`PM_SILENT_NO_CONTRIBUTION` responses remain readable during rollout. Exact
+silent output is observed through the model-output hook so a core-suppressed
+reply can complete normally instead of becoming a missing-reply failure.
+
+A successful native PM mutation with `turnComplete: true` or a finish/wait
+effect fences subsequent PM tools and requests a non-blocking abort of the
+current harness run. Both generation checks and successful HTTP/business
+status are required. Context prose and failed responses cannot stop a turn.
+The resulting dispatch unwind completes successfully; it is not cancellation
+or a retryable error. A superseded generation cannot stop its successor.
+This native-tool boundary does not intercept Claude CLI's shell HTTP calls;
+those receive the unified silence instruction and existing HTTP completion
+contract. Unsupported harness stop APIs log a warning and retain the tool fence.

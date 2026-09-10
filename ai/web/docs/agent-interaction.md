@@ -120,7 +120,7 @@ Replies must stay in the origin channel:
 Agents should not post the same answer in both comments and chat.
 They should also avoid no-op chatter: if a turn requires no visible
 contribution, the final reply body must be exactly
-`PM_SILENT_NO_CONTRIBUTION`. PM records the turn as complete without
+`NO_REPLY`. PM records the turn as complete without
 creating a chat or comment row.
 
 ### Soft-deleted content is hidden from agents
@@ -164,7 +164,7 @@ manager/assignee can still read the content and update their session
 memory — but every native PM-channel turn carries a `DIRECTED-MESSAGE
 RULE` block that names the directed set. If the recipient is NOT in
 that set and the message is not a broadcast, the recipient MUST reply
-exactly `PM_SILENT_NO_CONTRIBUTION` regardless of whether they are the
+exactly `NO_REPLY` regardless of whether they are the
 assignee, reviewer, epic acting manager, or reporter. Workflow turns
 (`start`, `ready_for_review`, `review_*`, `triage_to_todo`) are
 exempt — those are role-directed by construction and always expect a
@@ -235,7 +235,7 @@ For an unapproved Task Action Plan reply, `actionPlan` is required structured
 data. `text` is the human presentation; PM never derives authoritative steps
 from that Markdown. Non-plan replies omit `actionPlan`.
 
-If the final reply text is exactly `PM_SILENT_NO_CONTRIBUTION`, PM does
+If the final reply text is exactly `NO_REPLY`, PM does
 not write a visible reply. It records a `*.silent` ActivityLog row with
 `inReplyToMessageId` so pending live bubbles settle cleanly.
 

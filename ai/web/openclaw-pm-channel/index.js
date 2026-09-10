@@ -1,3 +1,4 @@
+import { isProtocolSilentReply, stopCompletedTaskTurn } from "./turn-completion.js";
 import { resolvePmTurnEffort, withPmHighDefault } from "./turn-effort.js";
 import { createPmTaskTelemetry } from "./task-telemetry.js";
 import { randomUUID, timingSafeEqual } from "node:crypto";
@@ -655,6 +656,11 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
   });
   const stream = createPmStreamPublisher({ account, target, logger, gatewayDispatchId: acceptedId });
   registeredTurn.stream = stream;
+  registeredTurn.finishTask = () => stopCompletedTaskTurn({
+    turn: registeredTurn, sessionKey,
+    findTurn: () => activeTurns.get(rawSessionKey),
+    loadHarness: () => import("openclaw/plugin-sdk/agent-harness"), logger,
+  });
   let visibleReplySent = false;
 
   const ctxPayload = await inbound.buildContext({
@@ -759,7 +765,8 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
       delivery: {
         deliver: async (replyPayload) => {
           const text = payloadText(replyPayload);
-          if (!text) return;
+          if (!text || registeredTurn.completedAction) return;
+          if (isProtocolSilentReply(text)) { registeredTurn.silentReply = true; return; }
           const result = await sendPmText({
             cfg,
             accountId: account.accountId,
@@ -804,7 +811,7 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
       },
       messageId,
     });
-    if (visibleReplySent) {
+    if (visibleReplySent || registeredTurn.completedAction || registeredTurn.silentReply) {
       await stream.done();
     } else {
       // Distinguish "gateway aborted this turn" (cancel endpoint) from "agent
@@ -819,6 +826,7 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
       }
     }
   } catch (err) {
+    if (registeredTurn.completedAction) { await stream.done(); return; }
     const message = String(err?.message ?? err);
     if (err?.name === "AbortError" || /abort/i.test(message)) {
       await stream.error(new Error(`gateway aborted turn: ${message}`));
