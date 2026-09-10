@@ -478,3 +478,10 @@ Use the PM agent Models tab or the two-argument
 [`rotate-agent-model.sh`](web/scripts/rotate-agent-model.sh) command. Both share
 provider-specific fallback rotation and guard against stale configurations and
 active PM work. See the [model upgrade runbook](web/docs/agent-model-upgrades.md).
+
+## OpenClaw runtime upgrade (2026-09-10)
+
+All four agent gateways use OpenClaw 2026.9.3. Asdrubal uses the separately
+managed Codex plugin 2026.9.3 (bundled Codex 0.153.4); the host CLI is 0.154.0.
+Keep both layers current. See the [upgrade audit and recovery procedure](web/docs/audits/openclaw-openai-upgrade-2026-09-10.md) for the OAuth routing repair,
+SQLite migration backups, plugin verification, and PM schema compatibility.

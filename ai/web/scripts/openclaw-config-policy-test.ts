@@ -29,12 +29,12 @@ const config = JSON.parse(rendered) as {
 
 assert.equal(
   config.diagnostics?.memoryPressureSnapshot,
-  true,
-  "new and updated agents must retain a pre-OOM gateway stability bundle",
+  undefined,
+  "retired diagnostics options must not invalidate the current schema",
 );
 assert.equal(
   config.meta?.lastTouchedVersion,
-  "2026.7.1-2",
+  "2026.9.3",
   "new and updated agents must record the deployed OpenClaw schema version",
 );
 assert.deepEqual(
@@ -60,8 +60,8 @@ assert.equal(
 );
 assert.deepEqual(
   config.agents?.defaults?.compaction,
-  { mode: "safeguard", reserveTokensFloor: 50_000 },
-  "long-lived PM sessions must reserve enough context for auto-compaction recovery",
+  { mode: "safeguard" },
+  "new agents must retain safeguard compaction without retired options",
 );
 
 const codexConfig = JSON.parse(renderOpenClawJson({
@@ -73,7 +73,7 @@ const codexConfig = JSON.parse(renderOpenClawJson({
   selectedModels: [{ provider: "openai-codex", id: "gpt-5.5", name: "gpt-5.5" }],
   now: "2026-07-27T00:00:00.000Z",
 })) as {
-  models?: { providers?: Record<string, { api?: string }> };
+  models?: { providers?: Record<string, { api?: string; baseUrl?: string; auth?: string }> };
   auth?: { profiles?: Record<string, { provider?: string }> };
   agents?: { defaults?: { model?: { primary?: string } } };
 };
@@ -94,4 +94,6 @@ assert.equal(
   "provisioned Codex auth metadata must use the canonical OpenAI provider id",
 );
 
+assert.equal(codexConfig.models?.providers?.openai?.baseUrl, "https://chatgpt.com/backend-api/codex");
+assert.equal(codexConfig.models?.providers?.openai?.auth, "oauth");
 console.log("openclaw-config-policy-test: ok");

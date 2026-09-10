@@ -12,13 +12,16 @@ import { queueAgentRestart } from "@/lib/agents/ops/restart";
 
 const AGENT_RE = /^[a-z][a-z0-9_-]{0,31}$/;
 
+type AgentModelEntry = { id?: string; default?: boolean; model?: string | { primary?: string; fallbacks?: string[] }; fallbacks?: string[] };
+
 export type OpenClawConfig = {
   agents?: {
     defaults?: {
       model?: { primary?: string; fallbacks?: string[] };
-      models?: Record<string, { alias?: string }>;
+      models?: Record<string, { alias?: string; agentRuntime?: { id: string } }>;
     };
-    list?: Array<{ id?: string; default?: boolean; model?: string | { primary?: string; fallbacks?: string[] }; fallbacks?: string[] }>;
+    list?: AgentModelEntry[];
+    entries?: Record<string, AgentModelEntry>;
   };
   models?: { providers?: Record<string, { apiKey?: string; api?: string; models?: Array<{ id?: string; name?: string; agentRuntime?: unknown }> }> };
 };
@@ -67,6 +70,12 @@ function addConfiguredModel(labels: Map<string, string>, model: unknown) {
   labels.set(id, `${id} · configured`);
 }
 
+function mainEntry(cfg: OpenClawConfig) {
+  const entries = cfg.agents?.entries;
+  return (entries && (Object.values(entries).find((entry) => entry.default) ?? entries.main))
+    ?? cfg.agents?.list?.find((entry) => entry.default || entry.id === "main");
+}
+
 function collectAvailable(cfg: OpenClawConfig) {
   const labels = new Map<string, string>();
   for (const [id, meta] of Object.entries(cfg.agents?.defaults?.models ?? {})) labels.set(id, meta.alias ? `${meta.alias} · ${id}` : id);
@@ -84,7 +93,7 @@ function collectAvailable(cfg: OpenClawConfig) {
   // cannot make a safe no-op save to recover settings.
   addConfiguredModel(labels, cfg.agents?.defaults?.model?.primary);
   for (const fallback of cfg.agents?.defaults?.model?.fallbacks ?? []) addConfiguredModel(labels, fallback);
-  for (const entry of cfg.agents?.list ?? []) {
+  for (const entry of Object.values(cfg.agents?.entries ?? {}).concat(cfg.agents?.list ?? [])) {
     addConfiguredModel(labels, entry.model);
     for (const fallback of modelFallbacks(entry.model)) addConfiguredModel(labels, fallback);
     for (const fallback of entry.fallbacks ?? []) addConfiguredModel(labels, fallback);
@@ -94,7 +103,7 @@ function collectAvailable(cfg: OpenClawConfig) {
 }
 
 function primaryFor(cfg: OpenClawConfig) {
-  const main = cfg.agents?.list?.find((entry) => entry.default || entry.id === "main");
+  const main = mainEntry(cfg);
   return modelPrimary(main?.model) ?? cfg.agents?.defaults?.model?.primary ?? null;
 }
 
@@ -216,11 +225,11 @@ async function updateModelSettingsLocked(agent: string, input: AgentModelUpdateI
   if (next.defaultModel) cfg.agents.defaults.model.primary = next.defaultModel;
   if (next.fallbacks) {
     cfg.agents.defaults.model.fallbacks = next.fallbacks;
-    const main = cfg.agents.list?.find((entry) => entry.default || entry.id === "main");
+    const main = mainEntry(cfg);
     if (main && modelPrimary(main.model)) main.model = { primary: modelPrimary(main.model)!, fallbacks: next.fallbacks };
   }
   if (next.active) {
-    const main = cfg.agents.list?.find((entry) => entry.default || entry.id === "main");
+    const main = mainEntry(cfg);
     if (main) {
       const currentFallbacks = modelFallbacks(main.model);
       const inheritedFallbacks = next.fallbacks ?? (currentFallbacks.length > 0 ? currentFallbacks : cfg.agents.defaults.model.fallbacks);
@@ -274,7 +283,9 @@ export async function promoteAgentModel(agent: string, provider: string, model: 
     const cfg = JSON.parse(raw) as OpenClawConfig;
     const target = preview.after.defaultModel!;
     cfg.agents!.defaults!.models ??= {};
+    const previousRuntime = cfg.agents!.defaults!.models![preview.before.defaultModel!]?.agentRuntime;
     cfg.agents!.defaults!.models![target] ??= {};
+    if (previousRuntime) cfg.agents!.defaults!.models![target].agentRuntime ??= { ...previousRuntime };
     // Preserve the provider transport override without copying the old model's
     // context, price, or capability metadata onto a new model.
     const known = KNOWN_MODEL_CAPABILITIES[target];
@@ -290,7 +301,7 @@ export async function promoteAgentModel(agent: string, provider: string, model: 
       }
     }
     cfg.agents!.defaults!.model = { ...cfg.agents!.defaults!.model, primary: target, fallbacks: preview.after.fallbacks };
-    const main = cfg.agents?.list?.find((entry) => entry.default || entry.id === "main");
+    const main = mainEntry(cfg);
     if (main) main.model = { primary: target, fallbacks: preview.after.fallbacks };
     await db.activityLog.create({ data: { kind: "agent.model.promotion.requested", targetAgent: agent, userId: actorUserId ?? undefined,
       payload: JSON.stringify({ provider, before: preview.before, after: preview.after, removed: preview.removed }) } });

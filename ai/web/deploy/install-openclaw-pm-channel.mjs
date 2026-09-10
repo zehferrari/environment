@@ -203,6 +203,9 @@ function runOpenClawInstall(agent, home, pluginPath, openclawBin) {
     openclawBin,
     "plugins",
     "install",
+    // This installer explicitly trusts the repo-managed, root-owned plugin.
+    "--force",
+    "--accept-capabilities",
     "--link",
     pluginPath,
   ], { stdio: "inherit" });
