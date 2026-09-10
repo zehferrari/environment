@@ -998,19 +998,22 @@ async function handleIngress({ cfg, logger, req, res }) {
   // was previously never populated, making /pm-channel/cancel dead code).
   // runPmTurn's finally removes the entry once this acceptedId settles.
   activeTurns.set(rawSessionKey, { acceptedId, abortedAt: null });
-  setImmediate(() => {
-    runPmTurn({ cfg, payload, accountId, logger, acceptedId }).catch((err) => {
-      if (activeTurns.get(rawSessionKey)?.acceptedId === acceptedId) activeTurns.delete(rawSessionKey);
-      logger.error?.(`[pm-channel] turn ${acceptedId} failed: ${String(err)}`);
-    });
-  });
-
   writeJson(res, 202, {
     ok: true,
     id: acceptedId,
     channel: CHANNEL_ID,
     sessionKey: payload.sessionKey,
   });
+  // Send the HTTP receipt immediately, but keep the handler's promise alive.
+  // OpenClaw 2026.9 releases the admission lease when this handler returns.
+  // A detached setImmediate inherits that released lease through AsyncLocalStorage
+  // and is rejected as draining even while the gateway is healthy.
+  try {
+    await runPmTurn({ cfg, payload, accountId, logger, acceptedId });
+  } catch (err) {
+    if (activeTurns.get(rawSessionKey)?.acceptedId === acceptedId) activeTurns.delete(rawSessionKey);
+    logger.error?.(`[pm-channel] turn ${acceptedId} failed: ${String(err)}`);
+  }
   return true;
 }
 
