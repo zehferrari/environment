@@ -80,6 +80,55 @@ record and conditionally restarting her. The staged fix loads on her next restar
 
 The two reported tasks retain their plans, reviewer feedback and completed work.
 Recovery uses PM's existing workflow-turn endpoint with current task context.
-Do not reset the tasks or overwrite failed run history to reopen the circuit
-breaker. Reverting the plugin on OpenClaw 2026.9 restores the admission bug;
+Do not reset the tasks or rewrite failure records merely to reopen the circuit
+breaker. A bounded operator replay must retain its original failure in the audit. Reverting the plugin on OpenClaw 2026.9 restores the admission bug;
 coordinate any rollback with the earlier core/runtime recovery procedure.
+
+
+## Recovered task outcomes and follow-up delivery repair
+
+PH-193 completed its first repaired turn on Astra and posted a response, but the
+attachment table still contained only the original screenshot. OpenClaw logged
+that the PM outbound adapter lacked `sendMedia` and discarded the media URLs.
+A textual success claim was therefore not proof of delivered files.
+
+Plugin **0.1.9** adds task-scoped media uploads through the existing attachment
+API. It uses OpenClaw's outbound media loader/access policy, retains the active
+message grant outside the prompt, enforces a 10 MiB cap, checks generation
+ownership around asynchronous work, and posts a link only after the API confirms
+storage. Upload failures propagate as errors instead of dropping the files.
+The installer stages the new helper with the rest of the plugin. The current
+SDK's `replyOptions.turnAdoptionLifecycle.onAdopted` also reports execution
+admission; the obsolete top-level callback alone did not populate admission
+and could provoke unnecessary recovery/supersession.
+
+A delivery-only recovery through Asdrubal's real PM ingress uploaded his existing
+files without regenerating them. It emitted `turn:admitted`, selected Astra, and
+completed in 7.76 seconds. Durable attachment records verify:
+
+- `PH-193-affected-orders.csv`: 61,670 bytes, attachment `cmtv7pqf826daovk8ojj9zra5`.
+- `PH-193-affected-orders-summary.csv`: 102,489 bytes, attachment `cmtv7pqg126deovk89bqoauu6`.
+
+This verifies transport/storage, not the business correctness of the CSV values;
+the task's normal reviewer still owns acceptance.
+
+V23-39 was recovered with one operator-controlled replay of the original owner
+instruction, proven to have failed before model execution. Its fresh scoped
+context went through the normal durable enqueue/capacity/fencing helpers; the
+global breaker was not disabled. `pm.channel.operator_recovery` preserves the
+original failure evidence. After intermediate fallback/recovery turns, Astra
+completed run `47d27100-0f2d-4123-abeb-faeb32be78d1` with `flag_blocker` and a
+visible response. The agent reports working AWS credentials and passing checks,
+but says step 5 requires PM/operator deployment under the current operating
+contract. No deployment was performed by this incident repair.
+
+Asdrubal is running 0.1.9; Carmen and Barekbaal loaded 0.1.8's admission fix.
+The shared installed files are 0.1.9 and apply to other gateways on their next
+restart. Karen was not restarted. Previous 0.1.8 files are privately backed up
+under `/var/backups/openclaw/pm-channel-before-attachments-fix-20260910/`.
+
+Additional regression coverage: `pnpm test:pm-task-attachments` verifies exact
+multipart bytes, scoped token/message, stale-generation refusal, explicit API
+errors, size limits and loopback endpoint validation. The runtime compatibility,
+admission, native task tool and recovery-response checks pass. The website's
+truthful-recovery response change remains pending human merge/deployment.

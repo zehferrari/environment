@@ -49,6 +49,7 @@
     "test:pm-channel-stream-protocol": "tsx scripts/pm-channel-stream-protocol-test.ts",
     "test:pm-channel-transport": "tsx scripts/pm-channel-transport-test.ts",
     "test:pm-workflow-recovery-response": "node scripts/pm-workflow-recovery-response-test.mjs",
+    "test:pm-task-attachments": "node scripts/pm-task-attachments-test.mjs",
     "test:pm-channel-admission": "node scripts/pm-channel-admission-test.mjs",
     "test:pm-channel-runtime-compat": "node scripts/pm-channel-runtime-compat-test.mjs",
     "test:chat-room-decomposition": "tsx scripts/chat-room-decomposition-test.ts",

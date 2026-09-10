@@ -1,3 +1,5 @@
+import { uploadPmTaskAttachment } from "./task-attachments.js";
+import { buildOutboundMediaLoadOptions } from "openclaw/plugin-sdk/media-runtime";
 import { isProtocolSilentReply, stopCompletedTaskTurn } from "./turn-completion.js";
 import { resolvePmTurnEffort, withPmHighDefault } from "./turn-effort.js";
 import { createPmTaskTelemetry } from "./task-telemetry.js";
@@ -445,6 +447,19 @@ function createPmStreamPublisher({ account, target, logger, gatewayDispatchId })
   };
 }
 
+async function sendPmMedia(params) {
+  const target = decodeTarget(params.to);
+  const turn = [...activeTurns.values()].find((candidate) => candidate.replyTarget?.taskId === target.taskId && candidate.replyTarget?.messageId === target.messageId);
+  const attachment = await uploadPmTaskAttachment({
+    turn,
+    findTurn: () => [...activeTurns.values()].find((candidate) => candidate === turn),
+    mediaUrl: params.mediaUrl,
+    loadMedia: (url) => getPmRuntime().media.loadWebMedia(url, buildOutboundMediaLoadOptions({ ...params, maxBytes: 10 * 1024 * 1024, optimizeImages: false })),
+  });
+  const text = [params.text, `[${attachment.filename}](${attachment.downloadUrl})`].filter(Boolean).join("\n\n");
+  return sendPmText({ ...params, text });
+}
+
 async function sendPmText({ cfg, accountId, to, text, replyToId, threadId, agentMeta }) {
   const target = decodeTarget(to);
   const account = resolvePmAccount({ cfg, accountId });
@@ -765,7 +780,14 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
       delivery: {
         deliver: async (replyPayload) => {
           const text = payloadText(replyPayload);
-          if (!text || registeredTurn.completedAction) return;
+          const mediaUrls = replyPayload.mediaUrls ?? (replyPayload.mediaUrl ? [replyPayload.mediaUrl] : []);
+          if (registeredTurn.completedAction) return;
+          if (mediaUrls.length) {
+            for (const mediaUrl of mediaUrls) await sendPmMedia({ cfg, accountId, to: encodedTarget, text, mediaUrl, replyToId: messageId });
+            visibleReplySent = true;
+            return { visibleReplySent: true };
+          }
+          if (!text) return;
           if (isProtocolSilentReply(text)) { registeredTurn.silentReply = true; return; }
           const result = await sendPmText({
             cfg,
@@ -790,6 +812,7 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
       replyPipeline: {},
       replyOptions: {
         ...effortOptions,
+        turnAdoptionLifecycle: { onAdopted: () => stream.turnAdmitted() },
         sourceReplyDeliveryMode: "automatic",
         allowProgressCallbacksWhenSourceDeliverySuppressed: true,
         // PM's bounded execution episodes count these events. Without this
@@ -1177,6 +1200,7 @@ const pmPlugin = createChatChannelPlugin({
     base: { deliveryMode: "direct" },
     attachedResults: {
       channel: CHANNEL_ID,
+      sendMedia: async (params) => await sendPmMedia(params),
       sendText: async ({ cfg, to, text, accountId, replyToId, threadId }) =>
         await sendPmText({ cfg, to, text, accountId, replyToId, threadId }),
     },
