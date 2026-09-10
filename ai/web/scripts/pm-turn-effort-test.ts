@@ -17,7 +17,6 @@ async function main() {
   assert.equal(selectPmEffort("manager", ["off", "high"]), "high");
   assert.equal(selectPmEffort("manager", ["off"]), null);
   assert.equal(selectPmEffort("normal", ["high", "xhigh", "max"]), "high");
-  assert.equal(selectPmEffort("manager", ["off", "high", "max"], "ollama"), "high");
   const cfg = { agents: { defaults: { thinkingDefault: "low", model: { primary: "openai/model" } }, list: [{ id: "main", thinkingDefault: "xhigh" }, { id: "aux", thinkingDefault: "low" }] } };
   const cloned = withPmHighDefault(cfg, "main");
   assert.equal(cfg.agents.list[0].thinkingDefault, "xhigh");
@@ -39,6 +38,19 @@ async function main() {
   assert.deepEqual(await resolvePmTurnEffort({ runtime, cfg, agentId: "main", sessionKey, policy: { mode: "manager" }, logger }), { thinkingLevelOverride: "max" });
   session = false; levels = ["off"];
   assert.deepEqual(await resolvePmTurnEffort({ runtime, cfg, agentId: "main", sessionKey, policy: { mode: "manager" }, logger }), {});
+  // Ollama follows the same advertised-capability policy as every provider.
+  let ollamaLevels = ["off", "high", "xhigh", "max"];
+  const ollamaRuntime = { gateway: { request: async () => ({ defaults: { modelProvider: "ollama", model: "test-model", thinkingLevels: ollamaLevels.map((id) => ({ id })) }, sessions: [] }) } };
+  const ollamaCfg = { agents: { defaults: { model: { primary: "ollama/test-model" } } } };
+  const ollamaArgs = { runtime: ollamaRuntime, cfg: ollamaCfg, agentId: "main", sessionKey, logger };
+  assert.deepEqual(await resolvePmTurnEffort({ ...ollamaArgs, policy: { mode: "manager" } }), { thinkingLevelOverride: "xhigh" });
+  ollamaLevels = ["off", "high", "max"];
+  assert.deepEqual(await resolvePmTurnEffort({ ...ollamaArgs, policy: { mode: "manager" } }), { thinkingLevelOverride: "max" });
+  assert.deepEqual(await resolvePmTurnEffort({ ...ollamaArgs, policy: { mode: "normal" } }), { thinkingLevelOverride: "high" });
+  ollamaLevels = ["off", "high"];
+  assert.deepEqual(await resolvePmTurnEffort({ ...ollamaArgs, policy: { mode: "manager" } }), { thinkingLevelOverride: "high" });
+  ollamaLevels = ["off"];
+  assert.deepEqual(await resolvePmTurnEffort({ ...ollamaArgs, policy: { mode: "manager" } }), {});
   const failingRuntime = { gateway: { request: async () => { throw new Error("unsupported API"); } } };
   assert.deepEqual(await resolvePmTurnEffort({ runtime: failingRuntime, cfg, agentId: "main", sessionKey, policy: { mode: "manager" }, logger }), {});
   const claudeCfg = { agents: { defaults: { model: { primary: "claude-cli/claude-fable-5-1" }, cliBackends: { "claude-cli": { command: "claude", env: { CLAUDE_CODE_EFFORT_LEVEL: "high", KEEP: "yes" } } } } }, models: { providers: { "claude-cli": { models: [{ id: "claude-fable-5-1", compat: { supportedReasoningEfforts: ["high", "xhigh", "max"] } }] } } } };

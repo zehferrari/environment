@@ -1,9 +1,6 @@
 /** Select only an advertised level; do not send an invalid effort to a model. */
-export function selectPmEffort(mode, levels, provider = "") {
+export function selectPmEffort(mode, levels) {
   const available = new Set(levels.map((level) => typeof level === "string" ? level : level.id));
-  // Current native Ollama adapter maps xHigh and Max to think:"high".
-  // Its catalogue advertises Max, but that is not a distinct wire setting.
-  if (provider === "ollama") { available.delete("xhigh"); available.delete("max"); }
   const preference = mode === "manager" ? ["xhigh", "max", "high"] : ["high"];
   return preference.find((level) => available.has(level)) ?? null;
 }
@@ -37,7 +34,7 @@ export async function resolvePmTurnEffort({ runtime, cfg, agentId, sessionKey, p
       logger.info?.(`[pm-channel] effort role=${mode} selected=${cliEffort ?? "high"} control=CLAUDE_CODE_EFFORT_LEVEL`);
       return { cliEffort: cliEffort ?? "high" };
     }
-    const level = selectPmEffort(mode, levels, provider);
+    const level = selectPmEffort(mode, levels);
     logger.info?.(`[pm-channel] effort role=${mode} selected=${level ?? "runtime-default"} supported=${levels.map((row) => row.id).join(",")}`);
     if (level) return { thinkingLevelOverride: level, ...(provider === "claude-cli" && cli?.env?.CLAUDE_CODE_EFFORT_LEVEL ? { cliEffort: level } : {}) };
     logger.warn?.("[pm-channel] requested effort unavailable; using High default with runtime compatibility normalization");

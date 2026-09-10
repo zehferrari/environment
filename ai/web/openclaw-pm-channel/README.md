@@ -95,8 +95,10 @@ that policy from current database roles at dispatch, including queued jobs. The
 plugin queries gateway session metadata and uses a one-shot
 `replyOptions.thinkingLevelOverride`: High for ordinary work; xHigh, then Max,
 then High for manager work, where supported. It never persists a `/think`
-command in the session. The current native Ollama adapter maps Max to High, so
-PM selects High explicitly for that transport. Metadata lookup failure falls
+command in the session. Ollama follows the same advertised xHigh → Max → High
+selection order. The current native adapter maps xHigh/Max to High on the wire;
+PM passes the selected level to OpenClaw without a provider-specific cap.
+Metadata lookup failure falls
 back to a per-turn High default normalized by OpenClaw and emits a warning.
 For a provisioned Fable 5.1 CLI backend, the plugin instead clones its
 `CLAUDE_CODE_EFFORT_LEVEL` environment per turn, because the installed

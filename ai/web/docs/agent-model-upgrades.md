@@ -128,9 +128,12 @@ confirms that xHigh and Max are distinct capabilities and Fable 5.1 supports bot
 
 The installed OpenClaw native Ollama adapter maps `high` to `think: "high"`,
 and also maps `xhigh` and `max` to that same value. Its provider catalogue
-nevertheless advertises Max for reasoning models. PM therefore excludes these
-two higher labels for the current native Ollama transport and selects High;
-it does not claim a stronger setting reached the provider.
+nevertheless advertises Max for reasoning models. As requested, PM applies the
+same advertised-capability policy to Ollama: **xHigh → Max → High** for manager
+work, and High for ordinary work. There is no Ollama-specific exclusion. A
+selected xHigh or Max is passed to OpenClaw; the current adapter may normalize
+it to High on the wire. The selected runtime level therefore does not prove
+that a stronger setting reached the model.
 
 [Ollama thinking](https://docs.ollama.com/capabilities/thinking) may be boolean
 or graded depending on the model. GLM 5.3 documents a separate
@@ -139,7 +142,8 @@ but the installed native adapter does not forward it as a separate effort
 parameter. Kimi K3 advertises thinking without documented equivalent effort
 levels on its Ollama page. Enabling thinking, choosing effort, and showing a
 reasoning trace in the PM are separate concepts. A future adapter improvement
-must prove the actual request mapping before exposing true Max for Ollama.
+must prove the actual request mapping before claiming a distinct Max setting
+reaches an Ollama model.
 
 ### Claude CLI Fable compatibility
 
