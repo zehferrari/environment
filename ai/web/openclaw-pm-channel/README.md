@@ -2,6 +2,24 @@
 
 Native local OpenClaw channel for the Mission Control webapp.
 
+Version 0.1.4 adds backend-aware native capabilities. Claude CLI subprocesses
+cannot use gateway-registered tools; PM sends them the compact scoped HTTP
+contract instead. The backend check includes configured fallbacks and fails
+conservatively when the model is unknown. The bundle now also includes
+`task-backend.js`. Deploy the matching PM web/consumer code before installing
+this plugin: old web code cannot generate the compact HTTP alternative.
+
+The model turn finishing is distinct from the requested workflow outcome.
+Explicit planning turns that finish without a submitted plan now raise a
+reporter alert and record the missing outcome; they do not automatically retry.
+
+Version 0.1.3 repairs native-tool discovery: all 15 tools are declared in
+`openclaw.plugin.json` → `contracts.tools`. Current OpenClaw selects plugins
+from those declarations before invoking their tool factories; `registerTool`
+alone does not expose tools. The capability handshake checks the declarations
+and refuses to advertise runtime support if any are missing. Validation must
+include a real task turn using `pm_context`, not just the capabilities endpoint.
+
 Version 0.1.2 adds task-scoped native tools and numeric usage telemetry.
 It is installed on all four enabled thinkpad gateways as of 2026-09-08, with
 `PM_TASK_RUNTIME_V2=1` enabled in the PM website and consumer.
@@ -69,3 +87,21 @@ The installer stages a root-owned copy at
 enabled agent's OpenClaw config. Do not link the worktree path directly for
 multi-user gateways; OpenClaw will block plugin paths owned by another
 non-root user.
+
+## Per-turn effort (0.1.5)
+
+Authenticated PM ingress can carry `effortPolicy` (normal or manager). PM resolves
+that policy from current database roles at dispatch, including queued jobs. The
+plugin queries gateway session metadata and uses a one-shot
+`replyOptions.thinkingLevelOverride`: High for ordinary work; xHigh, then Max,
+then High for manager work, where supported. It never persists a `/think`
+command in the session. Ollama follows the same advertised xHigh → Max → High
+selection order. The current native adapter maps xHigh/Max to High on the wire;
+PM passes the selected level to OpenClaw without a provider-specific cap.
+Metadata lookup failure falls
+back to a per-turn High default normalized by OpenClaw and emits a warning.
+For a provisioned Fable 5.1 CLI backend, the plugin instead clones its
+`CLAUDE_CODE_EFFORT_LEVEL` environment per turn, because the installed
+OpenClaw policy advertises Thinking Off for that route. This requires a current
+Claude Code CLI; High/xHigh were verified using its actual effort hook.
+See [the model/effort runbook](../docs/agent-model-upgrades.md).

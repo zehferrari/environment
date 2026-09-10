@@ -640,6 +640,7 @@ export async function sendTaskWorkflowNotification(args: {
     // PM-generated notification turn: safe for the turn-failure auto-retry
     // ladder (see retryOrFailPmChannelJobForTurnFailure).
     turnClass: "notification" as const,
+    ...(["backlog_plan_requested", "action_plan_feedback_received"].includes(args.reason) ? { expectedWorkflowAction: "submit_plan" as const } : {}),
     text: args.body,
     contextText: nullPmContextText(),
     systemPrompt: buildUnifiedPmTurnSystemPrompt({

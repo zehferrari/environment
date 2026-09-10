@@ -248,6 +248,16 @@ async function main() {
     assert.notEqual(binding.openclawSessionKey, "pm:task:rst-1:old");
     assert.equal(binding.lastDispatchedMessageId, null);
 
+    const resetEvent = activities.find((row) => row.kind === "task.reset")!;
+    const summary = JSON.parse(resetEvent.payload!);
+    assert.equal(summary.diagnostics.runs[0]._count._all, 1);
+    assert.ok(!JSON.stringify(summary).includes("agent work"));
+    const again = await quiesceTaskForHardReset({ taskId: task.id, actorUserId: owner.id, actorUsername: owner.username, fetchImpl: fakeFetch });
+    if (!again.ok) throw new Error(again.error);
+    const { purgeTaskHardResetState } = await import("@/lib/tasks/hard-reset");
+    await purgeTaskHardResetState({ taskId: task.id, actorUserId: owner.id, resetToken: again.preparation.resetToken, stoppedAgents: [], repositoryPath, branchName: null });
+    assert.equal(await db.activityLog.count({ where: { taskId: task.id, kind: "task.reset" } }), 2, "a second reset preserves the first diagnostic record");
+    assert.equal(await db.agentChatMessage.count({ where: { taskId: task.id } }), 0);
     console.log("task-hard-reset-test ok");
   } finally {
     await db.$disconnect();

@@ -1,5 +1,6 @@
 import { recordTaskModelUsage } from "./task-metrics";
 import { db } from "@/lib/db";
+import { flagMissingTaskPlanOutcome } from "./task-outcome";
 import {
   parsePmChannelReplyTarget,
   type PmChannelReplyTarget,
@@ -472,6 +473,7 @@ export async function applyPmChannelStreamCallback(args: {
     const persisted = await appendPmChannelStreamEventForTarget({ target, event });
     const state = publishPmChannelStreamEvent({ target, event, seq: persisted.seq });
     await recordStreamTransport(target, transportMode);
+  if (["final", "done", "turn:terminal"].includes(event)) await flagMissingTaskPlanOutcome(target);
     // ENV-159 Step 5: context:usage carries token/window usage. When context
     // pressure is high (usage approaching window limit), trigger episode
     // rollover with context_pressure_recovery as the primary signal.

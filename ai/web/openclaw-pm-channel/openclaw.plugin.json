@@ -2,8 +2,27 @@
   "id": "pm",
   "name": "PM Channel",
   "description": "Native local PM chat and task-comment channel for OpenClaw.",
-  "version": "0.1.2",
+  "version": "0.1.5",
   "channels": ["pm"],
+  "contracts": {
+    "tools": [
+      "pm_context",
+      "pm_submit_plan",
+      "pm_approve_plan",
+      "pm_request_plan_changes",
+      "pm_review_feedback",
+      "pm_start",
+      "pm_checkpoint",
+      "pm_complete_subtask",
+      "pm_add_subtask",
+      "pm_ready_for_review",
+      "pm_review_done",
+      "pm_flag_blocker",
+      "pm_clear_blocker",
+      "pm_assign_task",
+      "pm_publish_checkpoint"
+    ]
+  },
   "activation": {
     "onStartup": true
   },

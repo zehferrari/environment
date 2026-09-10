@@ -1,9 +1,11 @@
 "use client";
 
+import ModelPromotion from "./model-promotion";
 import { useMemo, useState } from "react";
 import type { AgentModelSettings } from "@/lib/agents/management/model-settings";
 
 export default function ModelsSettings({ agent, canEdit, settings }: { agent: string; canEdit: boolean; settings: AgentModelSettings; liveModel?: string | null }) {
+  const [revision, setRevision] = useState(settings.revision);
   const [active, setActive] = useState(settings.active ?? "");
   const [defaultModel, setDefaultModel] = useState(settings.defaultModel ?? "");
   const [fallbacks, setFallbacks] = useState<string[]>(settings.fallbacks);
@@ -15,6 +17,7 @@ export default function ModelsSettings({ agent, canEdit, settings }: { agent: st
     setMessage(null);
     if (!canEdit || !settings.readable) return;
     const payload = {
+      revision,
       active,
       defaultModel,
       fallbacks,
@@ -27,8 +30,9 @@ export default function ModelsSettings({ agent, canEdit, settings }: { agent: st
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),
       });
-      const body = await res.json().catch(() => null) as { error?: string; after?: { active?: string | null; defaultModel?: string | null; fallbacks?: string[] } } | null;
+      const body = await res.json().catch(() => null) as { error?: string; revision?: string; after?: { active?: string | null; defaultModel?: string | null; fallbacks?: string[] } } | null;
       if (!res.ok) throw new Error(body?.error ?? await res.text());
+      if (body?.revision) setRevision(body.revision);
       if (body?.after) {
         setActive(body.after.active ?? "");
         setDefaultModel(body.after.defaultModel ?? "");
@@ -80,6 +84,7 @@ export default function ModelsSettings({ agent, canEdit, settings }: { agent: st
 
   return (
     <div className="space-y-section-gap text-body">
+      {canEdit ? <ModelPromotion agent={agent} settings={settings} /> : null}
       <div className="space-y-2 rounded-card border border-line bg-panel-soft p-3">
         <div className="text-micro uppercase tracking-wider text-text-muted">Current model</div>
         <div className="break-words font-medium">{settings.active ?? "—"}</div>

@@ -176,7 +176,9 @@
     "test:phasee-12-drain": "node --import tsx scripts/phasee-12-drain-test.ts",
     "test:pm-task-tools": "node scripts/pm-task-tools-test.mjs",
     "test:pm-task-runtime": "node --import tsx scripts/pm-task-runtime-test.ts",
-    "report:pm-task-workflow": "node scripts/pm-task-workflow-report.mjs"
+    "report:pm-task-workflow": "node scripts/pm-task-workflow-report.mjs",
+    "test:model-rotation": "node --import tsx scripts/model-rotation-test.ts",
+    "test:pm-turn-effort": "node --import tsx scripts/pm-turn-effort-test.ts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.7.4",

@@ -27,6 +27,8 @@ const PLUGIN_FILES = [
   "session-key.js",
   "runtime-compat.js",
   "task-tools.js",
+  "task-backend.js",
+  "turn-effort.js",
   "task-telemetry.js",
   "openclaw.plugin.json",
   "package.json",

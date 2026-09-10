@@ -1,11 +1,18 @@
 import path from "node:path";
-import { rename, readFile, writeFile } from "node:fs/promises";
+import { rename, readFile, writeFile, open, unlink, lstat } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { KNOWN_MODEL_CAPABILITIES } from "./model-capabilities";
+import { rotateProviderModel } from "./model-rotation";
+import { readAgentIndex } from "./index-loader";
+import { requestAgentRestart } from "@/lib/agents/ops/restart";
 import { db } from "@/lib/db";
 import { queueAgentRestart } from "@/lib/agents/ops/restart";
 
 const AGENT_RE = /^[a-z][a-z0-9_-]{0,31}$/;
 
-type OpenClawConfig = {
+export type OpenClawConfig = {
   agents?: {
     defaults?: {
       model?: { primary?: string; fallbacks?: string[] };
@@ -13,10 +20,11 @@ type OpenClawConfig = {
     };
     list?: Array<{ id?: string; default?: boolean; model?: string | { primary?: string; fallbacks?: string[] }; fallbacks?: string[] }>;
   };
-  models?: { providers?: Record<string, { models?: Array<{ id?: string; name?: string }> }> };
+  models?: { providers?: Record<string, { apiKey?: string; api?: string; models?: Array<{ id?: string; name?: string; agentRuntime?: unknown }> }> };
 };
 
 export type AgentModelSettings = {
+  revision?: string;
   readable: boolean;
   writablePath: string;
   active: string | null;
@@ -27,14 +35,15 @@ export type AgentModelSettings = {
 };
 
 export type AgentModelUpdateInput = {
+  expectedRevision?: string;
   active?: string;
   defaultModel?: string;
   fallbacks?: string[];
 };
 
-function configPath(agent: string) {
+export function configPath(agent: string) {
   if (!AGENT_RE.test(agent)) throw new Error("Invalid agent id");
-  return path.join("/srv/agents/openclaw", agent, "openclaw.json");
+  return path.join(process.env.PM_AGENT_CONFIG_ROOT ?? "/srv/agents/openclaw", agent, "openclaw.json");
 }
 
 function modelPrimary(model: unknown) {
@@ -115,13 +124,31 @@ function assertAvailable(model: string, available: Set<string>, field: string) {
   if (!available.has(model)) throw new Error(`${field} is not in this agent's available model list`);
 }
 
-async function writeConfigAtomically(file: string, cfg: OpenClawConfig) {
-  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
-  await writeFile(tmp, `${JSON.stringify(cfg, null, 2)}\n`, "utf8");
-  // Parse the exact bytes before replacing the live config. This prevents a
-  // malformed JSON write from taking the agent/PM process down on reload.
-  JSON.parse(await readFile(tmp, "utf8"));
-  await rename(tmp, file);
+export function configRevision(raw: string) { return createHash("sha256").update(raw).digest("hex"); }
+
+// Shared by the manual editor and provider rotation. cp preserves the existing
+// permissions and ACL; a new default-mode temp file could expose config secrets.
+async function writeConfigAtomically(file: string, cfg: OpenClawConfig, original: string) {
+  const temp = `${file}.tmp-${randomUUID()}`;
+  try {
+    if (!(await lstat(file)).isFile()) throw new Error("Config must be a regular file");
+    await promisify(execFile)("/usr/bin/cp", ["--preserve=all", "--", file, temp]);
+    await writeFile(temp, JSON.stringify(cfg, null, 2) + "\n");
+    if (await readFile(file, "utf8") !== original) throw new Error("Config changed; refresh and preview again");
+    await rename(temp, file);
+  } finally { await unlink(temp).catch(() => undefined); }
+}
+
+async function withConfigLock<T>(agent: string, work: () => Promise<T>): Promise<T> {
+  const lock = `${configPath(agent)}.model-update.lock`;
+  const handle = await open(lock, "wx", 0o600).catch(() => { throw new Error("Another model update is in progress"); });
+  try { return await work(); }
+  finally { await handle.close(); await unlink(lock); }
+}
+
+export async function assertAgentIdle(agent: string) {
+  const busy = await db.pmChannelRun.count({ where: { agentSlug: agent, status: { in: ["queued", "accepted", "streaming"] } } });
+  if (busy) throw new Error(`${agent} has an active or queued PM run; retry when it finishes`);
 }
 
 export async function readAgentModelSettings(agent: string): Promise<AgentModelSettings> {
@@ -130,6 +157,7 @@ export async function readAgentModelSettings(agent: string): Promise<AgentModelS
     const raw = await readFile(file, "utf8");
     const cfg = JSON.parse(raw) as OpenClawConfig;
     return {
+      revision: configRevision(raw),
       readable: true,
       writablePath: file,
       active: primaryFor(cfg),
@@ -151,8 +179,13 @@ export async function readAgentModelSettings(agent: string): Promise<AgentModelS
 }
 
 export async function updateAgentModelSettings(agent: string, input: AgentModelUpdateInput, actorUserId?: string | null) {
+  return withConfigLock(agent, () => updateModelSettingsLocked(agent, input, actorUserId));
+}
+
+async function updateModelSettingsLocked(agent: string, input: AgentModelUpdateInput, actorUserId?: string | null) {
   const file = configPath(agent);
   const raw = await readFile(file, "utf8");
+  if (input.expectedRevision && input.expectedRevision !== configRevision(raw)) throw new Error("Config changed; refresh and preview again");
   const cfg = JSON.parse(raw) as OpenClawConfig;
   const available = new Set(collectAvailable(cfg).map((entry) => entry.id));
   const before = {
@@ -201,7 +234,9 @@ export async function updateAgentModelSettings(agent: string, input: AgentModelU
     fallbacks: cfg.agents.defaults.model.fallbacks ?? [],
   };
 
-  await writeConfigAtomically(file, cfg);
+  if (JSON.stringify(before) === JSON.stringify(after)) return { before, after, restart: null, revision: configRevision(raw) };
+  await assertAgentIdle(agent);
+  await writeConfigAtomically(file, cfg, raw);
   const restart = queueAgentRestart(agent, `models:${before.active ?? "unset"}->${after.active ?? "unset"}`);
   await db.activityLog.create({
     data: {
@@ -212,9 +247,58 @@ export async function updateAgentModelSettings(agent: string, input: AgentModelU
       payload: JSON.stringify({ before, after, configPath: file, restart }),
     },
   });
-  return { before, after, restart };
+  return { before, after, restart, revision: configRevision(JSON.stringify(cfg, null, 2) + "\n") };
 }
 
 export async function updateAgentActiveModel(agent: string, model: string, actorUserId?: string | null) {
   return updateAgentModelSettings(agent, { active: model }, actorUserId);
+}
+
+export async function previewAgentModelRotation(agent: string, provider: string, model: string) {
+  const index = await readAgentIndex();
+  if (!index.agents.some((a) => a.user === agent && a.enabled !== false)) throw new Error("Enabled agent not found");
+  const settings = await readAgentModelSettings(agent);
+  if (!settings.readable || !settings.revision) throw new Error("Cannot read agent model configuration");
+  return { ...rotateProviderModel({ active: settings.active, defaultModel: settings.defaultModel, fallbacks: settings.fallbacks }, provider, model), revision: settings.revision };
+}
+
+export async function promoteAgentModel(agent: string, provider: string, model: string, revision: string, actorUserId?: string | null) {
+  return withConfigLock(agent, async () => {
+    const preview = await previewAgentModelRotation(agent, provider, model);
+    if (preview.revision !== revision) throw new Error("Config changed; refresh and preview again");
+    if (!preview.changed) return { ...preview, restart: null };
+    await assertAgentIdle(agent);
+    const file = configPath(agent);
+    const raw = await readFile(file, "utf8");
+    if (configRevision(raw) !== revision) throw new Error("Config changed; refresh and preview again");
+    const cfg = JSON.parse(raw) as OpenClawConfig;
+    const target = preview.after.defaultModel!;
+    cfg.agents!.defaults!.models ??= {};
+    cfg.agents!.defaults!.models![target] ??= {};
+    // Preserve the provider transport override without copying the old model's
+    // context, price, or capability metadata onto a new model.
+    const known = KNOWN_MODEL_CAPABILITIES[target];
+    if (known) { cfg.models ??= {}; cfg.models.providers ??= {}; cfg.models.providers[provider] ??= { models: [] }; }
+    const providerCfg = cfg.models?.providers?.[provider];
+    if (providerCfg) {
+      const id = target.slice(provider.length + 1);
+      providerCfg.models ??= [];
+      if (!providerCfg.models.some((m) => m.id === id || m.id === target)) {
+        const oldId = preview.before.defaultModel!.slice(provider.length + 1);
+        const old = providerCfg.models.find((m) => m.id === oldId || m.id === preview.before.defaultModel);
+        providerCfg.models.push({ id, name: id, ...known, ...(old?.agentRuntime ? { agentRuntime: old.agentRuntime } : {}) });
+      }
+    }
+    cfg.agents!.defaults!.model = { ...cfg.agents!.defaults!.model, primary: target, fallbacks: preview.after.fallbacks };
+    const main = cfg.agents?.list?.find((entry) => entry.default || entry.id === "main");
+    if (main) main.model = { primary: target, fallbacks: preview.after.fallbacks };
+    await db.activityLog.create({ data: { kind: "agent.model.promotion.requested", targetAgent: agent, userId: actorUserId ?? undefined,
+      payload: JSON.stringify({ provider, before: preview.before, after: preview.after, removed: preview.removed }) } });
+    await writeConfigAtomically(file, cfg, raw);
+    // Await the result: a saved config is not proof that its gateway restarted.
+    const restart = await requestAgentRestart(agent, `model-promotion:${target}`, true);
+    await db.activityLog.create({ data: { kind: "agent.model.update", targetAgent: agent, userId: actorUserId ?? undefined,
+      payload: JSON.stringify({ provider, before: preview.before, after: preview.after, removed: preview.removed, restart }) } });
+    return { ...preview, restart };
+  });
 }

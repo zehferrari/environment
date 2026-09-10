@@ -362,6 +362,18 @@ export async function purgeTaskHardResetState(args: {
       select: { id: true },
     })).map((row) => row.id);
 
+    const runSummary = await tx.pmChannelRun.groupBy({
+      by: ["agentSlug", "provider", "model", "status", "lastAction"],
+      where: { taskId: task.id }, _count: { _all: true },
+    });
+    const runtimeSummary = (await tx.activityLog.findMany({
+      where: { taskId: task.id, kind: "pm.task.runtime.prepared" },
+      orderBy: { createdAt: "desc" }, take: 12, select: { targetAgent: true, payload: true },
+    })).map((row) => {
+      let data: Record<string, unknown> = {};
+      try { data = JSON.parse(row.payload ?? "{}"); } catch { /* incomplete diagnostic */ }
+      return { agent: row.targetAgent, contractVersion: data?.contractVersion, transport: data?.transport ?? "native-tools" };
+    });
     const purged: Record<string, number> = {};
     if (chatMessageIds.length > 0) {
       purged.proposals = count(await tx.workItemProposal.deleteMany({
@@ -394,7 +406,7 @@ export async function purgeTaskHardResetState(args: {
     purged.descriptionDrafts = count(await tx.descriptionDraft.deleteMany({ where: { scope: "task", targetId: task.id } }));
     purged.readCursors = count(await tx.chatReadCursor.deleteMany({ where: { agentSlug: `task:${task.id}` } }));
     purged.activities = count(await tx.activityLog.deleteMany({
-      where: { taskId: task.id, kind: { not: "task.create" } },
+      where: { taskId: task.id, kind: { notIn: ["task.create", "task.reset"] } },
     }));
 
     await tx.task.update({
@@ -424,6 +436,7 @@ export async function purgeTaskHardResetState(args: {
         kind: "task.reset",
         payload: JSON.stringify({
           hardReset: true,
+          diagnostics: { runs: runSummary, runtimes: runtimeSummary },
           resetToken: args.resetToken,
           stoppedAgents: args.stoppedAgents,
           localRepository: args.repositoryPath,

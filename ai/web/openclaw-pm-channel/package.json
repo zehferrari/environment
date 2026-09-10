@@ -1,6 +1,6 @@
 {
   "name": "@mission-control/openclaw-pm-channel",
-  "version": "0.1.2",
+  "version": "0.1.5",
   "type": "module",
   "private": true,
   "description": "Native OpenClaw channel for the Mission Control webapp",

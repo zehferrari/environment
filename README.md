@@ -62,6 +62,7 @@ Every Markdown doc in the tree, grouped by folder. Agent-facing files (copied in
 | [`ai/web/deploy/MULTI_AGENT_WORKTREES.md`](./ai/web/deploy/MULTI_AGENT_WORKTREES.md) | Multi-agent worktree + monitor-driven live-preview design. |
 | `ai/web/docs/agent-pm-api.md` | Agent-facing PM read API reference (on-demand; native task turns carry their operating contract). |
 | [`ai/web/docs/pm-task-runtime.md`](./ai/web/docs/pm-task-runtime.md) | Compact task runtime: active thinkpad configuration, native tools, session budgets, measurements and rollback. |
+| [`ai/web/docs/agent-model-upgrades.md`](./ai/web/docs/agent-model-upgrades.md) | Model promotion UI/CLI, provider fallback rotation, role-based effort and Ollama mapping limits. |
 | [`ai/web/docs/audits/v23-38-workflow-2026-09-08.md`](./ai/web/docs/audits/v23-38-workflow-2026-09-08.md) | V23-38 workflow audit, fixes, deployment and runtime activation record. |
 | `ai/web/docs/agent-interaction.md` | Agent-facing PM interaction contract (chat/comment/proposal). |
 | `ai/web/lib/pm-dispatch/README.md` | Dispatch seam emitter side. |
