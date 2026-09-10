@@ -54,6 +54,12 @@ await telemetry.output(modelEvent, usageContext); assert.equal(usages.length, 1)
 assert.equal(usages[0].inputTokens, 120); assert.ok(!JSON.stringify(usages).includes("private prompt"));
 telemetry.input({ runId: "late" }, usageContext); turn = { ...turn, acceptedId: "new", modelRunIds: undefined };
 await telemetry.output({ ...modelEvent, runId: "late" }, usageContext); assert.equal(usages.length, 1);
+telemetry.input({ runId: "silent-model" }, usageContext);
+await telemetry.output({ runId: "silent-model", assistantTexts: ["NO_REPLY"] }, usageContext);
+assert.equal(turn.silentReply, true, "core-suppressed NO_REPLY still completes the PM turn");
+telemetry.input({ runId: "visible-model" }, usageContext);
+await telemetry.output({ runId: "visible-model", assistantTexts: ["The plan needs a regression test."] }, usageContext);
+assert.equal(turn.silentReply, false, "later visible output is not treated as silence");
 console.log("PASS model usage: generation correlation, duplicate suppression and no prompt capture");
 
 turn.taskRuntime = { ...runtime, actionPlan: { id: "plan-3", version: 3 }, actions: ["context", "approve_plan"] };
@@ -80,3 +86,42 @@ assert.equal(nativeTaskToolsSupported({ agents: { defaults: { ...apiCfg.agents.d
 assert.deepEqual(taskToolCapabilities(manifest, cliCfg), { taskRuntimeVersions: [], taskTools: [] });
 assert.deepEqual(taskToolCapabilities(manifest, apiCfg).taskTools, PM_TASK_TOOL_NAMES);
 console.log("PASS native capabilities follow the actual configured backend and fallback chain");
+
+// PH-193: accepted terminal actions stop once; ordinary work and errors do not.
+const { stopCompletedTaskTurn, isProtocolSilentReply } = await import("../openclaw-pm-channel/turn-completion.js");
+let stopCalls = 0;
+turn = { acceptedId: "terminal-generation", replyTarget: target, taskRuntime: runtime, finishTask: async () => { stopCalls++; } };
+let outcome = { ok: true, actionEffect: "continue", turnComplete: false };
+const terminalTools = createTaskTools({ context, findTurn, fetchImpl: async () => Response.json(outcome) });
+await terminalTools[2].execute("checkpoint", { nextAction: "verify" });
+assert.equal(stopCalls, 0);
+outcome = { ok: true, actionEffect: "finish", turnComplete: true };
+await terminalTools[0].execute("context-cannot-stop", {});
+assert.equal(stopCalls, 0, "context content cannot authorize termination");
+await terminalTools[1].execute("submit-terminal", { actionPlan: {} });
+assert.equal(stopCalls, 1);
+assert.equal(turn.completedAction, "submit_plan");
+await assert.rejects(terminalTools[2].execute("after-finish", { nextAction: "unexpected" }), /completed/);
+assert.equal(createTaskTools({ context, findTurn }), null);
+turn = { acceptedId: "denied-generation", replyTarget: target, taskRuntime: runtime, finishTask: async () => { stopCalls++; } };
+await createTaskTools({ context, findTurn, fetchImpl: async () => Response.json(outcome, { status: 409 }) })[1].execute("denied-terminal", { actionPlan: {} });
+assert.equal(stopCalls, 1);
+const lateTools = createTaskTools({ context, findTurn, fetchImpl: async () => { turn = { ...turn, acceptedId: "successor" }; return Response.json(outcome); } });
+await lateTools[1].execute("late-terminal", { actionPlan: {} });
+assert.equal(stopCalls, 1, "late old-generation response cannot stop its successor");
+let active = { completedAction: "approve_plan" };
+const original = active;
+const aborts = [];
+const harness = { resolveActiveEmbeddedRunSessionId: () => "native-session", abortAgentHarnessRun: (id) => { aborts.push(id); return true; } };
+const stopArgs = { turn: original, sessionKey: "session-key", findTurn: () => active, loadHarness: async () => harness, logger: { warn() {} } };
+assert.equal(await stopCompletedTaskTurn(stopArgs), true);
+assert.deepEqual(aborts, ["native-session"]);
+active = original;
+await stopCompletedTaskTurn({ ...stopArgs, loadHarness: async () => { active = { completedAction: "new" }; return harness; } });
+assert.equal(aborts.length, 1, "generation rechecked after SDK load");
+active = original;
+await stopCompletedTaskTurn({ ...stopArgs, loadHarness: async () => ({ ...harness, resolveActiveEmbeddedRunSessionId: async () => { active = { completedAction: "newer" }; return "native-session"; } }) });
+assert.equal(aborts.length, 1, "generation rechecked after session resolution");
+for (const text of ["NO_REPLY", "NO_REPLY.NO_REPLY", "PM_SILENT_NO_CONTRIBUTION"]) assert.equal(isProtocolSilentReply(text), true);
+for (const text of ["", "The literal NO_REPLY is part of this explanation.", "Review finished."]) assert.equal(isProtocolSilentReply(text), false);
+console.log("PASS terminal outcomes stop native execution, fence later tools and preserve successor generations");

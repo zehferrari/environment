@@ -26,6 +26,9 @@ async function main() {
       "@/lib/agents/ops/model-fallback-activity"
     );
 
+    assert.equal(isSilentPmReplyText("NO_REPLY"), true);
+    assert.equal(isSilentPmReplyText("NO_REPLY.NO_REPLY"), true);
+    assert.equal(isSilentPmReplyText("A message discussing NO_REPLY needs a visible answer."), false);
     const notice = "↪️ Model Fallback: ollama/kimi-k2.6:cloud (selected claude-cli/claude-opus-5; session expired)";
     assert.equal(modelFallbackActivityText(notice), notice);
     assert.equal(modelFallbackActivityText(notice + "\nActual task contribution."), null);

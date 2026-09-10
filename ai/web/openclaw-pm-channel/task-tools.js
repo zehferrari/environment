@@ -58,7 +58,7 @@ function redact(value, runtime) {
 export function createTaskTools({ context, findTurn, fetchImpl = fetch }) {
   if (context.messageChannel !== "pm" || !context.sessionKey) return null;
   const turn = findTurn(context.sessionKey);
-  if (!turn || turn.abortedAt) return null;
+  if (!turn || turn.abortedAt || turn.completedAction) return null;
   const runtime = validateTaskRuntime(turn.taskRuntime, turn.replyTarget);
   if (!runtime) return null;
   const generation = turn.acceptedId;
@@ -69,7 +69,7 @@ export function createTaskTools({ context, findTurn, fetchImpl = fetch }) {
       name: `pm_${action}`, label: `PM ${action.replaceAll("_", " ")}`, description, parameters,
       async execute(_toolCallId, args = {}, signal) {
         const current = findTurn(context.sessionKey);
-        if (current !== turn || current.acceptedId !== generation || current.abortedAt) throw new Error("PM turn was replaced or canceled; no action was sent.");
+        if (current !== turn || current.acceptedId !== generation || current.abortedAt || current.completedAction) throw new Error("PM turn was replaced, canceled or completed; no action was sent.");
         if (!args || typeof args !== "object" || Array.isArray(args) || Object.keys(args).some((key) => !(Object.hasOwn(parameters.properties, key)))) throw new Error("Invalid PM tool arguments; task identity and credentials are supplied by the runtime.");
         if (parameters.required.some((key) => args[key] === undefined)) throw new Error("A required PM tool argument is missing.");
         const url = new URL(action === "context" ? runtime.contextUrl : runtime.workflowUrl);
@@ -81,7 +81,7 @@ export function createTaskTools({ context, findTurn, fetchImpl = fetch }) {
         // The same payload is safe to replay through PM's command receipt after a
         // lost response. Abort/cancel and business errors are never retried here.
         for (let attempt = 0; attempt < 2; attempt++) {
-          if (signal?.aborted || findTurn(context.sessionKey) !== turn || turn.abortedAt) throw new Error("PM turn is no longer active.");
+          if (signal?.aborted || findTurn(context.sessionKey) !== turn || turn.abortedAt || turn.completedAction) throw new Error("PM turn is no longer active.");
           try {
             response = await fetchImpl(url.toString(), {
               method: action === "context" ? "GET" : "POST", redirect: "error",
@@ -99,6 +99,14 @@ export function createTaskTools({ context, findTurn, fetchImpl = fetch }) {
           reviewedPlan = result.actionPlan ? { id: result.actionPlan.id, version: result.actionPlan.version } : null;
           if (args.section === "plan") data = { actionPlan: result.actionPlan };
           else if (args.section !== "history") data = { task: result.task, actionPlan: result.actionPlan, checklist: result.checklist, recentComments: result.recentComments, currentThread: result.currentThread };
+        }
+        // Only the trusted successful mutation response can close this turn.
+        // A context document, denied request, or late old generation cannot.
+        if (action !== "context" && response.ok && result.ok === true
+          && (result.turnComplete === true || ["finish", "wait"].includes(result.actionEffect))
+          && findTurn(context.sessionKey) === turn && !turn.abortedAt) {
+          turn.completedAction = action;
+          await turn.finishTask?.();
         }
         const safe = redact(data, runtime);
         return { content: [{ type: "text", text: JSON.stringify(safe) }], details: { status: response.status }, ...(response.ok ? {} : { isError: true }) };
