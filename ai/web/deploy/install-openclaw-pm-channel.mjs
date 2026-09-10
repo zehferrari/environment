@@ -29,6 +29,7 @@ const PLUGIN_FILES = [
   "task-tools.js",
   "task-backend.js",
   "turn-effort.js",
+  "turn-completion.js",
   "task-telemetry.js",
   "openclaw.plugin.json",
   "package.json",

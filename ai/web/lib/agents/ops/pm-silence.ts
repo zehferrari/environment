@@ -1,4 +1,5 @@
-export const PM_SILENT_REPLY_TOKEN = "PM_SILENT_NO_CONTRIBUTION";
+export const PM_SILENT_REPLY_TOKEN = "NO_REPLY";
+const LEGACY_PM_SILENT_REPLY_TOKEN = "PM_SILENT_NO_CONTRIBUTION";
 
 const TRANSIENT_PROGRESS = [
   /^🧹\s*Compacting context \(\d+ messages?\) so I can continue without losing history…?$/i,
@@ -37,7 +38,8 @@ export function isSilentPmReplyText(value: string | null | undefined): boolean {
   if (!text) return false;
   // Do not require word boundaries: some gateways have concatenated the
   // sentinel twice without whitespace.
-  if (text.toUpperCase().includes(PM_SILENT_REPLY_TOKEN)) return true;
+  if (text.toUpperCase().includes(LEGACY_PM_SILENT_REPLY_TOKEN)) return true;
+  if (/^(?:NO_REPLY[\s.]*)+$/i.test(text)) return true;
   return WORKFLOW_ACK_ONLY.some((pattern) => pattern.test(text));
 }
 

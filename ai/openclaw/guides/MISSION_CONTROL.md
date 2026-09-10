@@ -251,7 +251,7 @@ can reconnect with `Last-Event-ID` and replay missed frames.
 
 Visible replies are only for useful contributions: plans, action
 results, feedback, blockers, or necessary questions. If an agent has no
-new information to add, it replies with the `PM_SILENT_NO_CONTRIBUTION`
+new information to add, it replies with the `NO_REPLY`
 sentinel; `/api/openclaw/pm-channel/reply` records a silent completion
 activity row and creates no chat/comment bubble.
 

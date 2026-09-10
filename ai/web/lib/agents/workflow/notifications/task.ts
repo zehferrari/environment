@@ -315,7 +315,7 @@ function workflowPrompt(args: {
           "",
           "EXECUTION RECOVERY (mandatory):",
           "- This is an active execution continuation, not a status-check or reconnaissance-only turn. Use tools now and continue the task from its durable workspace state.",
-          "- Do not stop with PM_SILENT_NO_CONTRIBUTION after merely reading context, inspecting Git, rerunning an already-passed broad suite, or restating what remains.",
+          `- Do not stop with ${PM_SILENT_REPLY_TOKEN} after merely reading context, inspecting Git, rerunning an already-passed broad suite, or restating what remains.`,
           "- A failed tool command is not a terminal outcome. Diagnose it, use a safe alternative, and continue in this same turn unless the evidence proves a genuine human/external blocker; then call flag_blocker.",
           "- Reconcile the checklist as you work: complete proven items immediately and remove only obsolete/duplicate items. Keep executing until ready_for_review succeeds or flag_blocker records the precise dependency.",
         ]
@@ -415,6 +415,14 @@ export async function sendTaskWorkflowNotification(args: {
     agentUserId: targetUser.id,
   });
   if (!taskAccess.allowed) return null;
+
+  // Assignment itself is persisted by the workflow. An assigned implementer
+  // with no submitted plan leaves nothing for a Backlog reviewer to do.
+  // Plan submission emits its own revision-bound review notification.
+  if (args.reason === "reviewer_assignment_requested" && task.status === "Backlog" && task.assigneeId) {
+    const submitted = await db.actionPlan.findUnique({ where: { taskId: task.id }, select: { id: true } });
+    if (!submitted) return null;
+  }
 
   const mirroredBody = [
     `PM workflow notification for @${targetUser.agent.slug}:`,
