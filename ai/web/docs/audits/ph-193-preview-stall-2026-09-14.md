@@ -82,11 +82,27 @@ Prepared recovery instruction for Asdrubal:
 > unavailable instead of treating branch publication as a prerequisite.
 
 This audit did not post that instruction, wake agents, stage files on dev,
-clear the task blocker, or change PM database state. The instruction correction
-requires deployment/reconciliation before it reaches future task turns.
+clear the task blocker, or change PM database state. The application correction and guide were subsequently deployed as recorded below.
 
 ## PM validation
 
 The existing `test:pm-task-runtime` integration suite passed against its
 disposable SQLite database, including native and scoped-HTTP contracts, role
 fences, replay, plan feedback, and compact prompt budgets.
+
+## Activation
+
+At 10:18 AEST on 14 September, `pm-switch` deployed application commit
+`84d090e07f28c19135e263480a18c198877f8801` from `fix-ph193-preview-handoff`, using
+`PM_BRANCH_DB=/srv/Data/pm/wt-main.db` to preserve the operational database.
+There were no pending migrations. Production compilation and type checking
+passed; lint reported existing warnings in unrelated files. Both PM services
+and the hashed CSS passed switch verification; the public login returned 200
+over HTTP/2 in 68 ms. `openclaw-doc-sync` reconciled the repository guide to all
+four agents. The feature branch is pushed; no PR was created or merged.
+
+Receipt: `/srv/Data/pm/deployment-receipts/2026-09-14T001821Z-fix-ph193-preview-handoff-84d090e07f28.receipt`.
+This activation record is a later documentation-only commit; the receipt names
+the exact application commit built. PH-193 remains In Progress, version 16,
+with its preview blocker intact. Posting the prepared recovery handoff and
+waking Asdrubal are awaiting explicit owner authorization.
