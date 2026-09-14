@@ -64,6 +64,7 @@ Every Markdown doc in the tree, grouped by folder. Agent-facing files (copied in
 | [`ai/web/docs/pm-task-runtime.md`](./ai/web/docs/pm-task-runtime.md) | Compact task runtime: active thinkpad configuration, native tools, session budgets, measurements and rollback. |
 | [`ai/web/docs/agent-model-upgrades.md`](./ai/web/docs/agent-model-upgrades.md) | Model promotion UI/CLI, provider fallback rotation, role-based effort and Ollama mapping limits. |
 | [`ai/web/docs/audits/openclaw-openai-upgrade-2026-09-10.md`](./ai/web/docs/audits/openclaw-openai-upgrade-2026-09-10.md) | OpenClaw 2026.9.3 upgrade: Codex dependency, OAuth route, PM compatibility, verified backups and recovery. |
+| [`ai/web/docs/audits/ph-192-contract-blocker-2026-09-14.md`](./ai/web/docs/audits/ph-192-contract-blocker-2026-09-14.md) | PH-192 transaction-ID rejection and deterministic blocker recovery. |
 | [`ai/web/docs/audits/ph-193-standalone-publication-2026-09-14.md`](./ai/web/docs/audits/ph-193-standalone-publication-2026-09-14.md) | PH-193 origin-publication recovery and standalone remote-verification checkpoints. |
 | [`ai/web/docs/audits/ph-193-preview-stall-2026-09-14.md`](./ai/web/docs/audits/ph-193-preview-stall-2026-09-14.md) | PH-193 preview-access stall, owner-authorized test staging and initial deployment. |
 | [`ai/web/docs/audits/pm-channel-admission-2026-09-10.md`](./ai/web/docs/audits/pm-channel-admission-2026-09-10.md) | PH-193 / V23-39: expired HTTP admission, PM ingress regression test and truthful recovery status. |

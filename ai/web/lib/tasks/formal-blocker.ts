@@ -248,9 +248,7 @@ const VAGUE_RESUME_CONDITIONS = new Set([
 // Fault shapes a fresh browser/session/process legitimately retries. A single
 // occurrence of one of these is never a human blocker.
 const RETRYABLE_EVIDENCE = [
-  /\bbrowser\b/i,
-  /\bplaywright\b/i,
-  /\bchromium\b/i,
+  /\b(?:browser|playwright|chromium)\b.{0,80}\b(?:crashed?|disconnected|unavailable|not responding)\b/i,
   /\bstale (element|ref)/i,
   /\bpage crashed\b/i,
   /\bsession (expired|closed|not created)\b/i,
@@ -440,6 +438,21 @@ export function blockerDiagnosticsFingerprint(report: FormalBlockerReport) {
     .join("|");
 }
 
+/** A contract rejection explained by source inspection and an independent local
+ * reproduction needs the named dependency repaired, not another external call. */
+function hasDiagnosedContractViolation(report: FormalBlockerReport) {
+  if (report.blockedOn !== "dependency" ||
+      !/\b(?:INVALID_REQUEST|VALIDATION_ERROR|ValidationException)\b/i.test(report.evidence) ||
+      !/\b(?:length|too long|exceeds|must be|invalid (?:field|parameter))\b/i.test(report.evidence)) return false;
+  const sourceIndex = report.diagnosticsAttempted.findIndex((diagnosis) =>
+    /\.(?:js|ts|tsx|php|py|java|go|rs)\b/i.test(diagnosis) &&
+    /\b(?:read|inspected|source|git|handler|function|line)\b/i.test(diagnosis));
+  return sourceIndex >= 0 && report.diagnosticsAttempted.some((diagnosis, index) =>
+    index !== sourceIndex &&
+    /\b(?:evaluated|reproduced|unit test|local test)\b/i.test(diagnosis) &&
+    /\b(?:locally|local|node|offline|unit|test)\b/i.test(diagnosis));
+}
+
 function looksRetryable(report: FormalBlockerReport) {
   const haystack = `${report.evidence} ${report.diagnosticsAttempted.join(" ")}`;
   return RETRYABLE_EVIDENCE.some((pattern) => pattern.test(haystack));
@@ -485,6 +498,9 @@ export function classifyBlockerFailure(
   }
 
   const distinctDiagnoses = new Set(report.diagnosticsAttempted.map(diagnosisKey)).size;
+  if (distinctDiagnoses >= FORMAL_BLOCKER_MIN_DISTINCT_DIAGNOSES && hasDiagnosedContractViolation(report)) {
+    return { outcome: "accept", report };
+  }
   const priorDistinct = Math.max(0, context.priorDistinctDiagnostics ?? 0);
   const escalationEarned =
     distinctDiagnoses >= FORMAL_BLOCKER_MIN_DISTINCT_DIAGNOSES &&
@@ -499,7 +515,9 @@ export function classifyBlockerFailure(
       ? `The evidence describes a fault a fresh browser/session retry can clear ("${report.evidence.slice(0, 120)}"). That is not a human blocker.`
       : `A ${report.blockedOn.replace("_", " ")} failure with ${distinctDiagnoses} distinct diagnosis/diagnoses and ${priorDistinct} earlier incident round(s) is still recoverable.`,
     guidance:
-      `Recorded as an internal incident; the task stays In Progress and nobody was paged. Retry with a fresh session, then escalate only with at least ${FORMAL_BLOCKER_MIN_DISTINCT_DIAGNOSES} distinct diagnoses after at least ${FORMAL_BLOCKER_MIN_PRIOR_INCIDENTS} earlier incident round carrying different evidence.`,
+      `Recorded as an internal incident; the task stays In Progress and nobody was paged. ${retryable
+        ? "Retry a read-only operation with a fresh session where appropriate."
+        : "Gather distinct evidence from source, configuration, logs or local tests."} Do not repeat a payment or another side-effecting request merely to satisfy escalation. A dependency contract violation supported by source inspection and an independent local reproduction can be reported immediately; otherwise escalate with at least ${FORMAL_BLOCKER_MIN_DISTINCT_DIAGNOSES} distinct diagnoses after at least ${FORMAL_BLOCKER_MIN_PRIOR_INCIDENTS} earlier incident round carrying different evidence.`,
   };
 }
 

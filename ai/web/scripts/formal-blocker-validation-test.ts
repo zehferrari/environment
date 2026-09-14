@@ -267,3 +267,22 @@ assert(
 );
 
 console.log("formal-blocker-validation-test: ok");
+
+
+const contractDefect = serviceBlocker({
+  blockedOn: "dependency",
+  requestedActor: "zeh",
+  requestedAction: "Fix generateTransactionKey in the v23 repository and redeploy dev_CBA-PaySession; this task owns only the Patricia worktree.",
+  evidence: "The browser payment returned gateway HTTP 400 INVALID_REQUEST: transactionid length is 50 characters but must be less than 41.",
+  diagnosticsAttempted: [
+    "Read CBA-PaySession.js line 126 in origin/greenid-simplekyc: generateTransactionKey concatenates a timestamp and UUID.",
+    "Evaluated the source expression locally under node: output length 50; the gateway limit is 40.",
+  ],
+  resumeCondition: "dev_CBA-PaySession runs the published fix producing transaction IDs of at most 40 characters.",
+});
+assert.equal(classifyBlockerFailure(contractDefect, ASSIGNEE).outcome, "accept", "a source-proven contract violation does not need another payment attempt");
+assert.equal(classifyBlockerFailure({ ...contractDefect, requestedActor: "barekbaal" }, ASSIGNEE).outcome, "reject", "deterministic defects do not waive self-actionability");
+assert.equal(classifyBlockerFailure({ ...contractDefect, diagnosticsAttempted: ["Saw the browser error once"] }, ASSIGNEE).outcome, "incident", "a single validation error alone is not diagnosed");
+const browserMention = classifyBlockerFailure(serviceBlocker({ evidence: "The browser displayed a vendor validation error", diagnosticsAttempted: ["Read the response"] }), ASSIGNEE);
+assert.equal(browserMention.outcome === "incident" && browserMention.rule, "recoverable_tool_failure", "mentioning a browser is not a transient browser failure");
+assert.ok(browserMention.outcome === "incident" && !browserMention.guidance.includes("Retry with a fresh session"), "non-transient errors must not demand a fresh side-effecting request");

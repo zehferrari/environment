@@ -531,7 +531,12 @@ Latency / PM queue/status names:
    keep the incomplete task `In Progress` and call `flag_blocker` once with
    the evidence and required intervention. PM sets `alert_reporter`, notifies
    the decision owners, and suppresses ordinary stale-work nudges. Do not
-   repeat the blocker. If reporter permission is the only missing dependency,
+   repeat the blocker. A deterministic dependency contract rejection can be
+   reported with source inspection and an independent local reproduction;
+   another external attempt is not required. Never repeat payments or other
+   side-effecting requests merely to accumulate incident rounds. A browser
+   mentioned in evidence does not by itself establish a transient browser fault.
+   If reporter permission is the only missing dependency,
    include `permissionKind=reporter_approval` and an exact `permissionScope`;
    use `permissionKind=publish_checkpoint` for the validated Epic checkpoint
    path. PM links the board control to the exact blocker comment and renders a
