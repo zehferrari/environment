@@ -48,3 +48,20 @@ replay. Authenticated saved-order reopening/admin download was not tested;
 that limitation is available to the reviewer and has not been rewritten as a
 passing test. The transient session-busy continuation failed, but the subsequent
 submission succeeded without restarting Asdrubal's gateway.
+
+## Activation
+
+At 11:15 AEST, `pm-switch` deployed `ec0a06b8e671738daf27f85a5b0fefc06bfbc91c`
+from `fix-pm-standalone-checkpoints`, explicitly selecting
+`PM_BRANCH_DB=/srv/Data/pm/wt-main.db`. Production build and type checks passed,
+with existing unrelated lint warnings and no pending migrations. The switcher
+verified both services and the referenced hashed CSS. Independent process-env
+checks confirmed both services use `file:/srv/Data/pm/wt-main.db`; the public
+HTTP/2 login returned 200 in 68 ms. `openclaw-doc-sync` processed all four agents.
+
+Receipt: `/srv/Data/pm/deployment-receipts/2026-09-14T011535Z-fix-pm-standalone-checkpoints-ec0a06b8e671.receipt`.
+
+PH-193 was Done at workflow version 18 after reviewer acceptance and repository
+finalization. No extra wake, manual task-state edit, or force push was needed.
+This activation record is a later documentation-only commit. The application
+fix and audit are pushed on the feature branch; no PR was created or merged.
