@@ -449,7 +449,7 @@ function hasDiagnosedContractViolation(report: FormalBlockerReport) {
     /\b(?:read|inspected|source|git|handler|function|line)\b/i.test(diagnosis));
   return sourceIndex >= 0 && report.diagnosticsAttempted.some((diagnosis, index) =>
     index !== sourceIndex &&
-    /\b(?:evaluated|reproduced|unit test|local test)\b/i.test(diagnosis) &&
+    /\b(?:evaluat(?:ed|ion)|reproduc(?:ed|tion)|unit test|local test)\b/i.test(diagnosis) &&
     /\b(?:locally|local|node|offline|unit|test)\b/i.test(diagnosis));
 }
 

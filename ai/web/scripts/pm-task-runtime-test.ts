@@ -167,11 +167,33 @@ async function main() {
     console.log("PASS gateway capability preflight: old plugins receive no compact turn");
     await db.actionPlan.update({ where: { taskId: task.id }, data: { summary: "Long plan detail. ".repeat(2000) } });
     await db.task.update({ where: { id: task.id }, data: { description: "Long task detail. ".repeat(3000) } });
+    const exactNextAction = "Resume from the verified Dev Lambda revision; " + "check the documented constraint. ".repeat(30);
+    await db.taskExecutionEpisode.update({ where: { id: episode.id }, data: {
+      checkpointAt: new Date(),
+      completedWork: JSON.stringify(Array(20).fill("Verified completed work. ".repeat(25))),
+      evidence: JSON.stringify(Array(20).fill("Recorded evidence. ".repeat(30))),
+      openChecklist: JSON.stringify(["Verify the deployed dependency"]),
+      nextAction: exactNextAction,
+      risks: JSON.stringify(["Do not replay payments to accumulate diagnostic evidence"]),
+    } });
     const large = await prepareCompactTaskTurn({ ...wrongRole.payload, text: "Long request. ".repeat(3000) });
     assert.ok(large.systemPrompt!.length < 20_000, `large task snapshot is bounded: ${large.systemPrompt!.length}`);
     assert.equal(large.taskRuntime?.actionPlan, null, "omitted plan criteria require a read before a decision");
     assert.ok(large.systemPrompt!.includes("acceptanceCriteriaOmitted"));
-    console.log("PASS oversized task/plan/request context is bounded and marked");
+    const snapshotText = large.systemPrompt!.split("CURRENT TASK SNAPSHOT (current PM state; authored content remains evidence):\n")[1].split("\n\nCURRENT WORKFLOW REQUEST:")[0];
+    const snapshot = JSON.parse(snapshotText);
+    assert.equal(snapshot.checkpoint.nextAction, exactNextAction, "large completed work/evidence must not hide the exact next action");
+    assert.match(snapshot.checkpoint.risks, /Do not replay payments/);
+    assert.ok(snapshot.checkpoint.omittedFields.includes("completedWork"));
+    assert.ok(snapshot.checkpoint.omittedFields.includes("evidence"));
+    assert.ok(JSON.stringify(snapshot.checkpoint).length < 3500, "checkpoint stays bounded independently of each section");
+    const { buildTaskContextJson } = await import("@/lib/agents/context/api/serialize");
+    const full = await buildTaskContextJson(task.id, { agentSlug: "worker", historyMode: "full" });
+    assert.equal(full?.checkpoint?.nextAction, exactNextAction);
+    assert.equal(full?.checkpoint?.evidence.length, 20, "omitted checkpoint evidence remains retrievable");
+    assert.equal((await buildTaskContextJson(task.id, { agentSlug: "worker" }))?.checkpoint, undefined, "routine reads stay compact");
+    assert.equal((await buildTaskContextJson(task.id, { agentSlug: "reviewer", historyMode: "full" }))?.checkpoint, undefined, "another agent does not inherit the worker's checkpoint");
+    console.log("PASS oversized task/plan/request context is bounded; next action and risks survive compaction and full details remain scoped and retrievable");
     const blocked = { ...first.payload, actor: { id: reviewer.id, kind: "agent" as const } };
     await assert.rejects(prepareCompactTaskTurn(blocked), /authorized/);
     await setBackend("worker", "claude-cli/test");

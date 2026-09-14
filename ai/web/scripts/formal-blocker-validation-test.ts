@@ -286,3 +286,8 @@ assert.equal(classifyBlockerFailure({ ...contractDefect, diagnosticsAttempted: [
 const browserMention = classifyBlockerFailure(serviceBlocker({ evidence: "The browser displayed a vendor validation error", diagnosticsAttempted: ["Read the response"] }), ASSIGNEE);
 assert.equal(browserMention.outcome === "incident" && browserMention.rule, "recoverable_tool_failure", "mentioning a browser is not a transient browser failure");
 assert.ok(browserMention.outcome === "incident" && !browserMention.guidance.includes("Retry with a fresh session"), "non-transient errors must not demand a fresh side-effecting request");
+
+assert.equal(classifyBlockerFailure({ ...contractDefect, diagnosticsAttempted: [
+  "git inspection of CBA-PaySession.js line 126",
+  "node evaluation of generateTransactionKey: length 50",
+] }, ASSIGNEE).outcome, "accept", "PH-192's actual local-evaluation wording also qualifies without another payment");
