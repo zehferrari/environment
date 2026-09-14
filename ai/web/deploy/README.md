@@ -151,6 +151,22 @@ unwritable receipt directory fails preflight before services stop. The receipt
 records worktree, branch, commit, dirty
 path count, exact database selection/path, and last applied migration.
 
+### SQLite lock when switching back to main
+
+A feature worktree can serve the operational `wt-main.db`. Before migration,
+`pm-switch` always asks the privileged `pm-apply-worktree --stop-live` helper
+to compare both the active worktree and database and stop matching live writers.
+An unreadable active environment must never cause that check to be skipped.
+The switch runner retains the monitor's private group through
+`SupplementaryGroups`, alongside its shared `code-agents` primary group.
+Refresh these helpers and the unit with `install-pm-switch.sh` after updating
+this code. The deployment contract test covers the unreadable-environment case
+and ensures a failed privileged check prevents migration.
+
+`pm-switch` builds the local checkout; it does not fetch merged commits.
+Fast-forward a clean `main` worktree from `origin/main` before switching, or use
+the guarded `update-managed-host.sh` release command.
+
 ### Navigation stalls while the server is healthy
 
 PM holds several long-lived SSE connections (viewer policy, presence, board,

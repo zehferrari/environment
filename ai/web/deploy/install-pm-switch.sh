@@ -196,7 +196,7 @@ install -d -o root -g root -m 0755 /var/www/pm-maintenance
 install -o root -g root -m 0644 "$HERE/rebuilding.html" /var/www/pm-maintenance/rebuilding.html
 
 say "Render runner unit (User=$MON) → /etc/systemd/system/pm-switch-runner.service"
-sed "s#__PM_MONITOR_USER__#$MON#g; s#__PM_MONITOR_HOME__#$MON_HOME#g; s#__PM_CODE_GROUP__#$CODE_GROUP#g; s#__PM_REPO_ROOT__#$REPO_ROOT#g; s#__PM_WORKTREES_ROOT__#$WT_ROOT#g; s#__PM_SWITCH_DIR__#$SWITCH_DIR#g; s#__PM_LOCK_FILE__#$LOCK_FILE#g" \
+sed "s#__PM_MONITOR_USER__#$MON#g; s#__PM_MONITOR_GROUP__#$MON_GROUP#g; s#__PM_MONITOR_HOME__#$MON_HOME#g; s#__PM_CODE_GROUP__#$CODE_GROUP#g; s#__PM_REPO_ROOT__#$REPO_ROOT#g; s#__PM_WORKTREES_ROOT__#$WT_ROOT#g; s#__PM_SWITCH_DIR__#$SWITCH_DIR#g; s#__PM_LOCK_FILE__#$LOCK_FILE#g" \
   "$HERE/systemd/pm-switch-runner.service" > /etc/systemd/system/pm-switch-runner.service
 chmod 0644 /etc/systemd/system/pm-switch-runner.service
 
