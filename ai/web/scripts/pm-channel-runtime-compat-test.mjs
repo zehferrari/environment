@@ -178,7 +178,7 @@ assert.match(
 // modelSelected used to append flush() to `chain`, while flush() awaited that
 // same reassigned chain, permanently blocking every later tool/stream event.
 const publisherStart = pluginSource.indexOf("function createPmStreamPublisher");
-const publisherEnd = pluginSource.indexOf("\nasync function sendPmText", publisherStart);
+const publisherEnd = pluginSource.indexOf("\nasync function sendPmMedia", publisherStart);
 assert.ok(publisherStart >= 0 && publisherEnd > publisherStart, "publisher source must be extractable");
 const publisherSource = pluginSource.slice(publisherStart, publisherEnd).trim();
 const posted = [];

@@ -66,6 +66,7 @@ Every Markdown doc in the tree, grouped by folder. Agent-facing files (copied in
 | [`ai/web/docs/audits/openclaw-openai-upgrade-2026-09-10.md`](./ai/web/docs/audits/openclaw-openai-upgrade-2026-09-10.md) | OpenClaw 2026.9.3 upgrade: Codex dependency, OAuth route, PM compatibility, verified backups and recovery. |
 | [`ai/web/docs/audits/ph-193-standalone-publication-2026-09-14.md`](./ai/web/docs/audits/ph-193-standalone-publication-2026-09-14.md) | PH-193 origin-publication recovery and standalone remote-verification checkpoints. |
 | [`ai/web/docs/audits/ph-193-preview-stall-2026-09-14.md`](./ai/web/docs/audits/ph-193-preview-stall-2026-09-14.md) | PH-193 preview-access stall, owner-authorized test staging and initial deployment. |
+| [`ai/web/docs/audits/pm-channel-admission-2026-09-10.md`](./ai/web/docs/audits/pm-channel-admission-2026-09-10.md) | PH-193 / V23-39: expired HTTP admission, PM ingress regression test and truthful recovery status. |
 | [`ai/web/docs/audits/ph-193-reviewer-handoff-2026-09-10.md`](./ai/web/docs/audits/ph-193-reviewer-handoff-2026-09-10.md) | PH-193 reviewer audit: silence conflict, unnecessary wake and terminal model boundary. |
 | [`ai/web/docs/audits/v23-38-workflow-2026-09-08.md`](./ai/web/docs/audits/v23-38-workflow-2026-09-08.md) | V23-38 workflow audit, fixes, deployment and runtime activation record. |
 | [`ai/web/docs/audits/editor-save-navigation-2026-09-10.md`](./ai/web/docs/audits/editor-save-navigation-2026-09-10.md) | Task/Epic save, dirty-state and stale-deployment audit; regression checks and limits. |
