@@ -597,6 +597,16 @@ Latency / PM queue/status names:
     Epic-child branches remain local and PM merges them into the Epic branch
     after review; only the Epic branch reaches origin. Do not create or update
     a pull request. PR creation and landing are human-only.
+    If a standalone task needs a published commit for remaining remote
+    verification, use `publish_checkpoint` while `In Progress`. When owner
+    authorization is the missing dependency, call `flag_blocker` with
+    `permissionKind=publish_checkpoint`. Cite the resulting fresh owner
+    `authorizationCommentId` naming the Task and target task branch. PM commits
+    and pushes that feature branch, verifies origin, and leaves the checklist
+    and original review base intact. Verify the test environment serves that
+    exact SHA, finish the checks, then use `ready_for_review`. A matching branch
+    name alone is insufficient. If the clean SHA is already on origin, diagnose
+    deployment instead. Every later publication needs a fresh authorization.
     If an Epic-child task's remaining live-verification steps require a
     remotely deployable commit, first check whether PM's previous child
     finalizer already published the task's clean repository baseline as the
@@ -675,7 +685,7 @@ keep using the current turn. It never supersedes a live turn.
   workflow endpoint supplied in a PM-channel turn. Assignees may
   `start` (To Do → In Progress only),
   `add_subtask`/`complete_subtask`/`remove_subtask`,
-  `publish_checkpoint` (authorized Epic-child deployment checkpoints only),
+  `publish_checkpoint` (owner-authorized remote-verification checkpoints),
   `flag_blocker`/`clear_blocker`, and `ready_for_review`; the resolved reviewer may `approve_plan`,
   `assign_task` (optionally naming the assignee for an
   unassigned task), `request_subtask`, `review_feedback`, `review_done`,
@@ -857,11 +867,12 @@ the exact silent token and no other text.
   exact permission round whose grant it consumed on success or failure; any
   retry or later publication needs a fresh round.
 - `publish_checkpoint` is the narrow exception for an `In Progress`
-  Epic-child whose remaining checks require a remotely reachable commit. It
+  code task whose remaining checks require a remotely reachable commit. It
   requires the exact id of a fresh, single-use active-owner authorization
   comment written after current plan approval and naming the Task source plus
-  target Epic branch. PM owns the checkpoint commit, publishes only
-  the Epic branch, resets the task's repository base to the published tip,
+  target publication branch. PM owns the checkpoint commit. A standalone
+  task publishes its feature branch and retains its original review base; an
+  Epic child publishes only the Epic branch and advances its base to that tip,
   and leaves the task/worktree active. It never bypasses the eventual
   checklist and `ready_for_review` gates.
 - `review_feedback` returns the task to the **front** of To Do and wakes

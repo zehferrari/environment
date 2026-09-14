@@ -14,6 +14,7 @@ import {
   inspectValidatedCandidateWorktree,
   mergeTaskBranchIntoEpic,
   publishTaskCheckpointToEpic,
+  publishStandaloneTaskCheckpoint,
   publishEpicBranch,
   removeMergedOriginChildBranch,
 } from "@/lib/deploy/epic-merge-git";
@@ -1413,9 +1414,10 @@ async function executeCheckpointJob(
   if (task.assigneeId !== job.requestedByUserId) {
     return fail("The agent that requested this checkpoint is no longer the task assignee.");
   }
-  if (!task.epic || task.epic.status !== "In Progress") {
-    return fail("A publish checkpoint is available only for a task under an In Progress Epic.");
+  if (task.epic && task.epic.status !== "In Progress") {
+    return fail("An Epic-child checkpoint requires its Epic to remain In Progress.");
   }
+  if (task.repositoryRun?.phase !== "active") return fail("The checkpoint repository run is no longer active.");
 
   const authorization = await db.comment.findUnique({
     where: { id: job.authorizationCommentId },
@@ -1440,8 +1442,9 @@ async function executeCheckpointJob(
   const repositoryPath = task.repositoryRun?.repositoryPath ?? task.project.repositoryPath;
   const worktreePath = task.repositoryRun?.worktreePath;
   const taskBranch = task.repositoryRun?.branchName ?? effectiveTaskBranchName(task);
-  const epicBranch = task.repositoryRun?.epicBranch ?? effectiveEpicBranchName(task.epic);
-  if (!repositoryPath || !worktreePath || !taskBranch || !epicBranch) {
+  const epicBranch = task.epic ? task.repositoryRun?.epicBranch ?? effectiveEpicBranchName(task.epic) : null;
+  const publishedBranch = epicBranch ?? taskBranch;
+  if (!repositoryPath || !worktreePath || !taskBranch || !publishedBranch) {
     return fail("The active repository path, worktree, task branch, or Epic branch is missing.");
   }
   const explicitAuthorization = validateCheckpointAuthorizationText({
@@ -1463,8 +1466,9 @@ async function executeCheckpointJob(
   if (priorSuccessfulUse) {
     let evidence = "PM had already recorded a successful publication for this authorization.";
     try {
-      const parsed = JSON.parse(priorSuccessfulUse.payload ?? "{}") as { epicSha?: unknown };
-      if (typeof parsed.epicSha === "string") evidence += ` Published Epic SHA: \`${parsed.epicSha}\`.`;
+      const parsed = JSON.parse(priorSuccessfulUse.payload ?? "{}") as { epicSha?: unknown; publishedSha?: unknown };
+      const publishedSha = parsed.publishedSha ?? parsed.epicSha;
+      if (typeof publishedSha === "string") evidence += ` Published SHA: \`${publishedSha}\`.`;
     } catch {
       // The authorization match itself is sufficient for idempotent repair.
     }
@@ -1486,8 +1490,8 @@ async function executeCheckpointJob(
         : "checkpoint authorization was already published and its permission round was already settled",
     };
   }
-  if (isProtectedBranch(task.project.agentChangeBlockedBranches, epicBranch)) {
-    return fail(`The Epic integration branch ${epicBranch} is protected from agent-originated repository changes.`);
+  if (isProtectedBranch(task.project.agentChangeBlockedBranches, publishedBranch)) {
+    return fail(`The publication branch ${publishedBranch} is protected from agent-originated repository changes.`);
   }
 
   const settings = await resolveEffectiveProjectSettings({
@@ -1503,7 +1507,7 @@ async function executeCheckpointJob(
     return fail("The effective project Git identity is incomplete; PM cannot create the checkpoint commit.");
   }
   const prefix = effectiveTaskCommitPrefix(task);
-  const checkpoint = await publishTaskCheckpointToEpic({
+  const checkpoint = epicBranch ? await publishTaskCheckpointToEpic({
     repoPath: repositoryPath,
     worktreePath,
     epicBranch,
@@ -1514,7 +1518,13 @@ async function executeCheckpointJob(
     gitUserEmail,
     commitSubject: `${prefix ? `${prefix} ` : ""}${task.title}`,
     mergeMessage: `Checkpoint ${task.workItemKey ?? taskBranch} into Epic branch ${epicBranch}`,
-  });
+  }) : await publishStandaloneTaskCheckpoint({
+    repoPath: repositoryPath, worktreePath, taskBranch,
+    baseBranch: settings.deployment.productionBranch.value,
+    gitUserName, gitUserEmail,
+    commitSubject: `${prefix ? `${prefix} ` : ""}${task.title}`,
+    authorizationCommentId: job.authorizationCommentId,
+  }).then(result => result.ok ? { ...result, epicSha: result.publishedSha } : result);
   if (!checkpoint.ok) return fail(checkpoint.reason);
 
   await updateTaskRepositoryState(task.id, {
@@ -1522,7 +1532,8 @@ async function executeCheckpointJob(
     // The published Epic tip is the new implementation baseline. This lets a
     // later no-change handoff prove that all earlier changes were checkpointed,
     // while a later code-changing handoff verifies only work since checkpoint.
-    baseSha: checkpoint.epicSha,
+    // Standalone review must still see the full original implementation diff.
+    baseSha: epicBranch ? checkpoint.epicSha : task.repositoryRun?.baseSha ?? null,
     candidateSha: null,
     reviewedSha: null,
     validationOutcome: null,
@@ -1530,12 +1541,12 @@ async function executeCheckpointJob(
     lastError: null,
   });
   const body = [
-    `✅ PM published the authorized mid-task checkpoint to Epic branch \`${epicBranch}\`.`,
+    `✅ PM published the authorized mid-task checkpoint to ${epicBranch ? "Epic" : "standalone task"} branch \`${publishedBranch}\`.`,
     "",
     `- Task checkpoint: \`${checkpoint.checkpointSha.slice(0, 10)}\``,
-    `- Published Epic tip / new task base: \`${checkpoint.epicSha.slice(0, 10)}\``,
+    `- Published branch tip: \`${checkpoint.epicSha.slice(0, 10)}\``,
     `- Owner authorization comment: \`${job.authorizationCommentId}\``,
-    "- The task remains In Progress; its local-only task branch and worktree remain active.",
+    "- The task remains In Progress; its task branch and worktree remain active. Verification and independent review are still required.",
     "",
     job.note,
   ].join("\n");
@@ -1555,7 +1566,9 @@ async function executeCheckpointJob(
           taskBranch,
           epicBranch,
           checkpointSha: checkpoint.checkpointSha,
-          epicSha: checkpoint.epicSha,
+          epicSha: epicBranch ? checkpoint.epicSha : null,
+          publishedSha: checkpoint.epicSha,
+          publishedBranch,
           createdCommit: checkpoint.createdCommit,
           kind: checkpoint.kind,
         }),
@@ -1569,7 +1582,7 @@ async function executeCheckpointJob(
     requestedByUsername: job.requestedByUsername,
     actor,
     outcome: "checkpoint_published",
-    evidence: `Publication produced Epic SHA \`${checkpoint.epicSha}\`.`,
+    evidence: `Publication produced SHA \`${checkpoint.epicSha}\` on ${publishedBranch}.`,
   });
   if (task.assigneeId) {
     await sendTaskWorkflowNotification({
@@ -1578,11 +1591,13 @@ async function executeCheckpointJob(
       actor,
       reason: "checkpoint_published",
       body: [
-        `PM published the authorized checkpoint for "${task.title}" to origin/${epicBranch} at ${checkpoint.epicSha}.`,
+        `PM published the authorized checkpoint for "${task.title}" to origin/${publishedBranch} at ${checkpoint.epicSha}.`,
         ...(blockerSettlement.cleared
           ? ["PM automatically cleared the consumed publish_checkpoint permission blocker. If deployed verification exposes a new code change that requires another publication, fix it, then raise a fresh publish_checkpoint blocker so the reporter receives a new single-use grant action."]
           : []),
-        "The task remains In Progress. Publication must now flow through the project's configured deployment automation. Do not SSH to a target host, run Git there, or substitute another OS identity as a manual fallback. Verify the automation's outcome for this exact Epic SHA; if it fails, report the actual pipeline/deployment failure and fix agent-actionable code, or flag the missing deployment integration when human intervention is genuinely required. After successful deployment, complete the live-verification checklist and use ready_for_review normally.",
+        epicBranch
+          ? "The task remains In Progress. The configured project automation owns deployment of this exact Epic SHA; do not use manual SSH/Git as a fallback. Verify the deployed SHA, complete live verification, then use ready_for_review."
+          : "The task remains In Progress. Deploy this exact published task SHA through the configured test deployment or the explicitly owner-authorized test flow. Check the actual served revision before testing. Complete the remaining verification and then use ready_for_review; the original review baseline is preserved.",
       ].join("\n"),
     }).catch((err) => console.error("[pm] checkpoint success notify failed:", task.id, err));
   }
@@ -1591,7 +1606,9 @@ async function executeCheckpointJob(
     taskId: task.id,
     outcome: checkpoint.kind,
     checkpointSha: checkpoint.checkpointSha,
-    epicSha: checkpoint.epicSha,
+    publishedSha: checkpoint.epicSha,
+    publishedBranch,
+    epicSha: epicBranch ? checkpoint.epicSha : null,
     epicBranch,
   };
 }

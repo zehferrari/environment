@@ -252,3 +252,11 @@ turns. Selection uses gateway model metadata and current PM roles at dispatch.
 See [Agent model upgrades](agent-model-upgrades.md#effort-by-pm-role).
 This branch change is pending merge/deployment; the live default configuration
 can be updated independently.
+
+### Publishing before remote verification
+
+Coding assignees can use `publish_checkpoint` for an In Progress standalone
+task as well as an Epic child, with a fresh owner authorization. Standalone
+publication pushes the task feature branch and preserves the original review
+base; Epic-child publication uses the Epic integration branch. Both keep the
+task active and require the remaining checks before `ready_for_review`.

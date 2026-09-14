@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { rm } from "node:fs/promises";
+import { rm, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -672,5 +672,88 @@ export async function publishTaskCheckpointToEpic(args: {
       ok: false,
       reason: `The Epic checkpoint was published, but PM could not advance the active task branch to the new Epic tip: ${String(err instanceof Error ? err.message : err).trim().slice(0, 700)}`,
     };
+  }
+}
+
+export type StandaloneCheckpointResult =
+  | { ok: true; kind: "published" | "already"; checkpointSha: string; publishedSha: string; createdCommit: boolean }
+  | { ok: false; reason: string };
+
+// Publication before browser verification is not review acceptance. Keep the
+// original review base and the registered worktree; publish only an exact task
+// commit, with ordinary fast-forward protection and a durable replay marker.
+export async function publishStandaloneTaskCheckpoint(args: {
+  repoPath: string; worktreePath: string; taskBranch: string; baseBranch: string;
+  gitUserName: string; gitUserEmail: string; commitSubject: string;
+  authorizationCommentId: string;
+}): Promise<StandaloneCheckpointResult> {
+  const { repoPath, worktreePath, taskBranch } = args;
+  try {
+    if (!(await validBranchName(repoPath, taskBranch)) || ["main", "master", args.baseBranch].includes(taskBranch)) {
+      return { ok: false, reason: "A standalone checkpoint must target a feature task branch, never the production/integration branch." };
+    }
+    if (!args.gitUserName.trim() || !args.gitUserEmail.trim() || !/^[a-zA-Z0-9_-]+$/.test(args.authorizationCommentId)) {
+      return { ok: false, reason: "Checkpoint identity or authorization ID is invalid." };
+    }
+    const [top, branch, common, expectedCommon, gitDir] = await Promise.all([
+      git(worktreePath, ["rev-parse", "--show-toplevel"]),
+      git(worktreePath, ["branch", "--show-current"]),
+      git(worktreePath, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+      git(repoPath, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+      git(worktreePath, ["rev-parse", "--absolute-git-dir"]),
+    ]);
+    if (await realpath(top) !== await realpath(worktreePath) || branch !== taskBranch ||
+        await realpath(common) !== await realpath(expectedCommon) || await realpath(gitDir) === await realpath(common)) {
+      return { ok: false, reason: "Checkpoint requires the exact registered task worktree in the expected repository." };
+    }
+    const epicOwner = await git(repoPath, ["config", "--get", `branch.${taskBranch}.pmEpicBranch`]).catch(() => "");
+    if (epicOwner) return { ok: false, reason: "An Epic-child branch cannot be published as a standalone checkpoint." };
+    const remote = await inspectOriginBranch(repoPath, taskBranch);
+    if (!remote.ok) return { ok: false, reason: remote.reason };
+    const trailer = `PM-Checkpoint-Authorization: ${args.authorizationCommentId}`;
+    if (remote.sha) {
+      await git(repoPath, ["fetch", "--no-tags", "origin", `refs/heads/${taskBranch}`]);
+      const message = await git(repoPath, ["show", "-s", "--format=%B", remote.sha]);
+      if (message.split("\n").includes(trailer)) {
+        return { ok: true, kind: "already", checkpointSha: remote.sha, publishedSha: remote.sha, createdCommit: true };
+      }
+      if (!(await isAncestor(repoPath, remote.sha, `refs/heads/${taskBranch}`))) {
+        return { ok: false, reason: "Origin advanced or diverged; reconcile the task branch before publishing. No work was discarded." };
+      }
+    }
+    await git(worktreePath, ["diff", "--check"]);
+    const dirty = await git(worktreePath, ["status", "--porcelain"]);
+    const headBefore = await git(worktreePath, ["rev-parse", "HEAD"]);
+    const headMessage = await git(worktreePath, ["show", "-s", "--format=%B", "HEAD"]);
+    if (!dirty && remote.sha === headBefore) {
+      return { ok: false, reason: "The clean task SHA is already published. Verify its deployment instead of requesting another checkpoint." };
+    }
+    if (dirty && headMessage.split("\n").includes(trailer)) {
+      return { ok: false, reason: "An unpublished checkpoint already consumed this authorization and later edits exist. Preserve both and obtain a fresh authorization; a retry cannot absorb new work." };
+    }
+    let createdCommit = false;
+    if (dirty || !headMessage.split("\n").includes(trailer)) {
+      await git(worktreePath, ["add", "--all"]);
+      // An already-committed unpublished change also needs a durable grant
+      // marker so a post-push retry cannot absorb newer work under that grant.
+      if (!(await gitOk(worktreePath, ["diff", "--cached", "--quiet"])) || !headMessage.split("\n").includes(trailer)) {
+        await git(worktreePath, ["commit", "--allow-empty", "-m", args.commitSubject.slice(0, 240), "-m", trailer], {
+          GIT_AUTHOR_NAME: args.gitUserName, GIT_AUTHOR_EMAIL: args.gitUserEmail,
+          GIT_COMMITTER_NAME: args.gitUserName, GIT_COMMITTER_EMAIL: args.gitUserEmail,
+        });
+        createdCommit = true;
+      }
+    }
+    const sha = await git(worktreePath, ["rev-parse", "HEAD"]);
+    const currentBranch = await git(worktreePath, ["branch", "--show-current"]);
+    if (currentBranch !== taskBranch || await git(worktreePath, ["status", "--porcelain"])) {
+      return { ok: false, reason: "The worktree changed during checkpoint preparation; the commit was preserved and publication stopped." };
+    }
+    if (remote.sha !== sha) await git(worktreePath, ["push", "origin", `${sha}:refs/heads/${taskBranch}`]);
+    const published = await inspectOriginBranch(repoPath, taskBranch);
+    if (!published.ok || published.sha !== sha) return { ok: false, reason: "Origin did not confirm the exact checkpoint SHA; inspect before retrying." };
+    return { ok: true, kind: remote.sha === sha ? "already" : "published", checkpointSha: sha, publishedSha: sha, createdCommit };
+  } catch (err) {
+    return { ok: false, reason: `PM could not publish the standalone checkpoint: ${String(err instanceof Error ? err.message : err).slice(0, 700)}` };
   }
 }

@@ -476,6 +476,28 @@ submission commit and permitted publication belong to PM's trusted runner.
 If implementation no longer matches the approved plan materially, the assignee
 should expose the change or blocker rather than silently broaden scope.
 
+### Standalone checkpoints for remote verification
+
+A standalone code Task can also need a published commit before its remaining
+browser checks can run. While it is `In Progress`, use `publish_checkpoint`
+with a fresh active-owner authorization naming the Task and its target task
+branch. The permission blocker records these branch identities so its grant
+button can authorize the exact publication. PM commits the registered worktree,
+pushes the exact SHA to the standalone feature branch without force, and verifies
+origin. Production branches and local-only Epic-child branches are rejected.
+
+The Task stays `In Progress`, its checklist stays open, and its original
+repository base is retained so eventual review includes the complete change.
+Publication does not prove deployment or browser verification. Verify that the
+test environment serves the returned SHA before completing those checks and
+calling `ready_for_review`. If origin already has the clean worktree SHA,
+diagnose deployment instead of requesting another checkpoint.
+
+Each authorization is single-use. A durable commit trailer lets a runner retry
+recognize an already-published checkpoint without committing later edits. Push
+failure preserves the local commit; divergence never triggers a force push or
+reset. Later edits require a fresh authorization.
+
 ### Deployment-dependent Epic checkpoints
 
 Some Epic-child Tasks cannot finish their live-verification checklist until

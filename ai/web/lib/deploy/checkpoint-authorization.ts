@@ -2,7 +2,7 @@ type CheckpointAuthorizationTextArgs = {
   body: string;
   taskKey: string | null;
   taskBranch: string;
-  epicBranch: string;
+  epicBranch: string | null;
 };
 
 export type CheckpointAuthorizationValidation =
@@ -16,7 +16,8 @@ function normalized(value: string) {
 /**
  * A normal owner comment is not a publication capability. Checkpoint
  * authorization must explicitly name the operation, the task source, and the
- * Epic branch that PM is allowed to publish/deploy.
+ * publication branch that PM is allowed to publish/deploy (the task branch
+ * for standalone work, or the Epic integration branch for an Epic child).
  */
 export function validateCheckpointAuthorizationText(
   args: CheckpointAuthorizationTextArgs,
@@ -46,8 +47,8 @@ export function validateCheckpointAuthorizationText(
   if (!taskMarkers.some((marker) => body.includes(marker))) {
     return { ok: false, reason: "The owner comment does not name this task key or task branch." };
   }
-  if (!body.includes(normalized(args.epicBranch))) {
-    return { ok: false, reason: "The owner comment does not name the target Epic branch." };
+  if (!body.includes(normalized(args.epicBranch ?? args.taskBranch))) {
+    return { ok: false, reason: "The owner comment does not name the target publication branch." };
   }
   return { ok: true };
 }

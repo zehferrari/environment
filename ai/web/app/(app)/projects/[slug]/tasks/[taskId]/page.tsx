@@ -395,17 +395,15 @@ async function grantBlockerPermission(formData: FormData) {
       task.status !== "In Progress" ||
       !task.approvedOn ||
       !task.project.repositoryPath ||
-      !task.epic ||
-      task.epic.status !== "In Progress" ||
+      (task.epic && (task.epic.status !== "In Progress" || !epicBranch)) ||
       !taskBranch ||
-      !epicBranch ||
       request.taskBranch !== taskBranch ||
-      request.epicBranch !== epicBranch
+      (request.epicBranch ?? null) !== epicBranch
     ) {
       throw new Error("The checkpoint permission request no longer matches the task's active repository state.");
     }
     body = [
-      `@${task.assignee.username} I hereby authorize PM to publish and deploy the current checkpoint for ${task.workItemKey ?? taskBranch} / ${taskBranch} to the Epic branch ${epicBranch}.`,
+      `@${task.assignee.username} I hereby authorize PM to publish and deploy the current checkpoint for ${task.workItemKey ?? taskBranch} / ${taskBranch} to ${epicBranch ? `the Epic branch ${epicBranch}` : `the standalone task branch ${taskBranch}`}.`,
       `This authorization is limited to the permission requested in blocker comment ${blockerCommentId}: ${request.scope}`,
       "Use this comment as authorizationCommentId and proceed now. PM closes this permission round automatically when the checkpoint attempt succeeds or fails; any later publication requires a fresh blocker and grant.",
     ].join("\n\n");

@@ -61,6 +61,7 @@ const SUITES: readonly string[] = [
   "test:workflow-reconciler",
   "test:workflow-agent-rules",
   "test:repository-workflow",
+  "test:standalone-checkpoint",
   // Watchdog family.
   "test:workflow-watchdog",
   "test:workflow-watchdog-db",

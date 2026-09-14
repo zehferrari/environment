@@ -216,7 +216,7 @@ assert(
 assert(
   repositoryRunner.includes('kind: "checkpoint"') &&
     repositoryRunner.includes("publishTaskCheckpointToEpic") &&
-    repositoryRunner.includes("baseSha: checkpoint.epicSha") &&
+    repositoryRunner.includes("baseSha: epicBranch ? checkpoint.epicSha : task.repositoryRun?.baseSha ?? null") &&
     repositoryRunner.includes('phase: "active"'),
   "owner-authorized Epic checkpoints must publish through the runner, reset the active base, and keep the task In Progress",
 );

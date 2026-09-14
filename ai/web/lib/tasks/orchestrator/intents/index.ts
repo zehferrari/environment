@@ -603,10 +603,19 @@ const raiseBlockerExecutor: IntentExecutor<"raise_blocker"> = async (context) =>
     ].join("\n\n"),
     "blocker_notice",
   );
+  const checkpointTask = context.command.payload.permissionKind === "publish_checkpoint"
+    ? await context.tx.task.findUniqueOrThrow({ where: { id: context.command.taskId }, select: {
+        workItemKey: true, branchName: true, epic: { select: { workItemKey: true, branchName: true } },
+      } }) : null;
   const permissionRequest = context.command.payload.permissionKind
     ? {
         kind: context.command.payload.permissionKind,
         scope: context.command.payload.permissionScope ?? report.requestedAction,
+        ...(checkpointTask ? {
+          taskKey: checkpointTask.workItemKey,
+          taskBranch: effectiveTaskBranchName(checkpointTask),
+          epicBranch: checkpointTask.epic ? effectiveEpicBranchName(checkpointTask.epic) : null,
+        } : {}),
       }
     : null;
   await createDomainActivity(context, "task.blocker", {
@@ -876,12 +885,10 @@ const publishCheckpointExecutor: IntentExecutor<"publish_checkpoint"> = async (c
     !task.project.repositoryPath ||
     !task.repositoryRun?.worktreePath ||
     task.repositoryRun.phase !== "active" ||
-    !task.epic ||
-    task.epic.status !== "In Progress" ||
+    (task.epic && (task.epic.status !== "In Progress" || !epicBranch || taskBranch === epicBranch)) ||
     !taskBranch ||
-    !epicBranch ||
-    taskBranch === epicBranch ||
-    isProtectedBranch(task.project.agentChangeBlockedBranches, epicBranch)
+    isProtectedBranch(task.project.agentChangeBlockedBranches, epicBranch ?? taskBranch) ||
+    (!task.epic && ["main", "master"].includes(taskBranch))
   ) {
     return {
       status: "stale",

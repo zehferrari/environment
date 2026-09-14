@@ -147,6 +147,17 @@ The implementer flow is:
 > The Epic branch is the only ref that reaches origin. Reviewers reuse the
 > existing attached child worktree after PM moves the task to Review.
 
+## Publishing a standalone task for remote verification
+
+When remote tests need a Git revision before implementation can be submitted,
+use PM's `publish_checkpoint` with a fresh owner authorization naming the task
+and task branch. PM commits and pushes the exact feature SHA while keeping the
+task In Progress and preserving the original review base. Verify origin and
+the deployed SHA, finish the remaining tests, then call `ready_for_review`.
+Do not claim that a branch checkout includes uncommitted work. If the current
+clean SHA is already on origin, resolve deployment rather than republishing.
+Epic-child publication still uses only the Epic integration branch.
+
 ## Owner-authorized standalone task previews
 
 PM owns commits and branch publication. An explicit instruction from the active
