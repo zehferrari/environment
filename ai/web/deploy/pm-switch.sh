@@ -221,17 +221,11 @@ log "Preparing and migrating $BRANCH_DB (commit $DEPLOY_COMMIT; dirty paths $DEP
 branch_db_real="$(readlink -f "$BRANCH_DB")"
 [[ "$branch_db_real" == "$db_root_real"/* ]] \
   || die "resolved database escapes the configured PM DB root: $branch_db_real"
-served_wt="$(served_worktree || true)"
-active_db_url="$(active_database_url || true)"
-active_db_path="$(file_url_path "$active_db_url" || true)"
-active_db_real=""
-if [[ -n "$active_db_path" ]]; then
-  active_db_real="$(readlink -f "$active_db_path" 2>/dev/null || true)"
-fi
-if [[ "$served_wt" == "$WT_ROOT" || "$active_db_real" == "$branch_db_real" ]]; then
-  log "Target worktree or DB is already live; stopping PM services before migrate/build to avoid SQLite and build-tree locks…"
-  sudo -n "$APPLY" --stop-live "$STANDALONE" "$BRANCH_DB_URL"
-fi
+# The privileged helper can read the active environment even when a CLI user
+# cannot. It compares both the worktree and database and stops writers only
+# when the target is live. Never skip this check based on an unreadable env.
+log "Checking whether the target worktree or database is live…"
+sudo -n "$APPLY" --stop-live "$STANDALONE" "$BRANCH_DB_URL"
 # systemd can report both writers stopped while a final SQLite connection is
 # still unwinding. Wait for that reader and checkpoint its WAL before Prisma
 # requests the schema lock; otherwise a healthy deployment can fail once with

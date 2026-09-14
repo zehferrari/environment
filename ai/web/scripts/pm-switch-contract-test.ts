@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -57,5 +58,40 @@ assert.match(rebuild, /exec "\$PM_SWITCH" --database=worktree "\$WT_ROOT"/,
   "legacy rebuild delegation must state its stable worktree database intent");
 assert.match(managedUpdate, /pm-switch --database=worktree "\$WORKTREE"/,
   "managed host releases must state their stable worktree database intent");
+
+// Exercise the real pre-migration stop section with a deployer who cannot
+// inspect the active database. Root must make that decision, even across trees.
+const stopSection = switcher.slice(
+  switcher.indexOf('branch_db_real="$(readlink -f "$BRANCH_DB")"'),
+  switcher.indexOf("# systemd can report both writers stopped"),
+);
+for (const helperStatus of [0, 17]) {
+  const result = spawnSync("bash", ["-c", `
+    set -euo pipefail
+    BRANCH_DB=/tmp/pm-test/wt-main.db
+    BRANCH_DB_URL=file:$BRANCH_DB
+    db_root_real=/tmp/pm-test
+    WT_ROOT=/tmp/worktrees/main
+    STANDALONE=$WT_ROOT/ai/web/.next/standalone
+    APPLY=/test/pm-apply-worktree
+    readlink() { printf '%s\\n' "$2"; }
+    log() { :; }
+    die() { exit 1; }
+    served_worktree() { printf /tmp/worktrees/feature; }
+    active_database_url() { return 1; }
+    sudo() { printf '%s\\n' "$*"; return ${helperStatus}; }
+    ${stopSection}
+    printf 'MIGRATION_REACHED\\n'
+  `], { encoding: "utf8" });
+  assert.equal(result.status, helperStatus, result.stderr);
+  assert.match(result.stdout, /-n \/test\/pm-apply-worktree --stop-live .* file:\/tmp\/pm-test\/wt-main.db/,
+    "the privileged live database check must run even when the env is unreadable");
+  assert.equal(result.stdout.includes("MIGRATION_REACHED"), helperStatus === 0,
+    "a failed live database check must prevent migration");
+}
+assert.match(read("deploy/systemd/pm-switch-runner.service"), /SupplementaryGroups=__PM_MONITOR_GROUP__/,
+  "the runner must retain its private group when using the shared primary group");
+assert.match(installer, /s#__PM_MONITOR_GROUP__#\$MON_GROUP#g/,
+  "the installer must render the monitor's actual private group");
 
 console.log("pm-switch deployment contract tests passed");

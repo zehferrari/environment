@@ -10,6 +10,8 @@ Type=simple
 # Installer (install-pm-switch.sh) substitutes __PM_MONITOR_USER__.
 User=__PM_MONITOR_USER__
 Group=__PM_CODE_GROUP__
+# Keep access to the monitor-owned active environment and private spool.
+SupplementaryGroups=__PM_MONITOR_GROUP__
 Environment=HOME=__PM_MONITOR_HOME__
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=PM_SWITCH_DIR=__PM_SWITCH_DIR__
