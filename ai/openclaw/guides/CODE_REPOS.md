@@ -147,6 +147,26 @@ The implementer flow is:
 > The Epic branch is the only ref that reaches origin. Reviewers reuse the
 > existing attached child worktree after PM moves the task to Review.
 
+## Owner-authorized standalone task previews
+
+PM owns commits and branch publication. An explicit instruction from the active
+owner to stage an approved standalone task in a test environment also authorizes
+that preview without a commit or push. Keep the implementation in its registered
+worktree and stage only the approved application files. This exception does not
+apply to production deployment or replace Epic-child checkpoint automation.
+
+Check the test target's current branch, revision and local changes first. A
+matching branch name does not establish that uncommitted worktree changes are
+served. An old owner comment naming a branch may also be stale: preserve other
+tasks' work, use an isolated preview where available, or request coordination
+before replacing the shared target. Verify the staged file contents and retain
+a bounded rollback for only the files staged by this task.
+
+Respect browser access policy. Clear an access/preview blocker only after its
+stated resume condition is verified, complete the required browser/save/reload
+checks, and then call `ready_for_review`. Do not submit incomplete verification
+merely to obtain a remotely deployable commit.
+
 ## Review flow — one attached worktree
 
 A different agent reviews the changes after the assignee has stopped working.
