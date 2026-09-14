@@ -27,6 +27,7 @@ const PLUGIN_FILES = [
   "session-key.js",
   "runtime-compat.js",
   "task-tools.js",
+  "task-attachments.js",
   "task-backend.js",
   "turn-effort.js",
   "turn-completion.js",

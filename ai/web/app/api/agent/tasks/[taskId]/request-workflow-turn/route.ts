@@ -194,25 +194,36 @@ export async function POST(
     body,
   });
 
+  const dispatched = Boolean(sent?.delivery.ok);
   await db.activityLog.create({
     data: {
       projectId: task.projectId,
       taskId: task.id,
       userId: agent.user.id,
-      kind: "task.workflow.turn_requested",
+      kind: dispatched ? "task.workflow.turn_requested" : "task.workflow.turn_request_failed",
       targetAgent: agent.slug,
       payload: JSON.stringify({
         agentSlug: agent.slug,
         status: task.status,
         reason,
         messageId: sent?.messageId ?? null,
-        dispatched: Boolean(sent),
+        dispatched,
       }),
     },
   });
 
+  if (!dispatched) {
+    return NextResponse.json({
+      ok: false,
+      dispatched: false,
+      taskId: task.id,
+      messageId: sent?.messageId ?? null,
+      error: sent?.delivery.error ?? "Workflow notification was not dispatched",
+    }, { status: 503 });
+  }
   return NextResponse.json({
     ok: true,
+    dispatched: true,
     taskId: task.id,
     status: task.status,
     reason,
