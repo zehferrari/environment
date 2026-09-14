@@ -31,3 +31,20 @@ previously deployed branch and this branch; it is not a new regression.
 
 Deployment must retain `/srv/Data/pm/wt-main.db`. PH-193's code publication and
 PM activation evidence are recorded after execution below.
+
+## PH-193 publication confirmed
+
+At 11:09 AEST, the existing recovery completed its normal submission path.
+PM published `e9ec3d3c795c0c0ef76aff39a7df5792d1755ea5` to
+`origin/PH-1010-share-price-at-less-than-two-decimal-places-such-as-0-1`.
+An independent `git ls-remote` confirmed that exact SHA and `git show` confirmed
+the three application files and both regression tests are included. The task
+entered Review at workflow version 17 and Carmen began independent review.
+No additional recovery comment, owner grant, or agent wake was needed.
+
+The verification note explicitly limits its live evidence to full-form checks,
+anonymous Next Step POST/server-session reload and local production-export
+replay. Authenticated saved-order reopening/admin download was not tested;
+that limitation is available to the reviewer and has not been rewritten as a
+passing test. The transient session-busy continuation failed, but the subsequent
+submission succeeded without restarting Asdrubal's gateway.
