@@ -402,6 +402,27 @@ As of May 2026, host `thinkpad` relies dynamically on **OpenAI OAuth**, **Claude
 - **Ollama endpoint**: each agent's `models.providers.ollama.baseUrl` points at `http://127.0.0.1:11434` — the local Ollama on `thinkpad` (managed by `ollama.service`, `OLLAMA_HOST=0.0.0.0:11434`). The previous `http://ollama.local` indirection through `moonlight` is **deprecated** — moonlight's nginx upstream pointed at `10.0.0.17` (a different LAN host) which doesn't actually serve the agents' `:cloud` models, so requests were either silently mis-routed or going to thinkpad's local Ollama anyway. Agents now hit the local instance directly.
 - **Local Fallback Model**: `qwen2.5:3b-instruct` (~2 GB q4_K_M) is installed locally on the `thinkpad` CPU as a last-resort offline fallback.
 
+### Login renewal (who renews what)
+
+Model logins renew themselves: each owner refreshes its short-lived access
+token on next use. There is deliberately **no** separate renewal script or
+timer — OpenAI and Claude refresh tokens rotate on every refresh, so a second
+refresher invalidates the login (barekbaal's copied OpenAI profile logged
+`refresh_token_reused` this way in 2026-09).
+
+| Login | Owner / file | Human action needed when |
+|---|---|---|
+| Claude CLI (`anthropic/*` on the `claude-cli` runtime) | `~/.claude/.credentials.json` | Refresh token nears its recorded expiry (warned 7 days ahead) or a refresh fails. |
+| Codex CLI (`openai/*` when `plugins.entries.codex.config.appServer.homeScope` is `user`) | `~/.codex/auth.json` | A refresh fails. `openclaw models status` still names the OpenClaw store as the route; with `homeScope: user` it is not. |
+| OpenClaw OAuth profile | `~/.openclaw/state/openclaw.sqlite` (`authProfiles.store`) | The profile has no refresh token, or a refresh fails. |
+
+`openclaw-integrity-check` reports these as `model-auth <provider>` lines:
+renewability of the active chain's logins plus authentication failures from
+any gateway consumer in the last 15 minutes (model fallbacks, memory sync).
+`ai-monitor` routes them deterministically — not through its LLM judge and not
+through the monitor agent — and sends one Telegram per episode with the fix
+command (`model_auth_renotify_s`, default 6 h, quiets recurrences).
+
 ## Telegram
 
 Each agent is integrated with a dedicated Telegram bot:

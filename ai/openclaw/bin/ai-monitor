@@ -554,6 +554,17 @@ def probe_previous_shutdown(cfg):
     return result
 
 
+# Model-login findings from openclaw-integrity-check use one fixed shape:
+#   [FAIL|WARN] <user>: model-auth <provider>: <detail, including the fix>
+# They are routed deterministically (never through the LLM judge, which
+# paraphrased expiry lines into wrong times and invented failures) and go
+# straight to the human: no agent action can complete a browser/device login.
+MODEL_AUTH_LINE_RE = re.compile(
+    r"^\[(?P<level>FAIL|WARN)\] (?P<user>[\w.-]+): model-auth (?P<provider>[\w.-]+): (?P<detail>.+)$"
+)
+MODEL_AUTH_KINDS = {"model-auth-failing", "model-auth-renewal-due"}
+
+
 def probe_integrity_check(cfg):
     """Read the most recent openclaw-integrity-check output from the journal.
     We don't invoke the binary inline -- when called from a systemd service context
@@ -585,6 +596,9 @@ def probe_integrity_check(cfg):
     last_run = runs[-1] if runs else []
     fails = [l for l in last_run if l.startswith("[FAIL]")]
     warns = [l for l in last_run if l.startswith("[WARN]")]
+    model_auth_lines = [l for l in fails + warns if MODEL_AUTH_LINE_RE.match(l)]
+    fails = [l for l in fails if not MODEL_AUTH_LINE_RE.match(l)]
+    warns = [l for l in warns if not MODEL_AUTH_LINE_RE.match(l)]
     summary_line = next(
         (l for l in reversed(last_run) if l.startswith("[SUMMARY]")), ""
     )
@@ -603,6 +617,7 @@ def probe_integrity_check(cfg):
         "summary_line": summary_line,
         "fail_lines": real_fails[-20:],
         "warn_lines": warns[-20:],
+        "model_auth_lines": model_auth_lines,
         "transient_fails_ignored": transient_fails,
         "runs_in_window": len(runs),
     }
@@ -2792,6 +2807,33 @@ def build_compact_input(probes):
     }
 
 
+def model_auth_issues(lines):
+    """One issue per agent login, from integrity-check model-auth lines.
+
+    A login can report both a renewal problem and observed failures in one run;
+    those merge into a single issue so the human gets one bullet per login.
+    """
+    by_unit = {}
+    for line in lines or []:
+        m = MODEL_AUTH_LINE_RE.match(line)
+        if not m:
+            continue
+        failing = m.group("level") == "FAIL"
+        unit = f"{m.group('user')}/model-auth:{m.group('provider')}"
+        issue = by_unit.get(unit)
+        if issue is None or (failing and issue["severity"] != "crit"):
+            by_unit[unit] = {
+                "unit": unit,
+                "kind": "model-auth-failing" if failing else "model-auth-renewal-due",
+                "severity": "crit" if failing else "warn",
+                "reason": m.group("detail")[:420],
+                "suggested_action": "rotate-credentials",
+            }
+        elif failing == (issue["severity"] == "crit"):
+            issue["reason"] = f"{issue['reason']} | {m.group('detail')}"[:600]
+    return list(by_unit.values())
+
+
 def deterministic_issues(probes):
     """Emit issues we can derive without an LLM. These are the unambiguous signals;
     no natural-language interpretation needed. Run on every tick."""
@@ -2929,6 +2971,7 @@ def deterministic_issues(probes):
             "reason": f"no openclaw-integrity output in window ({integ.get('runs_in_window',0)} runs seen)",
             "suggested_action": "investigate",
         })
+    out.extend(model_auth_issues(integ.get("model_auth_lines")))
     reg = probes.get("registry", {})
     if not reg.get("ok"):
         out.append({
@@ -4431,6 +4474,18 @@ def format_alerts_message(issues):
     return header + "\n\n" + "\n\n".join(blocks)
 
 
+def format_model_auth_message(issues):
+    """Telegram for logins only a human can restore; each reason ends with the fix."""
+    head_icon = SEVERITY_ICON.get(_worst_severity(issues), "⚪")
+    lines = [
+        f"{head_icon} {socket.gethostname()} — model login needs you "
+        "(monitor agent skipped; only a login can fix this)"
+    ]
+    for issue in issues:
+        lines.append(f"• {issue.get('unit', '?')}: {issue.get('reason', '(no reason)')}")
+    return "\n\n".join(lines)
+
+
 def format_resolved_message(issues):
     """Build a single Telegram message for all resolved issues in this tick."""
     n = len(issues)
@@ -4606,6 +4661,57 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
         # Now strip transient issues out of the working set — they're done.
         new_alert_issues = [i for i in new_alert_issues if not i.get("_transient")]
         new_alert_keys = [event_key(i) for i in new_alert_issues]
+
+        # Model logins are restored only by a human (browser/device login),
+        # so they skip the monitor agent and the recovery ladder: one Telegram
+        # per episode carrying the fix command. Log-derived failures come and
+        # go with agent activity, so eviction is silent (idle is not a
+        # recovery) and a recurrence for the same login within
+        # `model_auth_renotify_s` of the last page stays quiet.
+        auth_issues = [i for i in new_alert_issues if i.get("kind") in MODEL_AUTH_KINDS]
+        if auth_issues:
+            renotify_s = int(triage_cfg.get("model_auth_renotify_s", 6 * 3600))
+            notified = state.setdefault("model_auth_notified", {})
+            for unit in [u for u, ts in notified.items() if now - int(ts) > 7 * 86400]:
+                del notified[unit]
+            due = [
+                i for i in auth_issues
+                if i.get("unit", "?") not in notified
+                or now - int(notified[i.get("unit", "?")]) >= renotify_s
+            ]
+            sent_ok = not due
+            if due and dry_run:
+                actions.append({
+                    "type": "would_notify_model_auth",
+                    "keys": [event_key(i) for i in due],
+                    "text": format_model_auth_message(due),
+                })
+            elif due:
+                r = send_telegram(cfg, format_model_auth_message(due), registry=registry)
+                sent_ok = bool(r.get("ok"))
+                if sent_ok:
+                    for i in due:
+                        notified[i.get("unit", "?")] = now
+                actions.append({
+                    "type": "model_auth_human_notified",
+                    "keys": [event_key(i) for i in due],
+                    "units": sorted(i.get("unit", "?") for i in due),
+                    "result": r,
+                })
+            for i in auth_issues:
+                ev = state["events"].get(event_key(i), {})
+                ev["silent_resolve"] = True
+                # Retry next tick if Telegram failed; otherwise this login is
+                # handled until it clears or the renotify window passes.
+                if sent_ok or i not in due:
+                    ev["alert_sent"] = True
+                    ev["human_notification_final"] = True
+            new_alert_issues = [i for i in new_alert_issues if i.get("kind") not in MODEL_AUTH_KINDS]
+            new_alert_keys = [event_key(i) for i in new_alert_issues]
+            # A monitor-agent login issue is handled above; it must not turn
+            # the rest of this tick into a self-incident.
+            self_incident = _is_monitor_self_incident(new_alert_issues, monitor_user)
+
         if new_alert_issues:
             text = format_alerts_message(new_alert_issues)
         else:
@@ -5207,7 +5313,7 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
             continue
         ev["missed_runs"] = ev.get("missed_runs", 0) + 1
         if ev["missed_runs"] >= threshold:
-            if ev.get("alert_sent"):
+            if ev.get("alert_sent") and not ev.get("silent_resolve"):
                 resolved_issues.append(ev.get("issue", {}))
                 resolved_keys.append(key)
             else:
