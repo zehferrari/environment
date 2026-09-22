@@ -77,3 +77,34 @@ turn boundary. Reconcile WORKFLOW.md into agent workspaces. Back up the database
 and installed plugin first. Rollback can retain the additive table, but restore
 matching application/plugin versions. Do not build the live standalone tree
 without its immediate restart.
+
+## Activation — 22 September 2026
+
+- Feature commit: `46721d3`; route startup correction: `138e2d5`.
+- Deployed application/consumer receipt:
+  `/srv/Data/pm/deployment-receipts/2026-09-22T025806Z-main-138e2d53e3d4.receipt`.
+- Backup: `/var/backups/openclaw/task-thinking-20260922T025233Z/`;
+  SQLite quick_check passed before deployment.
+- Migration applied; both services active; public login and referenced CSS
+  returned HTTP 200. Unauthenticated Thinking requests were redirected to login.
+- The initial deployment failed startup because the new API directory used
+  `[taskId]` beside existing `[id]` routes. It was moved under `[id]` and rebuilt
+  immediately. `scripts/api-route-paths-test.mjs` validates all 66 API paths using
+  Next's route sorter, and is now an automatic build preflight so this conflict
+  is rejected before Next modifies the build tree.
+- Plugin 0.1.11 loaded by Asdrubal, Barekbaal and Carmen. Authenticated capability
+  checks returned 200; Asdrubal/Carmen advertised `pm_task_note`. Barekbaal uses
+  Claude CLI and correctly advertises no native task tools; it receives `/notes`
+  through the compact HTTP contract. Karen's gateway was not restarted because
+  no gateway change was needed for her existing stream/HTTP path. WORKFLOW.md
+  was synchronized into all four agents' workspaces.
+- WDT-9 was already Done. Only its remaining no-action-required Done notification
+  (`ae7bf02f-e6f8-42da-bca9-2a09c0219d4c`) was canceled with gateway confirmation
+  before deployment; no task work was restarted. An authorized production read
+  returned ten recent runs with retained history and an earlier-page cursor;
+  the run count did not change and WDT-9 remained Done.
+- Isolated database, native-tool, WDT planning, compact runtime, channel lifecycle,
+  workflow-boundary, customer DOM, plugin compatibility, TypeScript and Chromium
+  checks passed. Browser checks included live updates, filtering, missing
+  telemetry, manual-scroll preservation, tab switching, reload and access
+  revocation. No production agent turn was created solely to test the UI.

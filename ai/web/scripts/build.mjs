@@ -1,3 +1,5 @@
+// Reject conflicting dynamic API segments before Next touches the build tree.
+import "./api-route-paths-test.mjs";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
