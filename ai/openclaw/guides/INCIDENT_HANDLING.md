@@ -32,7 +32,7 @@ You can still escalate early if a tier-1 fix is unsafe or out-of-scope (system-s
    - `issues[]` — the issues ai-monitor flagged, each with `{unit, kind, severity, reason, suggested_action}`
    - `summary` — ai-monitor's one-line summary
    - `ts` — when it was emitted
-   - `_model` — `deterministic`, `glm-5.1:cloud`, etc.
+   - `_model` — `deterministic`, `qwen2.5:7b-instruct`, etc.
    - `escalation_context` — present if this is a retry. See above.
 
 2. **Re-probe live state.** ai-monitor saw a moment in time; you're seeing now. Run quick checks for the units in the issue:

@@ -400,7 +400,22 @@ Host `thinkpad` uses Google Workspace/Gmail watchers rather than local Maildir. 
 As of May 2026, host `thinkpad` relies dynamically on **OpenAI OAuth**, **Claude CLI**, and **Ollama** (running locally on `thinkpad` and bridging `:cloud` models to `https://ollama.com` for the agents) to provision the models in use. Model configurations and fallback paths are managed dynamically per-user in each agent's private `~/.openclaw/openclaw.json` configuration file rather than being hardcoded in central host documentation.
 
 - **Ollama endpoint**: each agent's `models.providers.ollama.baseUrl` points at `http://127.0.0.1:11434` — the local Ollama on `thinkpad` (managed by `ollama.service`, `OLLAMA_HOST=0.0.0.0:11434`). The previous `http://ollama.local` indirection through `moonlight` is **deprecated** — moonlight's nginx upstream pointed at `10.0.0.17` (a different LAN host) which doesn't actually serve the agents' `:cloud` models, so requests were either silently mis-routed or going to thinkpad's local Ollama anyway. Agents now hit the local instance directly.
-- **Local Fallback Model**: `qwen2.5:3b-instruct` (~2 GB q4_K_M) is installed locally on the `thinkpad` CPU as a last-resort offline fallback.
+- **Local models**: `qwen2.5:7b-instruct` is ai-monitor's judge and `qwen2.5:3b-instruct` the last-resort offline fallback; both run on the Radeon 780M iGPU (see [`README.md`](./README.md) § Ollama).
+
+### Provider ownership (2026-09-22)
+
+All three accounts are the operator's own; each agent signs in separately
+(never a copied credential — see below).
+
+| Provider | Who may use it | How |
+|---|---|---|
+| OpenAI (ChatGPT) | **asdrubal only** | Codex CLI login for models; its OpenClaw OAuth profile serves memory-search embeddings (`text-embedding-3-small`). |
+| Claude (Max) | **barekbaal only** | Claude CLI login. Shares the Max allowance with the operator's own Claude Code sessions. |
+| Ollama cloud | carmen and karen as primary; asdrubal and barekbaal as fallback | One device key in the Ollama service (`zeh7o`). The subscription allows 10 models at once, but usage limits ("session usage limit") are shared by every agent. ai-monitor's judge runs locally so it never competes for them. |
+
+Memory search defaults to OpenAI embeddings. Only asdrubal has an OpenAI
+login, so barekbaal, carmen and karen run keyword-only memory recall until
+`memory.search.provider` is set to a local Ollama embedding model.
 
 ### Login renewal (who renews what)
 
