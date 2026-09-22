@@ -1,3 +1,4 @@
+import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { canRetryAcceptedRepositoryReview } from "@/lib/tasks/repository-finalization";
 import {
   createChecklistAndDelegatableTasksFromPlan,
@@ -32,8 +33,10 @@ async function executeRegisteredIntent<I extends TaskWorkflowIntent>(
   return context.helpers.executeDecisionWrites();
 }
 
-async function createWorkflowComment<I extends TaskWorkflowIntent>(
-  context: IntentExecutorContext<I>,
+type CommentContext = Pick<IntentExecutorContext<TaskWorkflowIntent>, "tx" | "decision" | "state" | "command">;
+
+async function createWorkflowComment(
+  context: CommentContext,
   body: string,
   commentKind = "workflow_action",
   isGenerated = false,
@@ -54,8 +57,8 @@ async function createWorkflowComment<I extends TaskWorkflowIntent>(
   });
 }
 
-async function createDomainActivity<I extends TaskWorkflowIntent>(
-  context: IntentExecutorContext<I>,
+async function createDomainActivity(
+  context: CommentContext,
   kind: string,
   payload: Record<string, unknown>,
 ) {
@@ -136,6 +139,25 @@ const approvePlanExecutor: IntentExecutor<"approve_plan"> = async (context) => {
   return context.helpers.executeDecisionWrites();
 };
 
+async function planReviewDecisionExecutor(context: IntentExecutorContext<"accept_plan_review"> | IntentExecutorContext<"delegate_plan_approval">) {
+  const delegated = context.command.intent === "delegate_plan_approval";
+  const changed = await context.tx.actionPlan.updateMany({
+    where: { id: context.command.payload.actionPlanId, taskId: context.command.taskId, version: context.command.payload.actionPlanVersion, status: "draft" },
+    data: delegated
+      ? { delegatedApproverId: resolveReviewOwnerId(context.state), delegatedById: context.command.actor.id }
+      : { reviewedAt: new Date(), reviewedById: context.command.actor.id },
+  });
+  if (changed.count !== 1) throw new Error("action_plan_version_conflict");
+  await createWorkflowComment(context, delegated
+    ? "The reporter delegated approval of this Action Plan revision to the task reviewer."
+    : "Review accepted — awaiting authorised plan approval. No plan revision is requested.");
+  await createDomainActivity(context, `task.action_plan.${delegated ? "delegate" : "review_accept"}`, {
+    actionPlanId: context.command.payload.actionPlanId, actionPlanVersion: context.command.payload.actionPlanVersion,
+    reviewerId: resolveReviewOwnerId(context.state),
+  });
+  return context.helpers.executeDecisionWrites();
+};
+
 const requestPlanChangesExecutor: IntentExecutor<"request_plan_changes"> = async (context) => {
   const changed = await context.tx.actionPlan.updateMany({
     where: {
@@ -143,7 +165,7 @@ const requestPlanChangesExecutor: IntentExecutor<"request_plan_changes"> = async
       taskId: context.command.taskId,
       version: context.command.payload.actionPlanVersion,
     },
-    data: { status: "revision_required", approvedOn: null, approvedById: null },
+    data: { status: "revision_required", approvedOn: null, approvedById: null, reviewedAt: null, reviewedById: null, delegatedApproverId: null, delegatedById: null },
   });
   if (changed.count !== 1) throw new Error("action_plan_version_conflict");
   await context.tx.actionPlanRevision.updateMany({
@@ -1017,6 +1039,8 @@ export const INTENT_EXECUTORS = {
   submit_plan: submitPlanExecutor,
   approve_plan: approvePlanExecutor,
   request_plan_changes: requestPlanChangesExecutor,
+  accept_plan_review: planReviewDecisionExecutor,
+  delegate_plan_approval: planReviewDecisionExecutor,
   start_implementation: startImplementationExecutor,
   checkpoint: checkpointExecutor,
   submit_for_review: submitForReviewExecutor,

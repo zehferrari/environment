@@ -33,6 +33,7 @@ export type WorkflowActionEffect = "continue" | "wait" | "finish";
  * next. Everything else that is episode-terminal is a plain `finish`.
  */
 const WAIT_ACTIONS = new Set([
+  "accept_plan_review",
   "flag_blocker",
   "flag_extra_work_blocker",
   "request_subtask",
@@ -132,6 +133,8 @@ const CHECKPOINTS: Readonly<Record<string, string>> = {
   approve_plan: "plan_approved",
   submit_plan: "plan_submitted",
   request_plan_changes: "plan_changes_requested",
+  accept_plan_review: "review_accepted_awaiting_approval",
+  delegate_plan_approval: "plan_approval_delegated",
   assign_task: "task_assigned",
   assign_after_plan_approval: "task_assigned",
   request_subtask: "subtask_requested",

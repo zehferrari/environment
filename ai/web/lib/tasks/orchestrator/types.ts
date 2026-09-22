@@ -73,6 +73,8 @@ export const WORKFLOW_PUBLIC_ACTIONS = [
   "approve_plan",
   "submit_plan",
   "request_plan_changes",
+  "accept_plan_review",
+  "delegate_plan_approval",
   "assign_task",
   "assign_after_plan_approval",
   "add_subtask",
@@ -103,6 +105,8 @@ export const TASK_WORKFLOW_INTENTS = [
   "submit_plan",
   "approve_plan",
   "request_plan_changes",
+  "accept_plan_review",
+  "delegate_plan_approval",
   "start_implementation",
   "checkpoint",
   "submit_for_review",
@@ -494,6 +498,8 @@ interface IntentPayloadMap {
   submit_plan: SubmitPlanPayload;
   approve_plan: ApprovePlanPayload;
   request_plan_changes: RequestPlanChangesPayload;
+  accept_plan_review: ApprovePlanPayload;
+  delegate_plan_approval: ApprovePlanPayload;
   start_implementation: StartImplementationPayload;
   checkpoint: CheckpointPayload;
   submit_for_review: SubmitForReviewPayload;
@@ -808,6 +814,10 @@ export type TaskStateSnapshot = {
     } | null;
   } | null;
   actionPlan?: {
+    reviewedAt?: Date | null;
+    reviewedById?: string | null;
+    delegatedApproverId?: string | null;
+    delegatedById?: string | null;
     id: string;
     version: number;
     status: string;

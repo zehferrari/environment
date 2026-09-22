@@ -110,6 +110,9 @@ export interface WatchdogTaskRecord {
   /** Task approval and structured-plan state for the To Do planning gate. */
   approvedOn?: number | null;
   hasActionPlan?: boolean;
+  planVersion?: number;
+  planReviewAccepted?: boolean;
+  planStatus?: string | null;
   /** Implementation checklist rows still open. */
   openChecklistCount: number;
   activeBlocker: WatchdogBlockerState | null;
@@ -753,7 +756,28 @@ const DELIVERED_NO_ADMISSION: WatchdogDetector = {
   },
 };
 
+const STALLED_PLAN_REVIEW: WatchdogDetector = {
+  id: "stalled_plan_review",
+  statement: "Failed planning handoffs and repeated revisions are escalated without scheduling another planning loop.",
+  detect: (snapshot) => snapshot.tasks.flatMap((task): WatchdogFinding[] => {
+    if (!["Backlog", "To Do"].includes(task.status) || task.approvedOn || task.planReviewAccepted) return [];
+    if (liveRunTaskIds(snapshot).has(task.id) || openContinuationTaskIds(snapshot).has(task.id)) return [];
+    if (idleSince(task, snapshot) < stallGrace(snapshot)) return [];
+    const latest = snapshot.runs.filter((r) => r.taskId === task.id).sort((a, b) => b.createdAt - a.createdAt)[0];
+    const failed = latest && ["failed", "timed_out"].includes(latest.status);
+    const loop = (task.planVersion ?? 0) >= 4;
+    if (!failed && !loop) return [];
+    return [{ detectorId: "stalled_plan_review", taskId: task.id, runId: latest?.id ?? null,
+      agentSlug: latest?.agentSlug ?? task.assigneeSlug, state: "stalled",
+      reasonCode: loop ? "plan_revision_loop" : "plan_handoff_failed",
+      reasonDetail: loop ? "Repeated plan revisions without approval; review the current decision instead of resubmitting again."
+        : "The latest planning/review turn failed. Resume with a fresh task capability or record approval; do not reset the plan.",
+      repair: "escalate", priority: 75 }];
+  }),
+};
+
 export const WATCHDOG_DETECTORS: readonly WatchdogDetector[] = [
+  STALLED_PLAN_REVIEW,
   BLOCKER_CLEAR_LOOP,
   SESSION_CHURN,
   EXPIRED_LEASE,
@@ -794,6 +818,9 @@ export function healthyExecutionState(
   task: WatchdogTaskRecord,
   snapshot: WatchdogSnapshot,
 ): { state: ExecutionState; reasonCode: string; reasonDetail: string } {
+  if (["Backlog", "To Do"].includes(task.status) && !task.approvedOn && task.planReviewAccepted) {
+    return { state: "waiting_review", reasonCode: "awaiting_plan_approval", reasonDetail: "review accepted; waiting for authorised plan approval, not another plan revision" };
+  }
   if (task.status === "Review") {
     return {
       state: "waiting_review",

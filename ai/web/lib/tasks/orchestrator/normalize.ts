@@ -113,6 +113,8 @@ const ACTION_TO_INTENT: ReadonlyMap<WorkflowPublicAction, TaskWorkflowIntent> = 
   ["approve_plan", "approve_plan"],
   ["submit_plan", "submit_plan"],
   ["request_plan_changes", "request_plan_changes"],
+  ["accept_plan_review", "accept_plan_review"],
+  ["delegate_plan_approval", "delegate_plan_approval"],
   ["assign_task", "assign_task"],
   ["assign_after_plan_approval", "assign_task"],
   ["add_subtask", "add_subtask"],
@@ -283,6 +285,8 @@ function buildPayload(
     }
 
     // --- approve_plan ---
+    case "accept_plan_review":
+    case "delegate_plan_approval":
     case "approve_plan": {
       const actionPlanId = ctx.actionPlanId;
       if (!actionPlanId) return fail("invalid_payload", "actionPlanId is required");

@@ -154,6 +154,10 @@ export interface TaskContextResponse {
     status: string;
     summary: string;
     approvedOn: string | null;
+    reviewedAt?: string | null;
+    reviewedById?: string | null;
+    delegatedApproverId?: string | null;
+    delegatedById?: string | null;
     approvedById: string | null;
     steps: Array<{
       id: string;
@@ -280,6 +284,7 @@ export async function buildTaskContextJson(
         select: {
           id: true, version: true, status: true, summary: true,
           approvedOn: true, approvedById: true,
+          reviewedAt: true, reviewedById: true, delegatedApproverId: true, delegatedById: true,
           steps: {
             orderBy: { rank: "asc" },
             select: {
@@ -466,6 +471,7 @@ export async function buildTaskContextJson(
     actionPlan: task.actionPlan
       ? {
           ...task.actionPlan,
+          reviewedAt: task.actionPlan.reviewedAt?.toISOString() ?? null,
           approvedOn: task.actionPlan.approvedOn?.toISOString() ?? null,
           steps: task.actionPlan.steps.map((step) => ({
             ...step,

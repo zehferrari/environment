@@ -17,6 +17,7 @@
 // effects. The decision says WHAT should happen; the procedure engine says
 // HOW it happens in ordered, replay-safe steps.
 
+import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import type {
   OrchestrationDecision,
   TaskStateSnapshot,
@@ -170,6 +171,18 @@ export function decideCommand(
       };
     }
 
+    case "accept_plan_review":
+    case "delegate_plan_approval": {
+      const effects: WorkflowEffect[] = [{ type: "board_touch", key: command.intent, payload: {} }];
+      const reviewerId = resolveReviewOwnerId(state);
+      if (command.intent === "delegate_plan_approval" && reviewerId) effects.push({
+        type: "task_notification", key: `delegated-plan:${reviewerId}:${command.payload!.actionPlanId}:${command.payload!.actionPlanVersion}`,
+        payload: { taskId: state.id, targetUserId: reviewerId, actor: command.actor, reason: "action_plan_review_requested",
+          body: "The reporter delegated approval of this plan revision to you. Review the current plan and approve it if acceptable; do not request resubmission for a new capability." },
+      });
+      return { fromStatus: state.status, toStatus: state.status, kernelIntent: "operator_override", cycleOperation: "none", effects,
+        evidence: { ...command.evidence ?? {}, decisionActorId, executorActorId }, decisionActorId, executorActorId };
+    }
     case "request_plan_changes": {
       // Stays in Backlog/To Do. No transition; the decision is recorded as
       // an outbox effect (a feedback notification to the assignee) and an

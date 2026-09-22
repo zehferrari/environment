@@ -12,6 +12,7 @@ export type BrowserPlanApprovalResult =
  * is never retried through the legacy transaction.
  */
 export async function submitBrowserPlanApproval(args: {
+  delegate?: boolean;
   actor: Viewer;
   taskId: string;
   actionPlanId: string;
@@ -28,7 +29,7 @@ export async function submitBrowserPlanApproval(args: {
 
   const result = await submitWorkflowCommand({
     taskId: args.taskId,
-    intent: "approve_plan",
+    intent: args.delegate ? "delegate_plan_approval" : "approve_plan",
     actor: {
       id: args.actor.id,
       kind: "human",
@@ -38,7 +39,7 @@ export async function submitBrowserPlanApproval(args: {
     workflowCycleId: null,
     source: "browser",
     idempotencyKey: [
-      "browser-plan-approval",
+      args.delegate ? "browser-plan-delegation" : "browser-plan-approval",
       args.actor.id,
       args.taskId,
       `v${args.expectedWorkflowVersion}`,

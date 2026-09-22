@@ -175,7 +175,7 @@ export async function persistActionPlan(args: {
   // Check for existing plan (idempotent — replace if exists and unapproved)
   const existing = await client.actionPlan.findUnique({
     where: { taskId: args.taskId },
-    select: { id: true, approvedOn: true, version: true },
+    select: { id: true, approvedOn: true, version: true, contentHash: true, status: true },
   });
   // Task.approvedOn is the executable approval gate. ActionPlan.approvedOn is
   // its denormalized projection. A repair/reopen transition deliberately
@@ -217,6 +217,11 @@ export async function persistActionPlan(args: {
 
   const version = (existing?.version ?? 0) + 1;
   const contentHash = createHash("sha256").update(JSON.stringify({ summary, steps })).digest("hex");
+  if (existing?.contentHash === contentHash && !existing.approvedOn) {
+    if (existing.status === "revision_required") throw new Error("The requested plan corrections must be addressed before resubmission; unchanged content is not a new revision.");
+    const unchanged = await client.actionPlan.findUniqueOrThrow({ where: { id: existing.id }, include: { steps: { orderBy: { rank: "asc" } } } });
+    return { ...unchanged, steps: unchanged.steps.map((step) => ({ ...step, acceptanceCriteria: parseAcceptanceCriteria(step.acceptanceCriteria) })) };
+  }
   const stepRows = steps.map((step, index) => ({
     stepId: step.id,
     title: step.title,
@@ -254,6 +259,7 @@ export async function persistActionPlan(args: {
           contentHash,
           approvedOn: null,
           approvedById: null,
+          reviewedAt: null, reviewedById: null, delegatedApproverId: null, delegatedById: null,
           steps: { create: stepRows },
         },
         include: { steps: { orderBy: { rank: "asc" } } },

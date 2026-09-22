@@ -204,6 +204,7 @@ async function getRawCachedTaskDetailShell(taskId: string) {
           select: {
             id: true,
             summary: true,
+            reviewedAt: true, reviewedById: true, delegatedApproverId: true, delegatedById: true,
             version: true,
             status: true,
             approvedOn: true,

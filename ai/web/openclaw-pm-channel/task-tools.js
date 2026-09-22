@@ -1,3 +1,4 @@
+import { uploadPmTaskAttachment } from "./task-attachments.js";
 import { nativeTaskToolsSupported } from "./task-backend.js";
 
 // Native tools are bound to one authenticated ingress generation, never tool arguments.
@@ -12,6 +13,8 @@ const plan = object({ summary: string, steps: { type: "array", minItems: 1, maxI
 export const PM_TASK_TOOL_DEFINITIONS = {
   context: ["Read current task, plan, checklist, or history only when a named fact is missing.", object({ section: { type: "string", enum: ["current", "plan", "history"] } })],
   submit_plan: ["Submit or revise the structured Action Plan. Finish this turn after acceptance.", object({ actionPlan: plan }, ["actionPlan"])],
+  accept_plan_review: ["Accept this plan without authorising execution; wait for reporter approval. Do not request changes when the plan is acceptable.", object(comment)],
+  attach_file: ["Upload an existing deliverable file to this task. Returns the stored attachment id; uploading does not complete the task.", object({ path: string }, ["path"])],
   approve_plan: ["Approve the current plan as the authorized reviewer; PM prepares the worktree.", object({ constraints: string })],
   request_plan_changes: ["Return the current Action Plan for one consolidated revision, with exact feedback.", object(comment, ["comment"])],
   review_feedback: ["Request specific changes to the reviewed implementation.", object(comment, ["comment"])],
@@ -55,7 +58,7 @@ function redact(value, runtime) {
   return JSON.parse(text);
 }
 
-export function createTaskTools({ context, findTurn, fetchImpl = fetch }) {
+export function createTaskTools({ context, findTurn, loadMedia, fetchImpl = fetch }) {
   if (context.messageChannel !== "pm" || !context.sessionKey) return null;
   const turn = findTurn(context.sessionKey);
   if (!turn || turn.abortedAt || turn.completedAction) return null;
@@ -72,9 +75,14 @@ export function createTaskTools({ context, findTurn, fetchImpl = fetch }) {
         if (current !== turn || current.acceptedId !== generation || current.abortedAt || current.completedAction) throw new Error("PM turn was replaced, canceled or completed; no action was sent.");
         if (!args || typeof args !== "object" || Array.isArray(args) || Object.keys(args).some((key) => !(Object.hasOwn(parameters.properties, key)))) throw new Error("Invalid PM tool arguments; task identity and credentials are supplied by the runtime.");
         if (parameters.required.some((key) => args[key] === undefined)) throw new Error("A required PM tool argument is missing.");
+        if (action === "attach_file") {
+          if (!loadMedia || typeof args.path !== "string" || !args.path.startsWith("/")) throw new Error("Provide an absolute path to the deliverable.");
+          const attachment = await uploadPmTaskAttachment({ turn, findTurn: () => findTurn(context.sessionKey), mediaUrl: args.path, loadMedia, fetchImpl });
+          return { content: [{ type: "text", text: JSON.stringify({ ok: true, attachment }) }] };
+        }
         const url = new URL(action === "context" ? runtime.contextUrl : runtime.workflowUrl);
         if (action === "context" && args.section === "history") url.searchParams.set("history", "full");
-        const planDecision = ["approve_plan", "request_plan_changes"].includes(action);
+        const planDecision = ["approve_plan", "request_plan_changes", "accept_plan_review"].includes(action);
         if (planDecision && !reviewedPlan) throw new Error("Read the current plan with pm_context section=plan before deciding.");
         const planEvidence = planDecision ? { actionPlanId: reviewedPlan.id, actionPlanVersion: reviewedPlan.version } : {};
         let response;

@@ -69,6 +69,9 @@ export async function POST(
     return error("Task grant is no longer authorized", 403);
   }
 
+  const run = await db.pmChannelRun.findFirst({ where: { taskId, agentSlug: grantAgentSlug, messageId }, orderBy: { createdAt: "desc" }, select: { status: true } });
+  if (!run || !["admitted", "streaming", "accepted"].includes(run.status)) return error("Attachment grant is not bound to an active run", 409);
+
   const [agent, task] = await Promise.all([
     db.agent.findUnique({
       where: { slug: grantAgentSlug },

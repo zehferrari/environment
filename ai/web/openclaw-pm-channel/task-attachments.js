@@ -2,7 +2,7 @@
 export async function uploadPmTaskAttachment({ turn, findTurn, mediaUrl, loadMedia, fetchImpl = fetch }) {
   const assertCurrent = () => {
     if (!turn || findTurn() !== turn || turn.abortedAt || turn.completedAction) throw new Error("PM attachment turn is no longer active");
-    if (!turn.taskRuntime || turn.replyTarget?.kind !== "task-comment" || turn.taskRuntime.taskId !== turn.replyTarget.taskId || turn.taskRuntime.messageId !== turn.replyTarget.messageId) throw new Error("PM attachments require an active scoped task turn");
+    if (!turn.taskRuntime || !["task-chat", "task-comment"].includes(turn.replyTarget?.kind) || turn.taskRuntime.taskId !== turn.replyTarget.taskId || turn.taskRuntime.messageId !== turn.replyTarget.messageId) throw new Error("PM attachments require an active scoped task turn");
   };
   assertCurrent();
   const grant = turn.taskRuntime;

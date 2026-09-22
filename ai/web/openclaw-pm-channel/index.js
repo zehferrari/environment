@@ -1229,6 +1229,7 @@ export default defineChannelPluginEntry({
     api.on("llm_output", telemetry.output);
     api.registerTool((context) => createTaskTools({
       context,
+      loadMedia: (url) => getPmRuntime().media.loadWebMedia(url, buildOutboundMediaLoadOptions({ cfg: api.config, maxBytes: 10 * 1024 * 1024, optimizeImages: false })),
       findTurn: (key) => [...activeTurns.values()].find((turn) => turn.canonicalSessionKey === key),
     }), { names: PM_TASK_TOOL_NAMES });
     api.registerHttpRoute({

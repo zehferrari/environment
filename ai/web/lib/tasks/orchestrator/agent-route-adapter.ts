@@ -292,6 +292,15 @@ export async function submitAuthoritativeAgentWorkflowAction(args: {
     agentSlug: args.agent.slug,
     messageId: args.messageId,
   });
+  const idempotencyKey = `${args.action}:${args.messageId}:${createHash("sha256").update(canonicalize(rawBody)).digest("hex").slice(0, 16)}`;
+  // The browser/agent request has no workflow version: this adapter supplies it.
+  // An exact approval retry must reuse the original server snapshot rather than
+  // fingerprinting the version advanced by that same successful approval.
+  // The orchestrator still verifies the complete fingerprint and actor.
+  const priorPlanReceipt = ["approve_plan", "accept_plan_review", "request_plan_changes"].includes(args.action)
+    ? await db.taskWorkflowCommandReceipt.findUnique({ where: { taskId_idempotencyKey: { taskId: args.taskId, idempotencyKey } }, select: { actorUserId: true, expectedWorkflowVersion: true, workflowCycleId: true } })
+    : null;
+  const replaySnapshot = priorPlanReceipt?.actorUserId === args.agent.id ? priorPlanReceipt : null;
   const normalized = normalizePublicAction(args.action, rawBody, {
     taskId: args.taskId,
     actorId: args.agent.id,
@@ -305,9 +314,9 @@ export async function submitAuthoritativeAgentWorkflowAction(args: {
       reporterId: aggregate.reporterId,
     }),
     actorCodingCapability: args.agent.registryRole === "coding",
-    expectedWorkflowVersion: aggregate.workflowVersion,
-    workflowCycleId: aggregate.activeWorkflowCycleId,
-    idempotencyKey: `${args.action}:${args.messageId}:${createHash("sha256").update(canonicalize(rawBody)).digest("hex").slice(0, 16)}`,
+    expectedWorkflowVersion: replaySnapshot?.expectedWorkflowVersion ?? aggregate.workflowVersion,
+    workflowCycleId: replaySnapshot ? replaySnapshot.workflowCycleId : aggregate.activeWorkflowCycleId,
+    idempotencyKey,
     messageId: args.messageId,
     source: "agent",
     // Native tools bind the revision actually shown to the reviewer. The

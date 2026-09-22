@@ -28,3 +28,20 @@ turn.taskRuntime.workflowUrl = "http://127.0.0.1:3000/api/agent/tasks/t/workflow
 turn.completedAction = "ready_for_review";
 await assert.rejects(uploadPmTaskAttachment(args), /no longer active/);
 console.log("PASS: attachment bytes, task grant, generation fencing, explicit upload failure, size limit and local endpoint policy");
+
+// Both task surfaces share the native upload tool; no credential enters its schema.
+const { createTaskTools } = await import('../openclaw-pm-channel/task-tools.js');
+delete turn.completedAction;
+turn.replyTarget.kind = 'task-chat';
+turn.replyTarget.agentSlug = 'worker';
+Object.assign(turn.taskRuntime, { version: 1, agentSlug: 'worker', actions: ['attach_file'], contextUrl: 'http://127.0.0.1:3000/api/agents/context/task/t?grant=private' });
+turn.acceptedId = 'generation-1';
+const [upload] = createTaskTools({ context: { messageChannel: 'pm', sessionKey: 's' }, findTurn: () => current, loadMedia: args.loadMedia, fetchImpl: args.fetchImpl });
+const saved = await upload.execute('upload-1', { path: '/workspace/audit.csv' });
+assert.equal(JSON.parse(saved.content[0].text).attachment.id, 'saved');
+assert.equal(turn.completedAction, undefined, 'upload does not finish implementation');
+await assert.rejects(upload.execute('upload-2', { path: '/workspace/audit.csv', token: 'injected' }), /Invalid PM tool arguments/);
+await assert.rejects(upload.execute('upload-3', { path: 'https://example.com/file' }), /absolute path/);
+current = null;
+await assert.rejects(upload.execute('upload-4', { path: '/workspace/audit.csv' }), /replaced/);
+console.log('PASS native attachment tool on task-chat: scoped upload, safe arguments and generation fence');

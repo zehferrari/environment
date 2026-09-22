@@ -66,6 +66,9 @@ export function executionStateForWorkflowAction(
       reasonDetail: "the assignee flagged a blocker and is waiting on a decision",
     };
   }
+  if (input.action === "accept_plan_review") {
+    return { state: "waiting_review", reasonCode: "awaiting_plan_approval", reasonDetail: "review accepted; waiting for authorised plan approval" };
+  }
   if (input.status === "Review") {
     return {
       state: "waiting_review",

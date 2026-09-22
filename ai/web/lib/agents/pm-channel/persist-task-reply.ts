@@ -298,24 +298,6 @@ export async function persistTaskReply(
           "Review the plan in Action Plan. If it is acceptable, call the workflow endpoint with action=approve_plan. If it needs changes, reply in Action Plan with concise feedback.",
         ].join("\n"),
       });
-    } else if (
-      task &&
-      !task.approvedOn &&
-      reviewerId === agentUser.id &&
-      task.assigneeId &&
-      task.assigneeId !== agentUser.id &&
-      (task.status === "Backlog" || task.status === "To Do")
-    ) {
-      await sendTaskWorkflowNotification({
-        taskId: task.id,
-        targetUserId: task.assigneeId,
-        actor: { id: agentUser.id, kind: "agent", username: target.agentSlug },
-        reason: "action_plan_feedback_received",
-        body: [
-          `@${target.agentSlug} reviewed your Action Plan for "${task.title}" and requested changes.`,
-          "Read the latest Action Plan feedback now, submit one revised structured implementation plan, and wait for approval. Do not start implementation.",
-        ].join("\n"),
-      });
     }
   }
 

@@ -529,7 +529,7 @@ export async function runPmChannelJob(job: NonNullable<Awaited<ReturnType<typeof
   });
   // The run may have been superseded after this worker claimed its job. Never
   // dispatch a terminal or already-accepted generation a second time.
-  if (!currentRun || currentRun.status !== "queued") {
+  if (!currentRun || !["queued", "waiting_capacity"].includes(currentRun.status)) {
     await settleTerminalRunPmChannelJobs();
     return { ok: true, status: 200, driver: "openclaw-pm-channel" } satisfies SendPmChannelTurnResult;
   }
@@ -603,6 +603,7 @@ export async function runPmChannelJob(job: NonNullable<Awaited<ReturnType<typeof
           claimedBy: null,
           claimedAt: null,
           lastError: `agent_capacity: blocked by run ${laneResult.blockedByRunId}`,
+          attemptCount: { decrement: 1 },
         },
       }),
       db.pmChannelRun.update({

@@ -85,6 +85,8 @@ const INTENT_PUBLIC_ACTIONS: Readonly<
 > = {
   submit_plan: ["submit_plan"],
   request_plan_changes: ["request_plan_changes"],
+  accept_plan_review: ["accept_plan_review"],
+  delegate_plan_approval: ["delegate_plan_approval"],
   approve_plan: ["approve_plan"],
   start_implementation: ["start"],
   checkpoint: ["checkpoint"],

@@ -135,6 +135,10 @@ export type TaskAggregate = TaskStateSnapshot & {
     authorId: string | null;
     sourceRunId: string | null;
     sourceMessageId: string | null;
+    reviewedAt?: Date | null;
+    reviewedById?: string | null;
+    delegatedApproverId?: string | null;
+    delegatedById?: string | null;
     contentHash: string;
     steps: Array<{
       id: string;
@@ -367,6 +371,7 @@ async function loadTaskAggregateWithClient(
           authorId: true,
           sourceRunId: true,
           sourceMessageId: true,
+          reviewedAt: true, reviewedById: true, delegatedApproverId: true, delegatedById: true,
           contentHash: true,
           steps: {
             select: {
@@ -685,6 +690,8 @@ async function loadTaskAggregateWithClient(
           authorId: task.actionPlan.authorId,
           sourceRunId: task.actionPlan.sourceRunId,
           sourceMessageId: task.actionPlan.sourceMessageId,
+          reviewedAt: task.actionPlan.reviewedAt, reviewedById: task.actionPlan.reviewedById,
+          delegatedApproverId: task.actionPlan.delegatedApproverId, delegatedById: task.actionPlan.delegatedById,
           contentHash: task.actionPlan.contentHash,
           steps: task.actionPlan.steps.map((s) => ({
             id: s.id,

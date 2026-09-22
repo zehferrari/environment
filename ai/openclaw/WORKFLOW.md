@@ -266,6 +266,15 @@ they approve with `approve_plan` and a concise note explaining why the
 plan is acceptable or naming any constraints; approval stamps
 `approved_on` and `approved_by`.
 
+If project policy reserves approval for the reporter, the reviewer can still
+request required corrections. When the plan is acceptable, record
+`accept_plan_review` (`pm_accept_plan_review`) and stop. PM shows “Review
+accepted — awaiting reporter approval”; do not request resubmission to obtain
+another capability. Only the authenticated reporter can delegate approval of
+the current revision using the Action Plan button. A changed revision revokes
+that delegation and the prior review acceptance. Chat permission is not a
+recorded delegation. Ordinary reviewer replies never trigger plan revisions.
+
 Approval stamps `approved_on` and `approved_by` on the task. Only an
 approved `To Do` task can move to `In Progress`. Do not start
 implementation before the plan is approved unless zeh explicitly

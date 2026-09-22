@@ -95,7 +95,7 @@ export function guardNoApprovedPlan(
 // when an actionPlan IS present but has an invalid status or no steps.
 export function guardPlanEvidence(
   state: TaskStateSnapshot,
-  intent: "approve_plan" | "request_plan_changes",
+  intent: "approve_plan" | "request_plan_changes" | "accept_plan_review" | "delegate_plan_approval",
 ): GuardResult {
   const plan = state.actionPlan;
   if (!plan) return { ok: true }; // undefined or null — no plan loaded
@@ -531,6 +531,8 @@ export function runGuards(
         guardNoApprovedPlan(state, command.intent),
       ]);
 
+    case "accept_plan_review":
+    case "delegate_plan_approval":
     case "approve_plan":
       // §10.2: status Backlog/To Do, plan evidence (draft, ≥1 step)
       return runGuardsChain([

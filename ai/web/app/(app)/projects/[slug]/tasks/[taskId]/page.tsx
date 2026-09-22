@@ -38,6 +38,7 @@ import {
   isActionableEpicStatus,
 } from "@/lib/tasks/workflow-actors";
 import { getTaskGitChanges, getTaskGitFileDiff } from "@/lib/tasks/git-changes";
+import { canApproveActionPlanForActor, resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { submitBrowserPlanApproval } from "@/lib/tasks/orchestrator/browser-plan-adapter";
 import { getBrowserTaskWorkflowActions } from "@/lib/tasks/orchestrator/browser-review-adapter";
 import { effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
@@ -187,12 +188,16 @@ async function approveTaskActionPlan(formData: FormData) {
       : "Only the latest submitted Action Plan revision can be approved.");
   }
 
+  if (String(formData.get("actionPlanId")) !== task.actionPlan.id || Number(formData.get("actionPlanVersion")) !== task.actionPlan.version) {
+    throw new Error("The Action Plan changed. Refresh before approving or delegating.");
+  }
   const approved = await submitBrowserPlanApproval({
     actor,
     taskId: task.id,
     actionPlanId: task.actionPlan.id,
     actionPlanVersion: task.actionPlan.version,
     expectedWorkflowVersion: task.workflowVersion,
+    delegate: formData.get("decision") === "delegate",
   });
   if (!approved.ok) throw new Error(approved.message);
 
@@ -1282,6 +1287,7 @@ export default async function TaskDetailPage({
     ?? "";
   const canApproveActionPlan =
     viewer.canAccessOwnerFeatures &&
+    canApproveActionPlanForActor(task, viewer.id) &&
     !task.approvedOn &&
     task.actionPlan?.status === "draft";
   const doneActivity = allActivity.find((row) =>
@@ -1939,10 +1945,20 @@ export default async function TaskDetailPage({
                       </div>
                     </article>
                   ) : null}
+                  {!task.approvedOn && task.actionPlan?.reviewedAt ? (
+                    <p role="status" className="text-caption text-text-muted">Review accepted — awaiting {task.actionPlan.delegatedApproverId === resolveReviewOwnerId(task) ? "delegated reviewer" : "reporter"} approval. No plan revision is needed.</p>
+                  ) : null}
                   {canApproveActionPlan ? (
-                    <form action={approveTaskActionPlan} className="flex justify-end">
+                    <form action={approveTaskActionPlan} className="flex justify-end gap-3">
                       <input type="hidden" name="taskId" value={task.id} />
                       <input type="hidden" name="projectSlug" value={slug} />
+                      <input type="hidden" name="actionPlanId" value={task.actionPlan!.id} />
+                      <input type="hidden" name="actionPlanVersion" value={task.actionPlan!.version} />
+                      {viewer.id === task.reporterId && resolveReviewOwnerId(task) && resolveReviewOwnerId(task) !== viewer.id ? (
+                        <button type="submit" name="decision" value="delegate" className="rounded-lg border border-line px-control-x py-control-y text-caption">
+                          Delegate this revision to reviewer
+                        </button>
+                      ) : null}
                       <button
                         type="submit"
                         className="rounded-lg bg-accent px-control-x py-control-y text-caption font-medium text-bg hover:opacity-90"

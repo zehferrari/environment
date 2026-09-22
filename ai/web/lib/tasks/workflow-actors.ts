@@ -1,11 +1,12 @@
 export type ReviewOwnerTask = {
+  actionPlan?: { delegatedApproverId?: string | null; delegatedById?: string | null } | null;
   actingManagerId: string | null;
   reporterId: string | null;
   project?: {
     onlyReportersCanApproveActionPlans?: boolean;
     onlyReportersCanSetTasksDone?: boolean;
   } | null;
-  epic: {
+  epic?: {
     status: string;
     actingManagerId: string | null;
   } | null;
@@ -54,6 +55,8 @@ export function canApproveActionPlanForActor(
   task: ReviewOwnerTask,
   actorId: string,
 ): boolean {
+  if (task.actionPlan?.delegatedById === task.reporterId && task.reporterId
+      && task.actionPlan?.delegatedApproverId === actorId && actorId === resolveReviewOwnerId(task)) return true;
   if (task.project?.onlyReportersCanApproveActionPlans) {
     return actorId === task.reporterId;
   }

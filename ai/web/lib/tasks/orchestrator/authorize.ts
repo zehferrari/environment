@@ -411,12 +411,22 @@ export function authorizeCommand(
       };
     }
 
-    case "approve_plan":
+    case "delegate_plan_approval": {
+      const allowed = actor.kind === "human" && actor.id === state.reporterId
+        && Boolean(resolveReviewOwnerId(state)) && resolveReviewOwnerId(state) !== actor.id;
+      return { allowed, reason: allowed ? "ok" : "not_authorized_for_plan", decisionActorId: allowed ? actor.id : null, executorActorId: null };
+    }
+    case "accept_plan_review":
     case "request_plan_changes": {
+      const allowed = actor.id === resolveReviewOwnerId(state) || actor.id === state.reporterId;
+      return { allowed, reason: allowed ? "ok" : "not_authorized_for_plan", decisionActorId: allowed ? actor.id : null, executorActorId: null };
+    }
+    case "approve_plan": {
       // Delegate to canonical workflow-actors.canApproveActionPlanForActor.
       if (
         !canApproveActionPlanForActor(
           {
+            actionPlan: state.actionPlan,
             actingManagerId: state.actingManagerId,
             reporterId: state.reporterId,
             project: state.project,

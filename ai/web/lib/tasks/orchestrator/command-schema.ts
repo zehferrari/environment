@@ -720,6 +720,8 @@ export function validateCommandPayload(
 
   switch (intent) {
     case "submit_plan": return validateSubmitPlan(raw);
+    case "accept_plan_review":
+    case "delegate_plan_approval":
     case "approve_plan": return validateApprovePlan(raw);
     case "request_plan_changes": return validateRequestPlanChanges(raw);
     case "start_implementation": return validateStartImplementation(raw);

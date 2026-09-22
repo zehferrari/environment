@@ -1,8 +1,10 @@
 # Compact PM task runtime
 
-Deployment note (10 September): live PM remains on `main` at `bb4a0cd`, and
-plugin files are 0.1.3. The 0.1.4 backend-aware changes below are pending merge
-and promotion. The activation table records the original 8 September rollout.
+Current change (22 September): PM channel 0.1.10 adds explicit plan-review
+acceptance and scoped native attachment upload. Required-attachment coding
+tasks now use compact context. The historical activation table below records
+the original 8 September rollout, not the current plugin version. See the
+[WDT-9 audit](audits/wdt-9-planning-workflow-2026-09-22.md) for validation and deployment.
 
 Enabled on **thinkpad on 2026-09-08**, after the workflow changes were merged
 and deployed from `main` at commit `998dae4`. The live website and consumer use
@@ -43,10 +45,11 @@ the workflow route rejecting a run in the legitimate `admitted` state.
 ## Scope and contracts
 
 The enabled compact path covers PM-owned task notifications to coding agents
-without an attachment-required review gate. Direct owner chats, interactive work-item
-proposals, Epics, general/artifact agents and attachment-required tasks retain
-their existing interaction contract. Native attachment upload and project-wide
-proposal tools are not part of this rollout.
+including attachment-required tasks. Direct owner chats, interactive work-item
+proposals, Epics and general-role agents retain their existing interaction
+contract. Native `pm_attach_file` uploads an existing local deliverable under
+the current run grant; the CLI contract supplies the corresponding multipart
+HTTP operation. Project-wide proposal tools remain outside this runtime.
 
 The prompt is an enqueue-time snapshot, not lasting authority. The API rechecks
 origin, task access, current role, workflow state and execution fences for every

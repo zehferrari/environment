@@ -97,7 +97,7 @@ export async function loadWatchdogSnapshot(
   const taskRows = await db.task.findMany({
     where: {
       deletedAt: null,
-      status: { in: ["To Do", "In Progress", "Review"] },
+      status: { in: ["Backlog", "To Do", "In Progress", "Review"] },
       ...(options.projectId ? { projectId: options.projectId } : {}),
     },
     take,
@@ -108,7 +108,7 @@ export async function loadWatchdogSnapshot(
       statusChangedAt: true,
       approvedOn: true,
       assignee: { select: { agent: { select: { slug: true } } } },
-      actionPlan: { select: { id: true } },
+      actionPlan: { select: { id: true, version: true, status: true, reviewedAt: true } },
       checklist: {
         where: { kind: "implementation", completedAt: null },
         select: { id: true },
@@ -209,6 +209,9 @@ export async function loadWatchdogSnapshot(
       statusChangedAt: ms(task.statusChangedAt),
       approvedOn: ms(task.approvedOn),
       hasActionPlan: Boolean(task.actionPlan),
+      planVersion: task.actionPlan?.version ?? 0,
+      planReviewAccepted: Boolean(task.actionPlan?.reviewedAt),
+      planStatus: task.actionPlan?.status ?? null,
       openChecklistCount: task.checklist.length,
       activeBlocker: blocker
         ? {

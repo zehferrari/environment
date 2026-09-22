@@ -1047,6 +1047,10 @@ model SubTask {
 // ------------------------------------------------------------------
 
 model ActionPlan {
+  reviewedAt      DateTime?
+  reviewedById    String?
+  delegatedApproverId String?
+  delegatedById   String?
   id              String               @id @default(cuid())
   taskId          String               @unique
   task            Task                 @relation(fields: [taskId], references: [id], onDelete: Cascade)
