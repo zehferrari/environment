@@ -119,6 +119,24 @@ PUBLIC_DEV_HEALTH_URL = "https://dev.vixi.au/webhooks/health"
 PUBLIC_DEV_HEALTH_UA = "Mozilla/5.0"
 WATCH_EXPIRY_WARN_HOURS = 24
 MODEL_AUTH_REFRESH_WARN_SECONDS = 7 * 24 * 60 * 60
+# Model-login results use one parseable shape so ai-monitor can route them
+# deterministically instead of through its LLM judge:
+#   [FAIL|WARN|OK] <user>: model-auth <provider>: <detail>
+# Access tokens are short-lived and renewed by their owner (OpenClaw, Codex CLI
+# or Claude CLI) on next use, so an expired access token is never a failure on
+# its own. Alert only when renewal is impossible, due, or observed failing.
+MODEL_AUTH_LOG_WINDOW = "-15min"
+# (pattern, provider when the line does not name one)
+MODEL_AUTH_FAILURE_PATTERNS = (
+    # OpenClaw's own OAuth refresh (e.g. a rotated/reused OpenAI refresh token).
+    (re.compile(r"OAuth token refresh failed for (?P<provider>[\w.-]+)"), None),
+    # A model candidate rejected for authentication. `reason=auth-unknown`
+    # (CLI session-history boundary noise) is deliberately not matched.
+    (re.compile(r"\[model-fallback/decision\].*\bcandidate=(?P<provider>[\w.-]+)/\S+\s+reason=auth(?=\s|$)"), None),
+    (re.compile(r"cli terminal failure: provider=(?P<provider>[\w.-]+)\b.*\berror=Failed to authenticate"), None),
+    # Codex CLI (user-scoped Codex home) refresh failure.
+    (re.compile(r"Your access token could not be refreshed"), "openai"),
+)
 OPENCLAW_BINARY = "/usr/local/bin/openclaw"
 RUNUSER_BINARY = "/usr/sbin/runuser"
 REMEDIATION_ENABLED = True  # Auto-restart failed services
@@ -550,10 +568,54 @@ def model_providers_in_use(status):
     }
 
 
-def check_native_claude_auth(user, home):
+def model_auth_emit(level, user, provider, detail):
+    emit(level, f"{user}: model-auth {provider}: {detail}")
+
+
+def model_auth_runtimes(auth):
+    """Map provider -> runtimes from `models status` (e.g. anthropic -> claude-cli)."""
+    runtimes = {}
+    for route in auth.get("runtimeAuthRoutes") or []:
+        if isinstance(route, dict) and route.get("provider"):
+            runtimes.setdefault(route["provider"], set()).add(route.get("runtime"))
+    return runtimes
+
+
+def uses_claude_cli(provider, runtimes):
+    return provider == "claude-cli" or "claude-cli" in runtimes.get(provider, set())
+
+
+def codex_uses_user_home(openclaw_cfg):
+    """True when the Codex harness runs on the agent's own ~/.codex login.
+
+    With `appServer.homeScope: "user"` OpenClaw does not inject its stored
+    OpenAI profile into Codex, yet `openclaw models status` still reports the
+    stored profile as the route — so that status is not the runtime truth.
+    """
+    entries = (((openclaw_cfg or {}).get("plugins") or {}).get("entries") or {})
+    codex = entries.get("codex") or {}
+    if codex.get("enabled") is False:
+        return False
+    app_server = (codex.get("config") or {}).get("appServer") or {}
+    return app_server.get("homeScope") == "user"
+
+
+def model_auth_fix(user, provider, runtimes, codex_user_home):
+    """The one command a human runs to restore this login."""
+    if uses_claude_cli(provider, runtimes):
+        return (
+            f"as {user}: `claude auth login`, then "
+            "`openclaw models auth login --provider anthropic --method cli --force`"
+        )
+    if provider == "openai" and codex_user_home:
+        return f"as {user}: `codex login --device-auth`"
+    return f"as {user}: `openclaw models auth login --provider {provider}`"
+
+
+def check_native_claude_auth(user, home, provider, fix):
     claude_binary = Path(home) / ".local" / "bin" / "claude"
     if not claude_binary.exists():
-        emit("FAIL", f"{user}: claude-cli is in the active model chain but {claude_binary} is missing")
+        model_auth_emit("FAIL", user, provider, f"claude-cli is in the active model chain but {claude_binary} is missing")
         return False
 
     rc, out, _err = run_as_user(
@@ -564,27 +626,23 @@ def check_native_claude_auth(user, home):
     )
     native_status = json_object_with_key(out, "loggedIn") if rc == 0 else None
     if not native_status or native_status.get("loggedIn") is not True:
-        emit(
-            "FAIL",
-            f"{user}: Claude CLI login is unavailable — run `claude auth login`, then "
-            "`openclaw models auth login --provider anthropic --method cli --force`",
-        )
+        model_auth_emit("FAIL", user, provider, f"Claude CLI login is unavailable. Fix: {fix}")
         return False
 
     credential_path = Path(home) / ".claude" / ".credentials.json"
     try:
         oauth = (load_json_file(credential_path) or {}).get("claudeAiOauth") or {}
     except Exception as exc:
-        emit("FAIL", f"{user}: unable to inspect Claude renewal metadata ({trim(str(exc))})")
+        model_auth_emit("FAIL", user, provider, f"unable to inspect Claude renewal metadata ({trim(str(exc))})")
         return False
 
     if not (oauth.get("refreshToken") or "").strip():
-        emit("FAIL", f"{user}: Claude CLI is logged in but has no renewable refresh token")
+        model_auth_emit("FAIL", user, provider, f"Claude CLI is logged in but has no renewable refresh token. Fix: {fix}")
         return False
 
     refresh_expires_ms = oauth.get("refreshTokenExpiresAt")
     if not refresh_expires_ms:
-        emit("WARN", f"{user}: Claude CLI refresh token has no recorded expiry")
+        model_auth_emit("OK", user, provider, "Claude CLI login is renewable (refresh token has no recorded expiry)")
         return True
     try:
         refresh_expires = datetime.fromtimestamp(
@@ -592,35 +650,146 @@ def check_native_claude_auth(user, home):
             timezone.utc,
         )
     except Exception:
-        emit("FAIL", f"{user}: Claude CLI refresh-token expiry is invalid")
+        model_auth_emit("FAIL", user, provider, "Claude CLI refresh-token expiry is invalid")
         return False
 
     remaining = (refresh_expires - datetime.now(timezone.utc)).total_seconds()
     if remaining <= 0:
-        emit("FAIL", f"{user}: Claude CLI refresh token expired — browser re-authentication is required")
+        model_auth_emit(
+            "FAIL", user, provider,
+            f"Claude CLI refresh token expired at {refresh_expires.isoformat()}; browser re-authentication is required. Fix: {fix}",
+        )
         return False
     if remaining <= MODEL_AUTH_REFRESH_WARN_SECONDS:
-        emit(
-            "WARN",
-            f"{user}: Claude CLI refresh token expires in {remaining / 86400:.1f}d "
-            f"({refresh_expires.isoformat()}) — renew before it lapses",
+        model_auth_emit(
+            "WARN", user, provider,
+            f"Claude CLI refresh token expires in {remaining / 86400:.1f}d "
+            f"({refresh_expires.isoformat()}) and cannot renew itself. Fix before then: {fix}",
         )
         return True
 
-    emit(
-        "OK",
-        f"{user}: Claude CLI login is renewable; refresh credential valid for "
+    model_auth_emit(
+        "OK", user, provider,
+        f"Claude CLI login is renewable; refresh credential valid for "
         f"{remaining / 86400:.1f}d ({refresh_expires.isoformat()})",
     )
     return True
 
 
-def check_model_auth(user, home):
-    """Inspect the current SQLite-backed auth store and native CLI routes.
+def check_codex_cli_auth(user, home, fix):
+    """Renewability of the user-scoped Codex CLI login (~/.codex/auth.json).
 
-    The former check read only `auth.json`, which OpenClaw no longer uses. It
-    therefore reported a healthy-looking "no auth file" while an active
-    claude-cli profile had been expired for weeks.
+    ChatGPT refresh tokens carry no recorded expiry and rotate on every
+    refresh, so the only static signal is whether one is present; a dead one
+    is caught by check_model_auth_failures when Codex tries to use it.
+    """
+    auth_path = Path(home) / ".codex" / "auth.json"
+    try:
+        auth = load_json_file(auth_path) or {}
+    except FileNotFoundError:
+        model_auth_emit("FAIL", user, "openai", f"Codex CLI has no login ({auth_path} missing). Fix: {fix}")
+        return
+    except Exception as exc:
+        model_auth_emit("FAIL", user, "openai", f"unable to read Codex login metadata ({trim(str(exc))}). Fix: {fix}")
+        return
+    tokens = auth.get("tokens") or {}
+    if (tokens.get("refresh_token") or "").strip():
+        model_auth_emit(
+            "OK", user, "openai",
+            f"Codex CLI login is renewable (last refreshed {auth.get('last_refresh') or 'unknown'})",
+        )
+        return
+    if (auth.get("OPENAI_API_KEY") or "").strip():
+        model_auth_emit("OK", user, "openai", "Codex CLI uses a static API key")
+        return
+    model_auth_emit("FAIL", user, "openai", f"Codex CLI login has no refresh token and cannot renew. Fix: {fix}")
+
+
+# Runs as the agent user so SQLite never creates root-owned WAL/SHM files in
+# the agent's home. Prints only provider/type/renewable/expiry — never secrets.
+OPENCLAW_AUTH_STORE_PROBE = r"""
+import json, sqlite3, sys
+try:
+    con = sqlite3.connect("file:" + sys.argv[1] + "?mode=ro", uri=True)
+    row = con.execute(
+        "select value_json from config_machine_state where state_key = 'authProfiles.store'"
+    ).fetchone()
+    profiles = (json.loads(row[0]).get("profiles") or {}) if row else {}
+except Exception as exc:
+    print(json.dumps({"error": type(exc).__name__}))
+    raise SystemExit(0)
+print(json.dumps({"profiles": {
+    pid: {
+        "provider": p.get("provider"),
+        "type": p.get("type"),
+        "renewable": bool(str(p.get("refresh") or "").strip()),
+    }
+    for pid, p in profiles.items() if isinstance(p, dict)
+}}))
+"""
+
+
+def check_openclaw_oauth_renewable(user, home, provider, store_path, state, fix):
+    """An expired/expiring OpenClaw OAuth access token renews on next use when
+    the stored profile still holds a refresh token."""
+    db = str(store_path or "~/.openclaw/state/openclaw.sqlite").replace("~", str(home), 1)
+    rc, out, _err = run_as_user(user, home, ["/usr/bin/python3", "-c", OPENCLAW_AUTH_STORE_PROBE, db], timeout=20)
+    probe = json_object_with_key(out, "profiles") if rc == 0 else None
+    if not probe:
+        # Store layout is OpenClaw-internal; failures are still caught by the
+        # log check, so an unreadable layout is informational only.
+        print(f"[INFO] {user}: model-auth {provider}: cannot inspect OpenClaw auth store; relying on failure detection")
+        return
+    oauth = [
+        p for p in probe["profiles"].values()
+        if p.get("provider") == provider and p.get("type") == "oauth"
+    ]
+    if not oauth or any(p.get("renewable") for p in oauth):
+        model_auth_emit("OK", user, provider, f"OpenClaw OAuth access token is {state}; it renews on next use")
+        return
+    model_auth_emit("FAIL", user, provider, f"OpenClaw OAuth profile has no refresh token and cannot renew. Fix: {fix}")
+
+
+def check_model_auth_failures(user, fix_for, canonical=lambda provider: provider):
+    """Report logins that actually failed to authenticate or renew recently.
+
+    Covers every consumer in the gateway (model chain, memory sync, tools), not
+    just the active chain: a stale OAuth copy used only for embeddings still
+    breaks that feature when its rotated refresh token is rejected.
+    """
+    rc, out, err = run(
+        ["su", "-", user, "-c", f"journalctl --user -u openclaw-gateway --since={MODEL_AUTH_LOG_WINDOW} --no-pager --output=cat"],
+        timeout=20,
+    )
+    failures = {}
+    for line in ((out or "") + "\n" + (err or "")).splitlines():
+        for pattern, default_provider in MODEL_AUTH_FAILURE_PATTERNS:
+            match = pattern.search(line)
+            if not match:
+                continue
+            provider = canonical(match.groupdict().get("provider") or default_provider)
+            entry = failures.setdefault(provider, {"count": 0, "sample": ""})
+            entry["count"] += 1
+            entry["sample"] = entry["sample"] or trim(line[match.start():], 120)
+            break
+    for provider in sorted(failures):
+        entry = failures[provider]
+        model_auth_emit(
+            "FAIL", user, provider,
+            f"login failing: {entry['count']} authentication failure(s) in the last "
+            f"{MODEL_AUTH_LOG_WINDOW.lstrip('-')} ({entry['sample']}). Fix: {fix_for(provider)}",
+        )
+    if not failures:
+        emit("OK", f"{user}: no model login failures in the last {MODEL_AUTH_LOG_WINDOW.lstrip('-')}")
+
+
+def check_model_auth(user, home, openclaw_cfg=None):
+    """Judge each active model login by whether it can renew, not by the
+    expiry of its short-lived access token, then look for observed failures.
+
+    The former check treated an expired access token as a failure: it paged
+    for idle agents whose logins were fine, and missed real refresh failures
+    because they left the stored expiry untouched.
     """
     rc, out, _err = run_as_user(
         user,
@@ -636,8 +805,20 @@ def check_model_auth(user, home):
     auth = status.get("auth") or {}
     active_providers = model_providers_in_use(status)
     missing = set(auth.get("missingProvidersInUse") or [])
-    for provider in sorted(active_providers & missing):
-        emit("FAIL", f"{user}: active model provider {provider} has no usable credential")
+    runtimes = model_auth_runtimes(auth)
+    codex_user_home = codex_uses_user_home(openclaw_cfg)
+
+    def fix_for(provider):
+        return model_auth_fix(user, provider, runtimes, codex_user_home)
+
+    # One login, one name: CLI failures log as `claude-cli` while the model
+    # chain (and the renewal check) names the provider, e.g. `anthropic`.
+    claude_providers = sorted(p for p, names in runtimes.items() if "claude-cli" in names)
+
+    def canonical(provider):
+        if provider == "claude-cli" and claude_providers:
+            return claude_providers[0]
+        return provider
 
     provider_status = {
         item.get("provider"): item
@@ -645,33 +826,32 @@ def check_model_auth(user, home):
         if isinstance(item, dict) and item.get("provider")
     }
 
-    for provider in sorted(active_providers - missing):
-        if provider == "claude-cli":
-            check_native_claude_auth(user, home)
+    for provider in sorted(active_providers):
+        if uses_claude_cli(provider, runtimes):
+            check_native_claude_auth(user, home, provider, fix_for(provider))
+            continue
+        if provider == "openai" and codex_user_home:
+            check_codex_cli_auth(user, home, fix_for(provider))
+            continue
+        if provider in missing:
+            model_auth_emit("FAIL", user, provider, f"no usable credential. Fix: {fix_for(provider)}")
             continue
 
         item = provider_status.get(provider)
         if not item:
             # Providers with environment/plugin-owned credentials need not
             # appear in oauth.providers; missingProvidersInUse is authoritative.
-            emit("OK", f"{user}: active model provider {provider} has usable runtime auth")
+            model_auth_emit("OK", user, provider, "usable runtime auth")
             continue
         state = item.get("status") or "unknown"
-        expires_ms = item.get("expiresAt")
-        expiry = ""
-        if expires_ms:
-            try:
-                expiry = datetime.fromtimestamp(int(expires_ms) / 1000, timezone.utc).isoformat()
-            except Exception:
-                expiry = "invalid expiry"
-        if state == "expired":
-            emit("FAIL", f"{user}: active model provider {provider} OAuth expired ({expiry or 'unknown expiry'})")
-        elif state == "expiring":
-            emit("WARN", f"{user}: active model provider {provider} OAuth is expiring ({expiry or 'unknown expiry'})")
-        elif state in {"ok", "static"}:
-            emit("OK", f"{user}: active model provider {provider} auth is {state}")
+        if state in {"ok", "static"}:
+            model_auth_emit("OK", user, provider, f"auth is {state}")
+        elif state in {"expired", "expiring"}:
+            check_openclaw_oauth_renewable(user, home, provider, auth.get("storePath"), state, fix_for(provider))
         else:
-            emit("WARN", f"{user}: active model provider {provider} auth status is {state}")
+            model_auth_emit("WARN", user, provider, f"auth status is {state}")
+
+    check_model_auth_failures(user, fix_for, canonical)
 
 
 def check_bitbucket(user, user_cfg, workspace, repo):
@@ -1109,9 +1289,9 @@ def main():
         if integrations.get("gmail"):
             check_google(user, openclaw_cfg)
         # Inspect the providers the configured default/fallback chain can
-        # actually select. This covers SQLite-backed OpenAI OAuth and native
-        # claude-cli renewal state regardless of legacy integration flags.
-        check_model_auth(user, user_cfg["home"])
+        # actually select (OpenClaw OAuth, user-scoped Codex CLI, native
+        # claude-cli renewal) plus observed login failures from any consumer.
+        check_model_auth(user, user_cfg["home"], openclaw_cfg)
         # Outbound API token checks are only meaningful for coding agents
         # (who actually call Jira/Bitbucket). The monitor agent may have
         # integrations.jira/bitbucket=true to gate its inbound RECEIVERS

@@ -673,7 +673,7 @@ Ollama is installed as a system service:
 - Data dir: `/usr/share/ollama`
 - Cloud auth identity: `/usr/share/ollama/.ollama/id_ed25519` and `.pub` were migrated from ThinkPad. If these are regenerated, `:cloud` models can still list but fail with `401 unauthorized`.
 
-Cloud models are installed on `thinkpad`; `qwen2.5:3b-instruct` is also available locally as the small offline fallback. The moonlight `ollama.local` nginx proxy still exists but agents no longer route through it.
+Cloud models are installed on `thinkpad`; `qwen2.5:7b-instruct` and `qwen2.5:3b-instruct` also run locally (on the Radeon 780M iGPU) for ai-monitor's judge and as offline fallbacks. The moonlight `ollama.local` nginx proxy still exists but agents no longer route through it.
 
 Expected cloud models:
 
@@ -684,11 +684,12 @@ Expected cloud models:
 | `deepseek-v4-flash:cloud` | cloud entry only |
 | `deepseek-v4-pro:cloud` | cloud entry only |
 
-Local fallback model (added 2026-05-08):
+Local models (3B added 2026-05-08; 7B judge since 2026-09-22). Both run 100% on the Radeon 780M iGPU using shared memory:
 
 | Model | Size | Role |
 |---|---|---|
-| `qwen2.5:3b-instruct` | ~2 GB (q4_K_M) | Last-resort fallback when internet/cloud is unavailable. Listed at the tail of the monitoring agent's openclaw `agents.defaults.model.fallbacks` chain *and* ai-monitor's `ai.fallback_models` chain. Slow (~30–60 s on Tiger Lake CPU) but keeps the host functional offline. |
+| `qwen2.5:7b-instruct` | ~4.7 GB on disk, ~6.6 GB loaded | ai-monitor's judge (`ai.model`). Kept off the shared Ollama cloud quota so monitoring still works when coding agents exhaust it. Measured on a real judge request: 16 s warm, 23 s cold, found 3/3 issues. |
+| `qwen2.5:3b-instruct` | ~2 GB (q4_K_M), ~3.4 GB loaded | Last-resort fallback when internet/cloud is unavailable. Tail of the monitoring agent's openclaw `agents.defaults.model.fallbacks` chain and ai-monitor's `ai.fallback_models`. Fast (3 s warm) but missed 2 of 3 issues in the same test, so it is only a fallback. |
 
 ### Monitoring and Recovery
 

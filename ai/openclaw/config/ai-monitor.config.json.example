@@ -2,12 +2,11 @@
   "_doc": "Example config for /etc/ai-monitor/config.json. Version monitor policy and defaults here so new AI servers can reproduce behaviour. Keep secrets and host-specific credentials out of git; resolve those through /etc/openclaw/agents.json or local secret files.",
   "ai": {
     "endpoint": "http://127.0.0.1:11434",
-    "model": "glm-5.1:cloud",
+    "model": "qwen2.5:7b-instruct",
     "fallback_models": [
-      "kimi-k2.6:cloud",
       "qwen2.5:3b-instruct"
     ],
-    "timeout_s": 30,
+    "timeout_s": 120,
     "keep_alive": "30m"
   },
   "integrity": {

@@ -32,7 +32,7 @@ You can still escalate early if a tier-1 fix is unsafe or out-of-scope (system-s
    - `issues[]` — the issues ai-monitor flagged, each with `{unit, kind, severity, reason, suggested_action}`
    - `summary` — ai-monitor's one-line summary
    - `ts` — when it was emitted
-   - `_model` — `deterministic`, `glm-5.1:cloud`, etc.
+   - `_model` — `deterministic`, `qwen2.5:7b-instruct`, etc.
    - `escalation_context` — present if this is a retry. See above.
 
 2. **Re-probe live state.** ai-monitor saw a moment in time; you're seeing now. Run quick checks for the units in the issue:
@@ -82,6 +82,7 @@ These are predictable, time-driven, and **should be auto-renewed by the host sys
 
 | Kind | What it really is | Action |
 |---|---|---|
+| `model-auth-failing` / `model-auth-renewal-due` (older incidents: `*oauth-expiring`, `*oauth-expired`) | A model login (Claude CLI, Codex CLI or an OpenClaw OAuth profile) that is failing, cannot renew, or whose refresh credential lapses within 7 days. Short-lived access tokens renew themselves on next use and are never an incident; only a human browser/device login restores these. | **Bypassed by ai-monitor** — it pages zeh directly, once per episode, with the exact fix command. If one reaches you anyway: take no action and escalate with `actions_taken: []`, naming the agent and provider. **Never** run login/logout/refresh commands, copy credentials between agents, or restart a gateway to "refresh" a token — these refresh tokens rotate on every use, so a second refresher invalidates the login it was meant to save. |
 | `gmail-watch-expiring` | Gmail watch tokens expire every 7 days. | Normally **self-healing**: root's `gmail-watch-renew.timer` runs `/usr/local/sbin/gmail-watch-renew-all` daily at 04:00 and executes each renewal as the owning agent. Re-probe `systemctl status gmail-watch-renew.timer gmail-watch-renew.service`. If the latest service run succeeded and the integrity warning has cleared, suppress quietly. If the service failed or the warning remains after a successful run, escalate with that service state; it needs host-level investigation. **Do not** read another agent's `watch-state.json`, run commands in their home, request broader home-directory access, or recommend another cron/timer. The monitor role intentionally lacks those privileges, and the systemd timer already owns this recurring job. |
 
 ### Resource / observe-only kinds
