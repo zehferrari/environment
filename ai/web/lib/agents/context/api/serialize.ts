@@ -19,6 +19,7 @@
 // for explicit historical investigation, but must never be the routine path.
 
 import { db } from "@/lib/db";
+import { latestTaskExecutionCheckpoint, type TaskExecutionEpisodeSummary } from "@/lib/agents/episodes/lifecycle";
 import { parseAcceptanceCriteria } from "@/lib/tasks/action-plan-store";
 import { effectiveCommitPrefix, effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
 import { effectiveEpicBranchName, effectiveTaskBranchName } from "@/lib/work-items/branches";
@@ -106,6 +107,8 @@ function parseActivityPayload(raw: string | null): ParsedActivityPayload {
 // ───────────────────────────────────────────────────────────────────────
 
 export interface TaskContextResponse {
+  /** Full history only, scoped to the authenticated agent. */
+  checkpoint?: TaskExecutionEpisodeSummary["checkpoint"] & { episodeNo: number; status: string };
   task: {
     id: string;
     workItemKey: string | null;
@@ -422,7 +425,12 @@ export async function buildTaskContextJson(
     }
   }
 
+  const checkpoint = historyMode === "full" && opts.agentSlug
+    ? await latestTaskExecutionCheckpoint({ taskId, agentSlug: opts.agentSlug })
+    : null;
+
   return {
+    ...(checkpoint ? { checkpoint: { ...checkpoint.checkpoint, episodeNo: checkpoint.episodeNo, status: checkpoint.status } } : {}),
     task: {
       id: task.id,
       workItemKey: task.workItemKey,

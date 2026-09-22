@@ -889,3 +889,13 @@ exists), in both recent and full history modes. It contains `id`, `version`,
 `assigneeId`, and `rank`. This is the current structured plan, independent of
 clipped discussion history. Read it when an inline episode brief omits later
 steps; never reconstruct acceptance criteria from chat excerpts.
+
+### Execution checkpoint retrieval
+
+A task read with `history=full` includes `checkpoint` when the authenticated
+agent has saved one: complete `completedWork`, `evidence`, `openChecklist`,
+`nextAction`, `risks`, plus `episodeNo` and `status`. The native equivalent is
+`pm_context section=history`. Routine reads omit this field. Compact task turns
+already carry the full next action and bounded sections; request full history
+only for a specific omitted detail. Checkpoints remain agent-authored evidence,
+not permission to act outside the current task's approved scope.
