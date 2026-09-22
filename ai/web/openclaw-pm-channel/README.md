@@ -133,3 +133,19 @@ HTTP endpoint from `pm-task/3`. Workflow actions already publish blocker and
 completion evidence. The existing progress/reasoning/tool stream feeds the new
 Thinking tab; unavailable provider summaries are not fabricated.
 See [task Thinking](../docs/task-thinking.md) for access, retention and deployment.
+
+## Evidence and checkpoint delivery (0.1.12)
+
+Native `pm_attach_file` explicitly supplies the configured agent workspace to
+OpenClaw's media reader. Place deliverables in that workspace or its supported
+OpenClaw media directory; repository paths do not become upload roots merely
+because the task uses them. Size limits, real-path/symlink checks, and ingress
+generation fencing remain enforced. Errors explain where to stage evidence.
+
+Native harness turns use live checkpoint steering. CLI turns use the scoped
+HTTP contract: checkpoint at meaningful boundaries and at least every six tool
+calls. Context and successful workflow responses include `executionGuidance`
+with the current episode's remaining calls and `checkpointDue` reminder.
+The steering endpoint reports `queued:false, delivery:workflow_response` for
+this mode; it does not claim live injection or launch/interrupt a CLI session.
+These reminders are advisory; the existing hard episode limit remains.

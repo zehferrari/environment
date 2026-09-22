@@ -26,6 +26,7 @@ const PLUGIN_FILES = [
   // index.js or a divergence between the two bricks every agent gateway.
   "session-key.js",
   "session-cancellation.js",
+  "task-media.js",
   "runtime-compat.js",
   "task-tools.js",
   "task-attachments.js",

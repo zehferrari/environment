@@ -199,6 +199,8 @@ async function main() {
     await setBackend("worker", "claude-cli/test");
     const cli = await notify("backlog_plan_requested", worker.id, "Submit the plan using the supplied workflow interface.", "cli-planning");
     assert.equal(cli.payload.taskRuntime, null);
+    assert.match(cli.payload.systemPrompt, /at least every 6 tool calls/);
+    assert.match(cli.payload.systemPrompt, /executionGuidance/);
     assert.equal(cli.payload.taskContract.transport, "scoped-http");
     assert.ok(cli.payload.systemPrompt.includes("Native PM tools are not available"));
     assert.ok(!cli.payload.systemPrompt.includes("Use native pm_* tools."));

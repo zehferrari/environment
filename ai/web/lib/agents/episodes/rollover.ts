@@ -128,6 +128,12 @@ async function scheduleSuccessorEpisode(
   const claimed = await claimEpisodeSuccessorSchedule(tx, { episodeId: args.episodeId });
   if (!claimed) return false;
   const runIsLive = (LIVE_RUN_STATUSES as readonly string[]).includes(run.status);
+  // Checkpoint/start/checklist continuations from this same turn are now
+  // represented by the sealed rollover. Do not let settling queue them too.
+  await tx.pmChannelContinuation.updateMany({
+    where: { runId: run.id, action: { not: EPISODE_ROLLOVER_CONTINUATION_ACTION }, status: { in: ["armed", "queued"] } },
+    data: { status: "superseded", lastError: "coalesced into episode rollover" },
+  });
   await armPmChannelContinuations(tx, {
     runs: [run],
     agentSlug: args.agentSlug,

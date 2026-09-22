@@ -78,6 +78,7 @@ export interface WatchdogRunRecord {
   // ENV-159: provider/model for tool telemetry coverage detection
   provider?: string | null;
   model?: string | null;
+  blockedByTaskId?: string | null;
 }
 
 /** Statuses in which a continuation still owes the task a turn. */
@@ -102,6 +103,7 @@ export interface WatchdogBlockerState {
 
 export interface WatchdogTaskRecord {
   id: string;
+  workItemKey?: string | null;
   projectId: string | null;
   status: string;
   assigneeSlug: string | null;
@@ -839,11 +841,22 @@ export function healthyExecutionState(
       reasonDetail: "a formal blocker is waiting on external input",
     };
   }
+  const liveRuns = snapshot.runs.filter((run) => run.taskId === task.id && runIsLive(run, snapshot));
+  const executing = liveRuns.some((run) => ["admitted", "streaming", "accepted"].includes(run.status));
+  const capacity = liveRuns.find((run) => run.status === "waiting_capacity");
+  if (!executing && capacity) {
+    const holder = snapshot.tasks.find((row) => row.id === capacity.blockedByTaskId);
+    return {
+      state: "waiting_capacity",
+      reasonCode: "agent_capacity",
+      reasonDetail: `${capacity.agentSlug} is waiting for capacity${capacity.blockedByTaskId ? `; currently working on ${holder?.workItemKey ?? capacity.blockedByTaskId}` : ""}`,
+    };
+  }
   if (liveRunTaskIds(snapshot).has(task.id)) {
     return {
       state: "running",
-      reasonCode: "active_run",
-      reasonDetail: "an execution turn is running",
+      reasonCode: executing ? "active_run" : "awaiting_admission",
+      reasonDetail: executing ? "an execution turn is running" : "an execution turn is queued for admission",
     };
   }
   if (openContinuationTaskIds(snapshot).has(task.id)) {

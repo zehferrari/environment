@@ -1,5 +1,5 @@
 import { uploadPmTaskAttachment } from "./task-attachments.js";
-import { buildOutboundMediaLoadOptions } from "openclaw/plugin-sdk/media-runtime";
+import { buildOutboundMediaLoadOptions, getAgentScopedMediaLocalRoots } from "openclaw/plugin-sdk/media-runtime";
 import { isProtocolSilentReply, stopCompletedTaskTurn } from "./turn-completion.js";
 import { resolvePmTurnEffort, withPmHighDefault } from "./turn-effort.js";
 import { createPmTaskTelemetry } from "./task-telemetry.js";
@@ -20,6 +20,8 @@ import { createPluginRuntimeStore } from "openclaw/plugin-sdk/runtime-store";
 import { resolvePmInboundRuntime } from "./runtime-compat.js";
 import { canonicalizePmStoreSessionKey } from "./session-key.js";
 import { clearPmSessionQueue } from "./session-cancellation.js";
+import { nativeTaskToolsSupported } from "./task-backend.js";
+import { createTaskMediaLoader } from "./task-media.js";
 
 import { createTaskTools, PM_TASK_TOOL_NAMES, taskToolCapabilities, validateTaskRuntime } from "./task-tools.js";
 
@@ -1117,6 +1119,13 @@ async function handleSteer({ cfg, req, res }) {
     return true;
   }
 
+  // CLI subprocesses cannot receive embedded-harness message injection. The
+  // scoped HTTP contract and PM responses carry their checkpoint guidance.
+  // Never report a queued live message or interrupt/start another CLI turn.
+  if (activeTurns.has(sessionKey) && !nativeTaskToolsSupported(cfg, account.agentId)) {
+    writeJson(res, 200, { ok: true, queued: false, delivery: "workflow_response" });
+    return true;
+  }
   const result = await steerActiveTurn(sessionKey, text.slice(0, 4_000));
   writeJson(res, result.queued ? 200 : 409, { ok: result.queued, ...result });
   return true;
@@ -1250,7 +1259,13 @@ export default defineChannelPluginEntry({
     api.on("llm_output", telemetry.output);
     api.registerTool((context) => createTaskTools({
       context,
-      loadMedia: (url) => getPmRuntime().media.loadWebMedia(url, buildOutboundMediaLoadOptions({ cfg: api.config, maxBytes: 10 * 1024 * 1024, optimizeImages: false })),
+      loadMedia: createTaskMediaLoader({
+        cfg: api.config,
+        agentId: context.agentId || resolvePmAccount({ cfg: api.config }).agentId,
+        getRoots: getAgentScopedMediaLocalRoots,
+        buildOptions: buildOutboundMediaLoadOptions,
+        media: getPmRuntime().media,
+      }),
       findTurn: (key) => [...activeTurns.values()].find((turn) => turn.canonicalSessionKey === key),
     }), { names: PM_TASK_TOOL_NAMES });
     api.registerHttpRoute({

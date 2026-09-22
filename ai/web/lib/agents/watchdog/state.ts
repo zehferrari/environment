@@ -21,6 +21,7 @@ export const EXECUTION_STATES = [
   "stalled",
   "blocked",
   "waiting_review",
+  "waiting_capacity",
 ] as const;
 
 export type ExecutionState = (typeof EXECUTION_STATES)[number];

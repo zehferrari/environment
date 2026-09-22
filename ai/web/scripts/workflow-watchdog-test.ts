@@ -822,4 +822,16 @@ assertEqual(
   assertEqual(detector.detect(duplicate).length,2,'two genuinely executing turns are still detected');
 }
 
+{
+  const waiting = run({ status: "waiting_capacity", admittedAt: null, acceptedAt: null, blockedByTaskId: "holder" });
+  const view = snapshot({ tasks: [task(), task({ id: "holder", workItemKey: "WDT-11", status: "Review" })], runs: [waiting] });
+  const health = healthyExecutionState(task(), view);
+  assertEqual(health.state, "waiting_capacity", "capacity wait is not running");
+  assert(health.reasonDetail.includes("WDT-11"), "capacity status names the occupying task");
+  view.runs.push(run({ id: "executing", status: "admitted" }));
+  assertEqual(healthyExecutionState(task(), view).state, "running", "actual admission overrides an old capacity waiter");
+  view.runs = [run({ status: "delivered", admittedAt: null, acceptedAt: null })];
+  assertEqual(healthyExecutionState(task(), view).reasonCode, "awaiting_admission", "delivery does not imply model execution");
+}
+
 console.log(`[workflow-watchdog] OK — ${checks} checks passed`);

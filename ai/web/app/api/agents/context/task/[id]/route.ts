@@ -10,6 +10,7 @@ import {
   isLoopbackRequest,
 } from "@/lib/agents/context/api/auth";
 import { buildTaskContextJson } from "@/lib/agents/context/api/serialize";
+import { readCheckpointGuidance } from "@/lib/agents/pm-channel/checkpoint-guidance";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -40,7 +41,8 @@ export async function GET(
   });
   if (!data) return NextResponse.json({ error: "Task not found" }, { status: 404 });
 
-  return NextResponse.json(data, {
+  const executionGuidance = identity.agentSlug ? await readCheckpointGuidance(id, identity.agentSlug).catch(() => null) : null;
+  return NextResponse.json({ ...data, executionGuidance }, {
     headers: { "cache-control": "no-store" },
   });
 }

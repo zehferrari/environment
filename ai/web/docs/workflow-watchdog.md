@@ -122,6 +122,14 @@ Two properties make it trustworthy rather than decorative:
 A task the watchdog has never evaluated has **no row**, and the UI renders
 nothing. Inventing `idle` for it would be the guessing this work removes.
 
+Capacity queues use `waiting_capacity` / `agent_capacity`, naming the agent
+and occupying task when known. Delivery alone reads `awaiting_admission`;
+only admitted/streaming (or legacy accepted) runs report actual execution.
+The continuation drain checks every active lifecycle state, including queued,
+claimed, delivered and capacity-waiting runs. Per-source-run claims coalesce
+checkpoint/checklist and rollover obligations into one successor, with a stable
+notification deduplication key for dispatch retries.
+
 ## Usage
 
 ```

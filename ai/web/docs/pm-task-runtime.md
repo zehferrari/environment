@@ -1,6 +1,10 @@
 # Compact PM task runtime
 
-Current change (22 September): PM channel 0.1.11 adds explicit task notes and
+Current change (22 September): PM channel 0.1.12 fixes agent-workspace evidence
+uploads and distinguishes live checkpoint steering from CLI guidance through
+authenticated PM responses. Continuations coalesce per source run, and capacity
+waits name the occupying task. See the [execution handoff audit](audits/execution-handoffs-2026-09-22.md).
+PM channel 0.1.11 adds explicit task notes and
 routes autonomous narration to the owner-only Thinking tab. Required-attachment
 coding tasks retain compact context, explicit review acceptance and native
 attachment upload from 0.1.10. See [task Thinking](task-thinking.md) and the

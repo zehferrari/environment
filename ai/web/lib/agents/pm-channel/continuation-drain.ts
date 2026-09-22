@@ -15,6 +15,7 @@ import {
 } from "@/lib/tasks/formal-blocker";
 import { WATCHDOG_CONTINUATION_ACTION } from "@/lib/agents/watchdog/repairs";
 import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
+import { ACTIVE_RUN_STATUSES } from "@/lib/workflow-invariants";
 
 const MAX_CONTINUATION_ATTEMPTS = 3;
 const DRAIN_BATCH = 10;
@@ -136,7 +137,7 @@ async function dispatchContinuation(row: ContinuationRow): Promise<"dispatched" 
       taskId: task.id,
       agentSlug: row.agentSlug,
       messageId: { not: row.messageId },
-      status: { in: ["queued", "accepted", "streaming"] },
+      status: { in: [...ACTIVE_RUN_STATUSES] },
     },
     select: { id: true },
   });
@@ -162,6 +163,7 @@ async function dispatchContinuation(row: ContinuationRow): Promise<"dispatched" 
     targetUserId: agent.user.id,
     actor: { id: agent.user.id, kind: "agent", username: row.agentSlug },
     reason: "monitor_recovery",
+    dedupeKey: `execution-continuation:${row.runId}`,
     restartExecutionSession: isWatchdogRecovery,
     body: reviewEpisode
       ? [
@@ -235,6 +237,33 @@ async function dispatchContinuation(row: ContinuationRow): Promise<"dispatched" 
   return "dispatched";
 }
 
+export async function claimPmChannelContinuation(id: string): Promise<boolean> {
+  return db.$transaction(async (tx) => {
+    const source = await tx.pmChannelContinuation.findUnique({ where: { id } });
+    if (!source || source.status !== "queued") return false;
+    // All actions in a source turn owe ONE successor. Claim that obligation,
+    // not just an individual action row, before leaving the transaction.
+    const owner = await tx.pmChannelContinuation.findFirst({
+      where: { runId: source.runId, id: { not: source.id }, status: { in: ["dispatching", "dispatched"] } },
+      select: { id: true },
+    });
+    if (owner) {
+      await tx.pmChannelContinuation.update({ where: { id: source.id }, data: { status: "superseded", lastError: "source turn already has a successor" } });
+      return false;
+    }
+    const claim = await tx.pmChannelContinuation.updateMany({
+      where: { id: source.id, status: "queued" },
+      data: { status: "dispatching", attempts: { increment: 1 } },
+    });
+    if (!claim.count) return false;
+    await tx.pmChannelContinuation.updateMany({
+      where: { runId: source.runId, id: { not: source.id }, status: { in: ["armed", "queued"] } },
+      data: { status: "superseded", lastError: "coalesced into the source turn's successor" },
+    });
+    return true;
+  });
+}
+
 /**
  * Claim queued continuation rows and turn each into a fresh execution turn.
  * Runs alongside the stale-job requeue in the PM channel worker drain.
@@ -254,11 +283,8 @@ export async function drainPmChannelContinuations(args: { limit?: number; now?: 
     });
     if (!candidate) break;
 
-    const claimed = await db.pmChannelContinuation.updateMany({
-      where: { id: candidate.id, status: "queued" },
-      data: { status: "dispatching", attempts: { increment: 1 } },
-    });
-    if (claimed.count !== 1) continue;
+    const claimed = await claimPmChannelContinuation(candidate.id);
+    if (!claimed) continue;
 
     const row = await db.pmChannelContinuation.findUnique({
       where: { id: candidate.id },

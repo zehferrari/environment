@@ -40,6 +40,7 @@ const STATE_TONE: Record<ExecutionState, string> = {
   stalled: "text-crit",
   blocked: "text-warn",
   waiting_review: "text-accent",
+  waiting_capacity: "text-text-muted",
 };
 
 /** Compact one-word cue for the board card. Exported for the badge. */

@@ -105,6 +105,7 @@ export async function loadWatchdogSnapshot(
     take,
     select: {
       id: true,
+      workItemKey: true,
       projectId: true,
       status: true,
       statusChangedAt: true,
@@ -157,6 +158,7 @@ export async function loadWatchdogSnapshot(
         disposition: true,
         provider: true,
         model: true,
+        blockedByTaskId: true,
       },
     }),
     db.pmChannelContinuation.findMany({
@@ -210,6 +212,7 @@ export async function loadWatchdogSnapshot(
     const durable = lastAction.get(task.id) ?? null;
     return {
       id: task.id,
+      workItemKey: task.workItemKey,
       projectId: task.projectId,
       status: task.status,
       assigneeSlug: task.assignee?.agent?.slug ?? null,
@@ -255,6 +258,7 @@ export async function loadWatchdogSnapshot(
       disposition: run.disposition,
       provider: run.provider,
       model: run.model,
+      blockedByTaskId: run.blockedByTaskId,
     })),
     continuations: continuationRows.map((row) => ({
       id: row.id,

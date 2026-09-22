@@ -15,7 +15,7 @@ export const PM_TASK_TOOL_DEFINITIONS = {
   context: ["Read current task, plan, checklist, or history only when a named fact is missing.", object({ section: { type: "string", enum: ["current", "plan", "history"] } })],
   submit_plan: ["Submit or revise the structured Action Plan. Finish this turn after acceptance.", object({ actionPlan: plan }, ["actionPlan"])],
   accept_plan_review: ["Accept this plan without authorising execution; wait for reporter approval. Do not request changes when the plan is acceptable.", object(comment)],
-  attach_file: ["Upload an existing deliverable file to this task. Returns the stored attachment id; uploading does not complete the task.", object({ path: string }, ["path"])],
+  attach_file: ["Upload an existing deliverable from your configured agent workspace or OpenClaw media directory. Copy worktree evidence into your workspace first; arbitrary repository paths are not attachment roots. Returns the stored attachment id; uploading does not complete the task.", object({ path: string }, ["path"])],
   approve_plan: ["Approve the current plan as the authorized reviewer; PM prepares the worktree.", object({ constraints: string })],
   request_plan_changes: ["Return the current Action Plan for one consolidated revision, with exact feedback.", object(comment, ["comment"])],
   review_feedback: ["Request specific changes to the reviewed implementation.", object(comment, ["comment"])],
@@ -108,7 +108,7 @@ export function createTaskTools({ context, findTurn, loadMedia, fetchImpl = fetc
         if (action === "context" && response.ok) {
           reviewedPlan = result.actionPlan ? { id: result.actionPlan.id, version: result.actionPlan.version } : null;
           if (args.section === "plan") data = { actionPlan: result.actionPlan };
-          else if (args.section !== "history") data = { task: result.task, actionPlan: result.actionPlan, checklist: result.checklist, recentComments: result.recentComments, currentThread: result.currentThread };
+          else if (args.section !== "history") data = { task: result.task, actionPlan: result.actionPlan, checklist: result.checklist, recentComments: result.recentComments, currentThread: result.currentThread, executionGuidance: result.executionGuidance };
         }
         // Only the trusted successful mutation response can close this turn.
         // A context document, denied request, or late old generation cannot.

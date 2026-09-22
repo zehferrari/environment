@@ -90,7 +90,14 @@ export async function steerGatewaySession(args: {
       signal: AbortSignal.timeout(10_000),
     });
     const body = await response.text().catch(() => "");
-    if (response.ok) return { ok: true as const };
+    if (response.ok) {
+      const result = JSON.parse(body) as { queued?: boolean; delivery?: string };
+      if (result.delivery === "workflow_response" && result.queued === false) {
+        return { ok: true as const, queued: false, delivery: "workflow_response" as const };
+      }
+      if (result.queued === true) return { ok: true as const, queued: true, delivery: "live" as const };
+      return { ok: false as const, error: "gateway did not acknowledge checkpoint delivery" };
+    }
     return {
       ok: false as const,
       error: clipped(body.trim() || `gateway steering returned HTTP ${response.status}`),

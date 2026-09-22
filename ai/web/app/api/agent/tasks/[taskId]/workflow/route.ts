@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
+import { readCheckpointGuidance } from "@/lib/agents/pm-channel/checkpoint-guidance";
 import { verifyTaskWorkflowToken } from "@/lib/agents/workflow/token/task";
 import { hasAuthorizedTaskAgentOrigin } from "@/lib/agents/owner-origin";
 import { resolveAgentTaskAccess } from "@/lib/agents/private-task-access";
@@ -165,5 +166,9 @@ export async function POST(
   if (result.body.ok === true) {
     decorateAuthoritativeAgentResponseCache({ taskId, projectSlug: task.project.slug });
   }
-  return NextResponse.json(result.body, { status: result.status });
+  // Optional guidance must never turn a committed action into an HTTP failure.
+  const executionGuidance = result.body.ok === true && result.body.turnComplete !== true
+    ? await readCheckpointGuidance(taskId, grantAgentSlug, messageId).catch(() => null)
+    : null;
+  return NextResponse.json({ ...result.body, ...(executionGuidance ? { executionGuidance } : {}) }, { status: result.status });
 }
