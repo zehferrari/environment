@@ -22,6 +22,10 @@ causing successor supersession and rejected callbacks.
   Acknowledgements distinguish live queued delivery from HTTP-response mode.
 - Capacity waits render separately and identify the occupying task. Delivery
   without admission is described as queued for admission.
+- Deployment exposed a startup race: systemd reported the restarted gateway
+  active several seconds before PM ingress was listening. The installer now
+  waits for authenticated `/pm-channel/capabilities` before returning, including
+  CLI gateways that correctly advertise no native tools.
 
 ## Verification
 
