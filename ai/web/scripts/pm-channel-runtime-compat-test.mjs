@@ -102,6 +102,8 @@ assert.match(
   /registeredTurn\.canonicalSessionKey = sessionKey/,
   "gateway cancellation must retain the canonical OpenClaw session key",
 );
+assert.match(pluginSource, /async function steerActiveTurn[\s\S]*?import\("openclaw\/plugin-sdk\/agent-harness-runtime"\)/,
+  "checkpoint steering must use the public SDK export that includes queueAgentHarnessMessage");
 assert.match(
   pluginSource,
   /if \(!registeredTurn \|\| registeredTurn\.acceptedId !== acceptedId\)/,

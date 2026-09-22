@@ -188,6 +188,12 @@ The PM plugin cancellation boundary first calls the public gateway
 then drains any embedded run. An absent embedded run alone no longer proves
 that its follow-up queue is empty. Failed queue cancellation fails the fence;
 obsolete runs remain unauthorized and no callback permissions are weakened.
+The public client uses the agent's configured local gateway credentials;
+the internal `runtime.gateway.request` shortcut is unavailable to third-party
+plugins. Checkpoint steering imports `queueAgentHarnessMessage` from
+`openclaw/plugin-sdk/agent-harness-runtime`; the narrower `agent-harness`
+export does not include it in OpenClaw 2026.9.3. A missing steer warning can
+otherwise turn every tool-budget cutoff into an empty-checkpoint continuation.
 
 For operational recovery, install the updated plugin, retire the affected
 session's queue, and dispatch `sendTaskWorkflowNotification` with

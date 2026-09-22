@@ -975,7 +975,9 @@ async function steerActiveTurn(sessionKey, text) {
   const active = activeTurns.get(sessionKey);
   if (!active) return { queued: false, reason: "not_active" };
   try {
-    const harness = await import("openclaw/plugin-sdk/agent-harness");
+    // The narrow agent-harness surface exposes abort/drain only. Steering is
+    // exported by agent-harness-runtime in OpenClaw 2026.9.3.
+    const harness = await import("openclaw/plugin-sdk/agent-harness-runtime");
     if (
       typeof harness.resolveActiveEmbeddedRunSessionId !== "function"
       || typeof harness.queueAgentHarnessMessage !== "function"
