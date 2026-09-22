@@ -254,7 +254,10 @@ async function main() {
     }
 
     const taskDetailSource = readSource("app/(app)/projects/[slug]/tasks/[taskId]/page.tsx");
-    assert(taskDetailSource.includes("submitBrowserStatusOverride"), "the task detail page must submit the browser override command");
+    assert(taskDetailSource.includes("<WorkItemSaveForm"), "the task detail page delegates edits to the shared save form");
+    const editorSource = readSource("lib/tasks/editor-actions.ts");
+    assert(editorSource.includes("submitBrowserStatusOverride"), "the shared editor action must submit the browser override command");
+    assert(!/moveTaskStatus|transitionTask\(|applyTaskTransition\(/.test(editorSource), "the shared editor action must have no direct status writer");
     assert(!/moveTaskStatus|transitionTask\(|applyTaskTransition\(/.test(taskDetailSource), "the task detail page must have no direct status writer");
     assert(!taskDetailSource.includes("recordLegacyWorkflowBoundaryInvocation"), "the task detail page must not be a legacy boundary");
 

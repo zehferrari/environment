@@ -468,9 +468,9 @@ const repositoryFinalizationSucceededExecutor: IntentExecutor<"repository_finali
     },
   });
 
-  // Keep Epic queue refill and the whole-Epic acceptance handoff inside the
-  // authoritative completion command. The current task is still Review at
-  // this point, so the last-child query explicitly excludes it.
+  // Write Done before queue selection so the freed worker can pick tasks
+  // depending on this completion. All writes still share one transaction.
+  const result = await context.helpers.executeDecisionWrites();
   const task = await context.tx.task.findUniqueOrThrow({
     where: { id: context.command.taskId },
     select: {
@@ -580,7 +580,7 @@ const repositoryFinalizationSucceededExecutor: IntentExecutor<"repository_finali
       effects: completionEffects,
     });
   }
-  return context.helpers.executeDecisionWrites();
+  return result;
 };
 
 const repositoryFinalizationFailedExecutor: IntentExecutor<"repository_finalization_failed"> = async (context) => {

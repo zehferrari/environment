@@ -2,6 +2,7 @@ import type { Prisma } from "@prisma/client";
 
 import { db } from "@/lib/db";
 import { attachRowToActiveCycle } from "@/lib/tasks/workflow-cycle";
+import { settleDoneTaskExecution, supersedeObsoleteTaskNotifications } from "@/lib/tasks/notification-reconciliation";
 
 export const TASK_WORKFLOW_STATUSES = [
   "Backlog",
@@ -257,6 +258,8 @@ export async function applyTaskTransition(
   if (args.mutate) {
     await args.mutate({ tx, transitionId: transition.id, workflowVersion });
   }
+  if (args.to === "Done") await settleDoneTaskExecution(tx, args.taskId, args.projectId);
+  await supersedeObsoleteTaskNotifications(tx, args.taskId);
   const dependencyRefillNeeded = args.to === "Done" && (
     await tx.taskDependency.count({ where: { prerequisiteTaskId: args.taskId } }) > 0 ||
     await tx.task.count({ where: { blockedById: args.taskId, deletedAt: null } }) > 0

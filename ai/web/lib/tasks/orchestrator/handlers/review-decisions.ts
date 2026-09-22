@@ -432,44 +432,9 @@ async function notifyCompletion(ctx: StepHandlerContext): Promise<StepHandlerRes
   if (completeOutput?.superseded === true) {
     return { status: "completed", output: { skipped: true, reason: completeOutput.reason } };
   }
-  const task = await db.task.findUnique({
-    where: { id: ctx.taskId },
-    select: {
-      id: true,
-      title: true,
-      projectId: true,
-      assigneeId: true,
-      assignee: { select: { id: true, username: true } },
-      reporterId: true,
-    },
-  });
-  if (!task) {
-    return { status: "completed", output: { skipped: true, reason: "task_not_found" } };
-  }
-  // Notify assignee and reporter once, with a cycle/version-scoped dedupe key.
-  const effects = [];
-  if (task.assigneeId && task.assignee) {
-    effects.push({
-      type: "task_notification" as const,
-      key: `finalize_accepted_review:notify-assignee:${task.id}:${ctx.procedureRunId}`,
-      payload: {
-        taskId: task.id,
-        targetUserId: task.assigneeId,
-        actor: { id: task.assignee.id, kind: "agent", username: task.assignee.username },
-        reason: "review_done" as const,
-        body: `Task "${task.title}" was accepted and moved to Done. No further action is required unless the task is reopened.`,
-      },
-    });
-  }
-  if (effects.length > 0) {
-    await enqueueWorkflowEffects(db, {
-      taskId: task.id,
-      projectId: task.projectId,
-      aggregateVersion: 0,
-      effects,
-    });
-  }
-  return { status: "completed", output: { notified: true } };
+  // repository_finalization_succeeded is the sole notification producer.
+  // Retain this versioned procedure step for in-flight/replayed procedures.
+  return { status: "completed", output: { notificationHandledByCompletion: true } };
 }
 
 export function registerFinalizeAcceptedReviewHandlers(): void {

@@ -50,6 +50,10 @@ interface TransitionState {
 export function executionStateForWorkflowAction(
   input: Pick<TransitionInput, "action" | "status" | "blockedExternally">,
 ): TransitionState {
+  // Completed tasks must not inherit an old blocker from a late callback.
+  if (input.status === "Done") {
+    return { state: "idle", reasonCode: "task_done", reasonDetail: "the task is Done; nothing is scheduled" };
+  }
   // An unresolved external dependency outranks everything else: whatever the
   // agent's last action was, the task is not going to move without a human.
   if (input.blockedExternally) {
@@ -74,13 +78,6 @@ export function executionStateForWorkflowAction(
       state: "waiting_review",
       reasonCode: "awaiting_review",
       reasonDetail: "implementation is complete and waiting on the reviewer",
-    };
-  }
-  if (input.status === "Done") {
-    return {
-      state: "idle",
-      reasonCode: "task_done",
-      reasonDetail: "the task is Done; nothing is scheduled",
     };
   }
   // A continuation-required action means the agent is mid-episode and expected

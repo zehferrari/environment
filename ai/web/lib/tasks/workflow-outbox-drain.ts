@@ -8,10 +8,8 @@ import {
   enqueueTaskCheckpoint,
   enqueueTaskReviewFinalization,
 } from "@/lib/deploy/epic-merge";
-import {
-  sendTaskWorkflowNotification,
-  type TaskWorkflowNotificationReason,
-} from "@/lib/agents/workflow/notifications/task";
+import type { TaskWorkflowNotificationReason } from "@/lib/agents/workflow/notifications/task";
+import { deliverTaskWorkflowNotification } from "@/lib/tasks/workflow-notification-delivery";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import { refillDependentEpicQueuesForDoneTask } from "@/lib/epics/queue";
 
@@ -31,6 +29,7 @@ type OutboxRow = {
   taskId: string;
   projectId: string;
   transitionId: string | null;
+  workflowCycleId: string | null;
   effectType: string;
   payload: string;
   dedupeKey: string;
@@ -132,7 +131,7 @@ async function dispatch(row: OutboxRow) {
       throw new Error("Task notification outbox payload has no actor.");
     }
     const actor = actorRaw as Record<string, unknown>;
-    const delivered = await sendTaskWorkflowNotification({
+    const delivered = await deliverTaskWorkflowNotification({
       taskId: String(payload.taskId),
       targetUserId: String(payload.targetUserId),
       actor: {
@@ -143,8 +142,18 @@ async function dispatch(row: OutboxRow) {
       reason: String(payload.reason) as TaskWorkflowNotificationReason,
       body: String(payload.body),
       dedupeKey: row.dedupeKey,
+      workflowCycleId: row.workflowCycleId,
     });
-    if (!delivered) throw new Error("Task workflow notification has no active eligible recipient.");
+    if (delivered.status === "permanent_failure") throw new TerminalWorkflowEffectError(delivered.error);
+    if (delivered.status === "retryable_failure") throw new Error(delivered.error);
+    if (delivered.status === "skipped") {
+      await writeDeduplicatedActivity({
+        taskId: row.taskId, projectId: row.projectId,
+        kind: "task.workflow.notification_skipped",
+        dedupeKey: `notification-skipped:${row.id}`,
+        payload: { outboxId: row.id, reason: delivered.reason },
+      });
+    }
     return;
   }
   if (row.effectType === "repository_checkpoint") {
@@ -285,6 +294,7 @@ export async function drainWorkflowOutbox(args: {
         taskId: true,
         projectId: true,
         transitionId: true,
+        workflowCycleId: true,
         effectType: true,
         payload: true,
         dedupeKey: true,

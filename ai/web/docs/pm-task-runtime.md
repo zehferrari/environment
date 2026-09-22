@@ -45,6 +45,11 @@ the workflow route rejecting a run in the legitimate `admitted` state.
 
 ## Scope and contracts
 
+Workflow notifications now distinguish human PM/Web Push delivery from agent
+wakes, skip obsolete work, and classify transient versus permanent failures.
+Completion has one notification producer and atomically clears stale execution
+warnings. See the [V23-42 completion audit](audits/v23-42-notification-completion-2026-09-22.md).
+
 All agents must finish authorized work independent of a missing dependency
 before raising a formal blocker. This rule is included in the compact task
 contract, the full task context and the shared `WORKFLOW.md`. Early coordination

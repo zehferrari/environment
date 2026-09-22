@@ -634,6 +634,16 @@ export function describeActivity(row: ActivityRow): string {
       const p = parsePayload<{ agentSlug?: string; reason?: string }>(row.payload);
       return `PM workflow notified @${p?.agentSlug ?? "?"}${p?.reason ? ` (${p.reason})` : ""}`;
     }
+    case "task.workflow.human_notification":
+      return "PM recorded a workflow notification for the human recipient";
+    case "task.workflow.notification_skipped":
+      return "PM skipped a notification that no longer requires delivery";
+    case "task.workflow.notification_superseded":
+      return "PM superseded an obsolete workflow notification; history preserved";
+    case "task.workflow.effect_failed": {
+      const p = parsePayload<{ error?: string; resolution?: { status?: string } }>(row.payload);
+      return `${p?.resolution?.status === "superseded" ? "Historical failure (superseded)" : "Workflow delivery failed"}${p?.error ? `: ${trunc(p.error, 120)}` : ""}`;
+    }
     case "task.workflow.dispatch": {
       const p = parsePayload<{ agentSlug?: string; reason?: string; error?: string | null }>(row.payload);
       const base = `PM dispatched a workflow turn to @${p?.agentSlug ?? "?"}${p?.reason ? ` (${p.reason})` : ""}`;

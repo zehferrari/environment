@@ -70,6 +70,8 @@ export default function ActivityTimeline({ rows }: { rows: ActivityTimelineRow[]
         const actor = row.user ?? systemActor;
         const parsed = parsePayload(row.payload);
         const summary = payloadSummary(parsed);
+        const resolution = parsed && typeof parsed === "object" && "resolution" in parsed
+          ? parsed.resolution as { status?: string } | null : null;
         return (
           <li key={row.id} className="text-body">
             <Card tone="soft" padding="sm" className="min-w-0 py-2">
@@ -83,6 +85,9 @@ export default function ActivityTimeline({ rows }: { rows: ActivityTimelineRow[]
                   {row.kind}
                 </span>
                 {row.targetAgent ? <span>@{row.targetAgent}</span> : null}
+                {resolution?.status === "superseded" ? (
+                  <span className="rounded border border-line px-2 py-0.5 text-micro">Historical — superseded</span>
+                ) : null}
               </div>
               {summary ? (
                 <p className="break-words text-caption text-text-muted">{summary}</p>

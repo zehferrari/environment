@@ -112,6 +112,12 @@ async function main() {
     }
     const taskAfterFinalize = await db.task.findUniqueOrThrow({ where: { id: task.id } });
     assert.equal(taskAfterFinalize.status, "Done", "task moved to Done after finalization");
+    assert.equal(taskAfterFinalize.alertReporter, false);
+    const execution = await db.taskExecutionState.findUniqueOrThrow({ where: { taskId: task.id } });
+    assert.equal(execution.reasonCode, "task_done", "completion updates execution state atomically");
+    const completionNotifications = await db.workflowOutbox.findMany({ where: { taskId: task.id, effectType: "task_notification" } });
+    assert.equal(completionNotifications.filter((row) => JSON.parse(row.payload).reason === "review_done").length, 1,
+      "the completion command and notify_completion procedure must not send duplicate notifications");
     // The cycle should be closed as completed.
     const cycles = await db.taskWorkflowCycle.findMany({ where: { taskId: task.id }, orderBy: { sequence: "asc" } });
     const lastCycle = cycles[cycles.length - 1];
