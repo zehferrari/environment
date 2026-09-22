@@ -866,7 +866,7 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
   }
 }
 
-async function abortActiveTurn(sessionKey, expectedDispatchId = null, agentId = "main") {
+async function abortActiveTurn(sessionKey, expectedDispatchId = null, agentId = "main", gatewayPort = 18789) {
   const active = activeTurns.get(sessionKey);
   if (
     active &&
@@ -880,11 +880,19 @@ async function abortActiveTurn(sessionKey, expectedDispatchId = null, agentId = 
     // sessions.abort(clearQueued) clears that exact queue through the public
     // gateway lifecycle API; abortAndDrain alone cannot establish this fence.
     if (active) active.abortedAt = Date.now();
-    const runtime = getPmRuntime();
     const canonicalKey = active?.canonicalSessionKey ?? canonicalizePmStoreSessionKey({
       agentId, requestKey: sessionKey,
     });
-    await clearPmSessionQueue({ runtime, sessionKey: canonicalKey });
+    // Third-party plugins cannot use runtime.gateway.request. Use the public
+    // authenticated client, resolving the same local credentials as the CLI;
+    // do not change plugin trust or grant internal gateway capabilities.
+    const { callGatewayFromCli } = await import("openclaw/plugin-sdk/gateway-runtime");
+    await clearPmSessionQueue({
+      sessionKey: canonicalKey,
+      request: (method, params) => callGatewayFromCli(method, {
+        port: String(gatewayPort), timeout: "5000",
+      }, params),
+    });
     if (!active) sessionKey = canonicalKey;
     const harness = await import("openclaw/plugin-sdk/agent-harness");
     if (
@@ -1081,7 +1089,7 @@ async function handleCancel({ cfg, req, res }) {
   const expectedDispatchId = typeof payload.gatewayDispatchId === "string"
     ? payload.gatewayDispatchId.trim()
     : null;
-  const result = await abortActiveTurn(sessionKey, expectedDispatchId, account.agentId);
+  const result = await abortActiveTurn(sessionKey, expectedDispatchId, account.agentId, cfg.gateway?.port ?? 18789);
   writeJson(res, 200, { ok: true, ...result });
   return true;
 }
