@@ -118,6 +118,18 @@ async function main() {
   assert.equal((await db.pmChannelRun.findUniqueOrThrow({where:{id:'capacity'}})).status,'completed');
   console.log('PASS late stream frame cannot overwrite a concurrent terminal action');
 
+  await db.agentExecutionLease.updateMany({where:{agentSlug:'worker'},data:{status:'released',releasedAt:new Date()}});
+  const oldLane=await db.agentExecutionLease.findUniqueOrThrow({where:{runId:'occupied'}});
+  const reacquired=await reserveExecutionLane({agentSlug:'worker',runId:'occupied',taskId:failedTask.id});
+  assert.equal(reacquired.acquired,true,'retry must reacquire its released lease');
+  const newLane=await db.agentExecutionLease.findUniqueOrThrow({where:{runId:'occupied'}});
+  assert.equal(newLane.id,oldLane.id);assert.notEqual(newLane.leaseToken,oldLane.leaseToken);
+  assert.equal(newLane.releasedAt,null);assert.equal(newLane.status,'reserved');
+  const competing=await reserveExecutionLane({agentSlug:'worker',runId:'capacity',taskId:task.id});
+  assert.equal(competing.acquired,false,'reacquired lease still excludes concurrent execution');
+  assert.equal(!competing.acquired&&competing.blockedByRunId,'occupied');
+  console.log('PASS released leases are reusable on retry and retain agent exclusivity');
+
   // Approved Epics delegate child-plan approval even in reporter-only projects.
   const epic=await db.epic.create({data:{title:'Approved Epic',projectId:project.id,reporterId:owner.id,actingManagerId:reviewer.id,status:'In Progress'}});
   task=await db.task.create({data:{title:'Epic child plan',projectId:project.id,epicId:epic.id,reporterId:owner.id,assigneeId:worker.id}});

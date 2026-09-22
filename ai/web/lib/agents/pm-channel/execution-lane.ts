@@ -94,17 +94,27 @@ export async function reserveExecutionLane(args: {
   }
 
   try {
-    const lane = await db.agentExecutionLease.create({
-      data: {
+    // A retry keeps its run ID, whose previous released lease is still unique.
+    // Reacquire that row atomically; creating a second row would fail forever
+    // and used to be misreported as capacity waiting with an empty holder.
+    const reservation = {
         agentSlug: args.agentSlug,
         runId: args.runId,
         taskId: args.taskId ?? null,
         status: "reserved",
         leaseToken: crypto.randomUUID(),
         acquiredAt: now,
+        heartbeatAt: null,
+        releasedAt: null,
         expiresAt,
-      },
+    };
+    const reacquired = await db.agentExecutionLease.updateMany({
+      where: { runId: args.runId, agentSlug: args.agentSlug, status: "released" },
+      data: reservation,
     });
+    const lane = reacquired.count
+      ? await db.agentExecutionLease.findUniqueOrThrow({ where: { runId: args.runId } })
+      : await db.agentExecutionLease.create({ data: reservation });
     return {
       acquired: true,
       lane: {
@@ -130,6 +140,7 @@ export async function reserveExecutionLane(args: {
       },
       select: { runId: true, taskId: true },
     });
+    if (!holder) throw err;
     return {
       acquired: false,
       blockedByRunId: holder?.runId ?? "",

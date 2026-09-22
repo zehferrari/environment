@@ -17,6 +17,14 @@ even though the parent Epic had already been approved. The monitor nevertheless
 kept requesting approval from that manager. This was an authorization/recovery
 mismatch, not a request for Carmen to rewrite the plan.
 
+Deployment verification also found two Barekbaal retries in `waiting_capacity`
+with an empty blocking run ID. Each already had a released execution lease;
+creating a new lease violated the unique run ID, and the catch path mislabeled
+that error as capacity contention. Retried runs now atomically reacquire their
+released lease with a fresh token. The active-agent unique constraint still
+prevents concurrent execution. Errors without a real holder propagate instead
+of creating an endless capacity wait.
+
 ## Owner-approved policy
 
 Approval of any Epic authorizes its current manager to approve child-task plans
