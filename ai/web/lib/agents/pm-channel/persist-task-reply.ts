@@ -1,3 +1,4 @@
+import { captureTaskThinking } from "@/lib/tasks/thinking/store";
 // ENV-119: Extracted persistTaskReply service so tests can import and
 // exercise the real production entry point without going through the
 // Next.js route handler.
@@ -71,6 +72,7 @@ export async function persistTaskReply(
       baseArchiveId: true,
       originChannel: true,
       originCommentId: true,
+      workflowDedupeKey: true,
       project: { select: { slug: true } },
       task: { select: { deletedAt: true } },
     },
@@ -105,9 +107,7 @@ export async function persistTaskReply(
     originChannel: original.originChannel,
     originCommentId: original.originCommentId,
   });
-  const originWorkflowReason = origin.channel === "comment"
-    ? await taskWorkflowReasonForMessage(target.taskId, target.messageId)
-    : null;
+  const originWorkflowReason = await taskWorkflowReasonForMessage(target.taskId, target.messageId);
   const persistedBody = origin.channel === "chat"
     ? normalizeDiscussionReplySections(body)
     : body;
@@ -145,7 +145,7 @@ export async function persistTaskReply(
   // ENV-122: Look up the active PmChannelRun to wire runId, provider, and model provenance.
   const runProvenance = await db.pmChannelRun.findUnique({
     where: { targetKey: pmChannelRunTargetKey(target) },
-    select: { id: true, provider: true, model: true },
+    select: { id: true, provider: true, model: true, streamSeq: true },
   });
   const runId = runProvenance?.id ?? null;
   const runProvider = runProvenance?.provider ?? null;
@@ -170,6 +170,14 @@ export async function persistTaskReply(
       body: { ok: true, modelFallback: true, ...activity },
       streamText: "",
     };
+  }
+
+  // Only PM-authored autonomous wakes use this route. Human comment answers
+  // and interactive Action Plan discussions keep their original surface.
+  if ((original.workflowDedupeKey || originWorkflowReason) && !original.originCommentId && !validatedActionPlan && runProvenance) {
+    await db.$transaction((tx) => captureTaskThinking(tx, runProvenance.id,
+      { event: "final", text: persistedBody, replace: true }, runProvenance.streamSeq, true));
+    return { status: 200, body: { ok: true, thinkingOnly: true, channel: "thinking" }, streamText: persistedBody };
   }
 
   const reply = await db.$transaction(async (tx) => {

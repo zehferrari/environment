@@ -1,3 +1,4 @@
+import { captureTaskThinking } from "@/lib/tasks/thinking/store";
 import { db } from "@/lib/db";
 import type { PmChannelReplyTarget } from "@/lib/agents/pm-channel/openclaw";
 import {
@@ -201,6 +202,7 @@ export async function appendPmChannelStreamEvent(args: {
         });
       }
     }
+    await captureTaskThinking(tx, args.runId, args.input, run.streamSeq);
     // A `final` carrying replace+full-text is a self-contained terminal frame:
     // replay can reconstruct the complete reply from it alone. Drop the now-
     // redundant per-token/partial rows so this append-only ledger doesn't grow

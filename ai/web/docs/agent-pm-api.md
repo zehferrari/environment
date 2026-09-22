@@ -41,7 +41,7 @@ and 12 activity rows, with bounded bodies. `meta.historyMode` and `meta.limits`
 state the view actually returned. Use `history=full` only when an identified
 older fact is missing; it is not an episode-startup step.
 
-## Native coding-task turns (`pm-task/2`)
+## Native coding-task turns (`pm-task/3`)
 
 The compact runtime is enabled on thinkpad as of 2026-09-08.
 `pm_context` performs scoped reads without exposing

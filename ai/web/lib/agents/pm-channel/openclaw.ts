@@ -55,7 +55,7 @@ export interface SendPmChannelTurnArgs {
   taskRuntime?: PmTaskToolRuntime | null;
   effortPolicy?: PmEffortPolicy;
   expectedWorkflowAction?: "submit_plan";
-  taskContract?: { version: "pm-task/2"; transport: "native-tools" | "scoped-http"; actions: string[] };
+  taskContract?: { version: "pm-task/3"; transport: "native-tools" | "scoped-http"; actions: string[] };
   actor: {
     id: string;
     username?: string | null;

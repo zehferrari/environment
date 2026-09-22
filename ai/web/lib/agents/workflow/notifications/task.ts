@@ -335,6 +335,7 @@ function workflowPrompt(args: {
     "",
     "Workflow endpoint:",
     `POST application/json to: ${workflowUrl}`,
+    `Autonomous narration is displayed in Thinking, not Comments. Keep it brief. To publish a new finding, decision or question for the human, POST {messageId, token, category, body} to ${workflowUrl.replace(/\/workflow$/, "/notes")} using this turn's grant; body must be at most 2000 characters. This does not complete the turn or wake another agent. Use existing workflow actions for blockers and completion; do not duplicate their comments. Never include credentials or raw tool arguments in output.`,
     "Body shape:",
     bodyShape,
     "",

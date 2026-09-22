@@ -11,6 +11,7 @@ const plan = object({ summary: string, steps: { type: "array", minItems: 1, maxI
   id: string, title: string, acceptanceCriteria: strings, kind: { type: "string", enum: ["sequential", "parallel"] }, assigneeId: { type: ["string", "null"] },
 }, ["id", "title", "acceptanceCriteria", "kind"]) } }, ["summary", "steps"]);
 export const PM_TASK_TOOL_DEFINITIONS = {
+  task_note: ["Publish one concise finding, decision or question in Comments. Routine narration belongs in Thinking. Use workflow tools for blockers/completion; do not duplicate their comments. Does not stop the turn or wake another agent.", object({ category: { type: "string", enum: ["finding", "decision", "question"] }, body: { type: "string", minLength: 1, maxLength: 2000 } }, ["category", "body"])],
   context: ["Read current task, plan, checklist, or history only when a named fact is missing.", object({ section: { type: "string", enum: ["current", "plan", "history"] } })],
   submit_plan: ["Submit or revise the structured Action Plan. Finish this turn after acceptance.", object({ actionPlan: plan }, ["actionPlan"])],
   accept_plan_review: ["Accept this plan without authorising execution; wait for reporter approval. Do not request changes when the plan is acceptable.", object(comment)],
@@ -81,6 +82,7 @@ export function createTaskTools({ context, findTurn, loadMedia, fetchImpl = fetc
           return { content: [{ type: "text", text: JSON.stringify({ ok: true, attachment }) }] };
         }
         const url = new URL(action === "context" ? runtime.contextUrl : runtime.workflowUrl);
+        if (action === "task_note") url.pathname = url.pathname.replace(/\/workflow$/, "/notes");
         if (action === "context" && args.section === "history") url.searchParams.set("history", "full");
         const planDecision = ["approve_plan", "request_plan_changes", "accept_plan_review"].includes(action);
         if (planDecision && !reviewedPlan) throw new Error("Read the current plan with pm_context section=plan before deciding.");

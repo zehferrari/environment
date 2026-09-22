@@ -822,11 +822,19 @@ only when source-channel evidence exists: branch/commit/tests where code
 changed, PM comments where feedback was addressed, and the correct PM
 status transition.
 
-Task and Epic comments are durable workflow evidence, not a stream of
-thinking. Keep visible comments direct and consolidated: one comment per
-turn should contain the current issues, blockers, findings, and required
-questions whenever possible. Do not repeat a known blocker unless the
-state changed or the current turn asks for an update.
+Task and Epic comments are durable workflow evidence, not running narration.
+For PM tasks, autonomous progress and published reasoning summaries appear in
+**Thinking**. Keep those updates brief; do not announce every command or resume.
+Use `pm_task_note` (or the turn's scoped `/notes` HTTP endpoint) for one new,
+concise finding, decision or question that the human needs. Aim for one to three
+sentences with evidence or a specific question; the endpoint rejects more than
+2000 characters. It does not change task state or wake another agent. Use the
+existing workflow actions for blockers, plan decisions and completion; they
+publish their own evidence, so do not duplicate it in another note. A direct
+answer to a human's comment still belongs in Comments. Never include credentials
+or raw tool arguments. Do not repeat known findings or blockers unless something
+changed or the human requested an update. Save continuation details in checkpoints,
+not a comment or a Thinking recap.
 
 When a human task comment explicitly asks an agent to create, update, or
 reorganize PM work items, PM supplies the same single-use work-item

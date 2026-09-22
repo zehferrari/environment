@@ -939,3 +939,12 @@ Agents should not:
 - reuse callback tokens outside the message/action they were issued for;
 - post duplicate replies across channels;
 - bypass PM workflow rules by using host filesystem access.
+
+## Task Thinking and explicit notes
+
+Autonomous workflow output now goes to the task **Thinking** tab. It is a durable
+turn reply but does not become a task comment or imply task completion. Answers
+to human comments keep their original surface. Use `pm_task_note`, or the scoped
+`POST /api/agent/tasks/:taskId/notes` endpoint, for a concise finding, decision or
+question; do not duplicate the comments produced by blocker/completion actions.
+See [task Thinking](task-thinking.md) for the contract and access policy.

@@ -303,7 +303,7 @@ Important properties:
   planning/review turns preserve each task/agent session; open execution
   episodes own their tool/context limits and checkpoint handoffs. PM/task/repository state is durable memory;
   provider session context is disposable.
-- Eligible coding-task notifications use `pm-task/2`: a compact snapshot,
+- Eligible coding-task notifications use `pm-task/3`: a compact snapshot,
   durable checkpoint and role-scoped native tools, with credentials bound by
   the gateway outside the model prompt. `pm_context` retrieves missing facts.
   Direct/interactive chats, Epics, general/artifact agents and tasks requiring
@@ -563,3 +563,7 @@ The agent Models tab includes a provider upgrade preview and fallback rotation.
 The same operation is available as `scripts/rotate-agent-model.sh <provider> <model>`
 (with optional `--dry-run`). See [Agent model upgrades](docs/agent-model-upgrades.md)
 for matching rules, model discovery limits, restart behavior, and verification.
+
+Task execution narration appears in the owner-only **Thinking** tab; Comments
+contain explicit findings/questions and workflow evidence. See the
+[Thinking and task-note contract](docs/task-thinking.md).

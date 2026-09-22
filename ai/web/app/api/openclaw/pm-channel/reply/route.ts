@@ -453,7 +453,7 @@ export async function POST(req: NextRequest) {
     // Silent replies (no-contribution / workflow acks) persist no visible
     // message, so skip the push — otherwise every silent agent fires a content-
     // less "New reply" notification that opens a chat with nothing new in it.
-    if (eventInput.text.trim().length > 0) {
+    if (eventInput.text.trim().length > 0 && !("thinkingOnly" in result.body && result.body.thinkingOnly)) {
       void notifyHumanOfAgentReply(target, eventInput.text);
     }
   } else {

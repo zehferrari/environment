@@ -1471,6 +1471,7 @@ model PmChannelRun {
   createdAt                  DateTime                @default(now())
   updatedAt                  DateTime                @updatedAt
   jobs                       PmChannelJob[]
+  thinking                   TaskThinkingSnapshot?
   streamEvents               PmChannelStreamEvent[]
   contextGrants              ContextGrant[]
   continuations              PmChannelContinuation[]
@@ -2194,4 +2195,18 @@ model BillingReportDay {
 
   @@unique([reportId, day])
   @@index([reportId])
+}
+
+// Bounded, display-only execution history. Never included in agent prompts.
+model TaskThinkingSnapshot {
+  runId           String       @id
+  run             PmChannelRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  progress        String       @default("")
+  reasoning       String       @default("")
+  tools           String       @default("[]")
+  role            String       @default("agent")
+  truncated       Boolean      @default(false)
+  lastSeq         Int          @default(0)
+  finalReceivedAt DateTime?
+  updatedAt       DateTime     @updatedAt
 }

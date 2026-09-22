@@ -709,7 +709,7 @@ immediately when OpenClaw reports an unrecoverable context/compaction failure.
 The retry job and binding move to the fresh key together and the incremental
 baseline resets. This is provider-neutral: current PM state and the worktree
 are durable memory, while OpenAI/Anthropic/Ollama session context is a
-disposable cache. Compact coding-task turns use the `pm-task/2` snapshot and
+disposable cache. Compact coding-task turns use the `pm-task/3` snapshot and
 scoped native tools. Remaining legacy turns cap their aggregate inline working
 set with
 `PM_CHANNEL_PRIMARY_CONTEXT_MAX_CHARS` (default 48000 characters) and each

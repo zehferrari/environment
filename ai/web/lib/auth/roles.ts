@@ -81,6 +81,7 @@ const TASK_DETAIL_TABS = [
   "Sub-Tasks",
   "Attachments",
   "Comments",
+  "Thinking",
   "Activities",
   "Development",
   "Changes",
@@ -126,6 +127,7 @@ export function taskDetailTabsForRole(role: HumanRole | null, hasDeployment: boo
   const experience = viewerExperienceForRole(role);
   return TASK_DETAIL_TABS.filter((tab) => (
     (tab !== "Development" || hasDeployment)
+    && (tab !== "Thinking" || role === "owner")
     && (!experience.customerSafe || !CUSTOMER_HIDDEN_TASK_TABS.has(tab))
   ));
 }

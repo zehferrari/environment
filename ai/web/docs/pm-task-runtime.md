@@ -1,10 +1,11 @@
 # Compact PM task runtime
 
-Current change (22 September): PM channel 0.1.10 adds explicit plan-review
-acceptance and scoped native attachment upload. Required-attachment coding
-tasks now use compact context. The historical activation table below records
-the original 8 September rollout, not the current plugin version. See the
-[WDT-9 audit](audits/wdt-9-planning-workflow-2026-09-22.md) for validation and deployment.
+Current change (22 September): PM channel 0.1.11 adds explicit task notes and
+routes autonomous narration to the owner-only Thinking tab. Required-attachment
+coding tasks retain compact context, explicit review acceptance and native
+attachment upload from 0.1.10. See [task Thinking](task-thinking.md) and the
+[WDT-9 audit](audits/wdt-9-planning-workflow-2026-09-22.md). The historical table
+below records the original 8 September rollout, not the current plugin version.
 
 Enabled on **thinkpad on 2026-09-08**, after the workflow changes were merged
 and deployed from `main` at commit `998dae4`. The live website and consumer use
@@ -19,16 +20,16 @@ and deployed from `main` at commit `998dae4`. The live website and consumer use
 | Enabled gateways | Asdrubal, Karen, Barekbaal and Carmen; each authenticated capabilities response advertised runtime version **1** and **15 PM tools** |
 | Agent instructions | `AGENTS.md` and `WORKFLOW.md` synchronized from the deployed worktree and verified in every internal agent workspace |
 
-The model-facing contract is `pm-task/2`; the plugin envelope/capability version
+The model-facing contract is `pm-task/3`; the plugin envelope/capability version
 is `1`. These version numbers describe different contracts. The feature remains
-disabled by default on a fresh installation until explicitly configured. No new
-database migrations were required for this activation.
+disabled by default on a fresh installation until explicitly configured. The original 8 September activation required no database migration; the
+Thinking release requires `20260922100000_task_thinking`.
 
 ## What changes
 
 | Problem | Implemented behavior |
 | --- | --- |
-| Reintroducing PM on each wake | `pm-task/2` supplies identity, current role, task state, plan, checklist, repository/worktree and durable checkpoint. Generic PM manuals and personal startup files are no longer mandatory task onboarding. |
+| Reintroducing PM on each wake | `pm-task/3` supplies identity, current role, task state, plan, checklist, repository/worktree and durable checkpoint. Generic PM manuals and personal startup files are no longer mandatory task onboarding. |
 | Reconstructing HTTP and credentials | PM channel plugin 0.1.2 registers scoped `pm_*` tools. The active ingress generation supplies task/message identity and credentials outside the model's prompt and tool schema. |
 | Revisions start cold | Task/agent session bindings persist across planning feedback and plan review. Different agents have separate sessions; every message receives its own credentials. |
 | Multiple reset counters | Checklist bookkeeping consumes the real tool budget, not a second workflow-action charge. Open execution episodes own rotation; the existing completed-turn fallback still bounds planning sessions. Context-failure recovery and hard tool limits remain. |
@@ -263,3 +264,11 @@ task as well as an Epic child, with a fresh owner authorization. Standalone
 publication pushes the task feature branch and preserves the original review
 base; Epic-child publication uses the Epic integration branch. Both keep the
 task active and require the remaining checks before `ready_for_review`.
+
+### Thinking and explicit task notes
+
+Plugin 0.1.11 / `pm-task/3` routes autonomous narration into the task Thinking tab.
+The native `pm_task_note` tool and CLI `/notes` endpoint publish explicit concise
+findings, decisions and questions. Existing workflow actions keep their blocker
+and completion evidence. Thinking is display-only and is not added to future
+prompts. See [task Thinking](task-thinking.md) for retention and rollout.

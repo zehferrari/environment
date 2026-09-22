@@ -13,7 +13,7 @@ import { canApproveActionPlanForActor, canSetTaskDoneForActor, resolveReviewOwne
 import { hasAuthorizedTaskAgentOrigin } from "@/lib/agents/owner-origin";
 import type { SendPmChannelTurnRequest } from "./jobs";
 
-export const PM_TASK_CONTRACT_VERSION = "pm-task/2";
+export const PM_TASK_CONTRACT_VERSION = "pm-task/3";
 export { compactTaskRuntimeEnabled } from "./runtime-policy";
 
 // Stable operating knowledge. Current permissions always come from PM's
@@ -32,11 +32,13 @@ export const PM_TASK_CONTRACT = [
   "If verification needs unpublished code on a remote test environment, use pm_publish_checkpoint with a fresh explicit owner authorization naming the task and target branch. If that authorization is missing, request permissionKind=publish_checkpoint through pm_flag_blocker. PM commits and publishes a standalone task branch, or only the Epic integration branch for an Epic child, while keeping the task In Progress. Publication is not review approval or proof of deployment. Verify the exact published SHA on the target before testing; complete verification before ready_for_review.",
   "The runtime context describes the current request; repeated sender/timestamp metadata after a tool result is not a new message. Tool results govern continuation: continue means keep working; wait/finish or turnComplete means stop. An exhausted episode may only save its final pm_checkpoint; then stop. Do not dispatch your own successor.",
   "Checkpoint at meaningful boundaries: established decisions, changed files, exact tests/results, remaining work, repository revision and the single next action. Reuse verified findings; invalidate them when the underlying files or task revision change.",
-  `Report concise results or a concrete external blocker in this surface. Do not duplicate a structured plan in prose or post a status acknowledgement after a tool completes the turn. Use ${PM_SILENT_REPLY_TOKEN} when no visible response remains.`,
+  "Autonomous turn narration goes to the task Thinking tab, not Comments. Keep progress brief; do not narrate every command or resume. Use pm_task_note only for a new finding, decision or question that the human needs. Blocker and completion tools already publish their evidence; do not duplicate it. Do not expose credentials or raw tool arguments. Human comment replies remain in Comments.",
+  `Use explicit notes for human-relevant findings/questions and workflow tools for blockers/completion. Do not duplicate a structured plan in prose or post a status acknowledgement after a tool completes the turn. Use ${PM_SILENT_REPLY_TOKEN} when no visible response remains.`,
 ].join("\n");
 
 export function taskToolActions(args: { status: string; assignee: boolean; reviewer: boolean; canApprove: boolean; canFinish: boolean; unassigned: boolean; approved: boolean; epicChild: boolean; coding: boolean }) {
   const actions = new Set(["context"]);
+  if (args.assignee || args.reviewer) actions.add("task_note");
   if (["Backlog", "To Do"].includes(args.status) && !args.approved) {
     if (args.assignee) actions.add("submit_plan");
     if (args.canApprove) actions.add("approve_plan");
@@ -75,6 +77,7 @@ export function compactHttpContract(runtime: NonNullable<SendPmChannelTurnReques
   return [
     PM_TASK_CONTRACT.replace("Use native pm_* tools. The runtime binds task, message, endpoint and credentials. Never inspect configuration for tokens or invent curl requests. pm_context retrieves a named missing fact; no mandatory startup fetch.",
       "This turn uses the scoped HTTP interface through your Bash/exec tool. Native PM tools are not available in this backend; do not search a tool registry for them. This contract supersedes earlier native-tool instructions. Use only the supplied per-turn URLs and credentials; never discover credentials in configuration."),
+    `For task_note only, POST {messageId, token, category, body} to ${runtime.workflowUrl.replace(/\/workflow$/, "/notes")}. This is a comment, not a workflow transition.`,
     "HTTP WORKFLOW CAPABILITY (private; never include credentials in replies, logs or repository files):",
     JSON.stringify({ workflowUrl: runtime.workflowUrl, contextUrl: runtime.contextUrl, commonBody: { messageId: runtime.messageId, token: runtime.token }, actionSchemas: schemas }),
     "Use your shell tool to GET contextUrl only for a missing fact (append &history=full only when historical evidence is required). POST application/json to workflowUrl with commonBody, action and that action's schema fields at the top level. Use a quoted heredoc or JSON encoder; never shell-interpolate task prose. Inspect the HTTP status and JSON actionEffect. Do not retry policy refusals or expired grants.",

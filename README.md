@@ -61,6 +61,7 @@ Every Markdown doc in the tree, grouped by folder. Agent-facing files (copied in
 | [`ai/web/deploy/README.md`](./ai/web/deploy/README.md) | PM deployment notes: files, worktree switcher, branch verifier, service model, first-time install. |
 | [`ai/web/deploy/MULTI_AGENT_WORKTREES.md`](./ai/web/deploy/MULTI_AGENT_WORKTREES.md) | Multi-agent worktree + monitor-driven live-preview design. |
 | `ai/web/docs/agent-pm-api.md` | Agent-facing PM read API reference (on-demand; native task turns carry their operating contract). |
+| [`ai/web/docs/task-thinking.md`](./ai/web/docs/task-thinking.md) | Task Thinking history, explicit concise notes, provider contracts, access and deployment. |
 | [`ai/web/docs/pm-task-runtime.md`](./ai/web/docs/pm-task-runtime.md) | Compact task runtime: active thinkpad configuration, native tools, session budgets, measurements and rollback. |
 | [`ai/web/docs/agent-model-upgrades.md`](./ai/web/docs/agent-model-upgrades.md) | Model promotion UI/CLI, provider fallback rotation, role-based effort and Ollama mapping limits. |
 | [`ai/web/docs/audits/openclaw-openai-upgrade-2026-09-10.md`](./ai/web/docs/audits/openclaw-openai-upgrade-2026-09-10.md) | OpenClaw 2026.9.3 upgrade: Codex dependency, OAuth route, PM compatibility, verified backups and recovery. |

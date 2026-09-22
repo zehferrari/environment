@@ -123,3 +123,13 @@ or a retryable error. A superseded generation cannot stop its successor.
 This native-tool boundary does not intercept Claude CLI's shell HTTP calls;
 those receive the unified silence instruction and existing HTTP completion
 contract. Unsupported harness stop APIs log a warning and retain the tool fence.
+
+## Task output channels (0.1.11)
+
+Autonomous task narration is stored by PM as Thinking history, not comments.
+`pm_task_note` explicitly publishes a concise finding/decision/question through
+the scoped `/notes` endpoint without ending the turn. Claude CLI uses the same
+HTTP endpoint from `pm-task/3`. Workflow actions already publish blocker and
+completion evidence. The existing progress/reasoning/tool stream feeds the new
+Thinking tab; unavailable provider summaries are not fabricated.
+See [task Thinking](../docs/task-thinking.md) for access, retention and deployment.

@@ -37,7 +37,7 @@ async function main() {
   const plan={summary:'Short PDF, coverage limitations and hosting recommendation.',steps:[{id:'report',title:'Produce report',kind:'sequential',acceptanceCriteria:['Use available logs and attach PDF']}]};
   const first=await notify(worker,'backlog_plan_requested');let result=await post(first,'submit_plan',{actionPlan:plan});assert.equal(result.status,202,JSON.stringify(result));
   const review=await notify(reviewer,'action_plan_review_requested');assert.ok(review.payload.taskRuntime.actions.includes('accept_plan_review'));assert.ok(!review.payload.taskRuntime.actions.includes('approve_plan'));
-  for(const text of ['Acceptable; no revisions needed.','Approval failed: not_authorized_for_plan. Do not resubmit.']) {const n=await db.agentChatMessage.count({where:{taskId:task.id}});await runRouteHandler(()=>persistTaskReply(review.payload.replyTarget,text));assert.equal(await db.agentChatMessage.count({where:{taskId:task.id}}),n+1,'prose must not wake implementer');}
+  for(const text of ['Acceptable; no revisions needed.','Approval failed: not_authorized_for_plan. Do not resubmit.']) {const n=await db.agentChatMessage.count({where:{taskId:task.id}});await runRouteHandler(()=>persistTaskReply(review.payload.replyTarget,text));assert.equal(await db.agentChatMessage.count({where:{taskId:task.id}}),n,'autonomous prose belongs in Thinking and must not wake implementer');}
   assert.equal((await post(review,'approve_plan')).status,403);
   result=await post(review,'accept_plan_review');assert.equal(result.status,202,JSON.stringify(result));
   let stored=await db.actionPlan.findUniqueOrThrow({where:{taskId:task.id}});assert.equal(stored.reviewedById,reviewer.id);assert.equal(stored.approvedOn,null);

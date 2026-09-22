@@ -5,6 +5,8 @@
   "packageManager": "pnpm@10.33.0",
   "description": "Mission Control project workspace for agents, projects, and kanban",
   "scripts": {
+    "test:task-thinking": "node --import tsx scripts/task-thinking-test.ts",
+    "test:task-thinking-browser": "node scripts/task-thinking-browser-test.mjs",
     "dev": "next dev",
     "build": "node scripts/build.mjs",
     "start": "next start",

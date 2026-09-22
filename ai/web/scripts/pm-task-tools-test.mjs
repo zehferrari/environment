@@ -137,3 +137,16 @@ assert.equal(nativeTaskToolsSupported({ agents: { defaults: { model: { primary: 
 console.log("PASS OpenClaw 2026.9 entries and canonical CLI runtime capability checks");
 
 assert.equal(nativeTaskToolsSupported({ agents: { defaults: { model: { primary: "openai/gpt-6-astra" }, models: { "openai/gpt-6-astra": { agentRuntime: { id: "codex" } } } } } }), true, "Codex harness bridges native OpenClaw tools");
+
+// Explicit notes use the same scoped endpoint as Claude CLI without completing
+// or replacing the running turn. API-provider selection does not change routing.
+for (const provider of ['openai', 'anthropic', 'ollama']) {
+  turn = { acceptedId: `note-${provider}`, replyTarget: target, taskRuntime: { ...runtime, actions: ['task_note'] } };
+  const sent = [];
+  const [note] = createTaskTools({ context, findTurn, fetchImpl: async (url, options) => { sent.push({ url: String(url), body: JSON.parse(options.body) }); return Response.json({ ok: true, id: 'note-id' }); } });
+  await note.execute('note', { category: 'finding', body: 'Verified coverage.' });
+  assert.equal(sent[0].url, 'http://127.0.0.1:3000/api/agent/tasks/task-1/notes');
+  assert.equal(sent[0].body.token, runtime.token);
+  assert.equal(turn.completedAction, undefined);
+}
+console.log('PASS explicit task notes use scoped HTTP without completing the turn');

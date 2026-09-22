@@ -1,3 +1,4 @@
+import TaskThinkingPanel from "@/components/task-thinking-panel";
 import { notFound } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
@@ -806,7 +807,7 @@ function discussionTargetValue(
 }
 
 const DEVELOPMENT_TAB = "Development";
-const TASK_TABS = ["Description", "Action Plan", "Sub-Tasks", "Attachments", "Comments", "Activities", DEVELOPMENT_TAB, "Changes"] as const;
+const TASK_TABS = ["Description", "Action Plan", "Sub-Tasks", "Attachments", "Comments", "Thinking", "Activities", DEVELOPMENT_TAB, "Changes"] as const;
 
 function tabParam(tab: string) {
   return tab
@@ -976,6 +977,7 @@ export default async function TaskDetailPage({
   const settledMessageIds = activityMessageIds(recentReplyActivity);
   const recentCommentMessages = recentTaskChatMessages.filter((message) => (
     message.originChannel === "comment"
+    && Boolean(message.originCommentId)
     && message.sender.kind !== "agent"
   ));
   const recentCommentRuns = recentCommentMessages.length
@@ -2032,6 +2034,7 @@ export default async function TaskDetailPage({
                 </div>
               </TabPanel>
 
+              {viewer.canAccessOwnerFeatures ? <TabPanel name="Thinking"><TaskThinkingPanel taskId={task.id} /></TabPanel> : null}
               <TabPanel name="Comments">
                 <div className="flex h-[calc(100dvh-14rem)] min-h-[560px] flex-col">
                   <h2 className="mb-3 text-body font-semibold tracking-wide text-text">

@@ -223,6 +223,13 @@ function silentActivityKind(target: PmChannelReplyTarget) {
 }
 
 export async function pmChannelTargetHasDurableReply(target: PmChannelReplyTarget) {
+  if (target.kind === "task-comment" || target.kind === "task-chat") {
+    const thinking = await db.taskThinkingSnapshot.findFirst({ where: {
+      run: { targetKey: pmChannelRunTargetKey(target) }, finalReceivedAt: { not: null },
+    }, select: { runId: true } });
+    if (thinking) return true;
+  }
+
   const row = await db.activityLog.findFirst({
     where: {
       kind: { in: [replyActivityKind(target), silentActivityKind(target)] },
