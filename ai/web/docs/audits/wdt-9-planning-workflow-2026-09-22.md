@@ -107,3 +107,19 @@ to a completed UI event, retaining the error as a completion anomaly. The WDT
 fixture exercises that real stream callback, as well as deterministic races
 for retry, exhaustion and late stream writes. This follow-up changes PM's
 server/consumer only; another gateway reload is not needed.
+
+The final server/consumer deployment of `f5f102e` succeeded with receipt
+`/srv/Data/pm/deployment-receipts/2026-09-22T020646Z-main-f5f102e698d1.receipt`.
+Both services were active, public login returned HTTP 200, and the deployment
+verified that the HTML's referenced CSS returned 200. A first attempt stopped
+before building because its SQLite checkpoint encountered a busy reader; the
+reader exited and the standard deployment retry succeeded.
+
+For maintenance, only WDT-9's Barekbaal turn
+`1a66df5f-96d9-4477-a37c-468d8a88dc5d` was canceled, with gateway abort confirmed
+and checkpoint episode 4 preserved. The post-deployment resume guard found
+an existing continuation and did not send a duplicate notification. Run
+`9d84fde4-565f-4161-a6fd-acf4a9122f88` subsequently reached `streaming` without
+an error. The task remained In Progress at workflow version 2. This verifies
+the recovered handoff; it does not claim that the report/PDF deliverable has
+finished.
