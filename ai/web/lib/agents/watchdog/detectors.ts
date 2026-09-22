@@ -645,7 +645,9 @@ const TWO_ACTIVE_LANES_ONE_AGENT: WatchdogDetector = {
     const findings: WatchdogFinding[] = [];
     const agentActiveRuns = new Map<string, typeof snapshot.runs>();
     for (const run of snapshot.runs) {
-      if (!isActiveRunStatus(run.status)) continue;
+      // Queued/delivered/capacity-waiting turns have not begun execution.
+      // One running turn plus queued work is normal, not duplicate execution.
+      if (!["accepted", "admitted", "streaming"].includes(run.status)) continue;
       const bucket = agentActiveRuns.get(run.agentSlug) ?? [];
       bucket.push(run);
       agentActiveRuns.set(run.agentSlug, bucket);

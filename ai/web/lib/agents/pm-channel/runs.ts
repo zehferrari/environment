@@ -701,7 +701,7 @@ export async function recordPmChannelRunDispatch(args: {
         // Dispatch results are allowed to settle only the generation that is
         // still awaiting/holding this handoff. A delayed file-drop result for
         // a terminal generation must never resurrect it into the active lane.
-        status: { in: ["queued", "delivered", "accepted"] },
+        status: { in: ["queued", "waiting_capacity", "delivered", "accepted"] },
       },
       data: {
           httpStatus: args.result.status ?? null,
@@ -711,6 +711,10 @@ export async function recordPmChannelRunDispatch(args: {
           // ENV-159: delivered replaces accepted as the gateway-handoff state.
           // accepted is kept as a compatibility read path during migration.
           status: ok ? "delivered" : "failed",
+          blockedReason: null,
+          blockedByRunId: null,
+          blockedByTaskId: null,
+          capacityBlockedAt: null,
           error: ok ? null : clippedError(args.result.error),
           // ENV-159: Set acceptedAt as compatibility for old code; new code
           // uses admittedAt which is set by the canonical turn:admitted event.

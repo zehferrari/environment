@@ -129,6 +129,15 @@ async function main() {
   assert.equal(competing.acquired,false,'reacquired lease still excludes concurrent execution');
   assert.equal(!competing.acquired&&competing.blockedByRunId,'occupied');
   console.log('PASS released leases are reusable on retry and retain agent exclusivity');
+  const {recordPmChannelRunDispatch}=await import('@/lib/agents/pm-channel/runs');
+  await db.pmChannelRun.update({where:{id:'capacity'},data:{status:'waiting_capacity',blockedByRunId:'occupied',blockedReason:'agent_capacity'}});
+  await recordPmChannelRunDispatch({target:payload.replyTarget,result:{ok:true,status:202,driver:'openclaw-pm-channel'}});
+  const deliveredRetry=await db.pmChannelRun.findUniqueOrThrow({where:{id:'capacity'}});
+  assert.equal(deliveredRetry.status,'delivered');assert.equal(deliveredRetry.blockedByRunId,null);
+  await db.pmChannelRun.update({where:{id:'capacity'},data:{status:'completed'}});
+  await recordPmChannelRunDispatch({target:payload.replyTarget,result:{ok:true,status:202,driver:'openclaw-pm-channel'}});
+  assert.equal((await db.pmChannelRun.findUniqueOrThrow({where:{id:'capacity'}})).status,'completed');
+  console.log('PASS capacity retry handoff advances to delivered without reviving completed runs');
 
   // Approved Epics delegate child-plan approval even in reporter-only projects.
   const epic=await db.epic.create({data:{title:'Approved Epic',projectId:project.id,reporterId:owner.id,actingManagerId:reviewer.id,status:'In Progress'}});

@@ -812,4 +812,14 @@ assertEqual(
   }
 }
 
+{
+  const detector = WATCHDOG_DETECTORS.find(d => d.id === 'two_active_lanes_one_agent')!;
+  for (const status of ['queued', 'delivered', 'waiting_capacity']) {
+    const queued = snapshot({runs:[run({status:'streaming'}),run({id:'queued-run',taskId:'task-2',status})]});
+    assertEqual(detector.detect(queued).length,0,`streaming plus ${status} is not duplicate execution`);
+  }
+  const duplicate = snapshot({runs:[run({status:'streaming'}),run({id:'other-run',taskId:'task-2',status:'admitted'})]});
+  assertEqual(detector.detect(duplicate).length,2,'two genuinely executing turns are still detected');
+}
+
 console.log(`[workflow-watchdog] OK — ${checks} checks passed`);

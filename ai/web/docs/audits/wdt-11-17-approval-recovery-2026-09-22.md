@@ -25,6 +25,13 @@ released lease with a fresh token. The active-agent unique constraint still
 prevents concurrent execution. Errors without a real holder propagate instead
 of creating an endless capacity wait.
 
+The recovered handoff must also move `waiting_capacity` to `delivered` and
+clear its obsolete capacity metadata; the old dispatch-result guard excluded
+this state. Terminal and already-admitted runs remain fenced against delayed
+dispatch results. The duplicate-execution detector now excludes queued,
+delivered and capacity-waiting turns, preventing false stalled alerts when
+one agent legitimately has pending work behind an executing turn.
+
 ## Owner-approved policy
 
 Approval of any Epic authorizes its current manager to approve child-task plans
