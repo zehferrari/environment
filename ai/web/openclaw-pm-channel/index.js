@@ -866,7 +866,7 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
   }
 }
 
-async function abortActiveTurn(sessionKey, expectedDispatchId = null) {
+async function abortActiveTurn(sessionKey, expectedDispatchId = null, agentId = "main") {
   const active = activeTurns.get(sessionKey);
   if (
     active &&
@@ -881,9 +881,8 @@ async function abortActiveTurn(sessionKey, expectedDispatchId = null) {
     // gateway lifecycle API; abortAndDrain alone cannot establish this fence.
     if (active) active.abortedAt = Date.now();
     const runtime = getPmRuntime();
-    const account = resolvePmAccount({ cfg: runtime.config.loadConfig() });
     const canonicalKey = active?.canonicalSessionKey ?? canonicalizePmStoreSessionKey({
-      agentId: account.agentId, requestKey: sessionKey,
+      agentId, requestKey: sessionKey,
     });
     await clearPmSessionQueue({ runtime, sessionKey: canonicalKey });
     if (!active) sessionKey = canonicalKey;
@@ -1082,7 +1081,7 @@ async function handleCancel({ cfg, req, res }) {
   const expectedDispatchId = typeof payload.gatewayDispatchId === "string"
     ? payload.gatewayDispatchId.trim()
     : null;
-  const result = await abortActiveTurn(sessionKey, expectedDispatchId);
+  const result = await abortActiveTurn(sessionKey, expectedDispatchId, account.agentId);
   writeJson(res, 200, { ok: true, ...result });
   return true;
 }
