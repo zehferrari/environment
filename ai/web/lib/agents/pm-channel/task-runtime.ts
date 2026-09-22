@@ -45,7 +45,10 @@ export function taskToolActions(args: { status: string; assignee: boolean; revie
   if (["Backlog", "To Do"].includes(args.status) && !args.approved) {
     if (args.assignee) actions.add("submit_plan");
     if (args.canApprove) actions.add("approve_plan");
-    if (args.reviewer) { actions.add("request_plan_changes"); actions.add("accept_plan_review"); }
+    if (args.reviewer) {
+      actions.add("request_plan_changes");
+      if (!args.canApprove) actions.add("accept_plan_review");
+    }
     if (args.reviewer && args.unassigned) actions.add("assign_task");
   }
   if (args.assignee && ((args.status === "To Do" && args.approved) || args.status === "In Progress")) {

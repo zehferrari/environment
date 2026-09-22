@@ -49,6 +49,11 @@ async function main() {
   const other=await db.user.create({data:{username:'other',email:'other@wdt.invalid',kind:'human'}});const refused=await delegate({...actor,id:other.id,username:other.username});assert.ok(!['accepted','replayed'].includes(refused.status));
   const delegation=await delegate(actor);assert.equal(delegation.status,'accepted',JSON.stringify(delegation));assert.equal((await delegate(actor)).status,'replayed');
   const delegatedTurn=await notify(reviewer,'action_plan_review_requested');assert.ok(delegatedTurn.payload.taskRuntime.actions.includes('approve_plan'));
+  assert.ok(!delegatedTurn.payload.taskRuntime.actions.includes('accept_plan_review'));
+  const incorrectAcceptance=await post(delegatedTurn,'accept_plan_review');
+  assert.equal(incorrectAcceptance.status,403,JSON.stringify(incorrectAcceptance));
+  assert.match(JSON.stringify(incorrectAcceptance.body),/approval_required_use_approve_plan/);
+  assert.equal((await db.pmChannelRun.findUniqueOrThrow({where:{id:delegatedTurn.run.id}})).status,'admitted','rejection must keep the reviewer turn actionable');
   // Changing the revision revokes delegation and acceptance.
   const revision=await notify(worker,'backlog_plan_requested');result=await post(revision,'submit_plan',{actionPlan:{...plan,summary:plan.summary+' Include timezone.'}});assert.equal(result.status,202,JSON.stringify(result));
   stored=await db.actionPlan.findUniqueOrThrow({where:{taskId:task.id}});assert.equal(stored.version,2);assert.equal(stored.delegatedApproverId,null);assert.equal(stored.reviewedAt,null);
@@ -153,6 +158,7 @@ async function main() {
   assert.equal(epicSnapshot.tasks.find(t=>t.id===task.id)?.acceptedReviewerCanApprove,true);
   const approvedTurn=await notify(reviewer,'action_plan_review_requested');
   assert.ok(approvedTurn.payload.taskRuntime.actions.includes('approve_plan'));
+  assert.ok(!approvedTurn.payload.taskRuntime.actions.includes('accept_plan_review'));
   const childPlan=await db.actionPlan.findUniqueOrThrow({where:{taskId:task.id}});
   result=await post(approvedTurn,'approve_plan',{actionPlanId:childPlan.id,actionPlanVersion:childPlan.version});
   assert.equal(result.status,202,JSON.stringify(result));
@@ -160,6 +166,24 @@ async function main() {
   assert.equal(approvedChild.approvedById,reviewer.id);
   assert.ok(approvedChild.approvedOn);
   console.log('PASS approved Epic manager receives native approval capability and can approve through the API');
+
+  // V23-43: a standalone reviewer already has approval authority and must
+  // not be offered the acceptance-only action that waits for another actor.
+  await db.project.update({where:{id:project.id},data:{onlyReportersCanApproveActionPlans:false}});
+  task=await db.task.create({data:{title:'Standalone approval',projectId:project.id,reporterId:owner.id,actingManagerId:reviewer.id,assigneeId:worker.id}});
+  const standalonePlanTurn=await notify(worker,'backlog_plan_requested');
+  assert.equal((await post(standalonePlanTurn,'submit_plan',{actionPlan:plan})).status,202);
+  const standaloneReview=await notify(reviewer,'action_plan_review_requested');
+  assert.ok(standaloneReview.payload.taskRuntime.actions.includes('approve_plan'));
+  assert.ok(!standaloneReview.payload.taskRuntime.actions.includes('accept_plan_review'));
+  const deniedAcceptance=await post(standaloneReview,'accept_plan_review');
+  assert.equal(deniedAcceptance.status,403);
+  assert.match(JSON.stringify(deniedAcceptance.body),/approval_required_use_approve_plan/);
+  const standalonePlan=await db.actionPlan.findUniqueOrThrow({where:{taskId:task.id}});
+  assert.equal(standalonePlan.reviewedAt,null);
+  assert.equal((await post(standaloneReview,'approve_plan',{actionPlanId:standalonePlan.id,actionPlanVersion:standalonePlan.version})).status,202);
+  assert.equal((await db.task.findUniqueOrThrow({where:{id:task.id}})).approvedById,reviewer.id);
+  console.log('PASS standalone approver cannot enter acceptance-only wait and can approve in the same turn');
 
 
  }finally{await db.$disconnect();rmSync(dir,{recursive:true,force:true});}

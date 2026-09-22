@@ -45,6 +45,7 @@ export type AuthorizationReason =
   | "not_reporter"
   | "not_monitor"
   | "not_authorized_for_plan"
+  | "approval_required_use_approve_plan"
   | "not_authorized_for_done"
   | "not_coding_capable"
   | "monitor_cannot_decide"
@@ -419,6 +420,9 @@ export function authorizeCommand(
     case "accept_plan_review":
     case "request_plan_changes": {
       const allowed = actor.id === resolveReviewOwnerId(state) || actor.id === state.reporterId;
+      if (allowed && intent === "accept_plan_review" && canApproveActionPlanForActor(state, actor.id)) {
+        return { allowed: false, reason: "approval_required_use_approve_plan", decisionActorId: null, executorActorId: null };
+      }
       return { allowed, reason: allowed ? "ok" : "not_authorized_for_plan", decisionActorId: allowed ? actor.id : null, executorActorId: null };
     }
     case "approve_plan": {

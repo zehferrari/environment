@@ -273,6 +273,12 @@ the manager to approve their own implementation plan, approve the Epic itself,
 or bypass the separate completion/deployment rules. Use `approve_plan` for an
 acceptable plan when the current PM grant includes it.
 
+`accept_plan_review` is only for a reviewer who cannot approve. An authorized
+approver must use `approve_plan` for an acceptable plan, or
+`request_plan_changes` for required corrections. PM rejects `accept_plan_review`
+with `approval_required_use_approve_plan` when that same actor can approve;
+this is an instruction to use the approval action, not a permission blocker.
+
 Otherwise, if project policy reserves approval for the reporter, the reviewer can still
 request required corrections. When the plan is acceptable, record
 `accept_plan_review` (`pm_accept_plan_review`) and stop. PM shows “Review
