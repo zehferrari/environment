@@ -29,7 +29,7 @@ export async function resolvePmEffortPolicy(args: SendPmChannelTurnArgs): Promis
   const task = await db.task.findUnique({ where: { id: target.taskId }, select: {
     status: true, assigneeId: true, actingManagerId: true, reporterId: true, approvedOn: true,
     project: { select: { onlyReportersCanApproveActionPlans: true, onlyReportersCanSetTasksDone: true } },
-    epic: { select: { status: true, actingManagerId: true } },
+    epic: { select: { status: true, actingManagerId: true, approvedOn: true } },
   } });
   return task ? taskEffortPolicy(task, user.id) : normal;
 }

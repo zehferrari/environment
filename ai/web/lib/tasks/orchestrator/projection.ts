@@ -136,7 +136,7 @@ export async function buildTaskWorkflowProjection(taskId: string): Promise<TaskW
           repositoryPath: true,
         },
       },
-      epic: { select: { status: true, actingManagerId: true } },
+      epic: { select: { status: true, actingManagerId: true, approvedOn: true } },
       repositoryRun: {
         select: {
           phase: true,
@@ -226,7 +226,7 @@ export async function buildTaskWorkflowProjection(taskId: string): Promise<TaskW
     resolvedReviewOwnerId: resolveReviewOwnerId({
       actingManagerId: task.actingManagerId,
       reporterId: task.reporterId,
-      epic: task.epic ? { status: task.epic.status, actingManagerId: task.epic.actingManagerId } : null,
+      epic: task.epic ? { status: task.epic.status, actingManagerId: task.epic.actingManagerId, approvedOn: task.epic.approvedOn } : null,
     }),
     activeReviewRun: reviewRun
       ? { id: reviewRun.id, status: reviewRun.status, candidateSha: reviewRun.candidateSha, reviewerId: reviewRun.reviewerId, baseSha: reviewRun.baseSha, repoTouched: reviewRun.repoTouched, validationOutcome: reviewRun.validationOutcome }
@@ -245,7 +245,7 @@ export async function buildTaskWorkflowProjection(taskId: string): Promise<TaskW
       onlyReportersCanSetTasksDone: task.project.onlyReportersCanSetTasksDone,
       repositoryPath: task.project.repositoryPath,
     },
-    epic: task.epic ? { status: task.epic.status, actingManagerId: task.epic.actingManagerId } : null,
+    epic: task.epic ? { status: task.epic.status, actingManagerId: task.epic.actingManagerId, approvedOn: task.epic.approvedOn } : null,
   };
 
   const operationalError =

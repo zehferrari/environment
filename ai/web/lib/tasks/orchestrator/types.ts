@@ -793,6 +793,7 @@ export type TaskStateSnapshot = {
   epic?: {
     status: string;
     actingManagerId: string | null;
+    approvedOn?: Date | string | null;
   } | null;
   // --- Extended fields for §10 guards (PHASEE-03) ---
   // These are populated by loadTaskAggregate and are optional on

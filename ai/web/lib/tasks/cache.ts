@@ -173,6 +173,7 @@ async function getRawCachedTaskDetailShell(taskId: string) {
             workItemKey: true,
             title: true,
             status: true,
+            approvedOn: true,
             deploymentStatus: true,
             branchName: true,
             commitPrefix: true,

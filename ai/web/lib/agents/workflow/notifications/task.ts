@@ -279,7 +279,7 @@ function workflowPrompt(args: {
     "- If you are the assigned task reviewer on an unassigned task, call action=assign_task to select or request an eligible coding agent. The assignee authors the implementation plan; reviewers never author that artifact. If the plan can be safely split into independent steps, flag that in consolidated feedback; do not demand splitting for small or strictly sequential/dependent work.",
     "- If you are the resolved reviewer or reporter and you accept the assignee's Action Plan, call action=approve_plan and include one concise `comment` explaining why the plan is acceptable or naming any constraints. If the task was in Backlog, PM will move it to To Do and wake the assignee.",
     args.onlyReportersCanApproveActionPlans
-      ? "- Project policy: only the reporter can approve Action Plans. Reviewers and acting managers should comment with feedback or agreement, but must wait for reporter approval."
+      ? "- Project policy: approval is reserved for the reporter except that the manager of an approved, actionable Epic may approve its child-task plans (never their own implementation plan), and a recorded revision delegation may authorize the resolved reviewer. Use approve_plan when the current PM grant allows it; otherwise accept_plan_review and wait for the authorized approver."
       : "- Project policy: the reporter or resolved reviewer may approve Action Plans.",
     "- If you are the assigned task reviewer and the task has no assignee, call action=assign_task. PM will choose an eligible coding agent; that assignee then authors the Action Plan.",
     args.workMode === "repository"

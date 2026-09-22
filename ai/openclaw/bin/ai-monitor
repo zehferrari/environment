@@ -1692,6 +1692,36 @@ def _pm_has_action_plan_since(conn, task_id, user_id, since_s):
     return False
 
 
+def _pm_plan_review_approval_state(conn, task_id, reviewer_id):
+    """Mirror PM's approval permission after a durable review acceptance.
+
+    Accepted review is not a new review request. Reporter-only standalone
+    plans wait for the reporter; approved Epic managers can finish approval.
+    Unknown/older schemas retain the existing probe behavior.
+    """
+    try:
+        row = conn.execute("""
+            SELECT ap.reviewedAt, ap.reviewedById, ap.status,
+                   ap.delegatedApproverId, ap.delegatedById,
+                   t.assigneeId, t.reporterId,
+                   p.only_reporters_can_approve_action_plans AS reporterOnly,
+                   e.status AS epicStatus, e.approved_on AS epicApprovedOn,
+                   e.actingManagerId AS epicManagerId
+            FROM Task t JOIN Project p ON p.id=t.projectId
+            JOIN ActionPlan ap ON ap.taskId=t.id
+            LEFT JOIN Epic e ON e.id=t.epicId WHERE t.id=?
+        """, (task_id,)).fetchone()
+    except sqlite3.Error:
+        return None
+    if not row or row["status"] != "draft" or not row["reviewedAt"] or row["reviewedById"] != reviewer_id:
+        return None
+    delegated = (row["reporterId"] and row["delegatedById"] == row["reporterId"]
+                 and row["delegatedApproverId"] == reviewer_id)
+    epic_manager = (row["epicApprovedOn"] and row["epicStatus"] in ("To Do", "In Progress")
+                    and row["epicManagerId"] == reviewer_id and row["assigneeId"] != reviewer_id)
+    return bool(delegated or epic_manager or not row["reporterOnly"] or row["reporterId"] == reviewer_id)
+
+
 def _pm_has_action_plan_feedback_since(conn, task_id, reviewer_id, since_s):
     """Return true only for reviewer discussion newer than the plan revision.
 
@@ -2433,6 +2463,13 @@ def probe_pm_workflow(cfg, registry):
                     action_plan_revision_s,
                 )
                 if not row["approvedOn"]:
+                    accepted_review_can_approve = _pm_plan_review_approval_state(conn, row["id"], reviewer_id)
+                    if accepted_review_can_approve is False:
+                        # PM already handed the accepted plan to its approver.
+                        # Re-waking this reviewer cannot supply that permission.
+                        continue
+                    if accepted_review_can_approve is True:
+                        reviewer_responded = False
                     if changed_age >= warn_todo_s and not action_plan_posted:
                         add(
                             row,
@@ -2451,7 +2488,7 @@ def probe_pm_workflow(cfg, registry):
                             "pm-action-plan-awaiting-approval",
                             reviewer_slug,
                             changed_age,
-                            "Review the Action Plan. If acceptable, approve it so approved_on is set; otherwise reply with concise feedback in Action Plan.",
+                            "Review the current Action Plan. If acceptable and approve_plan is authorized, approve it; otherwise accept_plan_review once and wait for the authorized approver. Use request_plan_changes only for required corrections.",
                             extra={"assignee": assignee_slug},
                         )
                     continue

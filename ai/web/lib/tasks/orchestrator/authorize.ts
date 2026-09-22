@@ -427,6 +427,7 @@ export function authorizeCommand(
         !canApproveActionPlanForActor(
           {
             actionPlan: state.actionPlan,
+            assigneeId: state.assigneeId,
             actingManagerId: state.actingManagerId,
             reporterId: state.reporterId,
             project: state.project,
@@ -434,6 +435,7 @@ export function authorizeCommand(
               ? {
                   status: state.epic.status,
                   actingManagerId: state.epic.actingManagerId,
+                  approvedOn: state.epic.approvedOn,
                 }
               : null,
           },

@@ -266,7 +266,14 @@ they approve with `approve_plan` and a concise note explaining why the
 plan is acceptable or naming any constraints; approval stamps
 `approved_on` and `approved_by`.
 
-If project policy reserves approval for the reporter, the reviewer can still
+Approval of an Epic also authorizes its acting manager to approve child-task
+Action Plans while that Epic is To Do or In Progress, including when the
+project otherwise reserves approval for reporters. This does not authorize
+the manager to approve their own implementation plan, approve the Epic itself,
+or bypass the separate completion/deployment rules. Use `approve_plan` for an
+acceptable plan when the current PM grant includes it.
+
+Otherwise, if project policy reserves approval for the reporter, the reviewer can still
 request required corrections. When the plan is acceptable, record
 `accept_plan_review` (`pm_accept_plan_review`) and stop. PM shows “Review
 accepted — awaiting reporter approval”; do not request resubmission to obtain

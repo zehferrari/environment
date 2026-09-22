@@ -4,6 +4,7 @@ import {
   type TaskWorkflowNotificationReason,
 } from "@/lib/agents/workflow/notifications/task";
 import { startApprovedTodoTaskIfIdle } from "@/lib/tasks/auto-start";
+import { canApproveActionPlanForActor } from "@/lib/tasks/workflow-actors";
 import {
   repositoryFinalizationFenceSelect,
   repositoryFinalizationOwnsTask,
@@ -93,7 +94,7 @@ function defaultRequiredAction(status: string, kind: string | undefined): string
     return "Call action=submit_plan with one concise structured Action Plan. A plain chat reply is discussion only. Do not change status or start work until reviewer/reporter approval stamps approved_on.";
   }
   if (kind === "pm-action-plan-awaiting-approval") {
-    return "Review the Action Plan. If acceptable, approve it so approved_on is set; otherwise reply with concise feedback in Action Plan.";
+    return "Review the current Action Plan. If acceptable and approve_plan is authorized, approve it. Otherwise accept_plan_review once and wait for the authorized approver; do not repeat an accepted review. Use request_plan_changes only for required corrections.";
   }
   if (kind === "pm-todo-not-started") {
     return "The Action Plan is approved. Move the task to In Progress through the workflow endpoint, then start work immediately. Do not post an acknowledgement unless you have new task information to add.";
@@ -143,14 +144,20 @@ async function main() {
         statusChangedAt: true,
         approvedOn: true,
         deletedAt: true,
+        assigneeId: true,
+        actingManagerId: true,
+        reporterId: true,
+        actionPlan: { select: { reviewedAt: true, reviewedById: true, delegatedApproverId: true, delegatedById: true } },
         repositoryRun: { select: repositoryFinalizationFenceSelect },
-        project: { select: { slug: true } },
+        project: { select: { slug: true, onlyReportersCanApproveActionPlans: true } },
         assignee: { select: { agent: { select: { slug: true } } } },
         actingManager: { select: { agent: { select: { slug: true } } } },
         reporter: { select: { agent: { select: { slug: true } } } },
         epic: {
           select: {
             status: true,
+            approvedOn: true,
+            actingManagerId: true,
             actingManager: { select: { agent: { select: { slug: true } } } },
           },
         },
@@ -322,6 +329,14 @@ async function main() {
         ? `${args.agent} is a ${namedUser.status} ${namedUser.kind} user — PM-channel nudges only reach active agents; notify them via Telegram or the board instead.`
         : `No user matches agent slug ${args.agent} — nothing to nudge.`,
     }, null, 2));
+    return;
+  }
+  if (args.kind === "pm-action-plan-awaiting-approval" && (
+    task.approvedOn || (task.actionPlan?.reviewedAt && task.actionPlan.reviewedById === targetUser.id
+      && !canApproveActionPlanForActor(task, targetUser.id))
+  )) {
+    skip({ taskId: task.id, project: task.project.slug, agent: args.agent, kind: args.kind,
+      reason: task.approvedOn ? "plan-already-approved" : "accepted-review-awaits-authorized-approver" });
     return;
   }
   const sender = monitorSender ?? await db.user.findFirst({

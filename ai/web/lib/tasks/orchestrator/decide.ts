@@ -17,7 +17,7 @@
 // effects. The decision says WHAT should happen; the procedure engine says
 // HOW it happens in ordered, replay-safe steps.
 
-import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
+import { resolveReviewOwnerId, resolvePlanApproverId } from "@/lib/tasks/workflow-actors";
 import type {
   OrchestrationDecision,
   TaskStateSnapshot,
@@ -175,6 +175,12 @@ export function decideCommand(
     case "delegate_plan_approval": {
       const effects: WorkflowEffect[] = [{ type: "board_touch", key: command.intent, payload: {} }];
       const reviewerId = resolveReviewOwnerId(state);
+      const approverId = resolvePlanApproverId(state);
+      if (command.intent === "accept_plan_review" && approverId && approverId !== command.actor.id) effects.push({
+        type: "task_notification", key: `accepted-plan-approval:${approverId}:${command.payload!.actionPlanId}:${command.payload!.actionPlanVersion}`,
+        payload: { taskId: state.id, targetUserId: approverId, actor: command.actor, reason: "action_plan_review_requested",
+          body: "The reviewer accepted this Action Plan revision. Your approval is now required; review the current plan and approve it if acceptable. No resubmission is required." },
+      });
       if (command.intent === "delegate_plan_approval" && reviewerId) effects.push({
         type: "task_notification", key: `delegated-plan:${reviewerId}:${command.payload!.actionPlanId}:${command.payload!.actionPlanVersion}`,
         payload: { taskId: state.id, targetUserId: reviewerId, actor: command.actor, reason: "action_plan_review_requested",

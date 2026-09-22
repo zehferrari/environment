@@ -339,6 +339,7 @@ async function loadTaskAggregateWithClient(
           actingManagerId: true,
           branchName: true,
           commitPrefix: true,
+          approvedOn: true,
           completionReviewStatus: true,
           deploymentStatus: true,
         },
@@ -643,6 +644,7 @@ async function loadTaskAggregateWithClient(
       ? {
           status: task.epic.status,
           actingManagerId: task.epic.actingManagerId,
+          approvedOn: task.epic.approvedOn,
           id: task.epic.id,
           branchName: task.epic.branchName,
           commitPrefix: task.epic.commitPrefix,

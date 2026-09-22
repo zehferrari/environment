@@ -11,6 +11,7 @@
 // watchdog at all.
 
 import { db } from "@/lib/db";
+import { canApproveActionPlanForActor } from "@/lib/tasks/workflow-actors";
 import { recoverGitIdentityBlockers } from "@/lib/tasks/git-identity-recovery";
 import {
   activeFormalBlockerStatesByTask,
@@ -108,8 +109,13 @@ export async function loadWatchdogSnapshot(
       status: true,
       statusChangedAt: true,
       approvedOn: true,
+      assigneeId: true,
+      actingManagerId: true,
+      reporterId: true,
+      project: { select: { onlyReportersCanApproveActionPlans: true } },
+      epic: { select: { status: true, actingManagerId: true, approvedOn: true } },
       assignee: { select: { agent: { select: { slug: true } } } },
-      actionPlan: { select: { id: true, version: true, status: true, reviewedAt: true } },
+      actionPlan: { select: { id: true, version: true, status: true, reviewedAt: true, reviewedById: true, delegatedApproverId: true, delegatedById: true } },
       checklist: {
         where: { kind: "implementation", completedAt: null },
         select: { id: true },
@@ -212,6 +218,7 @@ export async function loadWatchdogSnapshot(
       hasActionPlan: Boolean(task.actionPlan),
       planVersion: task.actionPlan?.version ?? 0,
       planReviewAccepted: Boolean(task.actionPlan?.reviewedAt),
+      acceptedReviewerCanApprove: Boolean(task.actionPlan?.reviewedById && canApproveActionPlanForActor(task, task.actionPlan.reviewedById)),
       planStatus: task.actionPlan?.status ?? null,
       openChecklistCount: task.checklist.length,
       activeBlocker: blocker

@@ -21,7 +21,7 @@ async function main() {
   const project=await db.project.create({data:{name:'WDT fixture',slug:'wdt-test',onlyReportersCanApproveActionPlans:true}});
   const makeAgent=async(slug:string)=>{const agent=await db.agent.create({data:{slug,name:slug,role:'coding'}});return db.user.create({data:{username:slug,email:`${slug}@wdt.invalid`,kind:'agent',agentId:agent.id}});};
   const worker=await makeAgent('worker'), reviewer=await makeAgent('reviewer');
-  const task=await db.task.create({data:{title:'PDF from available logs',projectId:project.id,reporterId:owner.id,actingManagerId:reviewer.id,assigneeId:worker.id,reviewAttachmentRequired:true}});
+  let task=await db.task.create({data:{title:'PDF from available logs',projectId:project.id,reporterId:owner.id,actingManagerId:reviewer.id,assigneeId:worker.id,reviewAttachmentRequired:true}});
   const actor={id:owner.id,kind:'human' as const,username:owner.username};let serial=0;
   const notify=async(who:typeof worker,reason:'backlog_plan_requested'|'action_plan_review_requested')=>{
    const key=`wdt-${++serial}`;await sendTaskWorkflowNotification({taskId:task.id,targetUserId:who.id,actor,reason,body:'Perform current decision.',dedupeKey:key});
@@ -40,6 +40,8 @@ async function main() {
   for(const text of ['Acceptable; no revisions needed.','Approval failed: not_authorized_for_plan. Do not resubmit.']) {const n=await db.agentChatMessage.count({where:{taskId:task.id}});await runRouteHandler(()=>persistTaskReply(review.payload.replyTarget,text));assert.equal(await db.agentChatMessage.count({where:{taskId:task.id}}),n,'autonomous prose belongs in Thinking and must not wake implementer');}
   assert.equal((await post(review,'approve_plan')).status,403);
   result=await post(review,'accept_plan_review');assert.equal(result.status,202,JSON.stringify(result));
+  const approvalHandoff=await db.workflowOutbox.findMany({where:{taskId:task.id,effectType:'task_notification'}});
+  assert.ok(approvalHandoff.some(effect=>{const p=JSON.parse(effect.payload);return p.targetUserId===owner.id&&p.reason==='action_plan_review_requested';}), 'accepted review must notify the authorized reporter');
   let stored=await db.actionPlan.findUniqueOrThrow({where:{taskId:task.id}});assert.equal(stored.reviewedById,reviewer.id);assert.equal(stored.approvedOn,null);
   const same=await notify(worker,'backlog_plan_requested');result=await post(same,'submit_plan',{actionPlan:plan});assert.equal(result.status,202,JSON.stringify(result));
   stored=await db.actionPlan.findUniqueOrThrow({where:{taskId:task.id}});assert.equal(stored.version,1);assert.equal(stored.reviewedById,reviewer.id);
@@ -70,6 +72,8 @@ async function main() {
   await db.pmChannelRun.create({data:{id:'failed-review',targetKey:'failed-review',kind:'task-chat',agentSlug:'reviewer',messageId:'failed-msg',taskId:failedTask.id,status:'failed',createdAt:new Date(Date.now()-3600000)}});
   const snapshot=await loadWatchdogSnapshot({projectId:project.id});assert.ok(detectWatchdogFindings(snapshot).some(f=>f.taskId===failedTask.id&&f.detectorId==='stalled_plan_review'));
   const record=snapshot.tasks.find(t=>t.id===failedTask.id)!;record.planReviewAccepted=true;assert.ok(!detectWatchdogFindings(snapshot).some(f=>f.taskId===failedTask.id&&f.detectorId==='stalled_plan_review'));assert.equal(healthyExecutionState(record,snapshot).reasonCode,'awaiting_plan_approval');
+  record.acceptedReviewerCanApprove=true;
+  assert.ok(detectWatchdogFindings(snapshot).some(f=>f.taskId===failedTask.id&&f.detectorId==='stalled_plan_review'), 'accepted review must not hide a failed turn when that reviewer can approve');
   console.log('PASS Backlog handoff failure and human-wait distinction');
   const {reserveExecutionLane}=await import('@/lib/agents/pm-channel/execution-lane');const {claimNextPmChannelJob,runPmChannelJob}=await import('@/lib/agents/pm-channel/jobs');
   await db.pmChannelJob.updateMany({data:{status:'complete'}});
@@ -113,6 +117,28 @@ async function main() {
   finally {db.pmChannelRun.findUnique=findUnique;}
   assert.equal((await db.pmChannelRun.findUniqueOrThrow({where:{id:'capacity'}})).status,'completed');
   console.log('PASS late stream frame cannot overwrite a concurrent terminal action');
+
+  // Approved Epics delegate child-plan approval even in reporter-only projects.
+  const epic=await db.epic.create({data:{title:'Approved Epic',projectId:project.id,reporterId:owner.id,actingManagerId:reviewer.id,status:'In Progress'}});
+  task=await db.task.create({data:{title:'Epic child plan',projectId:project.id,epicId:epic.id,reporterId:owner.id,assigneeId:worker.id}});
+  const childPlanTurn=await notify(worker,'backlog_plan_requested');
+  assert.equal((await post(childPlanTurn,'submit_plan',{actionPlan:plan})).status,202);
+  const beforeApproval=await notify(reviewer,'action_plan_review_requested');
+  assert.ok(!beforeApproval.payload.taskRuntime.actions.includes('approve_plan'));
+  assert.equal((await post(beforeApproval,'approve_plan')).status,403);
+  assert.equal((await post(beforeApproval,'accept_plan_review')).status,202);
+  await db.epic.update({where:{id:epic.id},data:{approvedOn:new Date(),approvedById:owner.id}});
+  const epicSnapshot=await loadWatchdogSnapshot({projectId:project.id});
+  assert.equal(epicSnapshot.tasks.find(t=>t.id===task.id)?.acceptedReviewerCanApprove,true);
+  const approvedTurn=await notify(reviewer,'action_plan_review_requested');
+  assert.ok(approvedTurn.payload.taskRuntime.actions.includes('approve_plan'));
+  const childPlan=await db.actionPlan.findUniqueOrThrow({where:{taskId:task.id}});
+  result=await post(approvedTurn,'approve_plan',{actionPlanId:childPlan.id,actionPlanVersion:childPlan.version});
+  assert.equal(result.status,202,JSON.stringify(result));
+  const approvedChild=await db.task.findUniqueOrThrow({where:{id:task.id}});
+  assert.equal(approvedChild.approvedById,reviewer.id);
+  assert.ok(approvedChild.approvedOn);
+  console.log('PASS approved Epic manager receives native approval capability and can approve through the API');
 
 
  }finally{await db.$disconnect();rmSync(dir,{recursive:true,force:true});}

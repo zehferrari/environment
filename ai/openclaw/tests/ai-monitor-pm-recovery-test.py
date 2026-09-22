@@ -62,6 +62,38 @@ class PmRecoveryTest(unittest.TestCase):
     def setUp(self):
         self.monitor = load_monitor_module()
 
+    def test_accepted_plan_recovery_matches_approval_authority(self):
+        with sqlite3.connect(":memory:") as conn:
+            conn.row_factory = sqlite3.Row
+            conn.executescript("""
+                CREATE TABLE Project(id TEXT, only_reporters_can_approve_action_plans INTEGER);
+                CREATE TABLE Epic(id TEXT, status TEXT, approved_on INTEGER, actingManagerId TEXT);
+                CREATE TABLE Task(id TEXT, projectId TEXT, epicId TEXT, assigneeId TEXT, reporterId TEXT);
+                CREATE TABLE ActionPlan(taskId TEXT, status TEXT, reviewedAt INTEGER, reviewedById TEXT,
+                    delegatedApproverId TEXT, delegatedById TEXT);
+                INSERT INTO Project VALUES ('p', 1);
+                INSERT INTO Epic VALUES ('e', 'In Progress', 123, 'manager');
+                INSERT INTO Task VALUES ('t', 'p', 'e', 'worker', 'owner');
+                INSERT INTO ActionPlan VALUES ('t', 'draft', 456, 'manager', NULL, NULL);
+            """)
+            state = lambda: self.monitor._pm_plan_review_approval_state(conn, 't', 'manager')
+            self.assertIs(state(), True)
+            conn.execute("UPDATE Epic SET approved_on=NULL")
+            self.assertIs(state(), False)
+            conn.execute("UPDATE Epic SET approved_on=123, status='Done'")
+            self.assertIs(state(), False)
+            conn.execute("UPDATE Epic SET status='In Progress'")
+            conn.execute("UPDATE Task SET assigneeId='manager'")
+            self.assertIs(state(), False)
+            conn.execute("UPDATE Task SET assigneeId='worker', epicId=NULL")
+            self.assertIs(state(), False)
+            conn.execute("UPDATE ActionPlan SET delegatedById='owner', delegatedApproverId='manager'")
+            self.assertIs(state(), True)
+            conn.execute("UPDATE ActionPlan SET reviewedAt=NULL")
+            self.assertIsNone(state())
+        with sqlite3.connect(":memory:") as older_schema:
+            self.assertIsNone(self.monitor._pm_plan_review_approval_state(older_schema, 't', 'manager'))
+
     def test_only_formal_blockers_skip_stale_assignee_recovery(self):
         source = SCRIPT.read_text()
         blocker_guard = 'blocker["kind"] != "task.blocker.cleared"'

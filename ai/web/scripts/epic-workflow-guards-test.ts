@@ -3,6 +3,8 @@ import {
   canApproveActionPlanForActor,
   epicAllowsAgentAction,
   resolveReviewOwnerId,
+  resolvePlanApproverId,
+  canSetTaskDoneForActor,
 } from "../lib/tasks/workflow-actors";
 import {
   canApplySubmittedEpicStatus,
@@ -33,6 +35,26 @@ assert.equal(
   "task reviewer remains first priority",
 );
 assert.equal(canApproveActionPlanForActor(baseTask, "epic-manager"), true);
+const approvedEpicTask = {
+  ...baseTask,
+  assigneeId: "worker",
+  project: { onlyReportersCanApproveActionPlans: true, onlyReportersCanSetTasksDone: true },
+  epic: { ...baseTask.epic, approvedOn: new Date() },
+};
+assert.equal(canApproveActionPlanForActor(approvedEpicTask, "epic-manager"), true);
+assert.equal(resolvePlanApproverId(approvedEpicTask), "epic-manager");
+assert.equal(canApproveActionPlanForActor(approvedEpicTask, "reporter"), true);
+assert.equal(canApproveActionPlanForActor(approvedEpicTask, "worker"), false);
+assert.equal(canSetTaskDoneForActor(approvedEpicTask, "epic-manager"), false, "plan delegation does not delegate completion");
+for (const task of [
+  { ...approvedEpicTask, epic: null },
+  { ...approvedEpicTask, epic: { ...approvedEpicTask.epic, approvedOn: null } },
+  ...["Backlog", "Review", "Done"].map(status => ({ ...approvedEpicTask, epic: { ...approvedEpicTask.epic, status } })),
+  { ...approvedEpicTask, assigneeId: "epic-manager" },
+]) {
+  assert.equal(canApproveActionPlanForActor(task, "epic-manager"), false);
+  assert.equal(resolvePlanApproverId(task), "reporter");
+}
 assert.equal(epicAllowsAgentAction({ epic: { status: "To Do" } }), true);
 assert.equal(epicAllowsAgentAction({ epic: { status: "Backlog" } }), false);
 

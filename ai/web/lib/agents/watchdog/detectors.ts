@@ -112,6 +112,7 @@ export interface WatchdogTaskRecord {
   hasActionPlan?: boolean;
   planVersion?: number;
   planReviewAccepted?: boolean;
+  acceptedReviewerCanApprove?: boolean;
   planStatus?: string | null;
   /** Implementation checklist rows still open. */
   openChecklistCount: number;
@@ -760,7 +761,8 @@ const STALLED_PLAN_REVIEW: WatchdogDetector = {
   id: "stalled_plan_review",
   statement: "Failed planning handoffs and repeated revisions are escalated without scheduling another planning loop.",
   detect: (snapshot) => snapshot.tasks.flatMap((task): WatchdogFinding[] => {
-    if (!["Backlog", "To Do"].includes(task.status) || task.approvedOn || task.planReviewAccepted) return [];
+    if (!["Backlog", "To Do"].includes(task.status) || task.approvedOn
+      || (task.planReviewAccepted && !task.acceptedReviewerCanApprove)) return [];
     if (liveRunTaskIds(snapshot).has(task.id) || openContinuationTaskIds(snapshot).has(task.id)) return [];
     if (idleSince(task, snapshot) < stallGrace(snapshot)) return [];
     const latest = snapshot.runs.filter((r) => r.taskId === task.id).sort((a, b) => b.createdAt - a.createdAt)[0];
