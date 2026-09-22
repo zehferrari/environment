@@ -361,7 +361,7 @@ export async function validateEpicBase(
       originBaseSha: baseSha,
       branchSha,
       mergeBaseSha,
-      error: `refs/heads/${branch} does not contain the current Epic branch ${baseBranch}; merge ${baseBranch} into your branch (or rebase onto it) and commit locally before review`,
+      error: `refs/heads/${branch} does not contain the current Epic branch ${baseBranch}; PM must synchronize the registered task worktree and return changed source for revalidation before review`,
     };
   }
 

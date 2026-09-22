@@ -158,6 +158,20 @@ Do not claim that a branch checkout includes uncommitted work. If the current
 clean SHA is already on origin, resolve deployment rather than republishing.
 Epic-child publication still uses only the Epic integration branch.
 
+## PM-owned Epic synchronization
+
+When an Epic branch advances during child-task work, `ready_for_review` lets
+PM preserve tracked and untracked changes in a local checkpoint and synchronize
+the registered task worktree. PM returns the integrated revision for fresh
+automated validation before reviewer handoff; previous source hashes cannot
+certify changed code. The child branch is never pushed.
+
+If PM prepares content conflicts, the assignee edits the conflicting files and
+stages each resolved file with `git add` (or `git rm` for an intentional deletion).
+This narrow staging permission does not authorize merge, rebase, commit, push,
+or abort. Submit again for PM to finish its merge, then validate the resulting
+revision. Keep owner-deferred physical checks open for final acceptance.
+
 ## Owner-authorized standalone task previews
 
 PM owns commits and branch publication. An explicit instruction from the active
@@ -221,7 +235,7 @@ This applies to every form of merge that lands the PR:
   integration branch.
 - Bitbucket REST API calls that land the PR (`/pullrequests/<id>/merge`).
 
-Agents **may** freely:
+For Jira work outside the PM repository lifecycle, agents **may**:
 
 - Merge or rebase the integration branch *into their own feature
   branch* to resolve conflicts (`git merge origin/main` or

@@ -65,6 +65,7 @@ import {
   isOperationalRepositoryFailure,
   semanticCommitDescriptionWarning,
 } from "@/lib/tasks/repository-validation";
+import { synchronizeEpicChild, renderEpicSyncHandoff } from "@/lib/deploy/epic-child-sync";
 
 const exec = promisify(execFile);
 const SWITCH_SCRIPT = process.env.PM_SWITCH_SCRIPT ?? "/usr/local/sbin/pm-switch";
@@ -746,7 +747,7 @@ function renderPreflightFailBody(args: {
     "- Safety boundary: PM did not create a submission commit and did not push the task branch.",
     "",
     args.epicMode
-      ? `Assignee: update the local task branch from the current Epic branch \`${args.baseValidation.baseBranch}\`, preserve the task changes, leave them uncommitted and unpushed, then call \`ready_for_review\` again.`
+      ? "PM could not prepare Epic synchronization from this repository state. Report the concrete repository diagnostic; do not manually merge, rebase, commit or push the task branch. PM owns synchronization."
       : `Assignee: update the local task branch from \`origin/${args.baseValidation.baseBranch}\`, preserve the task changes, leave them uncommitted and unpushed, then call \`ready_for_review\` again. PM owns the submission commit and publication.`,
   ].filter(Boolean).join("\n");
 }
@@ -1015,8 +1016,9 @@ async function main() {
     return;
   }
 
-  // Preflight is deliberately read-only. A stale task base must be rejected
-  // before PM stages/commits the assignee's changes or publishes any ref.
+  // Inspect before submission. Epic base drift is a PM-owned synchronization:
+  // preserve the work, integrate locally, then return it for fresh validation.
+  // Never hand an automatically changed candidate directly to the reviewer.
   let preflightState = await inspectLocalState(job, epicMode);
   let preflightFetchError: string | null = null;
   let preflightBase: BranchBaseValidation;
@@ -1025,6 +1027,41 @@ async function main() {
     const epicBase = await resolveEpicVerificationBase(job.repositoryPath, job.epicBranch);
     preflightFetchError = epicBase.error;
     preflightBase = await validateEpicBase(job.repositoryPath, job.branchName, epicBase);
+    if (!preflightFetchError && !preflightState.dirtyError && preflightState.branchWorktreePath && preflightBase.originBaseSha) {
+      const sync = await synchronizeEpicChild({
+        worktreePath: preflightState.branchWorktreePath,
+        branchName: job.branchName,
+        baseSha: preflightBase.originBaseSha,
+        requestId: job.jobId,
+        commitSubject: commitSubject(job),
+        gitUserName: job.expectedGitUserName,
+        gitUserEmail: job.expectedGitUserEmail,
+      });
+      if (sync.outcome === "error") {
+        const retry = await recordOperationalFailure(job, actor, `PM Epic synchronization failed safely: ${sync.error}`);
+        console.log(JSON.stringify({ ok: false, phase: "epic-sync", sync, ...retry }));
+        unlinkSync(jobFile);
+        return;
+      }
+      if (sync.outcome !== "unchanged") {
+        const body = renderEpicSyncHandoff(sync, job.branchName, preflightBase.baseBranch);
+        await db.$transaction([
+          db.comment.create({ data: { taskId: job.taskId, userId: actor.id, body } }),
+          db.activityLog.create({ data: {
+            projectId: job.projectId, taskId: job.taskId, userId: actor.id,
+            kind: "pm.repo.epic_sync", payload: JSON.stringify({ jobId: job.jobId, branchName: job.branchName, ...sync }),
+          } }),
+        ]);
+        await failTaskReviewValidation({
+          taskId: job.taskId, actor, error: body,
+          candidateSha: job.previousCandidateSha ?? null,
+          procedureCallback: procedureCallbackForJob(job),
+        });
+        console.log(JSON.stringify({ ok: false, phase: "epic-sync", revalidationRequired: true, sync }));
+        unlinkSync(jobFile);
+        return;
+      }
+    }
   } else {
     const fetchedBase = await fetchVerificationBase(job.repositoryPath, job.baseBranch);
     preflightFetchError = fetchedBase.error;

@@ -39,3 +39,30 @@ The prepared `measure-baseline.mjs` subsequently completed against the verified
 fixture. `baseline-dom.json` contains desktop 780×493 and mobile 390×844 DOM
 measurements, and explicitly labels them reconstructed after implementation.
 The recovery attachment is named `wdt-11-retrospective-baseline.json`.
+
+## Follow-on Epic ancestry failure
+
+The owner instruction worked: Asdrubal cleared the physical-validation blocker,
+completed the implementation checklist and submitted at 07:26 UTC. Repository
+preflight then found that WDT-13 had advanced `sept-2026` from WDT-11's base
+`689470d60e` to `b26742e967`, including shared `TimelineViewer.tsx` changes.
+The failure message directed the assignee to merge/rebase while the active
+runtime contract assigned all merges and commits to PM. Asdrubal correctly
+reported that contradiction; another wake with the same instructions could
+not fix it.
+
+The Epic-child verifier now owns base synchronization in the registered linked
+worktree. It preserves tracked and untracked work in a local checkpoint before
+merging a pinned Epic revision. A changed revision always returns to the
+assignee for affected automated checks and fresh evidence before review.
+No child ref is pushed. Conflicts remain visible in the PM-owned merge: the
+assignee may edit and stage resolved files; PM completes the merge on the next
+submission and requires revalidation. Unresolved files, staged conflict markers,
+unrelated merges, primary checkouts and wrong branches are rejected safely.
+A durable per-worktree record prevents a repeated verifier job from certifying
+the source it just changed.
+
+`epic-child-sync-test.ts` exercises preservation, local-only behavior, duplicate
+delivery, conflict resolution, marker rejection and worktree boundaries using
+real Git repositories. Existing branch-base, repository-workflow, review
+submission and compact-runtime checks cover the surrounding handoff.

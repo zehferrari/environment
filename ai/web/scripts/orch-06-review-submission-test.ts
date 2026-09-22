@@ -169,7 +169,7 @@ async function main() {
 
     // --- Test 4: validation failure closes cycle and returns to To Do ----
     // Use a project with a repositoryPath so the task is treated as code-touching.
-    const project4 = await db.project.create({ data: { slug: "orch06-4", name: "Code project", repositoryPath: "/srv/Code/test-repo-4" } });
+    const project4 = await db.project.create({ data: { slug: "orch06-4", name: "Code project", repositoryPath: "/srv/Code/test-repo-4", defaultGitUserName: "PM Test", defaultGitUserEmail: "pm-test@example.invalid" } });
     const task4 = await db.task.create({
       data: { projectId: project4.id, title: "Validation fail task", status: "In Progress", workflowVersion: 1, workflowEngine: "orchestrator_v2", workflowEnginePinnedAt: new Date(), workItemKey: "TEST-4", assigneeId: assigneeUser.id, actingManagerId: reviewerUser.id, reporterId: owner.id, approvedOn: new Date(), approvedById: owner.id },
     });
@@ -191,7 +191,7 @@ async function main() {
       source: "agent",
       payload: { candidateSha: "cand-4", baseSha: null, repoTouched: false },
     });
-    assert.equal(submit4.status, "accepted");
+    assert.equal(submit4.status, "accepted", JSON.stringify(submit4));
     // Run until the run_validation step is waiting for callback.
     for (let i = 0; i < 10; i += 1) {
       const r = await runProcedureRunner({ limit: 5 });
