@@ -69,7 +69,7 @@ type BoardStats = {
 type CardScope = "home" | "workspace" | "project";
 
 function BlockedBadge({ task }: { task: Task }) {
-  if (task.blockedByKeys.length === 0) return null;
+  if (task.status === "Done" || task.blockedByKeys.length === 0) return null;
   const [first, ...rest] = task.blockedByKeys;
   return (
     <span
@@ -93,6 +93,7 @@ const EXECUTION_BADGE_TONE: Record<string, string> = {
 };
 
 function ExecutionBadge({ task }: { task: Task }) {
+  if (task.status === "Done") return null;
   const tone = task.executionState ? EXECUTION_BADGE_TONE[task.executionState] : undefined;
   if (!task.executionState || !tone) return null;
   return (
@@ -121,7 +122,7 @@ function LockGlyph() {
 
 function ActiveBlockerButton({ task, projectSlug }: { task: Task; projectSlug: string }) {
   const router = useRouter();
-  if (!task.hasActiveBlocker) return null;
+  if (task.status === "Done" || !task.hasActiveBlocker) return null;
   const href = blockerHref(task, projectSlug);
   return (
     <button
@@ -501,7 +502,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
     let attention = 0;
     for (const task of items) {
       byStatus[task.status] = (byStatus[task.status] ?? 0) + 1;
-      if (task.blockedByKeys.length > 0 || task.hasActiveBlocker) blocked += 1;
+      if (task.status !== "Done" && (task.blockedByKeys.length > 0 || task.hasActiveBlocker)) blocked += 1;
       if (taskNeedsAttention(task)) attention += 1;
     }
     const done = byStatus.Done ?? 0;
@@ -2057,6 +2058,7 @@ function isPlanningAssigned(task: Task) {
 }
 
 function taskNeedsAttention(task: Task) {
+  if (task.status === "Done") return false;
   return Boolean(
     task.blockedByKeys.length > 0 ||
     task.hasActiveBlocker ||

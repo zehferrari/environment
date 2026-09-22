@@ -133,8 +133,8 @@ for (const [path, label] of [
   const source = read(path);
   assert(
     source.includes("activeFormalBlockersByTask(taskActivityRows, legacyBlockerComments)") &&
-      source.includes("hasActiveBlocker: activeFormalBlockers.has(t.id)") &&
-      source.includes("activeBlockerCommentId: activeFormalBlockers.get(t.id)?.commentId ?? null"),
+      /hasActiveBlocker:[^\n]*activeFormalBlockers\.has\(t\.id\)/.test(source) &&
+      /activeBlockerCommentId:[^\n]*activeFormalBlockers\.get\(t\.id\)\?\.commentId \?\? null/.test(source),
     `${label} must serialize the formal blocker state and exact comment id`,
   );
 }
