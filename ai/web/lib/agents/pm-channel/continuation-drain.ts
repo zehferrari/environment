@@ -162,6 +162,7 @@ async function dispatchContinuation(row: ContinuationRow): Promise<"dispatched" 
     targetUserId: agent.user.id,
     actor: { id: agent.user.id, kind: "agent", username: row.agentSlug },
     reason: "monitor_recovery",
+    restartExecutionSession: isWatchdogRecovery,
     body: reviewEpisode
       ? [
           `Your previous review episode on "${task.title}" spent its bounded budget and was closed. This is the next reviewer episode in a fresh session.`,

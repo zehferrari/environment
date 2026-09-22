@@ -19,6 +19,7 @@ import {
 import { createPluginRuntimeStore } from "openclaw/plugin-sdk/runtime-store";
 import { resolvePmInboundRuntime } from "./runtime-compat.js";
 import { canonicalizePmStoreSessionKey } from "./session-key.js";
+import { clearPmSessionQueue } from "./session-cancellation.js";
 
 import { createTaskTools, PM_TASK_TOOL_NAMES, taskToolCapabilities, validateTaskRuntime } from "./task-tools.js";
 
@@ -875,6 +876,17 @@ async function abortActiveTurn(sessionKey, expectedDispatchId = null) {
     return { aborted: false, reason: "dispatch_mismatch", activeDispatchId: active.acceptedId };
   }
   try {
+    // Admission may be stuck in a queued follow-up with no embedded run.
+    // sessions.abort(clearQueued) clears that exact queue through the public
+    // gateway lifecycle API; abortAndDrain alone cannot establish this fence.
+    if (active) active.abortedAt = Date.now();
+    const runtime = getPmRuntime();
+    const account = resolvePmAccount({ cfg: runtime.config.loadConfig() });
+    const canonicalKey = active?.canonicalSessionKey ?? canonicalizePmStoreSessionKey({
+      agentId: account.agentId, requestKey: sessionKey,
+    });
+    await clearPmSessionQueue({ runtime, sessionKey: canonicalKey });
+    if (!active) sessionKey = canonicalKey;
     const harness = await import("openclaw/plugin-sdk/agent-harness");
     if (
       typeof harness.resolveActiveEmbeddedRunSessionId !== "function"

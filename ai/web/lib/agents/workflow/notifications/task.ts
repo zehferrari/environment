@@ -9,6 +9,7 @@ import {
 } from "@/lib/agents/workflow/chat/task/context";
 import {
   latestTaskExecutionCheckpoint,
+  closeTaskExecutionEpisode,
   openTaskExecutionEpisode,
   renderEpisodeCheckpoint,
   taskExecutionEpisodeHistory,
@@ -351,6 +352,8 @@ export async function sendTaskWorkflowNotification(args: {
   reason: TaskWorkflowNotificationReason;
   body: string;
   dedupeKey?: string;
+  /** A failed admission/runtime session must not receive its own recovery. */
+  restartExecutionSession?: boolean;
 }) {
   if (args.actor.kind === "human" && !(await isOwnerUserId(args.actor.id))) {
     return null;
@@ -503,9 +506,26 @@ export async function sendTaskWorkflowNotification(args: {
     task.status === "In Progress" &&
     Boolean(task.assigneeId) &&
     targetUser.id === task.assigneeId;
-  const [previousEpisode] = executionEpisodeTurn
+  let [previousEpisode] = executionEpisodeTurn
     ? await taskExecutionEpisodeHistory({ taskId: task.id, agentSlug: targetUser.agent.slug, take: 1 })
     : [];
+  if (args.restartExecutionSession && previousEpisode?.status === "open" &&
+      previousEpisode.sessionKey && previousEpisode.messageId !== msg.id) {
+    const retired = previousEpisode;
+    await db.$transaction(async tx => {
+      const current = await tx.taskExecutionEpisode.findUnique({ where: { id: retired.id } });
+      if (current?.status !== "open") return;
+      await closeTaskExecutionEpisode(tx, {
+        episodeId: retired.id, closeReason: "runtime_recovery",
+      });
+      await tx.activityLog.create({ data: {
+        taskId: task.id, projectId: task.projectId, userId: args.actor.id,
+        kind: "task.execution.episode.runtime_recovery", targetAgent: targetUser.agent!.slug,
+        payload: JSON.stringify({ episodeId: retired.id, sessionKey: retired.sessionKey, recoveryMessageId: msg.id }),
+      } });
+    });
+    [previousEpisode] = await taskExecutionEpisodeHistory({ taskId: task.id, agentSlug: targetUser.agent.slug, take: 1 });
+  }
   const newestEpisode =
     executionEpisodeTurn && (!previousEpisode || previousEpisode.status !== "open")
       ? await db.$transaction((tx) =>

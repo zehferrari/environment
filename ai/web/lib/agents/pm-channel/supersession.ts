@@ -31,7 +31,9 @@ export async function abortGatewaySession(args: {
         sessionKey: args.sessionKey,
         ...(args.gatewayDispatchId ? { gatewayDispatchId: args.gatewayDispatchId } : {}),
       }),
-      signal: AbortSignal.timeout(10_000),
+      // Queue cancellation (5s), embedded drain (10s), registration grace
+      // (5s), plus transport headroom. Do not time out a valid process fence.
+      signal: AbortSignal.timeout(25_000),
     });
     // 404 means the gateway no longer owns that process/session. That is a
     // positive fence: there is nothing left to abort before replacement.

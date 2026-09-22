@@ -493,6 +493,28 @@ async function sectionB(): Promise<void> {
       "B7: dispatching an execution turn opens exactly one episode",
     );
 
+    // WDT-17: watchdog recovery must not re-enter a poisoned open session.
+    const recoveredTurn = await sendTaskWorkflowNotification({
+      taskId: task.id, targetUserId: agentUser.id,
+      actor: { id: owner.id, kind: "human", username: "episode-owner" },
+      reason: "monitor_recovery", restartExecutionSession: true,
+      dedupeKey: "wdt17-admission-recovery", body: "Resume from saved evidence in a fresh session.",
+    });
+    assert(recoveredTurn, "WDT-17 recovery produced a turn");
+    const recoveredPayload = await dispatchedPrompt(recoveredTurn!.messageId);
+    assert(recoveredPayload.sessionKey !== firstPayload.sessionKey, "WDT-17 recovery uses a different session");
+    assert(recoveredPayload.systemPrompt?.includes("EXECUTION EPISODE BRIEF"), "WDT-17 recovery retains the saved checkpoint");
+    const retired = await db.taskExecutionEpisode.findFirstOrThrow({ where: { taskId: task.id, sessionKey: firstPayload.sessionKey } });
+    assertEqual(retired.closeReason, "runtime_recovery", "WDT-17 old session is retired explicitly");
+    const repeatedRecovery = await sendTaskWorkflowNotification({
+      taskId: task.id, targetUserId: agentUser.id,
+      actor: { id: owner.id, kind: "human", username: "episode-owner" },
+      reason: "monitor_recovery", restartExecutionSession: true,
+      dedupeKey: "wdt17-admission-recovery", body: "Resume from saved evidence in a fresh session.",
+    });
+    assertEqual((await dispatchedPrompt(repeatedRecovery!.messageId)).sessionKey, recoveredPayload.sessionKey, "WDT-17 delivery retry reuses its new session");
+    assertEqual(await db.taskExecutionEpisode.count({ where: { taskId: task.id, status: "open" } }), 1, "WDT-17 recovery leaves one open episode");
+
     // ------------------------------------------------------------------
     // B8/B9 — the rollover BARRIER (ENV-121 review).
     //

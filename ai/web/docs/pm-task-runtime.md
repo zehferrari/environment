@@ -169,6 +169,35 @@ speed gain. Tune model/reasoning settings only after those measurements.
 
 ## Installation, configuration and rollback
 
+### Recovery from stalled gateway admission
+
+WDT-17 exposed a queued-turn failure on 2026-09-22: after a restart, an
+expired turn kept retrying a rejected PM callback while watchdog replacements
+reused its open episode. HTTP delivery succeeded but no replacement gained
+execution admission. This is a transport/session failure, not plan approval
+or evidence that the model provider exhausted its allowance.
+
+Watchdog continuations now request a new execution session. PM closes the
+previously dispatched episode with `runtime_recovery`, preserves its checkpoint,
+and supplies the successor with a full bounded brief and new tool credentials.
+Ordinary continuations retain their existing episode. Retrying the same recovery
+message does not rotate again.
+
+The PM plugin cancellation boundary first calls the public gateway
+`sessions.abort` API with `clearQueued: true` for the exact canonical PM session,
+then drains any embedded run. An absent embedded run alone no longer proves
+that its follow-up queue is empty. Failed queue cancellation fails the fence;
+obsolete runs remain unauthorized and no callback permissions are weakened.
+
+For operational recovery, install the updated plugin, retire the affected
+session's queue, and dispatch `sendTaskWorkflowNotification` with
+`restartExecutionSession: true`. Verify `admittedAt` and actual task progress
+before clearing the watchdog escalation. Preserve the implementation, evidence,
+approval, and any independent formal blocker. Never call a successful HTTP 202
+handoff a successful recovery.
+
+### Deployment
+
 For subsequent installations, deploy compatible application code through
 `pm-switch`, install the complete plugin bundle, synchronize instructions, and
 verify gateway capabilities before enabling compact turns. On thinkpad, run the

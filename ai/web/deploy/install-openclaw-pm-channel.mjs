@@ -25,6 +25,7 @@ const PLUGIN_FILES = [
   // index.js imports ./session-key.js — it MUST be staged together with
   // index.js or a divergence between the two bricks every agent gateway.
   "session-key.js",
+  "session-cancellation.js",
   "runtime-compat.js",
   "task-tools.js",
   "task-attachments.js",
