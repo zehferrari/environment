@@ -41,6 +41,7 @@
 // half-states.
 
 import { db } from "@/lib/db";
+import { GIT_IDENTITY_ERROR, hasCompleteGitIdentity } from "@/lib/tasks/git-identity";
 import { updateTaskWorkflowCycleCandidate } from "@/lib/tasks/workflow-cycle";
 import { updateTaskRepositoryState } from "@/lib/tasks/repository-state";
 import { enqueueWorkflowEffects } from "@/lib/tasks/transition-kernel";
@@ -233,6 +234,9 @@ async function runValidation(ctx: StepHandlerContext): Promise<StepHandlerResult
     deploymentProductionBranch: null,
     deploymentPrTargetBranch: task.project.deploymentPrTargetBranch,
   });
+  if (!hasCompleteGitIdentity({ name: effectiveSettings.gitIdentity.name.value, email: effectiveSettings.gitIdentity.email.value })) {
+    return { status: "failed", error: GIT_IDENTITY_ERROR, retryable: false };
+  }
   const validationProfile = await resolveValidationProfileSnapshot(task.projectId);
   // PHASEE-07 Fix #3: Deterministic job ID based on procedure run + step —
   // a crash-replay re-publishes the same jobId, hitting the same spool path,

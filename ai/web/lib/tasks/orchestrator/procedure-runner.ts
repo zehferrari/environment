@@ -24,6 +24,10 @@
 import { createHash } from "crypto";
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
+import { resolveGitIdentity } from "@/lib/settings/system";
+import { activeFormalBlockerStatesByTask } from "@/lib/tasks/formal-blocker";
+import { hasCompleteGitIdentity, isGitIdentityBlocker } from "@/lib/tasks/git-identity";
+import { projectUsesRepository } from "@/lib/projects/work-mode";
 import { getProcedureDefinition, getLatestProcedureDefinition } from "@/lib/tasks/orchestrator/procedures";
 import type { TaskProcedureType } from "@/lib/tasks/orchestrator/types";
 import { writeDeduplicatedActivity, computeActivityDedupeKey } from "@/lib/tasks/orchestrator/activity-dedup";
@@ -456,6 +460,7 @@ export async function runProcedureRunner(args: {
   const now = args.now ?? new Date();
   const limit = Math.max(1, Math.min(100, args.limit ?? DEFAULT_BATCH));
   const workerId = args.workerId ?? `procedure-runner:${process.pid}`;
+  await resumeGitIdentityProcedures(limit);
   let claimed = 0;
   let completed = 0;
   let retried = 0;
@@ -827,4 +832,55 @@ export async function createProcedureRun(
     stepIds.push(step.id);
   }
   return { procedureRunId: run.id, stepIds };
+}
+
+/** A configuration failure is terminal until its precondition changes. Resume
+ * only the failed preparation/validation step on the still-current cycle;
+ * never restart completed build, commit or publication steps. */
+export async function resumeGitIdentityProcedures(limit = 20) {
+  const steps = await db.taskProcedureStep.findMany({
+    where: {
+      status: "terminal_error", lastError: { contains: "[git_identity_incomplete]" },
+      name: { in: ["prepare_worktree", "run_validation"] },
+      procedureRun: { status: "operational_error", type: { in: ["prepare_todo_task", "submit_candidate_for_review"] } },
+    },
+    select: { id: true, procedureRunId: true }, take: limit,
+  });
+  let resumed = 0;
+  for (const step of steps) {
+    resumed += await db.$transaction(async (tx) => {
+      const run = await tx.taskProcedureRun.findUniqueOrThrow({
+        where: { id: step.procedureRunId }, include: { task: { include: { project: true } } },
+      });
+      const task = run.task;
+      if (run.status !== "operational_error" || task.deletedAt || task.archivedAt || task.project.deletedAt ||
+          run.workflowCycleId !== task.activeWorkflowCycleId ||
+          task.status !== (run.type === "prepare_todo_task" ? "To Do" : "In Progress") ||
+          !projectUsesRepository(task.project) || !hasCompleteGitIdentity(await resolveGitIdentity(task.project, tx))) return 0;
+      const blockerRows = await tx.activityLog.findMany({
+        where: { taskId: task.id, kind: { in: ["task.blocker", "task.extra_work.blocker", "task.blocker.cleared"] } },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 1,
+        select: { taskId: true, kind: true, payload: true, createdAt: true },
+      });
+      const blocker = activeFormalBlockerStatesByTask(blockerRows).get(task.id);
+      if (blocker && (blocker.override || blocker.permissionRequest || !isGitIdentityBlocker(blocker.report))) return 0;
+      // A later procedure supersedes this one even if the cycle stayed null.
+      const newer = await tx.taskProcedureRun.findFirst({ where: {
+        taskId: task.id, type: run.type, createdAt: { gt: run.createdAt },
+      }, select: { id: true } });
+      if (newer) return 0;
+      const changed = await tx.taskProcedureStep.updateMany({
+        where: { id: step.id, status: "terminal_error", lastError: { contains: "[git_identity_incomplete]" } },
+        data: { status: "pending", availableAt: new Date(), attempts: 0, lastError: null, leaseOwner: null, leaseExpiresAt: null },
+      });
+      if (!changed.count) return 0;
+      await tx.taskProcedureRun.update({ where: { id: run.id }, data: { status: "queued", lastError: null } });
+      await tx.activityLog.create({ data: {
+        taskId: task.id, projectId: task.projectId, kind: "task.workflow.configuration_repaired",
+        payload: JSON.stringify({ code: "git_identity_incomplete", procedureRunId: run.id, stepId: step.id }),
+      } });
+      return 1;
+    });
+  }
+  return resumed;
 }

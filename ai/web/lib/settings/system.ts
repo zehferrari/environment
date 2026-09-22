@@ -11,6 +11,7 @@
 // purge jobs can import it directly. Writes go through lib/settings/actions.ts.
 
 import { db } from "@/lib/db";
+import type { Prisma } from "@prisma/client";
 import { DEFAULT_PROFILE_IMAGE_PROMPT, normalizeProfileImagePrompt } from "@/lib/agents/management/profile-image-options";
 import { DEFAULT_DEPLOY_REVIEW_PROMPT, normalizeDeployReviewPrompt } from "@/lib/epics/deploy-review";
 import { normalizeCurrency } from "@/lib/billing/rate";
@@ -87,9 +88,9 @@ export function normalizeTheme(value: unknown): SystemTheme {
   return value === "dark" ? "dark" : "light";
 }
 
-async function primaryWorkspaceDefaults(projectId: string | undefined) {
+async function primaryWorkspaceDefaults(projectId: string | undefined, client: Prisma.TransactionClient = db) {
   if (!projectId) return null;
-  const link = await db.workspaceProject.findFirst({
+  const link = await client.workspaceProject.findFirst({
     where: { projectId, workspace: { archivedAt: null } },
     orderBy: { createdAt: "asc" },
     select: { workspace: { select: { defaultGitUserName: true, defaultGitUserEmail: true, doneTtlDays: true } } },
@@ -112,11 +113,14 @@ export async function resolveGitIdentity(project: {
   id?: string;
   defaultGitUserName: string | null;
   defaultGitUserEmail: string | null;
-}): Promise<{ name: string | null; email: string | null }> {
-  const [workspace, sys] = await Promise.all([primaryWorkspaceDefaults(project.id), getSystemSettings()]);
+}, client: Prisma.TransactionClient = db): Promise<{ name: string | null; email: string | null }> {
+  const [workspace, sys] = await Promise.all([
+    primaryWorkspaceDefaults(project.id, client),
+    client.systemSettings.findUnique({ where: { id: "system" }, select: { defaultGitUserName: true, defaultGitUserEmail: true } }),
+  ]);
   return {
-    name: project.defaultGitUserName ?? workspace?.defaultGitUserName ?? sys.defaultGitUserName ?? null,
-    email: project.defaultGitUserEmail ?? workspace?.defaultGitUserEmail ?? sys.defaultGitUserEmail ?? null,
+    name: project.defaultGitUserName ?? workspace?.defaultGitUserName ?? sys?.defaultGitUserName ?? null,
+    email: project.defaultGitUserEmail ?? workspace?.defaultGitUserEmail ?? sys?.defaultGitUserEmail ?? null,
   };
 }
 

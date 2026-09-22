@@ -41,7 +41,7 @@ import StickyViewportSurface from "@/components/sticky-viewport-surface";
 import AvatarCombobox, { type AvatarComboboxOption } from "@/components/avatar-combobox";
 import EpicTasksAiPrompt from "./epic-tasks-ai-prompt";
 import EpicTasksClient from "./epic-tasks-client";
-import { sendAgentChatMessage } from "@/lib/agents/chat/actions";
+import { sendEpicWorkflowNotification } from "@/lib/agents/workflow/notifications/epic";
 import { buildEpicActionPlanApprovalUpdate } from "@/lib/epics/action-plan-approval";
 import { epicStatusRevision } from "@/lib/epics/status-concurrency";
 import { promoteEpicBacklogTasks } from "@/lib/epics/assignment";
@@ -247,17 +247,16 @@ async function approveEpicActionPlan(formData: FormData) {
     ? epic.actingManager.agent?.slug ?? null
     : null;
   if (managerSlug && epic._count.tasks === 0) {
-    const notify = new FormData();
-    notify.set("projectSlug", slug);
-    notify.set("epicId", epic.id);
-    notify.set("discussionTarget", `agent:${managerSlug}`);
-    notify.set("body", [
-      `Action Plan approved for Epic "${epic.title}".`,
-      "Create the ordered child tasks for this Epic now. Use the work-item proposal endpoint from this turn.",
-      "Only create top-level Epic tasks when the Epic has no existing top-level tasks. If the Epic already has its implementation sequence, do not add duplicate tasks.",
-      "Each child task title must start with the implementation order: `1.`, `2.`, `3.`, and so on. Keep each task standalone and assignable.",
-    ].join("\n"));
-    await sendAgentChatMessage(notify);
+    await sendEpicWorkflowNotification({
+      epicId: epic.id, targetAgentSlug: managerSlug,
+      actor: { id: actor.id, kind: "human" }, reason: "action_plan_approved",
+      body: [
+        `Action Plan approved for Epic "${epic.title}".`,
+        "Create the ordered child tasks for this Epic now. Use action=create_tasks on this turn's Epic workflow endpoint.",
+        "Only create top-level Epic tasks when the Epic has no existing top-level tasks. If the Epic already has its implementation sequence, do not add duplicate tasks.",
+        "Each child task title must start with the implementation order: `1.`, `2.`, `3.`, and so on. Keep each task standalone and assignable.",
+      ].join("\n"),
+    });
   } else if (
     epic._count.tasks > 0 &&
     (approvalUpdate.promoted || epic.status === "To Do" || epic.status === "In Progress")
@@ -293,18 +292,17 @@ async function approveEpicActionPlan(formData: FormData) {
             .map((assigned) => `- "${assigned.task.title}" -> @${assigned.worker.username}`)
             .join("\n")
         : `- no assignment made (${refill.skipped ?? "queue busy"})`;
-      const notify = new FormData();
-      notify.set("projectSlug", slug);
-      notify.set("epicId", epic.id);
-      notify.set("discussionTarget", `agent:${managerSlug}`);
-      notify.set("body", [
-        `Action Plan approved for Epic "${epic.title}" — the Epic is now In Progress.`,
-        `PM promoted ${promoted.length} Backlog task${promoted.length === 1 ? "" : "s"} to To Do and started the queue:`,
-        queueSummary,
-        "You are the acting manager: keep every pool worker busy. Whenever a worker is free and an unblocked To Do task exists, use this turn's workflow grant (assign_next / advance_queue). Do not wait for a human prompt.",
-        "Do not post an acknowledgement-only response.",
-      ].join("\n"));
-      await sendAgentChatMessage(notify);
+      await sendEpicWorkflowNotification({
+        epicId: epic.id, targetAgentSlug: managerSlug,
+        actor: { id: actor.id, kind: "human" }, reason: "action_plan_approved",
+        body: [
+          `Action Plan approved for Epic "${epic.title}" — the Epic is now In Progress.`,
+          `PM promoted ${promoted.length} Backlog task${promoted.length === 1 ? "" : "s"} to To Do and started the queue:`,
+          queueSummary,
+          "You are the acting manager: keep every pool worker busy. Whenever a worker is free and an unblocked To Do task exists, use this turn's workflow grant (assign_next / advance_queue). Do not wait for a human prompt.",
+          "Do not post an acknowledgement-only response.",
+        ].join("\n"),
+      });
     }
     for (const assigned of refill.assignments) {
       revalidatePath(`/projects/${slug}/tasks/${assigned.task.id}`);

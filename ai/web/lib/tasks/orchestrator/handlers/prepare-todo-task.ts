@@ -34,6 +34,7 @@
 //     policy/permission failures once.
 
 import { db } from "@/lib/db";
+import { resolveGitIdentity } from "@/lib/settings/system";
 import { reserveTaskRepositoryState, updateTaskRepositoryState } from "@/lib/tasks/repository-state";
 import { ensureTaskCodeWorktree, TaskWorktreeError } from "@/lib/tasks/worktree-claim";
 import { effectiveTaskBranchName, effectiveEpicBranchName } from "@/lib/work-items/branches";
@@ -83,6 +84,7 @@ async function resolveRepositoryContract(ctx: StepHandlerContext): Promise<StepH
   const branchName = effectiveTaskBranchName(task);
   const epicBranch = task.epic ? effectiveEpicBranchName(task.epic) : null;
   const codeTouching = Boolean(branchName && projectUsesRepository(task.project));
+  const identity = await resolveGitIdentity({ ...task.project, id: task.projectId });
   const snapshot = {
     codeTouching,
     repositoryPath: task.project.repositoryPath,
@@ -90,8 +92,8 @@ async function resolveRepositoryContract(ctx: StepHandlerContext): Promise<StepH
     epicBranch,
     epicChild: Boolean(task.epicId),
     localOnly: Boolean(task.epicId), // Epic children are local-only
-    gitUserName: task.project.defaultGitUserName ?? null,
-    gitUserEmail: task.project.defaultGitUserEmail ?? null,
+    gitUserName: identity.name,
+    gitUserEmail: identity.email,
   };
   // Reserve the repository state if code-touching (mirrors the existing
   // approve_plan handler's reservation).

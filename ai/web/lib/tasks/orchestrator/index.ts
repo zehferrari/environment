@@ -14,6 +14,9 @@
 //   422 invalid, 503 operational.
 
 import { db } from "@/lib/db";
+import { resolveGitIdentity } from "@/lib/settings/system";
+import { projectUsesRepository } from "@/lib/projects/work-mode";
+import { GIT_IDENTITY_ERROR, hasCompleteGitIdentity } from "@/lib/tasks/git-identity";
 import { authorizeCommand } from "@/lib/tasks/orchestrator/authorize";
 import { runGuards } from "@/lib/tasks/orchestrator/guards";
 import { decideCommand } from "@/lib/tasks/orchestrator/decide";
@@ -182,6 +185,19 @@ async function submitWorkflowCommandWithClient(
     return guardResult.status === "stale"
       ? { status: "stale", reason: guardResult.reason, domainCode: domainCodeFromReason(guardResult.reason, "stale_version") }
       : { status: "invalid", reason: guardResult.reason, domainCode: domainCodeFromReason(guardResult.reason, "invalid_payload") };
+  }
+
+  // Refuse before freezing an episode or creating a submission procedure.
+  // Repeated requests while configuration is unchanged cannot enqueue Git jobs.
+  if ((command.intent === "start_implementation" || command.intent === "submit_for_review") &&
+      projectUsesRepository(state.project)) {
+    const project = await client.project.findUniqueOrThrow({
+      where: { id: state.projectId },
+      select: { id: true, defaultGitUserName: true, defaultGitUserEmail: true },
+    });
+    if (!hasCompleteGitIdentity(await resolveGitIdentity(project, client))) {
+      return { status: "invalid", reason: GIT_IDENTITY_ERROR, domainCode: "git_identity_incomplete" };
+    }
   }
 
   // --- Decide (pure) -----------------------------------------------------

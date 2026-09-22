@@ -1,3 +1,5 @@
+import { isGitIdentityBlocker } from "@/lib/tasks/git-identity";
+
 type TaskActivityKindRow = {
   taskId?: string | null;
   kind: string;
@@ -498,7 +500,7 @@ export function classifyBlockerFailure(
   }
 
   const distinctDiagnoses = new Set(report.diagnosticsAttempted.map(diagnosisKey)).size;
-  if (distinctDiagnoses >= FORMAL_BLOCKER_MIN_DISTINCT_DIAGNOSES && hasDiagnosedContractViolation(report)) {
+  if (distinctDiagnoses >= FORMAL_BLOCKER_MIN_DISTINCT_DIAGNOSES && (hasDiagnosedContractViolation(report) || isGitIdentityBlocker(report))) {
     return { outcome: "accept", report };
   }
   const priorDistinct = Math.max(0, context.priorDistinctDiagnostics ?? 0);

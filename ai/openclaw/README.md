@@ -209,3 +209,18 @@ This is why the same `lib.js` works for every registered coding agent.
 - Agent-specific runtime state (gmail watch state, comment dedupe ledgers, etc.)
 
 See [`AGENT_FILES.md`](./AGENT_FILES.md) for the full per-agent inventory.
+
+### Local managed-browser navigation (OpenClaw 2026.9.3)
+
+For an owner-approved loopback fixture, add the exact host to the individual
+agent's canonical `browser.ssrfPolicy.allowedHostnames`; retain
+`dangerouslyAllowPrivateNetwork=false` and `browser.noSandbox=false`. Host
+exceptions cover all ports on that host, not one URL path. Apply through the
+host `openclaw-config-sync.service` and restart the affected idle gateway.
+
+This release's direct `browser open <http URL>` can refuse with “strict browser
+SSRF policy requires Playwright-backed redirect-hop inspection” even with a
+valid host exception. Use the managed tool to open `about:blank`, then navigate
+that returned target to the authorized URL. `navigate` performs Playwright
+redirect checks. Verify with a DOM snapshot before resuming the task; do not
+switch to an unmanaged browser or direct CDP to evade a policy denial.

@@ -13,6 +13,7 @@ import {
 import path from "node:path";
 import { promisify } from "node:util";
 import { db } from "@/lib/db";
+import { GIT_IDENTITY_ERROR, hasCompleteGitIdentity } from "@/lib/tasks/git-identity";
 import { resolveGitIdentity } from "@/lib/settings/system";
 import {
   effectiveEpicBranchName,
@@ -376,6 +377,10 @@ export async function ensureTaskCodeWorktree(
   if (!task || !projectUsesRepository(task.project)) {
     return { required: false, reason: "no_repository" };
   }
+  const identity = await resolveGitIdentity(task.project);
+  if (!hasCompleteGitIdentity(identity)) {
+    throw new TaskWorktreeError(GIT_IDENTITY_ERROR, task.id);
+  }
   const repositoryPath = task.project.repositoryPath!;
   const branchName = effectiveTaskBranchName(task);
   if (!branchName) {
@@ -422,7 +427,6 @@ export async function ensureTaskCodeWorktree(
     };
   }
 
-  const identity = await resolveGitIdentity(task.project);
   const jobId = `claim-${task.id}-${randomUUID()}`;
   const responsePath = path.join(REPOSITORY_JOB_DIR, `${jobId}.result`);
   const job: WorktreeClaimJob = {

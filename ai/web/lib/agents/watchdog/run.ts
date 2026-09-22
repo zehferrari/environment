@@ -11,6 +11,7 @@
 // watchdog at all.
 
 import { db } from "@/lib/db";
+import { recoverGitIdentityBlockers } from "@/lib/tasks/git-identity-recovery";
 import {
   activeFormalBlockerStatesByTask,
   formalBlockerNeedsExternalInput,
@@ -320,6 +321,14 @@ export async function runWorkflowWatchdog(
     outcomes: [],
   };
 
+  if (!options.dryRun && maxRepairs > 0) {
+    try {
+      report.repaired += await recoverGitIdentityBlockers({ projectId: options.projectId, take: options.take, maxRepairs });
+    } catch (error) {
+      report.errors.push(`git_identity_recovery: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   // Highest-priority finding per task decides the visible state; every
   // finding's repair still runs, deduped so one pass can never queue two
   // continuations for one task.
@@ -330,7 +339,7 @@ export async function runWorkflowWatchdog(
 
   const performed = new Map<string, RepairResult>();
   const repairKeys = new Set<string>();
-  let repairs = 0;
+  let repairs = report.repaired;
 
   for (const finding of findings) {
     if (repairs >= maxRepairs) break;

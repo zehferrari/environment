@@ -572,7 +572,7 @@ export async function sendTaskWorkflowNotification(args: {
     epicId: task.epic?.id ?? null,
     turnId: msg.id,
   });
-  const gitIdentity = await resolveGitIdentity(task.project);
+  const gitIdentity = await resolveGitIdentity({ ...task.project, id: task.projectId });
   const commitPrefix = effectiveTaskCommitPrefix(task);
   const branchName = effectiveTaskBranchName(task);
   const kind = planChannelNotification ? "task-chat" as const : "task-comment" as const;
@@ -988,7 +988,7 @@ export async function sendTaskCommentNotifications(args: {
     currentMessageId: args.commentId,
   });
   const fetchBaseUrl = agentCallbackBaseUrl();
-  const gitIdentity = await resolveGitIdentity(task.project);
+  const gitIdentity = await resolveGitIdentity({ ...task.project, id: task.projectId });
   const commitPrefix = effectiveTaskCommitPrefix(task);
   const branchName = effectiveTaskBranchName(task);
 

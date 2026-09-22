@@ -272,3 +272,15 @@ The native `pm_task_note` tool and CLI `/notes` endpoint publish explicit concis
 findings, decisions and questions. Existing workflow actions keep their blocker
 and completion evidence. Thinking is display-only and is not added to future
 prompts. See [task Thinking](task-thinking.md) for retention and rollout.
+
+## Configuration dependency recovery
+
+Repository preparation and start/submission reject incomplete effective PM Git
+identity with `git_identity_incomplete`. Configure `defaultGitUserName` and
+`defaultGitUserEmail` in Project, Workspace or System settings; changing local
+`git config` does not repair the verifier's configuration. Report the exact
+configuration dependency once and preserve completed work and test evidence.
+The watchdog schedules one verification wake after the settings are repaired;
+the agent clears the matching blocker through the normal workflow. Typed failed
+procedure steps resume only while their original task/cycle is current.
+See [WDT-10 audit](audits/wdt-10-configuration-recovery-2026-09-22.md).

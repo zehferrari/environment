@@ -555,6 +555,7 @@ export type LegacyTaskWorkflowCommand = TaskWorkflowCommandBase & {
 
 export const DOMAIN_ERROR_CODES = [
   "invalid_payload",
+  "git_identity_incomplete",
   "missing_evidence",
   "stale_version",
   "idempotency_conflict",
@@ -594,6 +595,7 @@ export const RESULT_HTTP_STATUS: ReadonlyMap<string, number> = new Map([
 // Domain error code → HTTP status mapping.
 export const DOMAIN_ERROR_HTTP_STATUS: ReadonlyMap<DomainErrorCode, number> = new Map([
   ["invalid_payload", 422],
+  ["git_identity_incomplete", 422],
   ["missing_evidence", 422],
   ["stale_version", 409],
   ["idempotency_conflict", 409],
