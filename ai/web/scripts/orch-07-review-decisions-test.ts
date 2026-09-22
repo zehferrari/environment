@@ -82,6 +82,26 @@ async function main() {
     console.log("[orch07] monitor cannot accept_review PASS");
 
     // --- Test 2: reviewer accept_review starts finalization ------------
+    const deferredCheck = await db.subTask.create({ data: {
+      taskId: task.id, text: "Owner final acceptance: physical device validation", kind: "review",
+    } });
+    const { loadTaskAggregate } = await import("@/lib/tasks/orchestrator/state");
+    const { guardSubmitForReviewChecklist } = await import("@/lib/tasks/orchestrator/guards");
+    const withDeferred = await loadTaskAggregate(task.id);
+    assert.equal(withDeferred!.openChecklist.count, 0, "deferred review checks do not block review entry");
+    assert.equal(withDeferred!.openReviewChecklist.count, 1);
+    assert.equal(guardSubmitForReviewChecklist(withDeferred!, "submit_for_review").ok, true);
+    const prematureAccept = await submitWorkflowCommand({
+      taskId: task.id, intent: "accept_review",
+      actor: { id: reviewerUser.id, kind: "human", username: "reviewer", role: "reviewer" },
+      expectedWorkflowVersion: 1, idempotencyKey: "orch07:deferred-check-open", source: "agent",
+      payload: { reviewRunId: "rr-1", candidateSha: "cand-1" },
+    });
+    assert.equal(prematureAccept.status, "invalid", JSON.stringify(prematureAccept));
+    assert.match(JSON.stringify(prematureAccept), /checklist_incomplete/);
+    assert.equal(await db.reviewRun.count({ where: { taskId: task.id, status: "accepted" } }), 0);
+    await db.subTask.update({ where: { id: deferredCheck.id }, data: { completedAt: new Date() } });
+    console.log("[orch07] deferred checks allow review entry but fence final acceptance PASS");
     const reviewerAccept = await submitWorkflowCommand({
       taskId: task.id,
       intent: "accept_review",

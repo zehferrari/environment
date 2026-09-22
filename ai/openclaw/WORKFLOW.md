@@ -558,10 +558,24 @@ Latency / PM queue/status names:
    Request physical-device validation only when required by the approved
    acceptance criteria or a demonstrated limitation relevant to the task. Do
    not claim emulation proves physical wheel, trackpad, or touch behaviour.
+   If the owner explicitly defers named checks to final acceptance, that changes
+   the review-entry gate for those checks only. Finish the remaining implementation
+   criteria, retain the deferred checks as open review checklist items, cite the
+   owner's instruction and submit the evidence for review. Do not repeatedly
+   block implementation on those deferred checks or mark them as passed. The
+   reviewer may assess the work; final acceptance waits for the review checklist.
    The final blocker must distinguish completed checks, observed failures,
    checks genuinely waiting on the dependency, and the exact human action needed.
    Do not bypass permissions, publish/deploy without authorization, or repeat
    unchanged passing checks merely to stay busy.
+   For the known OpenClaw 2026.9.3 local-managed browser error “strict browser
+   SSRF policy requires Playwright-backed redirect-hop inspection”, use the
+   supported sequence `browser open about:blank`, then `browser navigate <url>`
+   against that returned tab. Navigation still enforces the hostname allowlist
+   and redirect policy. If navigation itself is denied, stop and report it; do
+   not weaken policy or use direct CDP navigation. Verify the fixture server and
+   loaded page before collecting evidence. Reconstructed baseline measurements
+   must be labelled retrospective; they cannot become before-edit records.
    If a blocker requires infrastructure,
    credential, external-service, reviewer, manager, or reporter intervention,
    keep the incomplete task `In Progress` and call `flag_blocker` once with

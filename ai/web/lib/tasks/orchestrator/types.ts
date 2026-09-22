@@ -803,6 +803,7 @@ export type TaskStateSnapshot = {
   otherInProgressTaskForAssignee?: { id: string; title: string } | null;
   otherInProgressTaskOnBranch?: { id: string; title: string; branchName: string | null } | null;
   openChecklist?: { count: number; ids: string[] };
+  openReviewChecklist?: { count: number; ids: string[] };
   activeBlocker?: {
     commentId: string | null;
     permissionRequest: { kind: string; scope: string } | null;

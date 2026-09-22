@@ -155,6 +155,7 @@ export type TaskAggregate = TaskStateSnapshot & {
     count: number;
     ids: string[];
   };
+  openReviewChecklist: { count: number; ids: string[] };
 
   // --- Active formal blocker + permission-round state ---
   activeBlocker: {
@@ -451,14 +452,13 @@ async function loadTaskAggregateWithClient(
       },
     }),
 
-    // Open checklist
+    // Open implementation and review checklists have different gates.
     client.subTask.findMany({
       where: {
         taskId: taskId,
         completedAt: null,
-        kind: { not: "review" },
       },
-      select: { id: true },
+      select: { id: true, kind: true },
     }),
 
     // Unresolved prerequisites (via TaskDependency)
@@ -708,8 +708,12 @@ async function loadTaskAggregateWithClient(
 
     // Open checklist
     openChecklist: {
-      count: openChecklist.length,
-      ids: openChecklist.map((c) => c.id),
+      count: openChecklist.filter((c) => c.kind !== "review").length,
+      ids: openChecklist.filter((c) => c.kind !== "review").map((c) => c.id),
+    },
+    openReviewChecklist: {
+      count: openChecklist.filter((c) => c.kind === "review").length,
+      ids: openChecklist.filter((c) => c.kind === "review").map((c) => c.id),
     },
 
     // Active blocker (resolved from activity log — formal blocker state)

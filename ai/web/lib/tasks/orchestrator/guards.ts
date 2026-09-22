@@ -310,6 +310,13 @@ export function guardSubmitForReviewChecklist(
   return { ok: true };
 }
 
+export function guardAcceptReviewChecklist(state: TaskStateSnapshot): GuardResult {
+  const remaining = state.openReviewChecklist?.count ?? 0;
+  return remaining > 0
+    ? { ok: false, status: "invalid", reason: `[checklist_incomplete] Final acceptance requires the review checklist to be complete. ${remaining} review item(s) remaining; assess the evidence while keeping deferred checks open.` }
+    : { ok: true };
+}
+
 // Required deliverables are a task-level review gate. Agents may attach files
 // throughout implementation, but Review cannot begin until evidence exists.
 export function guardSubmitForReviewAttachment(
@@ -620,6 +627,7 @@ export function runGuards(
         guardStatus(state, command.intent, ["Review"]),
         guardCyclePrecondition(state, command.intent, command.workflowCycleId),
         guardReviewLease(state, "accept_review", state.activeReviewRun?.candidateSha),
+        guardAcceptReviewChecklist(state),
       ]);
 
     case "repository_finalization_succeeded":
