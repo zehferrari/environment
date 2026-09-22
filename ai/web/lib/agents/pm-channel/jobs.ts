@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { prepareCompactTaskTurn } from "@/lib/agents/pm-channel/task-runtime";
 import { isOwnerUserId } from "@/lib/auth/permissions";
@@ -722,17 +723,27 @@ async function rollbackDispatchedTurnBinding(payload: DispatchJobPayload) {
 // implementation instruction risks re-running partially-completed work. With
 // item B in place, any turn that performed a durable workflow action settles
 // complete and never reaches this path.
+async function turnFailureStillMutable(tx: Prisma.TransactionClient, runId: string, jobId: string) {
+  const [run, job] = await Promise.all([
+    tx.pmChannelRun.findUnique({ where: { id: runId }, select: { status: true, settledByAction: true } }),
+    tx.pmChannelJob.findUnique({ where: { id: jobId }, select: { status: true } }),
+  ]);
+  return Boolean(run && !run.settledByAction && ["queued", "delivered", "accepted", "admitted", "streaming", "waiting_capacity"].includes(run.status)
+    && job && ["queued", "claimed", "accepted", "retryable"].includes(job.status));
+}
+
 export async function retryOrFailPmChannelJobForTurnFailure(args: {
   targetKey: string;
   error: string;
   now?: Date;
-}): Promise<"retried" | "exhausted" | "no_job"> {
+}): Promise<"retried" | "exhausted" | "no_job" | "settled"> {
   const now = args.now ?? new Date();
   const run = await db.pmChannelRun.findUnique({
     where: { targetKey: args.targetKey },
     select: {
       id: true,
       status: true,
+      settledByAction: true,
       projectId: true,
       taskId: true,
       agentSlug: true,
@@ -740,6 +751,7 @@ export async function retryOrFailPmChannelJobForTurnFailure(args: {
     },
   });
   if (!run || run.status === "cancelled" || run.status === "superseded" || run.status === "timed_out") return "no_job";
+  if (run.status === "completed" || run.settledByAction) return "settled";
   const job = await db.pmChannelJob.findUnique({
     where: { runId: run.id },
     select: { id: true, attemptCount: true, payload: true },
@@ -763,6 +775,7 @@ export async function retryOrFailPmChannelJobForTurnFailure(args: {
 
   if (contextPressureRecovery && run.taskId) {
     const recovered = await db.$transaction(async (tx) => {
+      if (!await turnFailureStillMutable(tx, run.id, job.id)) return false;
       const rollover = await rollOverTaskExecutionEpisodeForContextPressure(tx, {
         taskId: run.taskId!,
         projectId: run.projectId,
@@ -831,8 +844,9 @@ export async function retryOrFailPmChannelJobForTurnFailure(args: {
       });
       if (rotated) retryPayload = { ...payload, sessionKey: rotated.openclawSessionKey };
     }
-    await db.$transaction([
-      db.pmChannelJob.updateMany({
+    const retried = await db.$transaction(async (tx) => {
+      if (!await turnFailureStillMutable(tx, run.id, job.id)) return false;
+      await tx.pmChannelJob.updateMany({
         where: { id: job.id, status: { in: ["queued", "claimed", "accepted", "retryable"] } },
         data: {
           status: "retryable",
@@ -842,8 +856,8 @@ export async function retryOrFailPmChannelJobForTurnFailure(args: {
           lastError: error,
           payload: JSON.stringify(retryPayload),
         },
-      }),
-      db.pmChannelRun.update({
+      });
+      await tx.pmChannelRun.update({
         where: { id: run.id },
         data: {
           status: "queued",
@@ -853,14 +867,17 @@ export async function retryOrFailPmChannelJobForTurnFailure(args: {
           disposition: "continue",
           sessionKey: retryPayload.sessionKey,
         },
-      }),
-    ]);
+      });
+      return true;
+    });
+    if (!retried) return "settled";
     await appendAndPublishStatus({ payload: retryPayload, runStatus: "queued", error });
     return "retried";
   }
 
-  await db.$transaction([
-    db.pmChannelJob.updateMany({
+  const failed = await db.$transaction(async (tx) => {
+    if (!await turnFailureStillMutable(tx, run.id, job.id)) return false;
+    await tx.pmChannelJob.updateMany({
       where: { id: job.id, status: { in: ["queued", "claimed", "accepted", "retryable"] } },
       data: {
         status: "failed",
@@ -868,8 +885,8 @@ export async function retryOrFailPmChannelJobForTurnFailure(args: {
         claimedAt: null,
         lastError: error,
       },
-    }),
-    db.pmChannelRun.update({
+    });
+    await tx.pmChannelRun.update({
       where: { id: run.id },
       data: {
         status: "failed",
@@ -880,12 +897,14 @@ export async function retryOrFailPmChannelJobForTurnFailure(args: {
         lastEventAt: now,
         disposition: "failed",
       },
-    }),
-    db.pmChannelContinuation.updateMany({
+    });
+    await tx.pmChannelContinuation.updateMany({
       where: { runId: run.id, status: { in: ["armed", "queued", "dispatching"] } },
       data: { status: "superseded", lastError: "turn failed terminally" },
-    }),
-  ]);
+    });
+    return true;
+  });
+  if (!failed) return "settled";
   await appendAndPublishStatus({ payload, runStatus: "failed", error });
   await rollbackDispatchedTurnBinding(payload);
   return "exhausted";

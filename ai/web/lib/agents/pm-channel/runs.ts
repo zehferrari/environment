@@ -1536,7 +1536,7 @@ export async function recordPmChannelRunEvent(args: {
       const disposition = status === "completed"
         ? await resolveSettleDisposition({ targetKey, status: "complete", now })
         : undefined;
-      await db.pmChannelRun.upsert({
+      const mutation = {
         where: { targetKey },
         create: {
           targetKey,
@@ -1572,7 +1572,19 @@ export async function recordPmChannelRunEvent(args: {
           lastEventAt: now,
           disposition,
         },
-      });
+      } satisfies Prisma.PmChannelRunUpsertArgs;
+      if (existing) {
+        // A terminal workflow action can commit after the read above. Fence
+        // the write itself so a late tool/stream frame cannot revive it.
+        const changed = await db.pmChannelRun.updateMany({
+          where: { id: existing.id, settledByAction: null,
+            status: { notIn: status === "completed" ? ["completed", "cancelled", "superseded"] : ["completed", "cancelled", "superseded", "failed", "timed_out"] } },
+          data: mutation.update,
+        });
+        if (!changed.count) return;
+      } else {
+        await db.pmChannelRun.create({ data: mutation.create });
+      }
       if (status === "completed") {
         await settlePmChannelJobsForTargetKey({ targetKey, status: "complete", now });
       }

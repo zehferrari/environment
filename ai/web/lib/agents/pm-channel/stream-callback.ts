@@ -619,7 +619,10 @@ export async function applyPmChannelStreamCallback(args: {
     return { status: 200, body: { ok: true, key: state.key, status: state.status } };
   }
 
-  if (event === "error" && await pmChannelTargetHasDurableReply(target)) {
+  const terminalAction = event === "error" ? await db.pmChannelRun.findUnique({
+    where: { targetKey: pmChannelRunTargetKey(target) }, select: { settledByAction: true },
+  }) : null;
+  if (event === "error" && (terminalAction?.settledByAction || await pmChannelTargetHasDurableReply(target))) {
     const persisted = await appendPmChannelStreamEventForTarget({ target, event: "done" });
     const state = publishPmChannelStreamEvent({ target, event: "done", seq: persisted.seq });
     // The durable reply makes this a legitimate settle for the UI, but the

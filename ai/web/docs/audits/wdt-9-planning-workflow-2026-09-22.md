@@ -68,3 +68,42 @@ checks, 41 watchdog database checks, lease lifecycle and 186 workflow effect
 assertions passed. Test databases were isolated under `/tmp`.
 
 Activation and task-recovery results are recorded below after deployment.
+
+## Activation and observed recovery
+
+Initial deployment `af3e7db` completed through `pm-switch` at
+2026-09-22T01:42:55Z. Login HTML and its referenced CSS returned HTTP 200;
+the public login also returned 200. The database migration was applied.
+Backup: `/var/backups/openclaw/wdt9-20260922T014010Z/` (SQLite quick_check: ok).
+Plugin 0.1.10 was staged and loaded by Asdrubal, Barekbaal and Carmen.
+Asdrubal/Carmen advertised the new native tools; Barekbaal correctly advertised
+no native tools because its Claude CLI runtime uses scoped HTTP. Karen's
+unrelated old accepted-run record was not reset or canceled, and her gateway
+was not restarted. Updated WORKFLOW.md copies were synchronized for all agents.
+
+The operator recorded reporter-authorized delegation for existing revision 5
+through `delegate_plan_approval`, preserving the task and its history. Asdrubal
+approved it; PM prepared `/srv/Code/whitsunday-discovery-trail.worktrees/wdt-9`
+and Barekbaal called `start`. WDT-9 reached In Progress at workflow version 2.
+The reviewer prompt fell from 71,304 to 8,687 characters; the CLI implementer
+prompt fell from 71,575 to 13,943 characters. These are measured PM prompt
+characters, not full-model token counts or a latency benchmark.
+
+The live recovery exposed another race: after a committed approval, a late
+stream frame and no-reply handler could overwrite the completed run. The
+follow-up fences stream updates at the write and rechecks both run and job
+inside retry/exhaustion transactions. Deterministic regression cases simulate
+terminal settlement between the initial read and the write; neither streaming,
+retry nor exhaustion may revive/fail that completed action. The existing
+channel lifecycle suite also passes.
+
+Reviewer run `48e5f168-c150-41ae-9f91-1d9d9deaaafd` was restored from its
+committed approval receipt `cmuc0ft1p01kpovuh3i5budyf`. The false timeout remains
+in its completion anomaly and an operator-repair audit entry. No task decision
+was replayed by that repair.
+
+Late no-reply errors following a committed terminal action are also converted
+to a completed UI event, retaining the error as a completion anomaly. The WDT
+fixture exercises that real stream callback, as well as deterministic races
+for retry, exhaustion and late stream writes. This follow-up changes PM's
+server/consumer only; another gateway reload is not needed.

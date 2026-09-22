@@ -58,6 +58,12 @@ async function main() {
   result=await post(finalReview,'approve_plan',{actionPlanId:stored.id,actionPlanVersion:2});assert.equal(result.status,202,JSON.stringify(result));
   const approvalReplay=await post(finalReview,'approve_plan',{actionPlanId:stored.id,actionPlanVersion:2});assert.equal(approvalReplay.status,200,JSON.stringify(approvalReplay));
   assert.equal((await db.task.findUniqueOrThrow({where:{id:task.id}})).status,'To Do');
+  const {applyPmChannelStreamCallback}=await import('@/lib/agents/pm-channel/stream-callback');
+  const late=await applyPmChannelStreamCallback({payload:{version:1,target:finalReview.payload.replyTarget,event:'error',error:'Agent finished without posting a reply.'},transportMode:'http',rateLimit:false});
+  assert.equal(late.status,200,JSON.stringify(late));
+  assert.equal((await db.pmChannelRun.findUniqueOrThrow({where:{id:finalReview.run.id}})).status,'completed');
+  assert.equal((await db.pmChannelStreamEvent.findFirstOrThrow({where:{runId:finalReview.run.id},orderBy:{seq:'desc'}})).kind,'done','a committed action must not show a failed turn in the UI');
+
   console.log('PASS attachment context, review prose, explicit acceptance, permission denial, revision delegation, replay and approval');
   const {loadWatchdogSnapshot}=await import('@/lib/agents/watchdog/run');const {detectWatchdogFindings,healthyExecutionState}=await import('@/lib/agents/watchdog/detectors');
   const failedTask=await db.task.create({data:{title:'Failed Backlog review',projectId:project.id,status:'Backlog',statusChangedAt:new Date(0)}});
@@ -77,6 +83,38 @@ async function main() {
   const capacity=await db.pmChannelJob.create({data:{runId:'capacity',agentSlug:'worker',kind:'task-chat',payload:JSON.stringify(payload),status:'queued',availableAt:new Date(0)}});
   for(let i=0;i<5;i++){await db.pmChannelJob.update({where:{id:capacity.id},data:{availableAt:new Date(0)}});const job=await claimNextPmChannelJob('test');assert.ok(job);assert.equal(job.id,capacity.id,JSON.stringify({id:job.id,runId:job.runId,capacity:capacity.id}));await runPmChannelJob(job);const s=await db.pmChannelJob.findUniqueOrThrow({where:{id:job.id}});assert.equal(s.status,'retryable',s.lastError??'');assert.equal(s.attemptCount,0);assert.equal(s.claimedAt,null);}
   console.log('PASS repeated capacity waits preserve retry budget and release claims');
+  const {retryOrFailPmChannelJobForTurnFailure}=await import('@/lib/agents/pm-channel/jobs');
+  for(const attemptCount of [1,4]) {
+    await db.pmChannelRun.update({where:{id:'capacity'},data:{status:'admitted',settledByAction:null}});
+    await db.pmChannelJob.update({where:{id:capacity.id},data:{status:'accepted',attemptCount}});
+    const transaction=db.$transaction;
+    // Deterministically commit the terminal action after the failure handler's
+    // initial reads but before it opens its retry/exhaustion transaction.
+    db.$transaction=(async(operation:unknown,options:unknown)=>{
+      await db.pmChannelRun.update({where:{id:'capacity'},data:{status:'completed',settledByAction:'approve_plan'}});
+      await db.pmChannelJob.update({where:{id:capacity.id},data:{status:'complete'}});
+      return Reflect.apply(transaction,db,[operation,options]);
+    }) as typeof db.$transaction;
+    try { assert.equal(await retryOrFailPmChannelJobForTurnFailure({targetKey:pmChannelRunTargetKey(payload.replyTarget),error:'Agent finished without posting a reply.'}),'settled'); }
+    finally { db.$transaction=transaction; }
+    assert.equal((await db.pmChannelRun.findUniqueOrThrow({where:{id:'capacity'}})).status,'completed');
+    assert.equal((await db.pmChannelJob.findUniqueOrThrow({where:{id:capacity.id}})).status,'complete');
+  }
+  console.log('PASS terminal-action race cannot revive or fail a completed approval');
+  const {recordPmChannelRunEvent}=await import('@/lib/agents/pm-channel/runs');
+  await db.pmChannelRun.update({where:{id:'capacity'},data:{status:'admitted',settledByAction:null}});
+  const findUnique=db.pmChannelRun.findUnique;
+  db.pmChannelRun.findUnique=(async(args:{select?:{streamingAt?:boolean}})=>{
+    const stale=await Reflect.apply(findUnique,db.pmChannelRun,[args]);
+    if(args.select?.streamingAt) await db.pmChannelRun.update({where:{id:'capacity'},data:{status:'completed',settledByAction:'approve_plan'}});
+    return stale;
+  }) as unknown as typeof db.pmChannelRun.findUnique;
+  try {await recordPmChannelRunEvent({target:payload.replyTarget,event:'partial'});}
+  finally {db.pmChannelRun.findUnique=findUnique;}
+  assert.equal((await db.pmChannelRun.findUniqueOrThrow({where:{id:'capacity'}})).status,'completed');
+  console.log('PASS late stream frame cannot overwrite a concurrent terminal action');
+
+
  }finally{await db.$disconnect();rmSync(dir,{recursive:true,force:true});}
 }
 main().catch(e=>{console.error(e);process.exitCode=1;});
