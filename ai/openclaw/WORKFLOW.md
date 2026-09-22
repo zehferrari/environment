@@ -535,7 +535,21 @@ Latency / PM queue/status names:
 8. If blocked before starting, do not start unless explicitly instructed.
    Task execution always belongs to the visible assignee. If another agent
    must perform independent work, create and explicitly assign a separate PM
-   Task so ownership and dependencies remain visible. If a blocker requires infrastructure,
+   Task so ownership and dependencies remain visible. Before raising a blocker,
+   finish all authorized work that does not depend on the missing input: focused
+   implementation, available automated checks, diagnostics, and evidence uploads.
+   An unavailable physical device does not prevent headless/browser automation,
+   unit tests, or preparing reproducible test instructions. Record any early
+   request for coordination with `task_note` while continuing independent work;
+   use `flag_blocker` only when no remaining authorized work can proceed.
+   Request physical-device validation only when required by the approved
+   acceptance criteria or a demonstrated limitation relevant to the task. Do
+   not claim emulation proves physical wheel, trackpad, or touch behaviour.
+   The final blocker must distinguish completed checks, observed failures,
+   checks genuinely waiting on the dependency, and the exact human action needed.
+   Do not bypass permissions, publish/deploy without authorization, or repeat
+   unchanged passing checks merely to stay busy.
+   If a blocker requires infrastructure,
    credential, external-service, reviewer, manager, or reporter intervention,
    keep the incomplete task `In Progress` and call `flag_blocker` once with
    the evidence and required intervention. PM sets `alert_reporter`, notifies

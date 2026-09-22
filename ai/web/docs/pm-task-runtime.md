@@ -45,6 +45,24 @@ the workflow route rejecting a run in the legitimate `admitted` state.
 
 ## Scope and contracts
 
+All agents must finish authorized work independent of a missing dependency
+before raising a formal blocker. This rule is included in the compact task
+contract, the full task context and the shared `WORKFLOW.md`. Early coordination
+uses a task note while independent work continues. Missing physical-device
+access does not stop automated verification or evidence uploads; actual device
+checks remain required only by approved criteria or a demonstrated relevant
+limitation. This is a shared operating instruction, not new device access or a
+server-side proof that every remaining action depends on the blocker.
+
+The current episode tool budgets remain unchanged: normally 30 calls, with
+smaller provider/model ceilings selected by `episodeToolCycleBudgetForModel`.
+PM attempts a checkpoint steer at two-thirds of the budget and aborts the turn
+at exhaustion. WDT-11 exposed unsuccessful steering and incomplete handoffs;
+a future change should use acknowledged checkpoints and a bounded grace period,
+preserve active verification jobs, and use actual context occupancy where
+available. Aggregate token usage is not context occupancy. Raising the call
+limit alone does not address those handoff failures.
+
 The enabled compact path covers PM-owned task notifications to coding agents
 including attachment-required tasks. Direct owner chats, interactive work-item
 proposals, Epics and general-role agents retain their existing interaction
