@@ -185,8 +185,9 @@ the entry-point overview.
   `pm_workflow.failed_run_max_age_hours` (default 48) never alert, and
   `retryable` runs (mid retry-backoff) are suppressed until twice the
   channel-stall warn threshold. Before issuing a non-channel recovery, the
-  monitor also suppresses duplicate work while any queued, accepted,
-  streaming, or retryable PM-channel run exists for the same task and agent.
+  monitor also suppresses duplicate work while any queued, accepted, admitted,
+  streaming, retryable, or waiting-capacity PM-channel run exists for the same
+  task and agent. Capacity waits belong to the PM queue, not gateway recovery.
   When a resolved nudge target is a human
   rather than an active agent, the recovery ladder and service restarts are
   skipped — the human gets a single Telegram/board notification, deduplicated
@@ -196,6 +197,17 @@ the entry-point overview.
   recovery. The ordinary two-minute no-start threshold applies to dispatch,
   not a live tool-heavy agent execution; restarting inside that grace can kill
   the very browser/tool work the workflow is waiting for.
+
+  Before either recovery tier restarts or nudges an agent, it rereads the live
+  PM database. Any admitted/streaming run or unexpired execution lease for that
+  agent prevents intervention, including work on another task. Accepted turns
+  retain their execution grace; another turn's acceptance also prevents restart.
+  Exact channel incidents must still name the current workflow owner and the
+  same unsettled run, with no newer replacement and no recent progress. Missing
+  evidence or an unreadable database defers intervention. Deferral is recorded
+  without consuming a recovery attempt. The PM execution watchdog remains
+  responsible for settling stuck execution/expired leases; this monitor does
+  not kill an admitted turn merely because its visible output is quiet.
 
 ## Registry-driven
 

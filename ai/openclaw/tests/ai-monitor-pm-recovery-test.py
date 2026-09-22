@@ -4,6 +4,8 @@ import importlib.machinery
 import importlib.util
 import json
 import sqlite3
+import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -86,7 +88,7 @@ class PmRecoveryTest(unittest.TestCase):
     def test_accepted_pm_turn_gets_execution_grace_before_recovery(self):
         source = SCRIPT.read_text()
         self.assertIn('channel_accepted_warn_minutes", 30', source)
-        accepted_guard = 'run_status == "accepted"'
+        accepted_guard = 'run_status in ("accepted", "admitted")'
         stalled_kind = '"pm-channel-stalled"'
         self.assertIn(accepted_guard, source)
         self.assertLess(
@@ -97,7 +99,7 @@ class PmRecoveryTest(unittest.TestCase):
     def test_monitor_recovery_never_stacks_behind_a_live_turn(self):
         source = SCRIPT.read_text()
         self.assertIn("_pm_has_live_channel_run", source)
-        self.assertIn("status IN ('queued', 'accepted', 'streaming', 'retryable')", source)
+        self.assertIn("status IN ('queued', 'accepted', 'admitted', 'streaming', 'retryable', 'waiting_capacity')", source)
         self.assertIn('not kind.startswith("pm-channel-")', source)
 
     def test_completed_status_suppresses_historical_orphan_recovery(self):
@@ -321,6 +323,128 @@ class PmRecoveryTest(unittest.TestCase):
             )
         )
 
+    def recovery_db(self):
+        directory = tempfile.TemporaryDirectory(prefix="ai-monitor-recovery-")
+        self.addCleanup(directory.cleanup)
+        db_path = Path(directory.name) / "pm.db"
+        conn = sqlite3.connect(db_path)
+        self.addCleanup(conn.close)
+        conn.executescript("""
+            CREATE TABLE PmChannelRun (id TEXT PRIMARY KEY, agentSlug TEXT, taskId TEXT,
+                messageId TEXT, status TEXT, lastEventAt INTEGER, createdAt INTEGER);
+            CREATE TABLE AgentExecutionLease (agentSlug TEXT, runId TEXT, status TEXT, expiresAt INTEGER);
+            CREATE TABLE Project (id TEXT, deletedAt INTEGER);
+            CREATE TABLE Agent (id TEXT, slug TEXT);
+            CREATE TABLE User (id TEXT, username TEXT, agentId TEXT);
+            CREATE TABLE Epic (id TEXT, status TEXT, actingManagerId TEXT);
+            CREATE TABLE Task (id TEXT, projectId TEXT, assigneeId TEXT, actingManagerId TEXT,
+                reporterId TEXT, epicId TEXT, status TEXT, deletedAt INTEGER, archived_at INTEGER);
+            CREATE TABLE AgentChatMessage (id TEXT, taskId TEXT, body TEXT, deletedAt INTEGER);
+            INSERT INTO Project VALUES ('project',NULL);
+            INSERT INTO Agent VALUES ('agent','asdrubal');
+            INSERT INTO User VALUES ('worker','asdrubal','agent');
+            INSERT INTO User VALUES ('owner','zeh',NULL);
+            INSERT INTO Task VALUES ('task-1','project','worker',NULL,'owner',NULL,'In Progress',NULL,NULL);
+            INSERT INTO AgentChatMessage VALUES ('message-1','task-1','Resume authorized task',NULL);
+        """)
+        self.old_ms = int((time.time() - 4000) * 1000)
+        conn.execute("INSERT INTO PmChannelRun VALUES (?,?,?,?,?,?,?)",
+                     ('run-1','asdrubal','task-1','message-1','queued',self.old_ms,self.old_ms))
+        conn.commit()
+        cfg = {"pm_workflow": {"database_path": str(db_path)}}
+        bucket = {"pm_tasks": [{"task_id": "task-1", "message_id": "message-1", "kind": "pm-channel-no-start"}]}
+        return conn, cfg, bucket
+
+    def test_recovery_rechecks_state_changed_after_probe_for_both_tiers(self):
+        conn, cfg, bucket = self.recovery_db()
+        issue = {"unit": "pm:asdrubal/task-1", **bucket["pm_tasks"][0]}
+        for status in ('streaming', 'admitted', 'accepted', 'waiting_capacity', 'completed', 'superseded'):
+            conn.execute("UPDATE PmChannelRun SET status=?,lastEventAt=?", (status, int(time.time()*1000)))
+            conn.commit()
+            for recovery in (self.monitor.auto_wake_stalled_agents, self.monitor.restart_and_wake_stalled_agents):
+                with self.subTest(status=status, recovery=recovery.__name__), \
+                     mock.patch.object(self.monitor, 'run_cmd') as command, \
+                     mock.patch.object(self.monitor, '_run_pm_workflow_nudges') as nudge:
+                    result = recovery([issue], cfg, registry())
+                    self.assertEqual(result['asdrubal']['action'], 'pm-recovery-deferred')
+                    command.assert_not_called()
+                    nudge.assert_not_called()
+
+    def test_other_task_execution_and_dispatch_lease_protect_gateway(self):
+        conn, cfg, bucket = self.recovery_db()
+        conn.execute("INSERT INTO PmChannelRun VALUES (?,?,?,?,?,?,?)",
+                     ('other','asdrubal','task-2','other-message','streaming',self.old_ms,self.old_ms))
+        conn.commit()
+        self.assertFalse(self.monitor._pm_recovery_preflight(cfg,'asdrubal',bucket)['allowed'])
+        conn.execute("UPDATE PmChannelRun SET status='accepted' WHERE id='other'")
+        conn.commit()
+        self.assertFalse(self.monitor._pm_recovery_preflight(cfg,'asdrubal',bucket)['allowed'])
+        conn.execute("DELETE FROM PmChannelRun WHERE id='other'")
+        conn.execute("INSERT INTO AgentExecutionLease VALUES (?,?,?,?)",
+                     ('asdrubal','other','reserved',int((time.time()+120)*1000)))
+        conn.commit()
+        self.assertFalse(self.monitor._pm_recovery_preflight(cfg,'asdrubal',bucket)['allowed'])
+        conn.execute("UPDATE AgentExecutionLease SET expiresAt=?", (self.old_ms,))
+        conn.commit()
+        self.assertTrue(self.monitor._pm_recovery_preflight(cfg,'asdrubal',bucket)['allowed'])
+
+    def test_current_quiescent_failure_can_recover_but_newer_turn_or_owner_change_cannot(self):
+        conn, cfg, bucket = self.recovery_db()
+        conn.execute("UPDATE PmChannelRun SET status='failed'")
+        conn.commit()
+        self.assertTrue(self.monitor._pm_recovery_preflight(cfg,'asdrubal',bucket)['allowed'])
+        conn.execute("INSERT INTO PmChannelRun VALUES (?,?,?,?,?,?,?)",
+                     ('new','asdrubal','task-1','new-message','queued',self.old_ms+1,self.old_ms+1))
+        conn.commit()
+        self.assertFalse(self.monitor._pm_recovery_preflight(cfg,'asdrubal',bucket)['allowed'])
+        conn.execute("DELETE FROM PmChannelRun WHERE id='new'")
+        conn.execute("UPDATE Task SET status='Review'")
+        conn.commit()
+        result = self.monitor._pm_recovery_preflight(cfg,'asdrubal',bucket)
+        self.assertFalse(result['allowed'])
+        self.assertTrue(result['resolved'])
+
+    def test_missing_database_and_missing_message_do_not_authorize_restart(self):
+        conn, cfg, bucket = self.recovery_db()
+        bucket['pm_tasks'][0].pop('message_id')
+        self.assertFalse(self.monitor._pm_recovery_preflight(cfg,'asdrubal',bucket)['allowed'])
+        cfg['pm_workflow']['database_path'] += '.missing'
+        self.assertFalse(self.monitor._pm_recovery_preflight(cfg,'asdrubal',bucket)['allowed'])
+
+    def test_deferral_does_not_advance_recovery_ladder(self):
+        event = {'attempts': 1}
+        issue = {'unit': 'pm:asdrubal/task-1', 'kind': 'pm-channel-no-start'}
+        results = {'asdrubal': {'action': 'pm-recovery-deferred', 'preflight': {'reason': 'live execution'}}}
+        self.assertTrue(self.monitor._record_pm_recovery_deferral(issue, results, event, 100, 60))
+        self.assertEqual(event['attempts'], 1)
+        self.assertEqual(event['next_attempt_after'], 160)
+        self.assertEqual(event['attempt_history'][0]['action'], 'pm-recovery-deferred')
+
+    def test_mixed_queue_incidents_cannot_bypass_live_execution_guard(self):
+        conn, cfg, bucket = self.recovery_db()
+        conn.execute("UPDATE PmChannelRun SET status='streaming'")
+        conn.commit()
+        issues = [
+            {'unit': 'pm:asdrubal/task-1', **bucket['pm_tasks'][0]},
+            {'unit': 'jira:asdrubal/TEST-1', 'kind': 'task-stalled-no-agent'},
+        ]
+        for recovery in (self.monitor.auto_wake_stalled_agents, self.monitor.restart_and_wake_stalled_agents):
+            with mock.patch.object(self.monitor, 'run_cmd') as command:
+                result = recovery(issues, cfg, registry())
+                self.assertEqual(result['asdrubal']['action'], 'pm-recovery-deferred')
+                command.assert_not_called()
+
+    def test_admission_and_capacity_suppress_duplicate_workflow_nudges(self):
+        conn, cfg, bucket = self.recovery_db()
+        for status in ('admitted','waiting_capacity'):
+            conn.execute("UPDATE PmChannelRun SET status=?", (status,))
+            conn.commit()
+            self.assertTrue(self.monitor._pm_has_live_channel_run(conn,'task-1','asdrubal'))
+        self.assertTrue(self.monitor._pm_channel_run_confirmed({
+            'ok': True, 'status': 'admitted', 'lastEventAt': int(time.time()*1000),
+        }))
+        self.assertFalse(self.monitor._pm_channel_run_confirmed({'ok':True,'status':'waiting_capacity'}))
+
     def test_gateway_readiness_uses_registered_readyz(self):
         with mock.patch.object(
             self.monitor.urllib.request,
@@ -363,6 +487,7 @@ class PmRecoveryTest(unittest.TestCase):
             }]
 
         with (
+            mock.patch.object(self.monitor, "_pm_recovery_preflight", return_value={"allowed": True}),
             mock.patch.object(
                 self.monitor, "run_cmd", return_value=(0, "", "")
             ),
@@ -409,6 +534,7 @@ class PmRecoveryTest(unittest.TestCase):
             }]
 
         with (
+            mock.patch.object(self.monitor, "_pm_recovery_preflight", return_value={"allowed": True}),
             mock.patch.object(self.monitor, "run_cmd", side_effect=run_cmd),
             mock.patch.object(
                 self.monitor, "_run_pm_workflow_nudges", side_effect=nudge

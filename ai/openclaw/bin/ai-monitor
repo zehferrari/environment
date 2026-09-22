@@ -1873,7 +1873,7 @@ def _pm_has_live_channel_run(conn, task_id, agent_slug):
             FROM PmChannelRun
             WHERE taskId = ?
               AND agentSlug = ?
-              AND status IN ('queued', 'accepted', 'streaming', 'retryable')
+              AND status IN ('queued', 'accepted', 'admitted', 'streaming', 'retryable', 'waiting_capacity')
             LIMIT 1
             """,
             (task_id, agent_slug),
@@ -2203,7 +2203,7 @@ def probe_pm_workflow(cfg, registry):
               AND m.deletedAt IS NULL
               AND t.parentTaskId IS NULL
               AND t.status NOT IN ('Backlog', 'Done')
-              AND (r.status IS NULL OR r.status IN ('queued', 'accepted', 'streaming', 'retryable', 'failed'))
+              AND (r.status IS NULL OR r.status IN ('queued', 'accepted', 'admitted', 'streaming', 'retryable', 'failed'))
               AND (COALESCE(r.status, '') != 'failed' OR m.createdAt >= ?)
               -- A missing run is useful recovery evidence only near the
               -- original message. Older gaps are legacy display residue; the
@@ -2341,7 +2341,7 @@ def probe_pm_workflow(cfg, registry):
                     # the retry ladder room before flagging a stall.
                     if age_s < warn_channel_s * 2:
                         continue
-                elif run_status == "accepted":
+                elif run_status in ("accepted", "admitted"):
                     if age_s < warn_accepted_channel_s:
                         continue
                 elif age_s < warn_channel_s:
@@ -3622,7 +3622,7 @@ def _pm_channel_run_confirmed(snapshot, accepted_window_s=120):
     # deployment may still have an older PM process writing the legacy value.
     if status in ("streaming", "complete", "completed"):
         return True
-    if status == "accepted":
+    if status in ("accepted", "admitted"):
         age_s = _pm_age_s(snapshot.get("lastEventAt"))
         return age_s is not None and age_s <= accepted_window_s
     return False
@@ -3654,6 +3654,114 @@ def _bucket_needs_pm_restart(bucket):
         in ("pm-channel-no-start", "pm-channel-stalled", "pm-channel-failed")
         for p in bucket.get("pm_tasks") or []
     )
+
+
+def _record_pm_recovery_deferral(issue, results, event, now, delay):
+    result = results.get(_pm_issue_target_user(issue)) or {}
+    if result.get("action") != "pm-recovery-deferred":
+        return False
+    event["next_attempt_after"] = now + delay
+    event.setdefault("attempt_history", []).append({
+        "ts": now, "tier": event.get("attempts", 0),
+        "kind": issue.get("kind"), "route": "bypass-monitor",
+        "action": "pm-recovery-deferred", "preflight": result.get("preflight"),
+    })
+    return True
+
+
+def _pm_recovery_preflight(cfg, user, bucket):
+    """Revalidate immediately before a PM restart/nudge, not at probe time.
+
+    A gateway is shared by all this agent's tasks. Never terminate admitted
+    execution to recover a different queued/failed turn. PM owns execution
+    leases and capacity retries; an unavailable DB is not restart permission.
+    """
+    def defer(reason, resolved=False):
+        return {"allowed": False, "reason": reason, "resolved": resolved}
+
+    pc = cfg.get("pm_workflow") or {}
+    grace_s = float(pc.get("channel_accepted_warn_minutes", 30)) * 60
+    warn_s = float(pc.get("channel_no_start_warn_minutes", 2)) * 60
+    try:
+        conn = sqlite3.connect(f"file:{_sqlite_pm_db_path(cfg)}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            active = conn.execute("""
+                SELECT id, messageId, status, lastEventAt FROM PmChannelRun
+                WHERE agentSlug = ? AND status IN ('accepted', 'admitted', 'streaming')
+            """, (user,)).fetchall()
+            incident_messages = {p.get("message_id") for p in bucket.get("pm_tasks") or []}
+            for run in active:
+                age = _pm_age_s(run["lastEventAt"])
+                if run["messageId"] not in incident_messages or run["status"] in ("admitted", "streaming") or age is None or age < grace_s:
+                    return defer(f"agent has live execution: {run['id']} ({run['status']})")
+            leases = conn.execute("""
+                SELECT runId, expiresAt FROM AgentExecutionLease
+                WHERE agentSlug = ? AND status IN ('reserved', 'admitted', 'running')
+            """, (user,)).fetchall()
+            for lease in leases:
+                expires = _parse_pm_ts(lease["expiresAt"])
+                if expires is None or expires > time.time():
+                    return defer(f"agent execution lease is occupied: {lease['runId']}")
+
+            for incident in bucket.get("pm_tasks") or []:
+                if not (incident.get("kind") or "").startswith("pm-channel-"):
+                    if _pm_has_live_channel_run(conn, incident.get("task_id"), user):
+                        return defer("task already has a queued or active turn")
+                    continue
+                message_id = incident.get("message_id")
+                if not message_id:
+                    return defer("channel incident has no exact message identity")
+                # Recheck the current task owner/status as well as the run.
+                # A historical assignee incident must not restart a reviewer.
+                current = conn.execute("""
+                    SELECT m.body, t.status, ? AS messageAgentSlug,
+                      aa.slug AS assigneeAgentSlug, a.username AS assigneeUsername,
+                      ra.slug AS reviewerAgentSlug, r.username AS reviewerUsername,
+                      ea.slug AS epicManagerAgentSlug, er.username AS epicManagerUsername,
+                      e.status AS epicStatus, rep.username AS reporterUsername
+                    FROM AgentChatMessage m JOIN Task t ON t.id = m.taskId
+                    JOIN Project p ON p.id = t.projectId
+                    LEFT JOIN User a ON a.id = t.assigneeId LEFT JOIN Agent aa ON aa.id = a.agentId
+                    LEFT JOIN User r ON r.id = t.actingManagerId LEFT JOIN Agent ra ON ra.id = r.agentId
+                    LEFT JOIN User rep ON rep.id = t.reporterId
+                    LEFT JOIN Epic e ON e.id = t.epicId
+                    LEFT JOIN User er ON er.id = e.actingManagerId LEFT JOIN Agent ea ON ea.id = er.agentId
+                    WHERE m.id = ? AND t.id = ? AND m.deletedAt IS NULL
+                      AND t.deletedAt IS NULL AND t.archived_at IS NULL AND p.deletedAt IS NULL
+                """, (user, message_id, incident.get("task_id"))).fetchone()
+                if not current or not _pm_workflow_notification_is_current(current):
+                    return defer("incident no longer belongs to the current workflow owner", True)
+                run = conn.execute("""
+                    SELECT id, status, lastEventAt, createdAt FROM PmChannelRun
+                    WHERE agentSlug = ? AND messageId = ? AND taskId = ?
+                    ORDER BY createdAt DESC LIMIT 1
+                """, (user, message_id, incident.get("task_id"))).fetchone()
+                if not run:
+                    return defer("no current run proves a gateway fault")
+                if run["status"] in ("complete", "completed", "canceled", "cancelled", "superseded"):
+                    return defer("incident run has settled", True)
+                if run["status"] == "waiting_capacity":
+                    return defer("capacity wait is owned by the PM queue")
+                if run["status"] not in ("queued", "accepted", "retryable", "failed", "timed_out"):
+                    return defer(f"run is no longer restartable: {run['status']}")
+                age = _pm_age_s(run["lastEventAt"])
+                threshold = grace_s if run["status"] == "accepted" else warn_s
+                if run["status"] == "retryable":
+                    threshold *= 2
+                if age is None or age < threshold:
+                    return defer("incident has made recent progress or is within retry grace")
+                newer = conn.execute("""
+                    SELECT id FROM PmChannelRun WHERE agentSlug = ? AND taskId = ?
+                      AND createdAt > ? LIMIT 1
+                """, (user, incident.get("task_id"), run["createdAt"])).fetchone()
+                if newer:
+                    return defer("a newer turn supersedes the incident", True)
+            return {"allowed": True, "reason": "current incident; no live execution or lease"}
+        finally:
+            conn.close()
+    except Exception as error:
+        return defer(f"cannot verify live PM state: {error}")
 
 
 def _gateway_listener_for_user(registry, user):
@@ -3884,6 +3992,18 @@ def restart_and_wake_stalled_agents(no_agent_issues, cfg=None, registry=None):
                 "human_target": True,
             }
             continue
+        if b.get("pm_tasks"):
+            preflight = _pm_recovery_preflight(cfg or {}, user, b)
+            if not preflight["allowed"]:
+                results[user] = {
+                    **b, "wake_rc": 0, "wake_err": "", "post_idle_s": None,
+                    "recovered": preflight.get("resolved", False),
+                    "email_results": {}, "all_email_resolved": None,
+                    "action": "pm-recovery-deferred", "preflight": preflight,
+                    "restart_rc": None, "restart_err": "", "gateway_ready": None,
+                    "pm_nudge_results": [],
+                }
+                continue
         if _bucket_only_pm(b):
             restart_rc = None
             restart_err = ""
@@ -4082,6 +4202,18 @@ def auto_wake_stalled_agents(no_agent_issues, cfg=None, registry=None):
                 "human_target": True,
             }
             continue
+        if b.get("pm_tasks"):
+            preflight = _pm_recovery_preflight(cfg or {}, user, b)
+            if not preflight["allowed"]:
+                results[user] = {
+                    **b, "wake_rc": 0, "wake_err": "", "post_idle_s": None,
+                    "recovered": preflight.get("resolved", False),
+                    "email_results": {}, "all_email_resolved": None,
+                    "action": "pm-recovery-deferred", "preflight": preflight,
+                    "restart_rc": None, "restart_err": "", "gateway_ready": None,
+                    "pm_nudge_results": [],
+                }
+                continue
         if _bucket_only_pm(b):
             restart_rc = None
             restart_err = ""
@@ -4845,6 +4977,8 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                 for i in tier1_issues:
                     k = event_key(i)
                     ev = state["events"].get(k, {})
+                    if _record_pm_recovery_deferral(i, wake_results, ev, now, confirmation_window_s):
+                        continue
                     ev["attempts"] = 1
                     ev.setdefault("attempt_history", []).append({
                         "ts": now,
@@ -4877,6 +5011,8 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                 for i in tier2_issues:
                     k = event_key(i)
                     ev = state["events"].get(k, {})
+                    if _record_pm_recovery_deferral(i, rw_results, ev, now, confirmation_window_s):
+                        continue
                     ev["attempts"] = 2
                     semantic_pm_only = i.get("kind", "").startswith("pm-") and i.get("kind") not in (
                         "pm-channel-no-start", "pm-channel-stalled", "pm-channel-failed"
@@ -4912,6 +5048,8 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                 for i in tier3_issues:
                     k = event_key(i)
                     ev = state["events"].get(k, {})
+                    if _record_pm_recovery_deferral(i, final_results, ev, now, confirmation_window_s):
+                        continue
                     ev["attempts"] = max_attempts
                     ev.setdefault("attempt_history", []).append({
                         "ts": now,
