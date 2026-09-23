@@ -151,7 +151,7 @@ test("WORKFLOW_PUBLIC_ACTIONS includes the complete cross-transport public vocab
   const required = [
     "start", "checkpoint", "publish_checkpoint", "ready_for_review",
     "submit_review", "review_feedback", "review_done", "triage_to_todo",
-    "approve_plan", "request_plan_changes", "submit_plan", "assign_task", "assign_after_plan_approval",
+    "approve_plan", "request_plan_changes", "request_plan_revision", "submit_plan", "assign_task", "assign_after_plan_approval",
     "add_subtask", "complete_subtask", "remove_subtask", "request_subtask",
     "request_task", "flag_blocker", "clear_blocker", "flag_extra_work_blocker",
     "override_status", "accept_plan_review", "delegate_plan_approval", "review_permission", "defer_acceptance_check",
@@ -644,6 +644,7 @@ function getValidRawBodyForAction(action: WorkflowPublicAction): Record<string, 
     case "ready_for_review":
     case "submit_review": return { repoTouched: true };
     case "request_plan_changes":
+    case "request_plan_revision":
     case "review_feedback": return { findings: [{ title: "Required correction", acceptanceCriteria: "Demonstrate the correction with a regression check.", scopeReference: "Approved implementation scope" }], reviewerComment: "Fix this" };
     case "review_done": return {};
     case "triage_to_todo": return {};

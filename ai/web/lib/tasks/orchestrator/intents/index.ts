@@ -1,3 +1,5 @@
+import { fenceTaskRunsForPlanRevision } from "@/lib/agents/pm-channel/supersession";
+import { createStandingAuthorizationForApprovedPlan, validateStandingAuthorization } from "@/lib/tasks/standing-authorization";
 import { createReviewFindingChecklist } from "@/lib/tasks/review-findings";
 import { deferAcceptanceCheckExecutor } from "./defer-acceptance-check";
 import { reviewPermissionExecutor } from "./review-permission";
@@ -141,7 +143,9 @@ const approvePlanExecutor: IntentExecutor<"approve_plan"> = async (context) => {
     actionPlanId: context.command.payload.actionPlanId,
     actionPlanVersion: context.command.payload.actionPlanVersion,
   });
-  return context.helpers.executeDecisionWrites();
+  const result = await context.helpers.executeDecisionWrites();
+  await createStandingAuthorizationForApprovedPlan(context.tx, { taskId: context.command.taskId, approvedById: context.decision.decisionActorId });
+  return result;
 };
 
 async function planReviewDecisionExecutor(context: IntentExecutorContext<"accept_plan_review"> | IntentExecutorContext<"delegate_plan_approval">) {
@@ -160,6 +164,38 @@ async function planReviewDecisionExecutor(context: IntentExecutorContext<"accept
     actionPlanId: context.command.payload.actionPlanId, actionPlanVersion: context.command.payload.actionPlanVersion,
     reviewerId: resolveReviewOwnerId(context.state),
   });
+  return context.helpers.executeDecisionWrites();
+};
+
+const requestPlanRevisionExecutor: IntentExecutor<"request_plan_revision"> = async (context) => {
+  const { tx, command, state } = context;
+  // A single-use checkpoint may already be in the runner spool after its
+  // outbox effect completes. Its durable request/terminal pair fences that
+  // whole interval even when no named Dev environment lease is configured.
+  const checkpointHistory = await tx.activityLog.findMany({ where: { taskId: command.taskId, kind: { in: ["task.repository.checkpoint.requested", "pm.repo.checkpoint.ok", "pm.repo.checkpoint.fail"] } }, select: { kind: true, payload: true } });
+  const requested = new Set<string>();
+  const settled = new Set<string>();
+  for (const row of checkpointHistory) {
+    let payload: Record<string, unknown>;
+    try { payload = JSON.parse(row.payload ?? "null"); } catch { continue; }
+    if (!payload || typeof payload.authorizationCommentId !== "string" || payload.standingAuthorizationId) continue;
+    (row.kind === "task.repository.checkpoint.requested" ? requested : settled).add(payload.authorizationCommentId);
+  }
+  if ([...requested].some(id => !settled.has(id))) return { status: "stale", reason: "A requested checkpoint has not recorded its terminal result. Wait for that publication to settle before reopening the plan.", domainCode: "cycle_mismatch" };
+  const publicationLease = await tx.devEnvironmentLease.findFirst({ where: { taskId: command.taskId, state: { in: ["reserved", "verifying", "uncertain"] } }, select: { id: true } });
+  const dispatchingCheckpoint = await tx.workflowOutbox.findFirst({ where: { taskId: command.taskId, effectType: "repository_checkpoint", status: "dispatching" }, select: { id: true } });
+  if (publicationLease || dispatchingCheckpoint) return { status: "stale", reason: "Development publication has an in-flight or unverified effect; settle its exact deployment result before reopening the plan.", domainCode: "cycle_mismatch" };
+  if ((state.outstandingJobs?.length ?? 0) > 0 || state.activeProcedureRuns?.some(run => run.status === "running")) return { status: "stale", reason: "Repository operation started; retry after it settles.", domainCode: "cycle_mismatch" };
+  const changed = await tx.actionPlan.updateMany({
+    where: { id: command.payload.actionPlanId, taskId: command.taskId, version: command.payload.actionPlanVersion, status: "approved" },
+    data: { status: "revision_required", approvedOn: null, approvedById: null, reviewedAt: null, reviewedById: null, delegatedApproverId: null, delegatedById: null },
+  });
+  if (changed.count !== 1) throw new Error("action_plan_version_conflict");
+  await supersedeCycleMechanicalWork(tx, { taskId: command.taskId, workflowCycleId: state.activeWorkflowCycleId, reason: "Approved plan reopened for revision", invalidateReview: true });
+  await fenceTaskRunsForPlanRevision(tx, { taskId: command.taskId, currentRunId: command.executionContext?.pmChannelRunId, expectedEpisodeId: command.executionContext?.expectedEpisodeId });
+  await tx.taskStandingAuthorization.updateMany({ where: { taskId: command.taskId, status: "active" }, data: { status: "revoked", revokedAt: new Date() } });
+  await createWorkflowComment(context, `Action Plan revision requested: ${command.payload.reviewerComment}`);
+  await createDomainActivity(context, "task.action_plan.reopen", { actionPlanId: command.payload.actionPlanId, actionPlanVersion: command.payload.actionPlanVersion, reason: command.payload.reviewerComment });
   return context.helpers.executeDecisionWrites();
 };
 
@@ -217,7 +253,7 @@ async function supersedeCycleMechanicalWork(
   tx: Prisma.TransactionClient,
   args: {
     taskId: string;
-    workflowCycleId: string;
+    workflowCycleId: string | null;
     reason: string;
     procedureTypes?: string[];
     effectTypes?: string[];
@@ -283,7 +319,7 @@ async function supersedeCycleMechanicalWork(
       where: {
         taskId: args.taskId,
         workflowCycleId: args.workflowCycleId,
-        status: { in: ["awaiting_review", "accepted"] },
+        status: { in: ["awaiting_review", "accepted", "accepted_pending_owner"] },
       },
       data: {
         status: "invalidated",
@@ -895,8 +931,19 @@ const publishCheckpointExecutor: IntentExecutor<"publish_checkpoint"> = async (c
       repositoryRun: { select: { phase: true, worktreePath: true } },
     },
   });
+  const standingId = context.command.payload.standingAuthorizationId;
+  if (standingId) {
+    const validated = await validateStandingAuthorization(context.tx, { taskId: context.command.taskId, grantId: standingId, assigneeId: context.command.actor.id });
+    if (!validated.ok) return { status: "forbidden", reason: validated.reason, domainCode: "not_authorized" };
+    if (!task?.repositoryRun?.worktreePath || task.repositoryRun.phase !== "active" || task.epic && task.epic.status !== "In Progress") return { status: "stale", reason: "Checkpoint repository contract is not active.", domainCode: "cycle_mismatch" };
+    const publicationAttemptId = `checkpoint:${context.command.taskId}:${context.command.idempotencyKey}`;
+    context.decision.effects = context.decision.effects.map(effect => effect.type === "repository_checkpoint" ? { ...effect, key: publicationAttemptId, payload: { ...effect.payload, publicationAttemptId } } : effect);
+    await createDomainActivity(context, "task.repository.checkpoint.requested", { standingAuthorizationId: standingId, publicationAttemptId: `checkpoint:${context.command.taskId}:${context.command.idempotencyKey}`, target: validated.grant.target, environmentId: validated.grant.environmentId });
+    return context.helpers.executeDecisionWrites();
+  }
+  const authorizationCommentId = context.command.payload.authorizationCommentId!;
   const authorization = await context.tx.comment.findUnique({
-    where: { id: context.command.payload.authorizationCommentId },
+    where: { id: authorizationCommentId },
     select: {
       taskId: true,
       body: true,
@@ -905,7 +952,7 @@ const publishCheckpointExecutor: IntentExecutor<"publish_checkpoint"> = async (c
       user: { select: { kind: true, status: true, isOwner: true } },
     },
   });
-  const reviewerGrant = authorization && await isReviewerCheckpointAuthorization(context.tx, context.command.taskId, context.command.payload.authorizationCommentId);
+  const reviewerGrant = authorization && await isReviewerCheckpointAuthorization(context.tx, context.command.taskId, authorizationCommentId);
   if (
     !task?.approvedOn ||
     !authorization ||
@@ -959,7 +1006,7 @@ const publishCheckpointExecutor: IntentExecutor<"publish_checkpoint"> = async (c
   });
   if (priorUses.some((row) => activityPayloadUsesCheckpointAuthorization(
     row.payload,
-    context.command.payload.authorizationCommentId,
+    authorizationCommentId,
   ))) {
     return {
       status: "invalid",
@@ -968,7 +1015,7 @@ const publishCheckpointExecutor: IntentExecutor<"publish_checkpoint"> = async (c
     };
   }
   await createDomainActivity(context, "task.repository.checkpoint.requested", {
-    authorizationCommentId: context.command.payload.authorizationCommentId,
+    authorizationCommentId: authorizationCommentId,
     candidateSha: context.command.payload.candidateSha,
     baseSha: context.command.payload.baseSha,
   });
@@ -1051,6 +1098,7 @@ export const INTENT_EXECUTORS = {
   submit_plan: submitPlanExecutor,
   approve_plan: approvePlanExecutor,
   request_plan_changes: requestPlanChangesExecutor,
+  request_plan_revision: requestPlanRevisionExecutor,
   accept_plan_review: planReviewDecisionExecutor,
   delegate_plan_approval: planReviewDecisionExecutor,
   start_implementation: startImplementationExecutor,

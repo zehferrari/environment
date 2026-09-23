@@ -6,8 +6,8 @@ export function activeChecklistProgress(task: {
 }, hidden = false) {
   const feedback = task.reviewFindings[0]; // query sorts by source review, newest first
   const currentReview = task.reviewRuns[0];
-  const implementation = task.checklist.filter(item => item.kind !== "review" && item.groupKey === (feedback ? `feedback:${feedback.reviewRunId}` : "initial"));
-  const review = task.checklist.filter(item => item.kind === "review" && item.groupKey === (currentReview ? `review:${currentReview.id}` : "initial"));
+  const implementation = task.checklist.filter(item => item.kind === "implementation" && (feedback ? item.groupKey === `feedback:${feedback.reviewRunId}` : item.groupKey === "initial" || item.groupKey.startsWith("plan:")));
+  const review = task.checklist.filter(item => item.kind === "review" && (item.groupKey === (currentReview ? `review:${currentReview.id}` : "initial") || item.groupKey.startsWith("plan:")));
   return {
     subtaskImplTotal: hidden ? 0 : implementation.length,
     subtaskImplDone: hidden ? 0 : implementation.filter(item => item.completedAt !== null).length,

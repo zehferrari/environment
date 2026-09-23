@@ -135,6 +135,7 @@ export type EpicPublishResult =
 export async function publishEpicBranch(args: {
   repoPath: string;
   epicBranch: string;
+  beforePush?: (sha: string) => Promise<void>;
 }): Promise<EpicPublishResult> {
   const { repoPath, epicBranch } = args;
   if (!(await validBranchName(repoPath, epicBranch))) {
@@ -182,6 +183,7 @@ export async function publishEpicBranch(args: {
     }
   }
 
+  await args.beforePush?.(localSha);
   if (!(await gitOk(repoPath, [
     "push",
     "origin",
@@ -351,6 +353,7 @@ export async function mergeTaskBranchIntoEpic(args: {
   gitUserName: string;
   gitUserEmail: string;
   message: string;
+  beforePush?: (sha: string) => Promise<void>;
 }): Promise<EpicMergeResult> {
   const { repoPath, epicBranch, taskBranch, baseBranch } = args;
 
@@ -369,7 +372,7 @@ export async function mergeTaskBranchIntoEpic(args: {
     const detail = String(err instanceof Error ? err.message : err).slice(0, 200);
     return {
       ok: false,
-      reason: `\`git fetch origin\` failed for the merge runner (${detail}) — refusing to merge \`${taskBranch}\` against possibly stale refs. Fix runner connectivity/credentials, then move the task to Done again.`,
+      reason: `\`git fetch origin\` failed for the merge runner (${detail}). PM must repair runner connectivity and retry the recorded finalization; the task cannot finish against stale refs.`,
     };
   }
 
@@ -381,7 +384,7 @@ export async function mergeTaskBranchIntoEpic(args: {
   } else {
     return {
       ok: false,
-      reason: `Task branch \`${taskBranch}\` was not found locally (refs/heads) or on origin — do not mark the task Done until the branch exists. Commit your work locally on \`${taskBranch}\` (Epic-child branches are never pushed), then move the task to Done again.`,
+      reason: `Task branch \`${taskBranch}\` was not found locally or on origin. Preserve the worktree and request PM repository recovery; PM owns submission commits and finalization.`,
     };
   }
 
@@ -402,6 +405,7 @@ export async function mergeTaskBranchIntoEpic(args: {
     return { ok: true, kind: "already" };
   }
   if (inLocalEpic) {
+    await args.beforePush?.(await git(repoPath, ["rev-parse", `refs/heads/${epicBranch}`]));
     if (!(await gitOk(repoPath, ["push", "origin", `refs/heads/${epicBranch}:refs/heads/${epicBranch}`]))) {
       return {
         ok: false,
@@ -448,10 +452,11 @@ export async function mergeTaskBranchIntoEpic(args: {
       await gitOk(wt, ["merge", "--abort"]);
       return {
         ok: false,
-        reason: `Merging \`${taskBranch}\` into the Epic branch \`${epicBranch}\` hit a conflict. Merge the Epic branch \`${epicBranch}\` into your task branch (or rebase onto it), resolve the conflict, commit the resolution locally, then move the task to Done again. Do not push Epic-child branches.`,
+        reason: `Merging \`${taskBranch}\` into the Epic branch \`${epicBranch}\` hit a conflict. Request changes to invalidate this candidate, then use PM's Epic-child synchronization. Resolve and stage the reported conflicts in the registered task worktree, revalidate the integrated code, and call ready_for_review. PM owns commits, merges and publication.`,
       };
     }
     const sha = await git(wt, ["rev-parse", "HEAD"]);
+    await args.beforePush?.(sha);
     if (!(await gitOk(wt, ["push", "origin", `HEAD:refs/heads/${epicBranch}`]))) {
       return {
         ok: false,
@@ -485,6 +490,7 @@ export async function publishTaskCheckpointToEpic(args: {
   gitUserEmail: string;
   commitSubject: string;
   mergeMessage: string;
+  beforePush?: (sha: string) => Promise<void>;
 }): Promise<EpicCheckpointResult> {
   const {
     repoPath,
@@ -634,6 +640,7 @@ export async function publishTaskCheckpointToEpic(args: {
     gitUserName: args.gitUserName,
     gitUserEmail: args.gitUserEmail,
     message: args.mergeMessage,
+    beforePush: args.beforePush,
   });
   if (!merged.ok) return merged;
 
@@ -686,6 +693,7 @@ export async function publishStandaloneTaskCheckpoint(args: {
   repoPath: string; worktreePath: string; taskBranch: string; baseBranch: string;
   gitUserName: string; gitUserEmail: string; commitSubject: string;
   authorizationCommentId: string;
+  beforePush?: (sha: string) => Promise<void>;
 }): Promise<StandaloneCheckpointResult> {
   const { repoPath, worktreePath, taskBranch } = args;
   try {
@@ -749,7 +757,10 @@ export async function publishStandaloneTaskCheckpoint(args: {
     if (currentBranch !== taskBranch || await git(worktreePath, ["status", "--porcelain"])) {
       return { ok: false, reason: "The worktree changed during checkpoint preparation; the commit was preserved and publication stopped." };
     }
-    if (remote.sha !== sha) await git(worktreePath, ["push", "origin", `${sha}:refs/heads/${taskBranch}`]);
+    if (remote.sha !== sha) {
+      await args.beforePush?.(sha);
+      await git(worktreePath, ["push", "origin", `${sha}:refs/heads/${taskBranch}`]);
+    }
     const published = await inspectOriginBranch(repoPath, taskBranch);
     if (!published.ok || published.sha !== sha) return { ok: false, reason: "Origin did not confirm the exact checkpoint SHA; inspect before retrying." };
     return { ok: true, kind: remote.sha === sha ? "already" : "published", checkpointSha: sha, publishedSha: sha, createdCommit };

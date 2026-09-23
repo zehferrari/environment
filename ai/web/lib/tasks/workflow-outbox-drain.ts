@@ -162,7 +162,9 @@ async function dispatch(row: OutboxRow) {
       projectId: String(payload.projectId),
       requestedByUserId: String(payload.requestedByUserId),
       requestedByUsername: String(payload.requestedByUsername),
-      authorizationCommentId: String(payload.authorizationCommentId),
+      authorizationCommentId: typeof payload.authorizationCommentId === "string" ? payload.authorizationCommentId : undefined,
+      standingAuthorizationId: typeof payload.standingAuthorizationId === "string" ? payload.standingAuthorizationId : undefined,
+      publicationAttemptId: typeof payload.publicationAttemptId === "string" ? payload.publicationAttemptId : undefined,
       note: String(payload.note),
     });
     if (result.blockedByFailedJob) {

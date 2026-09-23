@@ -178,6 +178,7 @@ export async function loadWorkflowInvariantSnapshot(
       heartbeatAt: true,
       disposition: true,
       settledByAction: true,
+      thinking: { select: { progress: true, finalReceivedAt: true } },
     },
   });
 
@@ -345,7 +346,10 @@ export async function loadWorkflowInvariantSnapshot(
     settledByAction: run.disposition == null
       ? settledActionFor(run)
       : run.settledByAction,
-    finalResponseText: finalResponseFor(run.agentSlug, run.messageId),
+    // Autonomous turns deliberately keep their final narrative in Thinking.
+    // Only a final snapshot is evidence of a reply; partial progress is not.
+    finalResponseText: finalResponseFor(run.agentSlug, run.messageId)
+      ?? (run.thinking?.finalReceivedAt ? run.thinking.progress : null),
     disposition: run.disposition,
   }));
 

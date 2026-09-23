@@ -49,7 +49,13 @@ export type ChecklistItem = {
   text: string;
   completedAt: string | null;
   minutesSpent: number | null;
-  kind: ChecklistKind;
+  kind: ChecklistKind | "superseded";
+  responsibleActor?: string;
+  verificationEnvironment?: string | null;
+  acceptanceGate?: string;
+  completionEvidence?: string | null;
+  supersededReason?: string | null;
+  canComplete?: boolean;
   groupKey?: string;
   reviewFinding?: { id: string; title: string; completionEvidence: string | null } | null;
 };
@@ -120,13 +126,14 @@ export default function TaskChecklist({
     const finding = findings.find(finding => finding.subTaskId === item.id);
     return item.groupKey ?? (finding ? `feedback:${finding.reviewRunId}` : "initial");
   };
-  const initial = order.filter(item => item.kind !== "review" && groupKeyFor(item) === "initial");
+  const initial = order.filter(item => item.kind === "implementation" && (groupKeyFor(item) === "initial" || groupKeyFor(item).startsWith("plan:")));
+  const superseded = order.filter(item => item.kind === "superseded");
   const feedback = [...new Set(findings.map(finding => finding.reviewRunId))].map(id => {
     const groupFindings = findings.filter(finding => finding.reviewRunId === id);
     return { id, requestedAt: groupFindings[0].requestedAt, findings: groupFindings,
-      items: order.filter(item => groupKeyFor(item) === `feedback:${id}`) };
+      items: order.filter(item => item.kind !== "superseded" && groupKeyFor(item) === `feedback:${id}`) };
   }).sort((a, b) => (a.requestedAt ?? "").localeCompare(b.requestedAt ?? "") || a.id.localeCompare(b.id));
-  const review = order.filter(item => item.kind === "review" && groupKeyFor(item) === "initial");
+  const review = order.filter(item => item.kind === "review" && (groupKeyFor(item) === "initial" || groupKeyFor(item).startsWith("plan:")));
   const showReview = review.length > 0 || (taskStatus === "Review" && reviewRounds.length === 0);
   const reviews = reviewRounds.map((round, index) => ({ ...round, number: index + 1,
     items: order.filter(item => item.kind === "review" && groupKeyFor(item) === `review:${round.id}`),
@@ -169,8 +176,10 @@ export default function TaskChecklist({
   const toggle = useCallback(
     (item: ChecklistItem) => {
       const completed = !item.completedAt;
-      const evidence = item.reviewFinding && completed ? window.prompt("Describe the correction and verification evidence:")?.trim() : undefined;
-      if (item.reviewFinding && completed && !evidence) return;
+      if (item.canComplete === false || item.kind === "superseded") return;
+      const needsEvidence = Boolean(item.reviewFinding) || item.responsibleActor === "owner";
+      const evidence = needsEvidence && completed ? window.prompt("Describe what was verified and the evidence:")?.trim() : undefined;
+      if (needsEvidence && completed && !evidence) return;
       setOrder((prev) =>
         prev.map((i) =>
           i.id === item.id
@@ -299,6 +308,7 @@ export default function TaskChecklist({
         ) : null}
       </div>
 
+      {superseded.length > 0 ? <details className="mt-4 rounded-lg border border-line p-3"><summary className="cursor-pointer text-caption">Superseded requirements ({superseded.length})</summary><ul className="mt-2 space-y-2">{superseded.map(item => <li key={item.id} className="text-caption"><p>{item.text}</p><p className="text-text-muted">{item.supersededReason}{item.completedAt ? " · Previously completed" : " · Not completed"}</p>{item.completionEvidence ? <p>{item.completionEvidence}</p> : null}</li>)}</ul></details> : null}
       <div className="mt-4 flex flex-wrap gap-2">
         <input
           ref={inputRef}
@@ -517,6 +527,7 @@ function ChecklistRow({
       <input
         type="checkbox"
         checked={done}
+        disabled={item.canComplete === false}
         onChange={onToggle}
         aria-label={done ? `Mark "${(item.reviewFinding?.title ?? item.text)}" not done` : `Mark "${(item.reviewFinding?.title ?? item.text)}" done`}
         className="h-6 w-6 shrink-0 accent-text-accent md:h-4 md:w-4"
@@ -526,6 +537,8 @@ function ChecklistRow({
         title={item.completedAt ? `Completed ${item.completedAt}` : undefined}
       >
         {(item.reviewFinding?.title ?? item.text)}
+        {item.responsibleActor === "owner" ? <span className="ml-2 text-caption text-text-muted">Owner check · {item.acceptanceGate === "epic_release" ? "gates Epic release" : "gates task completion"}{item.verificationEnvironment ? ` · ${item.verificationEnvironment}` : ""}</span> : null}
+        {item.completionEvidence ? <span className="block whitespace-pre-wrap text-caption text-text-muted">Evidence: {item.completionEvidence}</span> : null}
       </span>
       {done ? (
         <MinutesInput minutes={item.minutesSpent} onCommit={onSetMinutes} />
@@ -533,7 +546,7 @@ function ChecklistRow({
       <button
         type="button"
         onClick={onRemove}
-        disabled={!!item.reviewFinding}
+        disabled={!!item.reviewFinding || item.responsibleActor === "owner" || item.groupKey?.startsWith("plan:")}
         className="grid h-11 w-11 shrink-0 place-items-center rounded-md text-text-muted hover:bg-crit/10 hover:text-crit md:h-auto md:w-auto md:px-1.5 md:py-1"
         aria-label={`Remove "${(item.reviewFinding?.title ?? item.text)}"`}
         title={item.reviewFinding ? "Review corrections require an explicit reviewer supersession decision; they cannot be deleted." : "Remove"}

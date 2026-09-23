@@ -7,7 +7,7 @@ import { createServer } from "node:http";
 import { runInNewContext } from "node:vm";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
-const dist = process.env.OPENCLAW_DIST;
+const dist = process.env.OPENCLAW_DIST ?? "/usr/local/lib/node_modules/openclaw/dist";
 assert.ok(dist, "Set OPENCLAW_DIST to the installed OpenClaw dist directory");
 const file = readdirSync(dist).find((name) => /^gateway-work-admission-.*\.mjs$/.test(name));
 assert.ok(file, "OpenClaw admission module must be available");

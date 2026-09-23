@@ -1,6 +1,6 @@
 # `lib/pm-consumer`
 
-For the `pm-task/3` notification path (enabled on thinkpad since 2026-09-08), see the
+For the `pm-task/4` notification path (enabled on thinkpad since 2026-09-08), see the
 [compact task runtime](../../docs/pm-task-runtime.md). Its native tool envelope
 is forwarded unchanged to the gateway; the consumer and PM server must use the
 same `PM_TASK_RUNTIME_V2=1` setting and PM channel plugin 0.1.2. Both services

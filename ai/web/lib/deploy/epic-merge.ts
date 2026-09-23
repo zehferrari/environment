@@ -46,6 +46,34 @@ import {
 import { drainWorkflowOutbox } from "@/lib/tasks/workflow-outbox-drain";
 import { purgeTaskHardResetState } from "@/lib/tasks/hard-reset";
 import { localWorktreeProtectedBranches } from "@/lib/deploy/local-worktree";
+import { withDevPublication, publicationAttemptId, DevPublicationError, assertDevPublicationCandidate, releaseTaskDevLease } from "@/lib/deploy/dev-publication";
+import { validateStandingAuthorization } from "@/lib/tasks/standing-authorization";
+import { queueTaskExecutionContinuation } from "@/lib/agents/pm-channel/continuations";
+import { assertEpicReleaseChecksComplete } from "@/lib/tasks/acceptance";
+
+async function publishWithDevLease<T extends { ok: boolean }>(args: {
+  projectId: string; taskId?: string; branch: string; repositoryPath: string; attemptId: string; grantId?: string;
+  publish: (beforePush: (sha: string) => Promise<void>) => Promise<T>;
+}): Promise<T | { ok: false; reason: string; deferred?: boolean }> {
+  try {
+    return await withDevPublication({ ...args, publish: () => args.publish(async sha => {
+      if (args.grantId && args.taskId) {
+        const authority = await validateStandingAuthorization(db, { taskId: args.taskId, grantId: args.grantId });
+        if (!authority.ok) throw new DevPublicationError(authority.reason);
+      }
+      await assertDevPublicationCandidate({ projectId: args.projectId, repositoryPath: args.repositoryPath, branch: args.branch, sha });
+    }), publishedSha: async result => {
+      if (!result.ok) return null;
+      const remote = await inspectOriginBranch(args.repositoryPath, args.branch);
+      const candidate = result as T & { publishedSha?: string; epicSha?: string; sha?: string };
+      const expected = candidate.publishedSha ?? candidate.epicSha ?? candidate.sha;
+      if (expected && (!remote.ok || remote.sha !== expected)) throw new DevPublicationError("Origin advanced before Dev verification; the exact published candidate is no longer confirmed.", true);
+      return remote.ok ? remote.sha : null;
+    } });
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : "Dev publication could not settle.", deferred: error instanceof DevPublicationError && error.retryable };
+  }
+}
 
 // Auto-merge a Done Epic-child task's branch into the Epic integration branch.
 //
@@ -119,6 +147,8 @@ export type EpicMergeJob =
       requestedByUserId: string;
       requestedByUsername: string;
       authorizationCommentId: string;
+      standingAuthorizationId?: string;
+      publicationAttemptId?: string;
       note: string;
       enqueuedAt: string;
     }
@@ -159,7 +189,7 @@ export type EpicMergeJob =
 function jobFileName(job: EpicMergeJob) {
   if (job.kind === "merge") return `merge-${job.taskId}.json`;
   if (job.kind === "finalize") return `finalize-${job.taskId}-${job.candidateSha.slice(0, 16)}.json`;
-  if (job.kind === "checkpoint") return `checkpoint-${job.taskId}.json`;
+  if (job.kind === "checkpoint") return job.standingAuthorizationId ? `${job.jobId}.json` : `checkpoint-${job.taskId}.json`;
   if (job.kind === "reset") return `reset-${job.taskId}.json`;
   if (job.kind === "review") return `review-${job.epicId}.json`;
   if (job.kind === "review-approval") return `review-approval-${job.epicId}.json`;
@@ -272,17 +302,24 @@ export async function enqueueTaskCheckpoint(args: {
   projectId: string;
   requestedByUserId: string;
   requestedByUsername: string;
-  authorizationCommentId: string;
+  authorizationCommentId?: string;
+  standingAuthorizationId?: string;
+  publicationAttemptId?: string;
   note: string;
 }) {
+  if (args.standingAuthorizationId && !args.publicationAttemptId) throw new Error("Standing publication needs a stable per-attempt identity.");
+  if (!args.standingAuthorizationId && !args.authorizationCommentId) throw new Error("Checkpoint publication requires explicit authorization.");
+  const attempt = args.standingAuthorizationId ? publicationAttemptId(args.publicationAttemptId!) : null;
   const job: Extract<EpicMergeJob, { kind: "checkpoint" }> = {
     kind: "checkpoint",
-    jobId: `checkpoint-${args.taskId}`,
+    jobId: attempt ? `checkpoint-${args.taskId}-${attempt}` : `checkpoint-${args.taskId}`,
     taskId: args.taskId,
     projectId: args.projectId,
     requestedByUserId: args.requestedByUserId,
     requestedByUsername: args.requestedByUsername,
-    authorizationCommentId: args.authorizationCommentId,
+    authorizationCommentId: args.authorizationCommentId ?? `standing-${attempt}`,
+    standingAuthorizationId: args.standingAuthorizationId,
+    publicationAttemptId: args.publicationAttemptId,
     note: args.note,
     enqueuedAt: new Date().toISOString(),
   };
@@ -481,7 +518,7 @@ async function bounceTaskToReview(args: {
               body: [
                 `Your task "${task.title}" could not be auto-merged into the Epic branch \`${epicBranch}\` and is back in Review.`,
                 reason,
-                `Resolve it and commit your changes locally on \`${taskBranch}\` — never push Epic-child branches. When the task is moved to Done again the integration retries automatically.`,
+                `Keep work on the registered \`${taskBranch}\` worktree. PM owns repository synchronization and commits; after conflict resolution and fresh validation, request independent review again.`,
               ].join("\n"),
             }
           : null,
@@ -804,6 +841,7 @@ async function validateCompletionReviewCandidate(args: {
   epicId: string;
   expectedCandidateSha?: string | null;
   publish: boolean;
+  publicationAttemptId?: string;
 }) {
   const epic = await db.epic.findUnique({
     where: { id: args.epicId },
@@ -867,8 +905,9 @@ async function validateCompletionReviewCandidate(args: {
 
   let candidateSha: string | null = null;
   if (args.publish) {
-    const published = await publishEpicBranch({ repoPath: repositoryPath, epicBranch });
-    if (!published.ok) return { ok: false as const, reason: published.reason };
+    if (!args.publicationAttemptId) throw new Error("Epic candidate publication requires its stable runner job identity.");
+    const published = await publishWithDevLease({ projectId: epic.projectId, repositoryPath, branch: epicBranch, attemptId: args.publicationAttemptId, publish: beforePush => publishEpicBranch({ repoPath: repositoryPath, epicBranch, beforePush }) });
+    if (!published.ok) return { ok: false as const, reason: published.reason, deferred: "deferred" in published && published.deferred === true };
     candidateSha = published.sha;
   } else {
     const remote = await inspectOriginBranch(repositoryPath, epicBranch);
@@ -943,11 +982,12 @@ async function executeCompletionReviewJob(job: Extract<EpicMergeJob, { kind: "re
   }
   let validated;
   try {
-    validated = await validateCompletionReviewCandidate({ epicId: job.epicId, publish: true });
+    validated = await validateCompletionReviewCandidate({ epicId: job.epicId, publish: true, publicationAttemptId: job.jobId });
   } catch (error) {
     validated = { ok: false as const, reason: String(error instanceof Error ? error.message : error) };
   }
   if (!validated.ok) {
+    if ("deferred" in validated && validated.deferred) return { epicId: job.epicId, outcome: "deferred" as const, reason: validated.reason };
     await recordCompletionReviewOperationalError({
       epicId: job.epicId,
       projectId: job.projectId,
@@ -1040,6 +1080,7 @@ async function executeCompletionReviewApprovalJob(job: Extract<EpicMergeJob, { k
 
   const now = new Date();
   const cleanupEffectCount = await db.$transaction(async (tx) => {
+    await assertEpicReleaseChecksComplete(tx, job.epicId);
     await tx.epic.update({
       where: { id: job.epicId },
       data: {
@@ -1135,15 +1176,15 @@ async function executeMergeJob(job: Extract<EpicMergeJob, { kind: "merge" }>) {
   const baseBranch = await productionBranchFor(task.projectId);
   const remoteTaskBranch = await inspectOriginBranch(repoPath, taskBranch);
   const remoteTaskBranchSha = remoteTaskBranch.ok ? remoteTaskBranch.sha : null;
-  const result = await mergeTaskBranchIntoEpic({
-    repoPath,
+  const result = await publishWithDevLease({ projectId: task.projectId, taskId: task.id, repositoryPath: repoPath, branch: epicBranch, attemptId: job.jobId, publish: beforePush => mergeTaskBranchIntoEpic({
+    beforePush, repoPath,
     epicBranch,
     taskBranch,
     baseBranch,
     gitUserName: task.project.defaultGitUserName?.trim() || "PM Monitor",
     gitUserEmail: task.project.defaultGitUserEmail?.trim() || "pm-monitor@localhost",
     message: `Merge ${task.workItemKey ?? taskBranch} into Epic branch ${epicBranch}`,
-  });
+  }) });
   if (result.ok) {
     await recordMergeOk(task, epicBranch, {
       taskBranch,
@@ -1154,6 +1195,9 @@ async function executeMergeJob(job: Extract<EpicMergeJob, { kind: "merge" }>) {
         ? { unexpectedRemoteTaskBranchSha: remoteTaskBranchSha }
         : {}),
     });
+    // This compatibility path merges a task that was already Done before the
+    // publication lease existed, so its normal Done transition cannot release it.
+    await db.$transaction(tx => releaseTaskDevLease(tx, { taskId: task.id }));
     if (remoteTaskBranchSha) {
       const monitor = await monitorAgentUser();
       await db.$transaction(async (tx) => {
@@ -1189,6 +1233,7 @@ async function executeMergeJob(job: Extract<EpicMergeJob, { kind: "merge" }>) {
     }
     return { taskId: task.id, outcome: result.kind, epicBranch, taskBranch };
   }
+  if ("deferred" in result && result.deferred) return { taskId: task.id, outcome: "deferred" as const, reason: result.reason };
   await bounceTaskToReview({ task, epicBranch, taskBranch, reason: result.reason });
   return { taskId: task.id, outcome: "bounced" as const, epicBranch, taskBranch, reason: result.reason };
 }
@@ -1379,7 +1424,7 @@ async function executeCheckpointJob(
         },
       }),
     ]);
-    const blockerSettlement = await settleConsumedCheckpointBlocker({
+    const blockerSettlement = job.standingAuthorizationId ? { cleared: false } : await settleConsumedCheckpointBlocker({
       taskId: task.id,
       projectId: task.projectId,
       authorizationCommentId: job.authorizationCommentId,
@@ -1390,7 +1435,8 @@ async function executeCheckpointJob(
       alertAfterFailure: true,
     });
     if (actor && task.assigneeId) {
-      await sendTaskWorkflowNotification({
+      const continuation = await queueTaskExecutionContinuation({ taskId: task.id, agentSlug: job.requestedByUsername, action: "checkpoint_failed", eventKey: job.publicationAttemptId ?? job.authorizationCommentId });
+      if (!continuation.scheduled) await sendTaskWorkflowNotification({
         taskId: task.id,
         targetUserId: task.assigneeId,
         actor,
@@ -1398,7 +1444,9 @@ async function executeCheckpointJob(
         body: [
           `PM could not publish the authorized checkpoint for "${task.title}".`,
           reason,
-          blockerSettlement.cleared
+          job.standingAuthorizationId
+            ? "The standing grant was not consumed. Resume the same publication attempt to reconcile its exact SHA and Dev reservation; scope or configuration changes require fresh plan approval."
+            : blockerSettlement.cleared
             ? "PM closed the consumed permission round. The task remains In Progress and the worktree is preserved. Diagnose the reported repository problem, fix agent-actionable work, then raise a fresh publish_checkpoint blocker for any retry. Use a general blocker only if evidence proves a genuine human/external dependency."
             : "The task remains In Progress and the worktree is preserved. Diagnose the reported repository problem and continue from the current formal-blocker state.",
         ].join("\n"),
@@ -1457,7 +1505,11 @@ async function executeCheckpointJob(
   }
   if (task.repositoryRun?.phase !== "active") return fail("The checkpoint repository run is no longer active.");
 
-  const authorization = await db.comment.findUnique({
+  const standingAuthority = job.standingAuthorizationId
+    ? await validateStandingAuthorization(db, { taskId: task.id, grantId: job.standingAuthorizationId, assigneeId: job.requestedByUserId })
+    : null;
+  if (standingAuthority && !standingAuthority.ok) return fail(standingAuthority.reason);
+  const authorization = job.standingAuthorizationId ? null : await db.comment.findUnique({
     where: { id: job.authorizationCommentId },
     select: {
       taskId: true,
@@ -1468,13 +1520,13 @@ async function executeCheckpointJob(
     },
   });
   const reviewerGrant = authorization && await isReviewerCheckpointAuthorization(db, task.id, job.authorizationCommentId);
-  if (
+  if (!job.standingAuthorizationId && (
     !authorization ||
     authorization.taskId !== task.id ||
     authorization.deletedAt ||
     authorization.createdAt < task.approvedOn ||
     (!isActiveOwnerPrincipal(authorization.user) && !reviewerGrant)
-  ) {
+  )) {
     return fail("The checkpoint authorization comment is missing, deleted, predates plan approval, or is not a live owner/scoped reviewer grant.");
   }
 
@@ -1486,8 +1538,8 @@ async function executeCheckpointJob(
   if (!repositoryPath || !worktreePath || !taskBranch || !publishedBranch) {
     return fail("The active repository path, worktree, task branch, or Epic branch is missing.");
   }
-  const explicitAuthorization = reviewerGrant ? { ok: true as const } : validateCheckpointAuthorizationText({
-    body: authorization.body,
+  const explicitAuthorization = reviewerGrant || standingAuthority?.ok ? { ok: true as const } : validateCheckpointAuthorizationText({
+    body: authorization!.body,
     taskKey: task.workItemKey,
     taskBranch,
     epicBranch,
@@ -1512,8 +1564,11 @@ async function executeCheckpointJob(
     return fail("The effective project Git identity is incomplete; PM cannot create the checkpoint commit.");
   }
   const prefix = effectiveTaskCommitPrefix(task);
-  const checkpoint = epicBranch ? await publishTaskCheckpointToEpic({
-    repoPath: repositoryPath,
+  const checkpoint = await publishWithDevLease({
+    projectId: task.projectId, taskId: task.id, repositoryPath, branch: publishedBranch,
+    attemptId: job.publicationAttemptId ?? `checkpoint:${job.authorizationCommentId}`, grantId: job.standingAuthorizationId,
+    publish: beforePush => epicBranch ? publishTaskCheckpointToEpic({
+    beforePush, repoPath: repositoryPath,
     worktreePath,
     epicBranch,
     taskBranch,
@@ -1523,14 +1578,18 @@ async function executeCheckpointJob(
     gitUserEmail,
     commitSubject: `${prefix ? `${prefix} ` : ""}${task.title}`,
     mergeMessage: `Checkpoint ${task.workItemKey ?? taskBranch} into Epic branch ${epicBranch}`,
-  }) : await publishStandaloneTaskCheckpoint({
-    repoPath: repositoryPath, worktreePath, taskBranch,
+  }) : publishStandaloneTaskCheckpoint({
+    beforePush, repoPath: repositoryPath, worktreePath, taskBranch,
     baseBranch: settings.deployment.productionBranch.value,
     gitUserName, gitUserEmail,
     commitSubject: `${prefix ? `${prefix} ` : ""}${task.title}`,
     authorizationCommentId: job.authorizationCommentId,
-  }).then(result => result.ok ? { ...result, epicSha: result.publishedSha } : result);
-  if (!checkpoint.ok) return fail(checkpoint.reason);
+  }).then(result => result.ok ? { ...result, epicSha: result.publishedSha } : result),
+  });
+  if (!checkpoint.ok) {
+    if ("deferred" in checkpoint && checkpoint.deferred) return { taskId: task.id, outcome: "deferred" as const, note: checkpoint.reason };
+    return fail(checkpoint.reason);
+  }
 
   await updateTaskRepositoryState(task.id, {
     phase: "active",
@@ -1550,7 +1609,7 @@ async function executeCheckpointJob(
     "",
     `- Task checkpoint: \`${checkpoint.checkpointSha.slice(0, 10)}\``,
     `- Published branch tip: \`${checkpoint.epicSha.slice(0, 10)}\``,
-    `- Authorization comment: \`${job.authorizationCommentId}\``,
+    job.standingAuthorizationId ? `- Standing authorization: \`${job.standingAuthorizationId}\`; attempt: \`${job.publicationAttemptId}\`` : `- Authorization comment: \`${job.authorizationCommentId}\``,
     "- The task remains In Progress; its task branch and worktree remain active. Verification and independent review are still required.",
     "",
     job.note,
@@ -1566,7 +1625,9 @@ async function executeCheckpointJob(
         payload: JSON.stringify({
           jobId: job.jobId,
           authorizationCommentId: job.authorizationCommentId,
-          authorizationUserId: authorization.user.id,
+          authorizationUserId: standingAuthority?.ok ? standingAuthority.grant.grantedById : authorization!.user.id,
+          standingAuthorizationId: job.standingAuthorizationId,
+          publicationAttemptId: job.publicationAttemptId,
           requestedByUserId: job.requestedByUserId,
           taskBranch,
           epicBranch,
@@ -1580,7 +1641,7 @@ async function executeCheckpointJob(
       },
     }),
   ]);
-  const blockerSettlement = await settleConsumedCheckpointBlocker({
+  const blockerSettlement = job.standingAuthorizationId ? { cleared: false } : await settleConsumedCheckpointBlocker({
     taskId: task.id,
     projectId: task.projectId,
     authorizationCommentId: job.authorizationCommentId,
@@ -1590,13 +1651,15 @@ async function executeCheckpointJob(
     evidence: `Publication produced SHA \`${checkpoint.epicSha}\` on ${publishedBranch}.`,
   });
   if (task.assigneeId) {
-    await sendTaskWorkflowNotification({
+    const continuation = await queueTaskExecutionContinuation({ taskId: task.id, agentSlug: job.requestedByUsername, action: "checkpoint_published", eventKey: job.publicationAttemptId ?? job.authorizationCommentId });
+    if (!continuation.scheduled) await sendTaskWorkflowNotification({
       taskId: task.id,
       targetUserId: task.assigneeId,
       actor,
       reason: "checkpoint_published",
       body: [
         `PM published the authorized checkpoint for "${task.title}" to origin/${publishedBranch} at ${checkpoint.epicSha}.`,
+        ...(job.standingAuthorizationId ? ["The registered Dev target verified this exact SHA. The bounded standing grant remains valid; continue the approved verification without another permission round."] : []),
         ...(blockerSettlement.cleared
           ? ["PM automatically cleared the consumed publish_checkpoint permission blocker. If deployed verification exposes a new code change that requires another publication, fix it, then raise a fresh publish_checkpoint blocker so the reporter receives a new single-use grant action."]
           : []),
@@ -2001,16 +2064,17 @@ async function executeFinalizeJob(
       }
     });
     if (!candidateAlreadyMerged) {
-      const result = await mergeTaskBranchIntoEpic({
-        repoPath: finalizedRepositoryPath,
+      const result = await publishWithDevLease({ projectId: task.projectId, taskId: task.id, repositoryPath: finalizedRepositoryPath, branch: epicBranch, attemptId: job.jobId, publish: async beforePush => mergeTaskBranchIntoEpic({
+        beforePush, repoPath: finalizedRepositoryPath,
         epicBranch,
         taskBranch: finalizedTaskBranch,
         baseBranch: await productionBranchFor(task.projectId),
         gitUserName: task.project.defaultGitUserName?.trim() || "PM Monitor",
         gitUserEmail: task.project.defaultGitUserEmail?.trim() || "pm-monitor@localhost",
         message: `Merge ${task.workItemKey ?? taskBranch} into Epic branch ${epicBranch}`,
-      });
+      }) });
       if (!result.ok) {
+        if ("deferred" in result && result.deferred) return { taskId: task.id, outcome: "deferred" as const, reason: result.reason };
         return fail(result.reason, isOperationalRepositoryFailure(result.reason));
       }
       await db.activityLog.create({
@@ -2135,11 +2199,12 @@ async function executeCleanupJob(job: Extract<EpicMergeJob, { kind: "cleanup" }>
   // Finalization invariant: an Epic cannot remain Done unless its integration
   // branch is published. This covers manual Epic-Done transitions and legacy
   // local-only integrations in addition to the normal per-child eager pushes.
-  const publish = await publishEpicBranch({
-    repoPath: job.repositoryPath,
+  const publish = await publishWithDevLease({ projectId: job.projectId, repositoryPath: job.repositoryPath, branch: job.epicBranch, attemptId: job.jobId, publish: beforePush => publishEpicBranch({
+    beforePush, repoPath: job.repositoryPath,
     epicBranch: job.epicBranch,
-  });
+  }) });
   if (!publish.ok) {
+    if ("deferred" in publish && publish.deferred) return { epicId: job.epicId, outcome: "deferred" as const, reason: publish.reason };
     const monitor = await monitorAgentUser();
     const now = new Date();
     const body = [

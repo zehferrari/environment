@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
+import { openEpicReleaseChecks } from "@/lib/tasks/acceptance";
 import {
   deleteEpicComment,
   restoreEpicComment,
@@ -1061,6 +1062,7 @@ export default async function EpicDetailPage({
   }
 
   const editorFormId = `epicMain-${epic.id}`;
+  const pendingReleaseChecks = canSeeAgentContent ? await openEpicReleaseChecks(db, epic.id) : [];
   return (
     <StickyViewportSurface kind="epic-detail">
     <div className="mx-auto w-full max-w-none">
@@ -1244,6 +1246,19 @@ export default async function EpicDetailPage({
                       </div>
                     </div> : null}
 
+                    {pendingReleaseChecks.length > 0 ? (
+                      <div className="space-y-2 rounded-card border border-amber-500/40 bg-amber-500/[0.08] p-card text-caption">
+                        <div className="font-semibold">Owner acceptance required for release</div>
+                        <p>Child Tasks can finish and integrate. These checks must have recorded evidence before this Epic can complete.</p>
+                        <ul className="list-disc space-y-1 pl-4">
+                          {pendingReleaseChecks.map(check => <li key={check.id}>
+                            <Link className="underline" href={`/projects/${slug}/tasks/${check.taskId}`}>
+                              {check.task.workItemKey ?? check.task.title}: {check.text}
+                            </Link>
+                          </li>)}
+                        </ul>
+                      </div>
+                    ) : null}
                     {canSeeAgentContent && (epic.status === "Review" || epic.completionReviewStatus !== "Not Required") ? (
                       <div className="space-y-1 rounded-card border border-amber-500/40 bg-amber-500/[0.08] p-card text-caption">
                         <div className="text-micro font-semibold uppercase tracking-wider text-text-muted">Whole-Epic acceptance</div>

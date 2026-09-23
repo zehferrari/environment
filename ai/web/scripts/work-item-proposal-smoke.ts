@@ -251,10 +251,10 @@ async function main(): Promise<void> {
           select: { allowWorkItemManagement: true },
         })
       : null;
-    check("directed task comment still wakes the reviewer for awareness", !!reviewerNotification, notifications);
+    check("directed task comment wakes only its explicit action recipient", !reviewerNotification, notifications);
     check(
       "non-directed reviewer receives no work-item grant",
-      reviewerMirror?.allowWorkItemManagement === false,
+      reviewerMirror === null,
       reviewerMirror,
     );
     const grantRun = mirroredGrant

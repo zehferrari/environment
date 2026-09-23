@@ -503,6 +503,21 @@ export default async function ProjectSettingsPage({
               <SettingsRow label="Host" hint="Deployment host label.">
                 <input type="text" name="deploymentHost" defaultValue={project.deploymentHost ?? ""} placeholder="x1" disabled={!canEditDeployment} className={deploymentInputClass} />
               </SettingsRow>
+              <SettingsRow label="Dev publication" hint="Standing authorization applies only to newly approved task plans and the exact registered non-production target. Existing grants are not expanded.">
+                <select name="devPublicationPolicy" defaultValue={project.devPublicationPolicy} disabled={!canEditDeployment} className={deploymentInputClass}>
+                  <option value="single_use">Request permission for each checkpoint</option>
+                  <option value="standing">Authorize bounded Dev operations with plan approval</option>
+                </select>
+              </SettingsRow>
+              <SettingsRow label="Owner acceptance" hint="Applies to future plan approvals. Existing checks and recorded acceptance evidence remain attached to their current gate.">
+                <select name="ownerAcceptancePolicy" defaultValue={project.ownerAcceptancePolicy} disabled={!canEditDeployment} className={deploymentInputClass}>
+                  <option value="task">Complete owner acceptance before task finalization</option>
+                  <option value="epic_release">Keep child owner checks for Epic release acceptance</option>
+                </select>
+              </SettingsRow>
+              <SettingsRow label="Registered Dev target" hint="Owner-managed JSON: environment, environmentId, target, repositoryPath, allowedOperations, publishTriggersDeployment, optional devOnCheckpoint command, and exact-SHA verify command. Use the same environmentId for projects sharing Dev. No credentials belong here.">
+                <textarea name="devPublicationConfig" defaultValue={project.devPublicationConfig ?? ""} rows={12} disabled={!canEditDeployment} className={`${deploymentInputClass} font-mono`} />
+              </SettingsRow>
               <SettingsRow label="Environment" hint="Environment name.">
                 <input type="text" name="deploymentEnvironment" defaultValue={project.deploymentEnvironment ?? ""} placeholder="production" disabled={!canEditDeployment} className={deploymentInputClass} />
               </SettingsRow>

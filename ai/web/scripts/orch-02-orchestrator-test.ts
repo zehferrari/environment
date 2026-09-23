@@ -54,6 +54,8 @@ async function main() {
         slug: "orch02",
         name: "ORCH-02",
         repositoryPath: "/srv/Code/test-repo",
+        defaultGitUserName: "Test Owner",
+        defaultGitUserEmail: "owner@example.test",
       },
     });
     const task = await db.task.create({

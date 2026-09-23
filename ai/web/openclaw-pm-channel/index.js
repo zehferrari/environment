@@ -1,8 +1,9 @@
 import { uploadPmTaskAttachment } from "./task-attachments.js";
 import { buildOutboundMediaLoadOptions, getAgentScopedMediaLocalRoots } from "openclaw/plugin-sdk/media-runtime";
-import { isProtocolSilentReply, stopCompletedTaskTurn } from "./turn-completion.js";
+import { canDeliverTaskReply, isDeliberateSilentDispatch, isGatewayFailureReply, isProtocolSilentReply, stopCompletedTaskTurn } from "./turn-completion.js";
 import { resolvePmTurnEffort, withPmHighDefault } from "./turn-effort.js";
 import { createPmTaskTelemetry } from "./task-telemetry.js";
+import { createToolLiveness } from "./tool-liveness.js";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createConnection } from "node:net";
@@ -206,7 +207,7 @@ function sendJsonLineToUnixSocket(path, body) {
   });
 }
 
-function createPmStreamPublisher({ account, target, logger, gatewayDispatchId }) {
+function createPmStreamPublisher({ account, target, logger, gatewayDispatchId, isActive = () => true }) {
   const streamUrl = resolveStreamUrl(target);
   const streamTransport = typeof target.streamTransport === "string" ? target.streamTransport : "http";
   const streamSocketPath = typeof target.streamSocketPath === "string" && target.streamSocketPath.trim()
@@ -223,8 +224,11 @@ function createPmStreamPublisher({ account, target, logger, gatewayDispatchId })
       partial: () => {},
       reasoning: () => {},
       modelSelected: () => {},
+      modelContext: () => {},
       agentMeta: () => null,
       toolStart: async () => {},
+      itemEvent: async () => {},
+      dispose: () => {},
       final: async () => {},
       done: async () => {},
       error: async () => {},
@@ -241,11 +245,15 @@ function createPmStreamPublisher({ account, target, logger, gatewayDispatchId })
   let chain = Promise.resolve();
   let lastReasoningText = "";
   let selectedAgentMeta = null;
+  let effectiveContextLimit;
   const observedToolCalls = new Set();
   let anonymousToolCallNo = 0;
+  let disposed = false;
+  let terminalSent = false;
   let modelSelectedEmitted = false;
 
   const post = (body) => {
+    if (disposed || !isActive()) return Promise.resolve();
     const payload = {
       version: 1,
       channel: CHANNEL_ID,
@@ -263,6 +271,7 @@ function createPmStreamPublisher({ account, target, logger, gatewayDispatchId })
     }
     return postJson(streamUrl, account.callbackToken, payload);
   };
+  const liveness = createToolLiveness({ heartbeat: () => post({ event: "tool:heartbeat" }), isActive });
 
   const schedule = () => {
     if (timer) return;
@@ -312,6 +321,7 @@ function createPmStreamPublisher({ account, target, logger, gatewayDispatchId })
   };
 
   return {
+    modelContext: (limit) => { effectiveContextLimit = typeof limit === "number" && limit > 0 ? limit : undefined; },
     modelSelected: (selection) => {
       if (!selection || typeof selection !== "object") return;
       const provider = typeof selection.provider === "string" ? selection.provider.trim() : "";
@@ -353,6 +363,7 @@ function createPmStreamPublisher({ account, target, logger, gatewayDispatchId })
           : phase === "start"
             ? `anonymous:${++anonymousToolCallNo}`
             : null;
+      if (stableId) liveness.start(stableId);
       if (!stableId || observedToolCalls.has(stableId)) return;
       observedToolCalls.add(stableId);
 
@@ -369,7 +380,22 @@ function createPmStreamPublisher({ account, target, logger, gatewayDispatchId })
         toolCallId: typeof payload.toolCallId === "string" ? payload.toolCallId : undefined,
         ...(selectedAgentMeta?.provider ? { provider: selectedAgentMeta.provider } : {}),
         ...(selectedAgentMeta?.model ? { model: selectedAgentMeta.model } : {}),
+        ...(effectiveContextLimit ? { contextLimit: effectiveContextLimit } : {}),
       });
+    },
+    itemEvent: async (payload) => {
+      const stableId = payload?.toolCallId ? `call:${payload.toolCallId}` : payload?.itemId ? `item:${payload.itemId}` : null;
+      if (!stableId || !observedToolCalls.has(stableId)) return;
+      if (!["end", "complete", "completed", "error", "failed"].includes(payload.phase) && !["completed", "failed", "error"].includes(payload.status)) return;
+      liveness.finish(stableId);
+      await post({ event: "tool:result", toolCallId: payload.toolCallId, toolName: payload.name });
+    },
+    dispose: () => {
+      disposed = true;
+      liveness.dispose();
+      if (timer) clearTimeout(timer);
+      timer = null;
+      queued = null;
     },
     partial: (payload) => {
       const delta = streamPayloadDelta(payload);
@@ -411,16 +437,21 @@ function createPmStreamPublisher({ account, target, logger, gatewayDispatchId })
       });
     },
     final: async (text) => {
+      liveness.dispose();
       await flush();
       if (text) await post({ event: "final", text, replace: true });
     },
     done: async () => {
+      if (terminalSent) return;
+      terminalSent = true;
+      liveness.dispose();
       await flush();
       // ENV-159: Emit canonical turn:terminal before legacy done.
       await post({ event: "turn:terminal" });
       await post({ event: "done" });
     },
     error: async (err) => {
+      liveness.dispose();
       await flush();
       await post({ event: "error", error: err instanceof Error ? err.message : String(err) });
     },
@@ -672,7 +703,8 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
     envelope: runtime.channel.reply.resolveEnvelopeFormatOptions(cfg),
     body: bodyForAgent,
   });
-  const stream = createPmStreamPublisher({ account, target, logger, gatewayDispatchId: acceptedId });
+  const stream = createPmStreamPublisher({ account, target, logger, gatewayDispatchId: acceptedId,
+    isActive: () => activeTurns.get(rawSessionKey) === registeredTurn && !registeredTurn.abortedAt });
   registeredTurn.stream = stream;
   registeredTurn.finishTask = () => stopCompletedTaskTurn({
     turn: registeredTurn, sessionKey,
@@ -765,7 +797,7 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
   if (!afterEffortLookup || afterEffortLookup.acceptedId !== acceptedId) return;
   if (afterEffortLookup.abortedAt) { activeTurns.delete(rawSessionKey); return; }
   try {
-    await inbound.dispatchReply({
+    const dispatchResult = await inbound.dispatchReply({
       cfg: withPmHighDefault(cfg, agentId, cliEffort),
       channel: CHANNEL_ID,
       accountId: account.accountId,
@@ -784,9 +816,13 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
         deliver: async (replyPayload) => {
           const text = payloadText(replyPayload);
           const mediaUrls = replyPayload.mediaUrls ?? (replyPayload.mediaUrl ? [replyPayload.mediaUrl] : []);
-          if (registeredTurn.completedAction) return;
+          if (!canDeliverTaskReply(registeredTurn, activeTurns.get(rawSessionKey))) return;
+          if (isGatewayFailureReply(text)) { registeredTurn.operationalFailure = true; return; }
           if (mediaUrls.length) {
-            for (const mediaUrl of mediaUrls) await sendPmMedia({ cfg, accountId, to: encodedTarget, text, mediaUrl, replyToId: messageId });
+            for (const mediaUrl of mediaUrls) {
+              if (!canDeliverTaskReply(registeredTurn, activeTurns.get(rawSessionKey))) return;
+              await sendPmMedia({ cfg, accountId, to: encodedTarget, text, mediaUrl, replyToId: messageId });
+            }
             visibleReplySent = true;
             return { visibleReplySent: true };
           }
@@ -800,6 +836,7 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
             replyToId: messageId,
             agentMeta: stream.agentMeta(),
           });
+          if (!canDeliverTaskReply(registeredTurn, activeTurns.get(rawSessionKey))) return;
           await stream.final(text);
           visibleReplySent = true;
           return {
@@ -823,6 +860,7 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
         // while its durable tool-cycle counter remains zero.
         allowToolLifecycleWhenProgressHidden: true,
         onToolStart: (toolPayload) => stream.toolStart(toolPayload),
+        onItemEvent: (itemPayload) => stream.itemEvent(itemPayload),
         // This is the actual selected model, including fallback changes. It is
         // attached to stream and durable reply callbacks for provenance.
         onModelSelected: (selection) => stream.modelSelected(selection),
@@ -837,7 +875,17 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
       },
       messageId,
     });
-    if (visibleReplySent || registeredTurn.completedAction || registeredTurn.silentReply) {
+    if (registeredTurn.operationalFailure && !registeredTurn.completedAction) {
+      await stream.error(new Error("Agent finished without posting a reply."));
+      return;
+    }
+    if (!registeredTurn.abortedAt && isDeliberateSilentDispatch(dispatchResult)) registeredTurn.silentReply = true;
+    if ((registeredTurn.silentReply || registeredTurn.completedAction) && !visibleReplySent && !registeredTurn.abortedAt) {
+      // The explicit silent final settles PM's existing silent path. A bare
+      // done with no durable reply remains a failure, preserving WFI-006.
+      await stream.final("NO_REPLY");
+    }
+    if (!registeredTurn.abortedAt && (visibleReplySent || registeredTurn.completedAction || registeredTurn.silentReply)) {
       await stream.done();
     } else {
       // Distinguish "gateway aborted this turn" (cancel endpoint) from "agent
@@ -852,7 +900,7 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
       }
     }
   } catch (err) {
-    if (registeredTurn.completedAction) { await stream.done(); return; }
+    if (registeredTurn.completedAction) { await stream.final("NO_REPLY"); await stream.done(); return; }
     const message = String(err?.message ?? err);
     if (err?.name === "AbortError" || /abort/i.test(message)) {
       await stream.error(new Error(`gateway aborted turn: ${message}`));
@@ -861,6 +909,7 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
     }
     throw err;
   } finally {
+    stream.dispose();
     const active = activeTurns.get(rawSessionKey);
     if (!active || active.acceptedId === acceptedId) {
       activeTurns.delete(rawSessionKey);

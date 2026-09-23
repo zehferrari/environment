@@ -129,8 +129,9 @@ assert(projectPage.includes("commitPrefix: null"), "board-created Tasks must ret
 
 const taskPage = readFileSync(join(root, "app/(app)/projects/[slug]/tasks/[taskId]/page.tsx"), "utf8");
 const taskCache = readFileSync(join(root, "lib/tasks/cache.ts"), "utf8");
-assert(taskPage.includes("data.branchName = newBranch"), "clearing a Task branch override must persist null, not a copied fallback");
-assert(taskPage.includes("data.commitPrefix = newCommitPrefix"), "clearing a Task prefix override must persist null, not a copied fallback");
+const taskEditor = readFileSync(join(root, "lib/tasks/editor-actions.ts"), "utf8");
+assert(taskEditor.includes("data.branchName = newBranch"), "clearing a Task branch override must persist null, not a copied fallback");
+assert(taskEditor.includes("data.commitPrefix = newCommitPrefix"), "clearing a Task prefix override must persist null, not a copied fallback");
 assert(taskPage.includes('defaultValue={task.branchName ?? ""}'), "the Task form must not submit an inherited branch as an override");
 assert(taskPage.includes('defaultValue={task.commitPrefix ?? ""}'), "the Task form must not submit an inherited prefix as an override");
 assert(
@@ -405,8 +406,8 @@ for (const pagePath of [
   assert(!pageSource.includes("ensureTaskCodeWorktree"), `${pagePath} must not prepare a worktree for a blocked human override`);
 }
 assert(
-  taskPage.includes("submitBrowserStatusOverride") &&
-    !taskPage.includes("transitionTaskStatus(taskId, statusChangedTo, slug)"),
+  taskEditor.includes("submitBrowserStatusOverride") &&
+    !taskEditor.includes("transitionTaskStatus(taskId, statusChangedTo, slug)"),
   "task editor status changes must submit the authoritative browser override command",
 );
 

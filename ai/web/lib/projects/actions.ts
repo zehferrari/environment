@@ -11,6 +11,7 @@ import { cleanDeployReviewPrompt } from "@/lib/epics/deploy-review";
 import { cleanBillingPrompt } from "@/lib/billing/prompt";
 import { serializeProtectedBranches } from "@/lib/projects/protected-branches";
 import { normalizeProjectWorkMode } from "@/lib/projects/work-mode";
+import { parseDevPublicationConfig } from "@/lib/projects/dev-publication-config";
 import {
   assertAgentAssignmentAllowed,
   requireProjectAccess,
@@ -76,6 +77,9 @@ export async function setProjectSettings(formData: FormData) {
       deploymentPrTargetBranch: true,
       deploymentMode: true,
       deploymentOnMerge: true,
+      devPublicationPolicy: true,
+      devPublicationConfig: true,
+      ownerAcceptancePolicy: true,
       deploymentPipelineName: true,
       deploymentHost: true,
       deploymentEnvironment: true,
@@ -221,7 +225,20 @@ export async function setProjectSettings(formData: FormData) {
       throw new Error("Only project owners can edit deployment settings.");
     }
     const deploymentMode = deploymentChoice(formData.get("deploymentMode"), DEPLOYMENT_MODES, project.deploymentMode);
+    if ((formData.has("devPublicationPolicy") || formData.has("devPublicationConfig") || formData.has("ownerAcceptancePolicy")) && actor.kind !== "human") throw new Error("A human owner must configure publication and acceptance policy.");
+    const ownerAcceptancePolicy = formData.has("ownerAcceptancePolicy") ? String(formData.get("ownerAcceptancePolicy")) : project.ownerAcceptancePolicy;
+    if (!["task", "epic_release"].includes(ownerAcceptancePolicy)) throw new Error("Invalid owner acceptance policy.");
+    const devPublicationPolicy = formData.has("devPublicationPolicy")
+      ? String(formData.get("devPublicationPolicy")) : project.devPublicationPolicy;
+    if (!["single_use", "standing"].includes(devPublicationPolicy)) throw new Error("Invalid Dev publication policy.");
+    const devPublicationConfig = formData.has("devPublicationConfig")
+      ? parseDevPublicationConfig(trimOrNull(formData.get("devPublicationConfig")))
+      : parseDevPublicationConfig(project.devPublicationConfig);
+    if (devPublicationPolicy === "standing" && !devPublicationConfig) throw new Error("Standing authorization requires a named Dev target, allowed operations and exact-SHA verification command.");
     const deploymentData = {
+      ownerAcceptancePolicy,
+      devPublicationPolicy,
+      devPublicationConfig: devPublicationConfig ? JSON.stringify(devPublicationConfig, null, 2) : null,
       deploymentProvider: deploymentChoice(formData.get("deploymentProvider"), DEPLOYMENT_PROVIDERS, project.deploymentProvider),
       deploymentProductionBranch: branchOrNull(formData.get("deploymentProductionBranch")) ?? "main",
       deploymentPrTargetBranch: branchOrNull(formData.get("deploymentPrTargetBranch")) ?? branchOrNull(formData.get("deploymentProductionBranch")) ?? "main",

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolvePmInboundRuntime } from "../openclaw-pm-channel/runtime-compat.js";
+import { createToolLiveness } from "../openclaw-pm-channel/tool-liveness.js";
 
 function surface(api, dispatchMethod) {
   return {
@@ -192,6 +193,7 @@ const createPmStreamPublisher = new Function(
   "streamPayloadDelta",
   "sendJsonLineToUnixSocket",
   "postJson",
+  "createToolLiveness",
   `return (${publisherSource});`,
 )(
   "pm",
@@ -200,6 +202,7 @@ const createPmStreamPublisher = new Function(
   (payload) => typeof payload?.delta === "string" ? payload.delta : "",
   async () => {},
   async (_url, _token, body) => { posted.push(body); return {}; },
+  createToolLiveness,
 );
 const publisher = createPmStreamPublisher({
   account: { callbackToken: "test-token" },

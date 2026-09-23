@@ -1913,6 +1913,53 @@ def _pm_has_live_channel_run(conn, task_id, agent_slug):
         return False
 
 
+def _pm_review_has_recorded_acceptance(conn, task_id):
+    try:
+        row = conn.execute("""
+            SELECT r.status FROM review_runs r JOIN Task t ON t.id = r.task_id
+            WHERE t.id = ? AND r.workflow_cycle_id = t.active_workflow_cycle_id
+            ORDER BY r.created_at DESC LIMIT 1
+        """, (task_id,)).fetchone()
+        return bool(row and row["status"] in ("accepted_pending_owner", "accepted"))
+    except sqlite3.OperationalError:
+        # An older schema cannot have the new conditional verdict state.
+        return False
+
+
+def _pm_permission_grant_wait(conn, task_id, grant):
+    """Read-only negative checks. The PM CLI validates the complete authority
+    immediately before dispatch; the monitor never creates a grant itself."""
+    grant_id = (grant or {}).get("authorizationCommentId")
+    if not grant_id:
+        return "external_dependency"
+    try:
+        comment = conn.execute("""
+            SELECT c.createdAt, c.deletedAt, t.approved_on AS approvedOn
+            FROM Comment c JOIN Task t ON t.id = c.taskId
+            WHERE c.id = ? AND t.id = ?
+        """, (grant_id, task_id)).fetchone()
+        if not comment or comment["deletedAt"] is not None:
+            return "permission_no_longer_valid"
+        approved = _parse_pm_ts(comment["approvedOn"])
+        created = _parse_pm_ts(comment["createdAt"])
+        if not approved or not created or created < approved:
+            return "permission_no_longer_valid"
+        uses = conn.execute("""
+            SELECT payload FROM ActivityLog WHERE taskId = ? AND kind IN (
+              'task.repository.checkpoint.requested', 'pm.repo.checkpoint.enqueue',
+              'pm.repo.checkpoint.ok', 'pm.repo.checkpoint.fail')
+        """, (task_id,)).fetchall()
+        def mentions_grant(value):
+            if isinstance(value, dict):
+                return value.get("authorizationCommentId") == grant_id or any(mentions_grant(v) for v in value.values())
+            return isinstance(value, list) and any(mentions_grant(v) for v in value)
+        if any(mentions_grant(json.loads(row["payload"] or "{}")) for row in uses):
+            return "checkpoint_attempt_pending_settlement"
+        return None
+    except (sqlite3.OperationalError, ValueError):
+        return "permission_state_unverified"
+
+
 def _pm_mentions_username(body, username):
     if not username:
         return False
@@ -2283,6 +2330,14 @@ def probe_pm_workflow(cfg, registry):
         def add(row, kind, target_agent, age_s, required_action, severity="warn", extra=None):
             if not target_agent:
                 return
+            if row["status"] == "Review" and _pm_review_has_recorded_acceptance(conn, row["id"]):
+                return
+            if row["status"] == "In Progress":
+                blocker = _pm_latest_blocker_activity(conn, row["id"])
+                if blocker and blocker["kind"] != "task.blocker.cleared":
+                    grant = _pm_blocker_permission_grant(conn, row["id"], blocker)
+                    if _pm_permission_grant_wait(conn, row["id"], grant):
+                        return
             # Never stack a monitor recovery behind a PM-channel turn that is
             # already queued or executing for the same task/agent. Channel
             # health items themselves remain eligible so their recovery ladder
@@ -3742,6 +3797,15 @@ def _pm_recovery_preflight(cfg, user, bucket):
                     return defer(f"agent execution lease is occupied: {lease['runId']}")
 
             for incident in bucket.get("pm_tasks") or []:
+                task_id = incident.get("task_id")
+                if _pm_review_has_recorded_acceptance(conn, task_id):
+                    return defer("recorded review awaits owner evidence or mechanical finalization", True)
+                blocker = _pm_latest_blocker_activity(conn, task_id)
+                if blocker and blocker["kind"] != "task.blocker.cleared":
+                    grant = _pm_blocker_permission_grant(conn, task_id, blocker)
+                    wait = _pm_permission_grant_wait(conn, task_id, grant)
+                    if wait:
+                        return defer(wait, True)
                 if not (incident.get("kind") or "").startswith("pm-channel-"):
                     if _pm_has_live_channel_run(conn, incident.get("task_id"), user):
                         return defer("task already has a queued or active turn")
@@ -4740,17 +4804,9 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
         # Reset is handled by the missed_runs eviction path below.
         ev["consecutive_seen"] = int(ev.get("consecutive_seen", 0)) + 1
 
-        if (
-            ev.get("alert_sent")
-            and _is_pm_workflow_retry_kind(kind)
-            and not ev.get("human_notification_final")
-        ):
-            # Old monitor state treated a Telegram/nudge as final. For PM
-            # workflow drift, the task itself must resolve the issue.
-            if now >= ev.get("next_attempt_after", 0):
-                ev["alert_sent"] = False
-                ev["attempts"] = 0
-                ev["next_attempt_after"] = 0
+        # An exhausted PM recovery remains visible until the observed issue
+        # resolves. Elapsed time or a delivered alert is not durable progress
+        # and cannot replenish the model/restart budget.
 
         if sev not in ("warn", "crit") or ev["alert_sent"]:
             continue
@@ -5150,16 +5206,8 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                             ev["next_attempt_after"] = now + max(1800, confirmation_window_s)
                             ev["last_tier3_telegram"] = now
                         elif _is_pm_workflow_retry_kind(i.get("kind")):
-                            # Same reasoning as email-awaiting-action: a
-                            # Telegram or accepted PM-channel nudge is not
-                            # task completion. Retry the PM-channel ladder
-                            # after cooldown until the PM workflow probe no
-                            # longer sees this task as stale.
-                            ev["attempts"] = 0
-                            ev["next_attempt_after"] = now + max(
-                                300,
-                                pm_retry_cooldown_s,
-                            )
+                            ev["alert_sent"] = True
+                            ev["human_notification_final"] = True
                             ev["last_tier3_telegram"] = now
                         else:
                             ev["alert_sent"] = True

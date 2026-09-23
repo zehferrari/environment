@@ -94,6 +94,7 @@ export interface WatchdogContinuationRecord {
 }
 
 export interface WatchdogBlockerState {
+  recoveryWaitReason?: string | null;
   /** The blocker is genuinely waiting on somebody outside the agent. */
   needsExternalInput: boolean;
   /** A scoped permission grant has already landed against it. */
@@ -837,8 +838,12 @@ export function healthyExecutionState(
   if (task.activeBlocker?.needsExternalInput && !task.activeBlocker.permissionGranted) {
     return {
       state: "blocked",
-      reasonCode: "external_dependency",
-      reasonDetail: "a formal blocker is waiting on external input",
+      reasonCode: task.activeBlocker.recoveryWaitReason ?? "external_dependency",
+      reasonDetail: task.activeBlocker.recoveryWaitReason === "checkpoint_attempt_pending_settlement"
+        ? "the authorized checkpoint was already submitted; waiting for repository settlement"
+        : task.activeBlocker.recoveryWaitReason === "permission_no_longer_valid"
+          ? "the recorded permission no longer matches the current approved task"
+          : "a formal blocker is waiting on external input",
     };
   }
   const liveRuns = snapshot.runs.filter((run) => run.taskId === task.id && runIsLive(run, snapshot));

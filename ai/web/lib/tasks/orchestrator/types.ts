@@ -77,6 +77,7 @@ export const WORKFLOW_PUBLIC_ACTIONS = [
   "approve_plan",
   "submit_plan",
   "request_plan_changes",
+  "request_plan_revision",
   "accept_plan_review",
   "delegate_plan_approval",
   "assign_task",
@@ -111,6 +112,7 @@ export const TASK_WORKFLOW_INTENTS = [
   "submit_plan",
   "approve_plan",
   "request_plan_changes",
+  "request_plan_revision",
   "accept_plan_review",
   "delegate_plan_approval",
   "start_implementation",
@@ -224,6 +226,9 @@ export type SubmitPlanPayload = {
       acceptanceCriteria: string[];
       kind: "sequential" | "parallel";
       assigneeId?: string | null;
+      phase?: "implementation" | "acceptance";
+      responsibleActor?: "assignee" | "reviewer" | "owner";
+      verificationEnvironment?: string | null;
     }>;
   };
   /** In-reply-to message ID for threading. */
@@ -433,7 +438,8 @@ export type RepositoryFinalizationFailedPayload = {
 
 export type PublishCheckpointPayload = {
   /** Authorization comment ID from the owner grant. */
-  authorizationCommentId: string;
+  authorizationCommentId?: string;
+  standingAuthorizationId?: string;
   /** Candidate SHA to publish. */
   candidateSha?: string | null;
   /** Base SHA (Epic branch tip at the time). */
@@ -511,6 +517,7 @@ interface IntentPayloadMap {
   submit_plan: SubmitPlanPayload;
   approve_plan: ApprovePlanPayload;
   request_plan_changes: RequestPlanChangesPayload;
+  request_plan_revision: RequestPlanChangesPayload;
   accept_plan_review: ApprovePlanPayload;
   delegate_plan_approval: ApprovePlanPayload;
   start_implementation: StartImplementationPayload;
@@ -768,6 +775,8 @@ export type TaskStateSnapshot = {
     baseSha: string | null;
     repoTouched: boolean;
     validationOutcome: string;
+    acceptancePlanVersion?: number | null;
+    acceptanceChecklistHash?: string | null;
   } | null;
   repositoryRun?: {
     phase: string;
@@ -819,6 +828,8 @@ export type TaskStateSnapshot = {
   otherInProgressTaskOnBranch?: { id: string; title: string; branchName: string | null } | null;
   openChecklist?: { count: number; ids: string[] };
   openReviewChecklist?: { count: number; ids: string[] };
+  openOwnerAcceptance?: { count: number; ids: string[] };
+  acceptanceChecklistHash?: string;
   activeBlocker?: {
     commentId: string | null;
     permissionRequest: { kind: string; scope: string } | null;

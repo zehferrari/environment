@@ -64,6 +64,17 @@ export function taskWorkflowReport(databasePath, taskId) {
     const episodeRows = db.prepare('SELECT episode_no, status, close_reason, cycle_count, tool_cycle_count FROM task_execution_episodes WHERE task_id = ? ORDER BY episode_no').all(taskId);
     return {
       task, notes: ["Times are milliseconds; null means unavailable, never zero-cost.", "Prompt sizes are characters, not tokenizer counts; model usage is provider-reported and includes non-PM context.", "Tool calls measure interaction volume; first-tool timing does not prove the action was useful.", "Compare matched tasks by role/provider/model; this report alone does not establish causation."],
+      workflowSignals: {
+        rejectedCommands: db.prepare('SELECT count(*) AS n FROM ActivityLog WHERE taskId = ? AND kind = ?').get(taskId, "task.workflow.command_rejected").n,
+        permissionRequests: db.prepare('SELECT payload FROM ActivityLog WHERE taskId = ? AND kind = ?').all(taskId, "task.blocker").filter(row => parse(row.payload)?.permissionRequest).length,
+        humanComments: db.prepare('SELECT count(*) AS n FROM Comment c JOIN User u ON u.id = c.userId WHERE c.taskId = ? AND c.deletedAt IS NULL AND u.kind = ?').get(taskId, "human").n,
+        completedRuns: rows.filter(run => run.status === "completed").length,
+        supersededRuns: rows.filter(run => run.status === "superseded").length,
+        runsWithoutToolsOrWorkflowAction: rows.filter(run => run.toolCalls === 0 && !run.settledByAction).length,
+        hardBudgetClosures: episodeRows.filter(episode => /tool.*budget|context.*budget/.test(episode.close_reason ?? "")).length,
+        // Missing pre-deployment rejection/usage telemetry is not proof of zero friction.
+        measurementsStartedWithContract: "pm-task/4",
+      },
       planRevisions: db.prepare('SELECT count(*) AS n FROM ActionPlanRevision WHERE taskId = ?').get(taskId).n,
       sessionRotations: activities.filter((row) => row.kind === "pm.session.rotated").length,
       episodes: episodeRows,

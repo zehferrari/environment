@@ -35,6 +35,7 @@ const PLUGIN_FILES = [
   "turn-effort.js",
   "turn-completion.js",
   "task-telemetry.js",
+  "tool-liveness.js",
   "openclaw.plugin.json",
   "package.json",
   "README.md",
@@ -178,6 +179,10 @@ async function configureAgentConfig({
       ? config.plugins.entries.pm
       : {}),
     enabled: true,
+    // Our managed plugin observes numeric usage and terminal silence only.
+    // OpenClaw 2026.9 requires explicit access to llm_input/llm_output hooks;
+    // the telemetry adapter never persists prompt or conversation content.
+    hooks: { ...config.plugins.entries.pm?.hooks, allowConversationAccess: true },
   };
   config.plugins.load = config.plugins.load && typeof config.plugins.load === "object"
     ? config.plugins.load

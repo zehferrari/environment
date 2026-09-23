@@ -17,7 +17,7 @@ import {
   recordPmChannelRunQueued,
 } from "@/lib/agents/pm-channel/runs";
 
-export type PersistedStreamInput = Omit<PmChannelStreamInput, "target" | "provider" | "model" | "degradedTelemetry">;
+export type PersistedStreamInput = Omit<PmChannelStreamInput, "target">;
 
 const STREAM_DURABILITY_RETRY_BASE_MS = 250;
 const STREAM_DURABILITY_RETRY_MAX_MS = 5_000;
@@ -43,6 +43,9 @@ function durabilityInput(input: PmChannelStreamInput): PersistedStreamInput {
     statusKind: input.statusKind,
     toolStatus: input.toolStatus,
     toolName: input.toolName,
+    provider: input.provider,
+    model: input.model,
+    degradedTelemetry: input.degradedTelemetry,
     ...(input.toolCallId ? { toolCallId: input.toolCallId } : {}),
   };
 }
@@ -230,6 +233,9 @@ export async function appendPmChannelStreamEventForTarget(args: {
   toolStatus?: PersistedStreamInput["toolStatus"];
   toolName?: string;
   toolCallId?: string;
+  provider?: string;
+  model?: string;
+  degradedTelemetry?: boolean;
 }) {
   const run = await ensurePmChannelRunForTarget(args.target);
   return appendPmChannelStreamEvent({
@@ -245,6 +251,9 @@ export async function appendPmChannelStreamEventForTarget(args: {
       statusKind: args.statusKind,
       toolStatus: args.toolStatus,
       toolName: args.toolName,
+      provider: args.provider,
+      model: args.model,
+      degradedTelemetry: args.degradedTelemetry,
       ...(args.toolCallId ? { toolCallId: args.toolCallId } : {}),
     },
   });
@@ -277,6 +286,10 @@ export async function replayPmChannelStreamFrames(args: {
       statusKind: payload.statusKind,
       toolStatus: payload.toolStatus,
       toolName: payload.toolName,
+      provider: payload.provider,
+      model: payload.model,
+      degradedTelemetry: payload.degradedTelemetry,
+      snapshot: payload.snapshot,
       ...(payload.toolCallId ? { toolCallId: payload.toolCallId } : {}),
       seq: row.seq,
     });

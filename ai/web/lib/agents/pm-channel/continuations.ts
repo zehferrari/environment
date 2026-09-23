@@ -18,9 +18,43 @@
 import type { Prisma } from "@prisma/client";
 
 import { db } from "@/lib/db";
+import { ACTIVE_RUN_STATUSES } from "@/lib/workflow-invariants";
 
 export const CONTINUATION_OPEN_STATUSES = ["armed", "queued", "dispatching"] as const;
 export const CONTEXT_PRESSURE_RECOVERY_ACTION = "context_pressure_recovery";
+export const AUTO_CONTINUATION_ACTION = "auto_continue";
+
+/** Attach asynchronous repository completion to the turn already owning the
+ * task. Its terminal callback releases the obligation; a late callback can
+ * queue it directly. Repeated runner callbacks never revive terminal rows. */
+export async function queueTaskExecutionContinuation(args: {
+  taskId: string; agentSlug: string; action: "checkpoint_published" | "checkpoint_failed"; eventKey?: string; now?: Date;
+}) {
+  const action = args.eventKey ? `${args.action}:${args.eventKey}` : args.action;
+  return db.$transaction(async tx => {
+    const task = await tx.task.findUnique({ where: { id: args.taskId }, select: {
+      status: true, deletedAt: true, assignee: { select: { agent: { select: { slug: true } } } },
+    } });
+    if (!task || task.deletedAt || task.status !== "In Progress" || task.assignee?.agent?.slug !== args.agentSlug) {
+      return { scheduled: false, reason: "task_not_actionable" as const };
+    }
+    const run = await tx.pmChannelRun.findFirst({
+      where: { taskId: args.taskId, agentSlug: args.agentSlug, status: { notIn: ["superseded", "cancelled"] } },
+      orderBy: { createdAt: "desc" },
+      select: { id: true, status: true, messageId: true, projectId: true, epicId: true },
+    });
+    if (!run) return { scheduled: false, reason: "source_run_missing" as const };
+    await tx.pmChannelContinuation.upsert({
+      where: { runId_messageId_action: { runId: run.id, messageId: run.messageId, action } },
+      create: { runId: run.id, taskId: args.taskId, agentSlug: args.agentSlug, projectId: run.projectId,
+        epicId: run.epicId, messageId: run.messageId, action,
+        status: (ACTIVE_RUN_STATUSES as readonly string[]).includes(run.status) ? "armed" : "queued",
+        availableAt: args.now ?? new Date() },
+      update: {},
+    });
+    return { scheduled: true };
+  });
+}
 
 type TxClient = Prisma.TransactionClient | typeof db;
 

@@ -412,6 +412,10 @@ export function authorizeCommand(
       };
     }
 
+    case "request_plan_revision": {
+      const allowed = actor.id === state.assigneeId || actor.id === resolveReviewOwnerId(state) || (actor.kind === "human" && actor.id === state.reporterId);
+      return { allowed, reason: allowed ? "ok" : "not_authorized_for_plan", decisionActorId: allowed ? actor.id : null, executorActorId: null };
+    }
     case "delegate_plan_approval": {
       const allowed = actor.kind === "human" && actor.id === state.reporterId
         && Boolean(resolveReviewOwnerId(state)) && resolveReviewOwnerId(state) !== actor.id;
@@ -465,7 +469,7 @@ export function authorizeCommand(
       // Invariant 8: only the resolved reviewer (or reporter under policy)
       // may request changes, and only against the active immutable lease.
       const lease = state.activeReviewRun ?? null;
-      if (!lease || (lease.status !== "awaiting_review" && lease.status !== "accepted")) {
+      if (!lease || !["awaiting_review", "accepted", "accepted_pending_owner"].includes(lease.status)) {
         return {
           allowed: false,
           reason: "no_active_lease",

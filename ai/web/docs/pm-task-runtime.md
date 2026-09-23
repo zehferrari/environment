@@ -24,7 +24,7 @@ and deployed from `main` at commit `998dae4`. The live website and consumer use
 | Enabled gateways | Asdrubal, Karen, Barekbaal and Carmen; each authenticated capabilities response advertised runtime version **1** and **15 PM tools** |
 | Agent instructions | `AGENTS.md` and `WORKFLOW.md` synchronized from the deployed worktree and verified in every internal agent workspace |
 
-The model-facing contract is `pm-task/3`; the plugin envelope/capability version
+The model-facing contract is `pm-task/4`; the plugin envelope/capability version
 is `1`. These version numbers describe different contracts. The feature remains
 disabled by default on a fresh installation until explicitly configured. The original 8 September activation required no database migration; the
 Thinking release requires `20260922100000_task_thinking`.
@@ -33,7 +33,7 @@ Thinking release requires `20260922100000_task_thinking`.
 
 | Problem | Implemented behavior |
 | --- | --- |
-| Reintroducing PM on each wake | `pm-task/3` supplies identity, current role, task state, plan, checklist, repository/worktree and durable checkpoint. Generic PM manuals and personal startup files are no longer mandatory task onboarding. |
+| Reintroducing PM on each wake | `pm-task/4` supplies identity, current role, task state, plan, checklist, repository/worktree and durable checkpoint. Generic PM manuals and personal startup files are no longer mandatory task onboarding. |
 | Reconstructing HTTP and credentials | PM channel plugin 0.1.2 registers scoped `pm_*` tools. The active ingress generation supplies task/message identity and credentials outside the model's prompt and tool schema. |
 | Revisions start cold | Task/agent session bindings persist across planning feedback and plan review. Different agents have separate sessions; every message receives its own credentials. |
 | Multiple reset counters | Checklist bookkeeping consumes the real tool budget, not a second workflow-action charge. Open execution episodes own rotation; the existing completed-turn fallback still bounds planning sessions. Context-failure recovery and hard tool limits remain. |
@@ -63,14 +63,17 @@ checks remain required only by approved criteria or a demonstrated relevant
 limitation. This is a shared operating instruction, not new device access or a
 server-side proof that every remaining action depends on the blocker.
 
-The current episode tool budgets remain unchanged: normally 30 calls, with
-smaller provider/model ceilings selected by `episodeToolCycleBudgetForModel`.
-PM attempts a checkpoint steer at two-thirds of the budget and aborts the turn
-at exhaustion. WDT-11 exposed unsuccessful steering and incomplete handoffs;
-a future change should use acknowledged checkpoints and a bounded grace period,
-preserve active verification jobs, and use actual context occupancy where
-available. Aggregate token usage is not context occupancy. Raising the call
-limit alone does not address those handoff failures.
+Episode tool budgets remain conservative (18/24/30 calls). A reported effective
+context window selects the configurable tier; missing telemetry retains the
+provider fallback. PM requests a checkpoint at two-thirds of the budget. An
+explicit checkpoint with an exact next action acknowledges that request and
+atomically seals the episode and arms its successor. The response says
+`turnComplete: true`; the successor resumes with the persisted evidence and
+verification job IDs. The remaining calls are a bounded grace window; the hard
+fence and abort remain for ignored requests. Actual latest-call context
+occupancy can trigger rollover; aggregate billing cannot. See the
+[plugin contract](../openclaw-pm-channel/README.md#usage-and-tool-liveness) for
+controls and telemetry limitations.
 
 The enabled compact path covers PM-owned task notifications to coding agents
 including attachment-required tasks. Direct owner chats, interactive work-item

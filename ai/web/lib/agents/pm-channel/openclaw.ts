@@ -55,7 +55,7 @@ export interface SendPmChannelTurnArgs {
   taskRuntime?: PmTaskToolRuntime | null;
   effortPolicy?: PmEffortPolicy;
   expectedWorkflowAction?: "submit_plan";
-  taskContract?: { version: "pm-task/3"; transport: "native-tools" | "scoped-http"; actions: string[] };
+  taskContract?: { version: "pm-task/4"; transport: "native-tools" | "scoped-http"; actions: string[] };
   actor: {
     id: string;
     username?: string | null;
@@ -287,7 +287,7 @@ export async function sendOpenClawPmChannelTurn(
       driver: "openclaw-pm-channel",
       error: `replacement dispatch fenced: ${fence.error}`,
     };
-    await recordPmChannelRunDispatch({ target: args.replyTarget, result });
+    await recordPmChannelRunDispatch({ target: args.replyTarget, result, fetchImpl: args.fetchImpl });
     return result;
   }
   return dispatchOpenClawPmChannelTurn(args);
@@ -306,7 +306,7 @@ export async function dispatchOpenClawPmChannelTurn(
       driver: "openclaw-pm-channel",
       transportMode,
     };
-    await recordPmChannelRunDispatch({ target: args.replyTarget, result });
+    await recordPmChannelRunDispatch({ target: args.replyTarget, result, fetchImpl: args.fetchImpl });
     return result;
   }
 
@@ -325,7 +325,7 @@ export async function dispatchOpenClawPmChannelTurn(
       transportMode,
       error: bus.error ?? "PM channel bus publish failed",
     };
-    await recordPmChannelRunDispatch({ target: args.replyTarget, result });
+    await recordPmChannelRunDispatch({ target: args.replyTarget, result, fetchImpl: args.fetchImpl });
     return result;
   }
 
@@ -342,7 +342,7 @@ export async function dispatchOpenClawPmChannelTurnViaHttp(
       transportMode: resolvePmChannelTransportMode(),
       error: `agent "${args.agentSlug}" has no gateway port`,
     };
-    await recordPmChannelRunDispatch({ target: args.replyTarget, result });
+    await recordPmChannelRunDispatch({ target: args.replyTarget, result, fetchImpl: args.fetchImpl });
     return result;
   }
 
@@ -354,7 +354,7 @@ export async function dispatchOpenClawPmChannelTurnViaHttp(
       transportMode: resolvePmChannelTransportMode(),
       error: `missing PM OpenClaw channel token for agent "${args.agentSlug}"`,
     };
-    await recordPmChannelRunDispatch({ target: args.replyTarget, result });
+    await recordPmChannelRunDispatch({ target: args.replyTarget, result, fetchImpl: args.fetchImpl });
     return result;
   }
 
@@ -395,7 +395,7 @@ export async function dispatchOpenClawPmChannelTurnViaHttp(
         transportMode,
         error: body.trim() || `HTTP ${res.status}`,
       };
-      await recordPmChannelRunDispatch({ target: args.replyTarget, result });
+      await recordPmChannelRunDispatch({ target: args.replyTarget, result, fetchImpl: args.fetchImpl });
       return result;
     }
 
@@ -422,7 +422,7 @@ export async function dispatchOpenClawPmChannelTurnViaHttp(
       model,
       gatewayDispatchId,
     };
-    await recordPmChannelRunDispatch({ target: args.replyTarget, result });
+    await recordPmChannelRunDispatch({ target: args.replyTarget, result, fetchImpl: args.fetchImpl });
     return result;
   } catch (err) {
     const result: SendPmChannelTurnResult = {
@@ -431,7 +431,7 @@ export async function dispatchOpenClawPmChannelTurnViaHttp(
       transportMode,
       error: err instanceof Error ? err.message : String(err),
     };
-    await recordPmChannelRunDispatch({ target: args.replyTarget, result });
+    await recordPmChannelRunDispatch({ target: args.replyTarget, result, fetchImpl: args.fetchImpl });
     return result;
   } finally {
     clearTimeout(timer);

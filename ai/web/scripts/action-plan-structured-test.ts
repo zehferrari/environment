@@ -434,7 +434,7 @@ async function main() {
       assert.equal(checklist.length, 2);
     });
 
-    await okAsync("adopts an exact pre-approval checklist row instead of duplicating it", async () => {
+    await okAsync("keeps title-only manual evidence independent from a newly approved requirement", async () => {
       const taskRecovery = await makeTestTask(project.id, agentUser.id);
       taskIds.push(taskRecovery.id);
       const title = "Legacy client planning step";
@@ -453,14 +453,17 @@ async function main() {
         approvedAt: new Date(),
         approvedById: agentUser.id,
       });
-      assert.equal(result.checklistCreated, 0);
+      assert.equal(result.checklistCreated, 1);
       const rows = await db.subTask.findMany({ where: { taskId: taskRecovery.id } });
-      assert.equal(rows.length, 1);
-      assert.equal(rows[0].id, existing.id);
-      assert.ok(rows[0].actionPlanStepId);
+      assert.equal(rows.length, 2);
+      assert.equal(rows.find(row => row.id === existing.id)?.actionPlanStepId, null);
+      const requirement = rows.find(row => row.id !== existing.id)!;
+      assert.ok(requirement.actionPlanStepId);
+      assert.ok(requirement.planContentHash);
+      assert.equal(requirement.completedAt, null);
     });
 
-    await okAsync("reopens a completed checklist row when a repair revision repeats its step", async () => {
+    await okAsync("retains completed historical evidence and creates a pending changed repair requirement", async () => {
       const taskRepair = await makeTestTask(project.id, agentUser.id);
       taskIds.push(taskRepair.id);
       const title = "Repeat the defect simulation";
@@ -517,11 +520,17 @@ async function main() {
         approvedById: agentUser.id,
       });
       const rows = await db.subTask.findMany({ where: { taskId: taskRepair.id, text: title } });
-      assert.equal(rows.length, 1);
-      assert.equal(rows[0].id, completed.id);
-      assert.equal(rows[0].completedAt, null);
-      assert.equal(rows[0].minutesSpent, null);
-      assert.ok(rows[0].actionPlanStepId);
+      assert.equal(rows.length, 2);
+      const historical = rows.find(row => row.id === completed.id)!;
+      assert.equal(historical.kind, "superseded");
+      assert.ok(historical.completedAt);
+      assert.equal(historical.minutesSpent, 5);
+      assert.match(historical.supersededReason ?? "", /approved Action Plan revision/);
+      const pending = rows.find(row => row.id !== completed.id)!;
+      assert.equal(pending.kind, "implementation");
+      assert.equal(pending.completedAt, null);
+      assert.equal(pending.minutesSpent, null);
+      assert.ok(pending.actionPlanStepId);
     });
 
     await okAsync("delegatable step creates child PM task", async () => {

@@ -62,6 +62,56 @@ class PmRecoveryTest(unittest.TestCase):
     def setUp(self):
         self.monitor = load_monitor_module()
 
+    def test_permission_recovery_excludes_consumed_and_stale_grants(self):
+        with sqlite3.connect(":memory:") as conn:
+            conn.row_factory = sqlite3.Row
+            conn.executescript("""
+                CREATE TABLE Task(id TEXT, approved_on INTEGER);
+                CREATE TABLE Comment(id TEXT, taskId TEXT, createdAt INTEGER, deletedAt INTEGER);
+                CREATE TABLE ActivityLog(taskId TEXT, kind TEXT, payload TEXT);
+                INSERT INTO Task VALUES ('t', 1000000);
+                INSERT INTO Comment VALUES ('grant','t',2000000,NULL);
+            """)
+            grant = {"authorizationCommentId": "grant"}
+            self.assertIsNone(self.monitor._pm_permission_grant_wait(conn, 't', grant))
+            conn.execute("INSERT INTO ActivityLog VALUES ('t','task.repository.checkpoint.requested',?)", (json.dumps(grant),))
+            self.assertEqual(self.monitor._pm_permission_grant_wait(conn, 't', grant), "checkpoint_attempt_pending_settlement")
+            conn.execute("DELETE FROM ActivityLog")
+            conn.execute("UPDATE Task SET approved_on=3000000")
+            self.assertEqual(self.monitor._pm_permission_grant_wait(conn, 't', grant), "permission_no_longer_valid")
+            self.assertEqual(self.monitor._pm_permission_grant_wait(conn, 't', None), "external_dependency")
+
+    def test_recorded_review_ownership_prevents_reviewer_recovery(self):
+        with sqlite3.connect(":memory:") as conn:
+            conn.row_factory = sqlite3.Row
+            conn.executescript("""
+                CREATE TABLE Task(id TEXT, active_workflow_cycle_id TEXT);
+                CREATE TABLE review_runs(task_id TEXT, workflow_cycle_id TEXT, status TEXT, created_at INTEGER);
+                INSERT INTO Task VALUES ('t','cycle');
+                INSERT INTO review_runs VALUES ('t','cycle','accepted_pending_owner',1000);
+            """)
+            self.assertTrue(self.monitor._pm_review_has_recorded_acceptance(conn, 't'))
+            conn.execute("UPDATE review_runs SET status='accepted'")
+            self.assertTrue(self.monitor._pm_review_has_recorded_acceptance(conn, 't'))
+            conn.execute("UPDATE Task SET active_workflow_cycle_id='new-cycle'")
+            self.assertFalse(self.monitor._pm_review_has_recorded_acceptance(conn, 't'))
+
+    def test_exhausted_pm_recovery_does_not_rearm_on_elapsed_time(self):
+        issue = {"unit": "pm:asdrubal/task-1", "kind": "pm-in-progress-stale", "severity": "warn", "reason": "No new durable progress"}
+        key = self.monitor.event_key(issue)
+        state = {"events": {key: {"issue": issue, "alert_sent": False, "attempts": 3,
+            "attempt_history": [], "next_attempt_after": 0, "missed_runs": 0}}}
+        cfg = {"notify": {"dedupe": {"resolved_after_runs": 3}}, "monitor_triage": {
+            "enabled": True, "escalation_ladder": {"max_attempts": 3, "confirmation_window_s": 1}}}
+        with mock.patch.object(self.monitor, "send_telegram", return_value={"ok": True}) as send:
+            self.monitor.dedupe_and_act(cfg, {"issues": [issue]}, state, registry=registry())
+            self.assertTrue(state["events"][key]["alert_sent"])
+            self.assertEqual(state["events"][key]["attempts"], 4)
+            with mock.patch.object(self.monitor.time, "time", return_value=time.time() + 86400):
+                self.monitor.dedupe_and_act(cfg, {"issues": [issue]}, state, registry=registry())
+            self.assertEqual(send.call_count, 1)
+            self.assertEqual(state["events"][key]["attempts"], 4)
+
     def test_accepted_plan_recovery_matches_approval_authority(self):
         with sqlite3.connect(":memory:") as conn:
             conn.row_factory = sqlite3.Row

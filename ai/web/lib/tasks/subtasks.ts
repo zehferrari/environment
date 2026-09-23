@@ -17,6 +17,7 @@ import type { Prisma } from "@prisma/client";
 import { ReviewCorrectionError } from "./review-findings-input";
 import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { db } from "@/lib/db";
+import { resumeReviewAfterOwnerAcceptance } from "@/lib/tasks/orchestrator/intents/owner-acceptance";
 
 // ENV-118: the agent workflow endpoint runs these mutations inside the same
 // transaction as its continuation-outbox write, so every mutation below takes
@@ -156,6 +157,7 @@ export async function setSubTaskCompletion(args: {
       completedAt: true,
       reviewFinding: true,
       minutesSpent: true,
+      kind: true, responsibleActor: true, acceptanceGate: true, completionEvidence: true,
       task: { select: { projectId: true } },
     },
   });
@@ -164,6 +166,18 @@ export async function setSubTaskCompletion(args: {
 
   const finding = item.reviewFinding;
   const evidence = args.completionEvidence?.trim();
+  if (item.kind === "superseded") throw new ReviewCorrectionError("This checklist requirement was superseded by an approved plan revision.");
+  if (item.responsibleActor === "owner") {
+    const actor = await client.user.findUnique({ where: { id: args.actorUserId }, select: { kind: true, isOwner: true, status: true } });
+    if (actor?.kind !== "human" || !actor.isOwner || actor.status !== "active") throw new ReviewCorrectionError("Only an active human owner can record or reopen owner acceptance.");
+    if (args.completed && (!item.completedAt || evidence !== undefined) && (!evidence || evidence.length > 10000)) {
+      throw new ReviewCorrectionError("Owner acceptance requires completionEvidence describing the check and observed result (maximum 10000 characters).");
+    }
+    if (!args.completed && item.completedAt && item.acceptanceGate === "task") {
+      const finalizing = await client.reviewRun.findFirst({ where: { taskId: item.taskId, status: { in: ["accepted", "completed"] } }, select: { id: true } });
+      if (finalizing) throw new ReviewCorrectionError("This owner check belongs to an accepted verdict. Request review feedback or an Action Plan revision before reopening accepted task requirements.");
+    }
+  }
   if (finding && args.completed && (!item.completedAt || finding.status !== "resolved") && (!evidence || evidence.length > 10000)) {
     throw new ReviewCorrectionError("This correction requires completionEvidence describing the fix and verification before it can be marked complete.");
   }
@@ -181,7 +195,8 @@ export async function setSubTaskCompletion(args: {
   const minutesChanged = nextMinutes !== item.minutesSpent;
 
   const findingChanged = !!finding && (finding.status !== (args.completed ? "resolved" : "open") || !!evidence && evidence !== finding.completionEvidence);
-  if (!completionChanged && !minutesChanged && !findingChanged) {
+  const evidenceChanged = !!evidence && evidence !== item.completionEvidence;
+  if (!completionChanged && !minutesChanged && !findingChanged && !evidenceChanged) {
     // Idempotent no-op — don't churn the activity feed.
     return { id: item.id, taskId: item.taskId, completedAt: item.completedAt, minutesSpent: item.minutesSpent };
   }
@@ -194,7 +209,11 @@ export async function setSubTaskCompletion(args: {
   // The row write and its audit row stay atomic either way: on the caller's
   // transaction when one was supplied, in our own when it was not.
   const write = async (tx: TxClient) => {
-    await tx.subTask.update({ where: { id: item.id }, data: { completedAt, minutesSpent: nextMinutes } });
+    await tx.subTask.update({ where: { id: item.id }, data: {
+      completedAt, minutesSpent: nextMinutes,
+      completionEvidence: args.completed ? (evidence ?? item.completionEvidence) : null,
+      completedById: args.completed ? args.actorUserId : null,
+    } });
     if (finding) await tx.reviewFinding.update({ where: { id: finding.id }, data: {
       status: args.completed ? "resolved" : "open",
       completionEvidence: args.completed ? (evidence || finding.completionEvidence) : null,
@@ -208,6 +227,9 @@ export async function setSubTaskCompletion(args: {
         kind,
         payload: JSON.stringify({ subTaskId: item.id, text: item.text, minutesSpent: nextMinutes, findingId: finding?.id, completionEvidence: evidence }),
       },
+    });
+    if (item.responsibleActor === "owner" && args.completed) await resumeReviewAfterOwnerAcceptance(tx as Prisma.TransactionClient, {
+      taskId: item.taskId, actorUserId: args.actorUserId,
     });
   };
   if (args.client) await write(args.client);
@@ -232,6 +254,7 @@ export async function deleteSubTaskItem(args: {
       taskId: true,
       text: true,
       reviewFinding: { include: { reviewRun: { select: { reviewedAt: true } } } },
+      responsibleActor: true, actionPlanStepId: true, planStepKey: true, kind: true,
       task: { select: { projectId: true, assigneeId: true, actingManagerId: true, reporterId: true, epic: { select: { status: true, actingManagerId: true } } } },
     },
   });
@@ -239,6 +262,7 @@ export async function deleteSubTaskItem(args: {
   if (args.expectTaskId && item.taskId !== args.expectTaskId) return null;
 
   const finding = item.reviewFinding;
+  if (!finding && (item.kind === "superseded" || item.responsibleActor === "owner" || item.actionPlanStepId || item.planStepKey)) throw new ReviewCorrectionError("Approved plan and owner acceptance requirements cannot be deleted. Revise and approve the Action Plan to supersede them explicitly.");
   if (args.supersededReason && !finding) throw new ReviewCorrectionError("Supersession applies only to a review correction.");
   if (finding) {
     const reviewerId = resolveReviewOwnerId(item.task);

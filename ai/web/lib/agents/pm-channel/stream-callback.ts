@@ -1,4 +1,4 @@
-import { recordTaskModelUsage } from "./task-metrics";
+import { recordTaskModelUsage, taskContextSnapshot } from "./task-metrics";
 import { db } from "@/lib/db";
 import { flagMissingTaskPlanOutcome } from "./task-outcome";
 import {
@@ -34,11 +34,12 @@ import { isAuthorizedPmChannelCallbackTarget } from "@/lib/agents/pm-channel/tar
 import { continueActionableTaskAfterReply } from "@/lib/agents/workflow/execution-continuation";
 import {
   episodeToolCycleBudgetForModel,
+  episodeCheckpointRequestAt,
   recordTaskExecutionToolCycle,
-  rollOverTaskExecutionEpisodeForContextPressure,
+  requestTaskExecutionEpisodeContextRollover,
 } from "@/lib/agents/episodes/lifecycle";
-import { sealEpisodeRolloverBarrierOnTurnEnd } from "@/lib/agents/episodes/rollover";
-import { abortGatewaySession, steerGatewaySession } from "@/lib/agents/pm-channel/supersession";
+import { sealEpisodeRolloverBarrierOnTurnEnd, sealEpisodeRolloverBarrierInTransaction, EPISODE_SEAL_REASON } from "@/lib/agents/episodes/rollover";
+import { fencePendingPmChannelCancellations, steerGatewaySession } from "@/lib/agents/pm-channel/supersession";
 
 export type PmChannelStreamTransportMode = "http" | "inproc" | "uds";
 
@@ -55,6 +56,7 @@ const EVENTS = new Set<PmChannelStreamEventKind>([
   "status:working",
   "tool:call",
   "tool:result",
+  "tool:heartbeat",
   "tool:start",
   "token",
   "partial",
@@ -218,6 +220,7 @@ async function countTaskExecutionToolCycle(
   target: Extract<PmChannelReplyTarget, { kind: "task-chat" | "task-comment" }>,
   toolCallId?: string,
   toolName?: string,
+  effectiveContextLimit?: number,
 ) {
   try {
     const selectedRun = await db.pmChannelRun.findUnique({
@@ -252,11 +255,11 @@ async function countTaskExecutionToolCycle(
       taskId: target.taskId,
       agentSlug: target.agentSlug,
       messageId: target.messageId,
-      toolCycleBudget: episodeToolCycleBudgetForModel(selectedRun?.provider, selectedRun?.model),
+      toolCycleBudget: episodeToolCycleBudgetForModel(selectedRun?.provider, selectedRun?.model, effectiveContextLimit),
     });
     if (!outcome) return;
 
-    const warningAt = Math.max(8, Math.floor(outcome.episode.toolCycleBudget * 2 / 3));
+    const warningAt = episodeCheckpointRequestAt(outcome.episode.toolCycleBudget);
     if (!outcome.rolledOver && outcome.episode.toolCycleCount === warningAt) {
       const steer = selectedRun?.gatewayPort && selectedRun.sessionKey
         ? await steerGatewaySession({
@@ -266,7 +269,7 @@ async function countTaskExecutionToolCycle(
             text: [
               `PM execution episode ${outcome.episode.episodeNo} is at ${outcome.episode.toolCycleCount}/${outcome.episode.toolCycleBudget} tool calls.`,
               "Before any more broad investigation, immediately save a checkpoint using pm_checkpoint when available, otherwise the authenticated workflow endpoint supplied for this turn.",
-              "Record concrete completedWork, evidence, openChecklist, one exact nextAction, and risks. Then continue only from that nextAction.",
+              "Record completedWork, evidence, openChecklist, one exact nextAction, risks and durable verification job IDs. When PM acknowledges the checkpoint with turnComplete:true, stop; the next episode resumes from it. The remaining calls are a hard grace limit.",
               "Do not fetch full task history or repeat repository/browser discovery unless the checkpoint identifies a specific missing fact.",
             ].join(" "),
           })
@@ -313,7 +316,7 @@ async function countTaskExecutionToolCycle(
     const now = new Date();
     await db.$transaction([
       db.pmChannelRun.updateMany({
-        where: { id: run.id, status: { in: ["queued", "accepted", "streaming"] } },
+        where: { id: run.id, status: { in: ["queued", "claimed", "delivered", "waiting_capacity", "accepted", "admitted", "streaming"] } },
         data: {
           status: "completed",
           error: null,
@@ -323,6 +326,9 @@ async function countTaskExecutionToolCycle(
           finishedReason: "episode_tool_budget_exhausted",
           lastEventAt: now,
           disposition: "continue",
+          cancellationRequestedAt: now,
+          cancellationAcknowledgedAt: null,
+          cancellationError: null,
         },
       }),
       db.pmChannelJob.updateMany({
@@ -336,14 +342,7 @@ async function countTaskExecutionToolCycle(
       messageId: target.messageId,
     });
 
-    let abort: { ok: boolean; error?: string } = { ok: true };
-    if (run.gatewayPort && run.sessionKey) {
-      abort = await abortGatewaySession({
-        agentSlug: target.agentSlug,
-        gatewayPort: run.gatewayPort,
-        sessionKey: run.sessionKey,
-      });
-    }
+    const abort = await fencePendingPmChannelCancellations({ runId: run.id });
     await db.activityLog.create({
       data: {
         projectId: run.projectId,
@@ -408,6 +407,16 @@ export async function applyPmChannelStreamCallback(args: {
 
   if (!(await isAuthorizedPmChannelCallbackTarget(target))) {
     return { status: 403, body: { error: "Stream target is not authorized" } };
+  }
+
+  // A known long-running tool keeps its execution lease without manufacturing
+  // progress rows, tool calls, or user-visible output. The plugin bounds these
+  // heartbeats and fences them to the exact active gateway generation.
+  if (event === "tool:heartbeat") {
+    await recordPmChannelRunEvent({ target, event });
+    const run = await db.pmChannelRun.findUnique({ where: { targetKey: pmChannelRunTargetKey(target) }, select: { id: true } });
+    if (run) await heartbeatExecutionLane({ runId: run.id });
+    return { status: 200, body: { ok: true, heartbeat: true } };
   }
 
   const text = stringField(args.payload.text, 40_000);
@@ -478,12 +487,12 @@ export async function applyPmChannelStreamCallback(args: {
     // pressure is high (usage approaching window limit), trigger episode
     // rollover with context_pressure_recovery as the primary signal.
     if (event === "context:usage" && usage && (target.kind === "task-chat" || target.kind === "task-comment")) {
-      const promptTokens = typeof usage.promptTokens === "number" ? usage.promptTokens : null;
-      const totalTokens = typeof usage.totalTokens === "number" ? usage.totalTokens : null;
-      const contextLimit = typeof usage.contextLimit === "number" ? usage.contextLimit : null;
-      // Context pressure is the primary rollover signal when token/window data is available.
-      // If prompt tokens exceed 80% of context limit, trigger rollover.
-      if (promptTokens && contextLimit && promptTokens > contextLimit * 0.8) {
+      const snapshot = taskContextSnapshot(usage);
+      const promptTokens = snapshot?.promptTokens;
+      const contextLimit = snapshot?.limit;
+      const configuredRatio = Number(process.env.PM_EPISODE_CONTEXT_ROLLOVER_RATIO ?? "0.7");
+      const ratio = Number.isFinite(configuredRatio) ? Math.min(0.95, Math.max(0.5, configuredRatio)) : 0.7;
+      if (promptTokens && contextLimit && promptTokens > contextLimit * ratio) {
         try {
           const selectedRun = await db.pmChannelRun.findUnique({
             where: { targetKey: pmChannelRunTargetKey(target) },
@@ -491,12 +500,18 @@ export async function applyPmChannelStreamCallback(args: {
           });
           if (selectedRun?.taskId) {
             await db.$transaction(async (tx) => {
-              const rollover = await rollOverTaskExecutionEpisodeForContextPressure(tx, {
+              const rollover = await requestTaskExecutionEpisodeContextRollover(tx, {
                 taskId: selectedRun.taskId!,
                 projectId: selectedRun.projectId,
                 agentSlug: selectedRun.agentSlug,
+                messageId: target.messageId,
               });
               if (rollover) {
+                await sealEpisodeRolloverBarrierInTransaction(tx, {
+                  taskId: selectedRun.taskId!, agentSlug: selectedRun.agentSlug,
+                  messageId: target.messageId, expectedEpisodeId: rollover.closed.id,
+                  runId: selectedRun.id, reason: EPISODE_SEAL_REASON.turnEnded,
+                });
                 console.warn(`[pm-channel] ENV-159 context pressure rollover triggered: ${promptTokens}/${contextLimit} tokens`);
               }
             });
@@ -723,7 +738,8 @@ export async function applyPmChannelStreamCallback(args: {
     // while legacy tool:call only fires for OpenAI — so tool:start is the
     // provider-neutral trigger that closes the Ollama zero-count gap.
     // ENV-159: Pass toolCallId and toolName for idempotent correlation.
-    await countTaskExecutionToolCycle(target, toolCallId || undefined, eventInput.toolName || undefined);
+    await countTaskExecutionToolCycle(target, toolCallId || undefined, eventInput.toolName || undefined,
+      typeof args.payload.contextLimit === "number" ? args.payload.contextLimit : undefined);
   }
   // ENV-159: Record tool:result completion to close the tool-call lifecycle.
   if (event === "tool:result" && toolCallId && (target.kind === "task-chat" || target.kind === "task-comment")) {

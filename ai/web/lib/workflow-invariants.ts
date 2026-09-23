@@ -113,6 +113,7 @@ export const WORKFLOW_ACTION_CLASS: Readonly<
   approve_plan: "episode-terminal",
   submit_plan: "episode-terminal",
   request_plan_changes: "episode-terminal",
+  request_plan_revision: "episode-terminal",
   accept_plan_review: "episode-terminal",
   delegate_plan_approval: "episode-terminal",
   assign_task: "episode-terminal",

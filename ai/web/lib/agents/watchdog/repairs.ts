@@ -22,6 +22,8 @@ import { intEnv } from "@/lib/agents/context/caps";
 import { armPmChannelContinuations } from "@/lib/agents/pm-channel/continuations";
 import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
 import type { WatchdogFinding } from "@/lib/agents/watchdog/detectors";
+import { readRecoveryBlocker, recoveryPermissionWaitReason } from "@/lib/tasks/recovery-permission";
+import { ACTIVE_RUN_STATUSES } from "@/lib/workflow-invariants";
 
 /** The continuation action name a watchdog recovery schedules its turn under. */
 export const WATCHDOG_CONTINUATION_ACTION = "watchdog_recovery";
@@ -253,6 +255,11 @@ export async function queueRecoveryContinuation(args: {
   agentSlug: string;
   now: Date;
 }): Promise<RepairResult> {
+  const wait = await recoveryPermissionWaitReason(args.taskId, await readRecoveryBlocker(args.taskId));
+  if (wait) return { outcome: "noop", recoveryAction: null, detail: wait };
+  const live = await db.pmChannelRun.findFirst({ where: { taskId: args.taskId, agentSlug: args.agentSlug,
+    status: { in: [...ACTIVE_RUN_STATUSES] } }, select: { id: true } });
+  if (live) return { outcome: "noop", recoveryAction: null, detail: "an execution turn already owns this task" };
   const run = await db.pmChannelRun.findFirst({
     where: { taskId: args.taskId, agentSlug: args.agentSlug },
     orderBy: { createdAt: "desc" },
@@ -276,7 +283,7 @@ export async function queueRecoveryContinuation(args: {
     },
     select: { status: true },
   });
-  if (existing && existing.status !== "superseded" && existing.status !== "failed") {
+  if (existing) {
     // armed / queued / dispatching / dispatched all mean this recovery already
     // owns the next turn for this run.
     return { outcome: "noop", recoveryAction: "new run queued" };
@@ -319,25 +326,11 @@ export async function wakeAssigneeAfterGrant(args: {
   }
   const slug = task.assignee?.agent?.slug;
   if (!slug) return { outcome: "noop", recoveryAction: null };
-
-  const notification = await sendTaskWorkflowNotification({
-    taskId: task.id,
-    targetUserId: task.assigneeId,
-    actor: { id: task.assigneeId, kind: "agent", username: slug },
-    reason: "blocker_response",
-    body: [
-      `The permission your blocker on "${task.title}" was waiting for has already been granted, and no external dependency is outstanding.`,
-      "Resume implementation from where the blocker interrupted it. Use the granted authorization if the round is agent-actionable, and do not re-raise the same blocker.",
-    ].join("\n"),
-  });
-  if (!notification) {
-    return {
-      outcome: "failed",
-      recoveryAction: null,
-      detail: "could not enqueue a wake turn for the assignee",
-    };
+  const blocker = await readRecoveryBlocker(task.id);
+  if (!blocker?.permissionGrant || await recoveryPermissionWaitReason(task.id, blocker)) {
+    return { outcome: "noop", recoveryAction: null, detail: "no current actionable permission grant" };
   }
-  return { outcome: "repaired", recoveryAction: "assignee woken" };
+  return queueRecoveryContinuation({ taskId: task.id, agentSlug: slug, now: args.now });
 }
 
 // ------------------------------------------------------------------

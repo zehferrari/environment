@@ -8,14 +8,14 @@
 
 import { db } from "@/lib/db";
 import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
-import { CONTEXT_PRESSURE_RECOVERY_ACTION } from "@/lib/agents/pm-channel/continuations";
+import { AUTO_CONTINUATION_ACTION, CONTEXT_PRESSURE_RECOVERY_ACTION } from "@/lib/agents/pm-channel/continuations";
 import {
   activeFormalBlockerStatesByTask,
-  formalBlockerNeedsExternalInput,
 } from "@/lib/tasks/formal-blocker";
 import { WATCHDOG_CONTINUATION_ACTION } from "@/lib/agents/watchdog/repairs";
 import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { ACTIVE_RUN_STATUSES } from "@/lib/workflow-invariants";
+import { recoveryPermissionWaitReason } from "@/lib/tasks/recovery-permission";
 
 const MAX_CONTINUATION_ATTEMPTS = 3;
 const DRAIN_BATCH = 10;
@@ -125,8 +125,9 @@ async function dispatchContinuation(row: ContinuationRow): Promise<"dispatched" 
     select: { taskId: true, kind: true, payload: true, createdAt: true },
   });
   const activeBlocker = activeFormalBlockerStatesByTask(lifecycleRows).get(task.id) ?? null;
-  if (implementationEpisode && activeBlocker && formalBlockerNeedsExternalInput(activeBlocker)) {
-    await settle(row.id, "superseded", { lastError: "a formal blocker is waiting on external input" });
+  const permissionWait = implementationEpisode ? await recoveryPermissionWaitReason(task.id, activeBlocker) : null;
+  if (permissionWait) {
+    await settle(row.id, "superseded", { lastError: permissionWait });
     return "superseded";
   }
 
@@ -189,6 +190,20 @@ async function dispatchContinuation(row: ContinuationRow): Promise<"dispatched" 
           "Everything the previous episode recorded is in the EXECUTION EPISODE BRIEF above: completed work, evidence, the open checklist, the next exact action and current risks. Start from the next exact action — do not re-derive work the brief already reports as done.",
           "Full task history stays retrievable through the scoped grant URLs; a small brief is not missing context. Continue the implementation and finish through ready_for_review, or record one precise external dependency with flag_blocker.",
         ].join("\n")
+      : /^(?:checkpoint_published|checkpoint_failed)(?::|$)/.test(row.action)
+      ? [
+          `PM recorded ${row.action.startsWith("checkpoint_published") ? "successful checkpoint publication" : "a checkpoint failure"} for "${task.title}" while your execution turn was in flight.`,
+          "Read the latest durable checkpoint outcome comment for its exact SHA, authorization and evidence. Continue from your checkpoint; do not repeat the completed publication or request permission already covered by a valid grant.",
+          "Verify the actual served revision before remote tests. Finish remaining work through ready_for_review, or record one precise external dependency if a supported recovery cannot proceed.",
+        ].join("\n")
+      : row.action === AUTO_CONTINUATION_ACTION
+      ? [
+          `Your preceding execution turn for "${task.title}" ended with a progress response, but implementation is still active.`,
+          activeBlocker?.permissionGrant?.authorizationCommentId
+            ? `Permission is already granted by comment ${activeBlocker.permissionGrant.authorizationCommentId}; use the exact current grant without requesting it again.`
+            : "No formal blocker is waiting on external input.",
+          "Continue from your checkpoint until ready_for_review succeeds or flag_blocker records one precise external dependency.",
+        ].join("\n")
       : [
           `Your execution turn for "${task.title}" recorded the workflow action \`${row.action}\`, which continues the episode rather than ending it, and then the turn ended without an episode-terminal action.`,
           "The task is still In Progress and PM has scheduled this fresh execution turn for you. Nothing about the previous turn was lost: check the task's current status, checklist, and comments before repeating any step.",
@@ -196,10 +211,20 @@ async function dispatchContinuation(row: ContinuationRow): Promise<"dispatched" 
         ].join("\n"),
   });
 
-  if (!continuation) {
+  if (!continuation || !continuation.delivery.ok) {
+    if (continuation?.delivery.error?.startsWith("channel down:")) {
+      // Circuit suppression made no delivery attempt. Preserve the durable
+      // obligation through the ten-minute probe window instead of spending
+      // all three retries before a gateway probe is allowed.
+      await db.pmChannelContinuation.update({ where: { id: row.id }, data: {
+        status: "queued", attempts: { decrement: 1 }, availableAt: new Date(Date.now() + 10 * 60_000),
+        lastError: continuation.delivery.error,
+      } });
+      return "failed";
+    }
     const attempts = row.attempts;
     if (attempts >= MAX_CONTINUATION_ATTEMPTS) {
-      await settle(row.id, "failed", { lastError: "could not enqueue a continuation turn" });
+      await settle(row.id, "failed", { lastError: continuation?.delivery.error ?? "could not enqueue a continuation turn" });
       return "failed";
     }
     await db.pmChannelContinuation.update({
@@ -207,7 +232,7 @@ async function dispatchContinuation(row: ContinuationRow): Promise<"dispatched" 
       data: {
         status: "queued",
         availableAt: new Date(Date.now() + 60_000 * attempts),
-        lastError: "could not enqueue a continuation turn",
+        lastError: continuation?.delivery.error ?? "could not enqueue a continuation turn",
       },
     });
     return "failed";

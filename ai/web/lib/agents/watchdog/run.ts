@@ -13,6 +13,7 @@
 import { db } from "@/lib/db";
 import { canApproveActionPlanForActor } from "@/lib/tasks/workflow-actors";
 import { recoverGitIdentityBlockers } from "@/lib/tasks/git-identity-recovery";
+import { recoveryPermissionWaitReason } from "@/lib/tasks/recovery-permission";
 import {
   activeFormalBlockerStatesByTask,
   formalBlockerNeedsExternalInput,
@@ -182,6 +183,9 @@ export async function loadWatchdogSnapshot(
   ]);
 
   const blockerStates = activeFormalBlockerStatesByTask(activityRows);
+  const recoveryWaits = new Map(await Promise.all([...blockerStates].map(async ([taskId, blocker]) =>
+    [taskId, await recoveryPermissionWaitReason(taskId, blocker)] as const,
+  )));
 
   // A completed flag→clear cycle is one `task.blocker.cleared` row. Counting
   // clears rather than raises is what makes this a LOOP detector: a blocker
@@ -226,8 +230,9 @@ export async function loadWatchdogSnapshot(
       openChecklistCount: task.checklist.length,
       activeBlocker: blocker
         ? {
-            needsExternalInput: formalBlockerNeedsExternalInput(blocker),
-            permissionGranted: Boolean(blocker.permissionGrant),
+            needsExternalInput: Boolean(recoveryWaits.get(task.id)) || formalBlockerNeedsExternalInput(blocker),
+            permissionGranted: Boolean(blocker.permissionGrant) && !recoveryWaits.get(task.id),
+            recoveryWaitReason: recoveryWaits.get(task.id) ?? null,
             raisedAt: blocker.raisedAt ? new Date(blocker.raisedAt).getTime() : null,
           }
         : null,

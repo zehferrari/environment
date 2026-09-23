@@ -9,6 +9,7 @@ import {
 import { effectiveEpicBranchName, effectiveTaskBranchName } from "@/lib/work-items/branches";
 import { effectiveCommitPrefix, effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
 import { subjectHasCommitPrefix } from "@/lib/work-items/commit-prefix";
+import { withDevPublication, assertDevPublicationCandidate } from "@/lib/deploy/dev-publication";
 
 const execFileAsync = promisify(execFile);
 const LOG_EXCERPT_MAX = 4000;
@@ -375,6 +376,8 @@ export async function inspectDeploymentWorktree(args: {
 }
 
 export async function verifyDeploymentBranch(args: {
+  projectId?: string;
+  taskId?: string | null;
   repositoryPath: string;
   branchName: string;
   commitPrefix: string | null;
@@ -419,7 +422,16 @@ export async function verifyDeploymentBranch(args: {
   }
   let pushed = false;
   if (remoteSha !== localSha) {
-    await git(args.repositoryPath, ["push", "origin", `${args.branchName}:${args.branchName}`]);
+    const publish = async () => {
+      if (args.projectId) await assertDevPublicationCandidate({ projectId: args.projectId, repositoryPath: args.repositoryPath, branch: args.branchName, sha: localSha });
+      await git(args.repositoryPath, ["push", "origin", `${args.branchName}:${args.branchName}`]);
+      const confirmed = await git(args.repositoryPath, ["ls-remote", "--heads", "origin", args.branchName]);
+      if (confirmed.split(/\s+/)[0] !== localSha) throw new Error("Origin did not confirm the approved deployment SHA.");
+      return { sha: localSha };
+    };
+    if (args.projectId) await withDevPublication({ projectId: args.projectId, taskId: args.taskId ?? undefined,
+      branch: args.branchName, attemptId: `deployment:${args.branchName}:${localSha}`, publish, publishedSha: result => result.sha });
+    else await publish(); // Pure Git helper callers have no PM project.
     pushed = true;
   }
   return { branchName: args.branchName, localSha, remoteSha: remoteSha ?? localSha, pushed, matchingCommitCount };
@@ -605,6 +617,8 @@ export async function handleDeploymentApproved(args: {
   const prs: OpenedDeploymentPr[] = [];
   for (const target of plan.targets) {
     const verification = await verifyDeploymentBranch({
+      projectId: plan.project.projectId,
+      taskId: target.taskId,
       repositoryPath: plan.project.repositoryPath,
       branchName: target.branchName,
       commitPrefix: target.commitPrefix,
@@ -708,6 +722,8 @@ export async function approveLocalChangesAndOpenDeploymentPr(args: {
 
   if (!args.createPr) bitbucketAuth();
   const verification = await verifyDeploymentBranch({
+    projectId: plan.project.projectId,
+    taskId: target.taskId,
     repositoryPath: plan.project.repositoryPath,
     branchName: target.branchName,
     commitPrefix: target.commitPrefix,

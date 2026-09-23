@@ -374,11 +374,28 @@ export async function recordPmChannelRunQueued(args: {
   projectId?: string | null;
   gatewayPort?: number | null;
   sessionKey?: string | null;
+  /** Owner instructions wait for the current turn instead of cancelling it. */
+  preserveActiveRuns?: boolean;
 }) {
   const now = new Date();
   const ids = targetIds(args.target);
   const targetKey = pmChannelRunTargetKey(args.target);
   try {
+    if (args.preserveActiveRuns && ids.taskId) {
+      // waiting_capacity is deliberately outside the legacy active-run unique
+      // index. The execution lane admits this durable instruction only after
+      // its predecessor finishes, including when both arrive concurrently.
+      return await db.pmChannelRun.upsert({
+        where: { targetKey },
+        create: { targetKey, kind: args.kind, agentSlug: args.target.agentSlug,
+          messageId: args.target.messageId, projectId: args.projectId ?? null,
+          taskId: ids.taskId, epicId: ids.epicId, sessionKey: args.sessionKey ?? null,
+          gatewayPort: args.gatewayPort ?? null, status: "waiting_capacity",
+          blockedReason: "owner_instruction_queued", capacityBlockedAt: now, lastEventAt: now },
+        update: {},
+        select: { id: true, targetKey: true, status: true, streamSeq: true },
+      });
+    }
     // Transactionally supersede ALL existing non-terminal runs for the same
     // (taskId, agentSlug) and create/refresh the new run in one atomic operation.
     // This prevents races where a crash between the supersede and the upsert
@@ -685,6 +702,7 @@ export async function heartbeatAgentExecutionLane(args: {
 export async function recordPmChannelRunDispatch(args: {
   target: PmChannelReplyTarget;
   result: SendPmChannelTurnResult;
+  fetchImpl?: typeof fetch;
 }) {
   const now = new Date();
   const ok = args.result.ok;
@@ -732,6 +750,28 @@ export async function recordPmChannelRunDispatch(args: {
       }),
     "dispatch run state",
   );
+  if (ok) {
+    const retired = await db.$transaction(async tx => {
+      const run = await tx.pmChannelRun.findUnique({ where: { targetKey: pmChannelRunTargetKey(args.target) },
+        select: { id: true, status: true, cancellationRequestedAt: true } });
+      if (!run || (!run.cancellationRequestedAt && !["superseded", "cancelled", "timed_out"].includes(run.status))) return null;
+      // The HTTP handoff may finish after revision/cancellation retired this
+      // row. Preserve its exact gateway identity without reviving the run,
+      // and invalidate an earlier "not_active" acknowledgement from that gap.
+      await tx.pmChannelRun.update({ where: { id: run.id }, data: {
+        httpStatus: args.result.status ?? null,
+        ...(args.result.gatewayDispatchId ? { gatewayDispatchId: args.result.gatewayDispatchId } : {}),
+        cancellationRequestedAt: run.cancellationRequestedAt ?? now,
+        cancellationAcknowledgedAt: null,
+        cancellationError: null,
+      } });
+      return run.id;
+    });
+    if (retired) {
+      const { fencePendingPmChannelCancellations } = await import("./supersession");
+      await fencePendingPmChannelCancellations({ runId: retired, fetchImpl: args.fetchImpl });
+    }
+  }
 }
 
 /**
@@ -1162,6 +1202,8 @@ export async function applyAuthenticatedPmChannelWorkflowAction(
       nextEpisodeNo: sealed.nextEpisodeNo,
     });
     result.successorScheduled = sealed.successorScheduled;
+    result.turnComplete = true;
+    result.nextAction = "await_episode_continuation";
     return applyWorkflowActionToRuns(tx, actionArgs, [resolved.run], result, {
       continuationMode: "already_scheduled",
     });
@@ -1179,6 +1221,24 @@ export async function applyAuthenticatedPmChannelWorkflowAction(
     },
     effect,
   );
+  if (context.publicAction === "checkpoint" && result.episode?.rolledOver && context.expectedEpisodeId) {
+    const sealed = await sealEpisodeRolloverBarrierInTransaction(tx, {
+      taskId: args.taskId, agentSlug: context.agentSlug, messageId: context.sourceMessageId,
+      expectedEpisodeId: context.expectedEpisodeId, runId: resolved.run.id,
+      checkpoint: args.checkpoint, reason: EPISODE_SEAL_REASON.agentCheckpoint,
+    });
+    if (!sealed) throw new PmChannelExecutionContextError("already_consumed", "checkpoint rollover was already sealed");
+    result.successorScheduled = sealed.successorScheduled;
+    result.turnComplete = true;
+    result.nextAction = "await_episode_continuation";
+    await tx.activityLog.create({ data: {
+      taskId: args.taskId, projectId: resolved.run.projectId, targetAgent: context.agentSlug,
+      kind: "task.execution.episode.checkpoint_acknowledged",
+      dedupeKey: `episode-checkpoint-ack:${sealed.episode.id}`,
+      payload: JSON.stringify({ runId: resolved.run.id, episodeNo: sealed.episode.episodeNo, nextEpisodeNo: sealed.nextEpisodeNo, successorScheduled: sealed.successorScheduled }),
+    } });
+    return applyWorkflowActionToRuns(tx, actionArgs, [resolved.run], result, { continuationMode: "already_scheduled" });
+  }
   return applyWorkflowActionToRuns(tx, actionArgs, [resolved.run], result, {
     continuationMode: result.episode?.rolledOver ? "rollover_barrier" : "arm",
   });
@@ -1298,8 +1358,18 @@ export async function recordPmChannelRunEvent(args: {
           existing?.status === "failed" ||
           existing?.status === "timed_out"
         ) return;
+        if (existing?.status === "completed") {
+          // Canonical terminal and legacy done are routinely both delivered.
+          // Preserve the original completion time, reason and disposition.
+          const anomalyError = args.error ? clippedError(args.error) : null;
+          if (anomalyError) {
+            await db.pmChannelRun.update({ where: { targetKey }, data: { completionAnomaly: anomalyError, completionAnomalyAt: now } });
+            await recordCompletionAnomaly({ target: args.target, targetKey, event: "done", error: anomalyError, settledStatus: existing.status, hadDurableReply: await pmChannelTargetHasDurableReply(args.target) });
+          }
+          return;
+        }
         const hadDurableReply = await pmChannelTargetHasDurableReply(args.target);
-        if (existing?.status === "completed" || hadDurableReply) {
+        if (hadDurableReply) {
           // Legitimate settle. A plain done stays anomaly-free; a done that
           // still CARRIES an error (the stream-callback durable-reply
           // conversion passes it through) records the masked failure as a
@@ -1421,8 +1491,14 @@ export async function recordPmChannelRunEvent(args: {
           existing?.status === "failed" ||
           existing?.status === "timed_out"
         ) return;
+        if (existing?.status === "completed") {
+          const anomalyError = clippedError(args.error) ?? "late stream error on settled run";
+          await db.pmChannelRun.update({ where: { targetKey }, data: { completionAnomaly: anomalyError, completionAnomalyAt: now } });
+          await recordCompletionAnomaly({ target: args.target, targetKey, event: "error", error: anomalyError, settledStatus: existing.status, hadDurableReply: await pmChannelTargetHasDurableReply(args.target) });
+          return;
+        }
         const hadDurableReply = await pmChannelTargetHasDurableReply(args.target);
-        if (existing?.status === "completed" || hadDurableReply) {
+        if (hadDurableReply) {
           // The run already settled (workflow action or durable reply). Keep
           // the settle, but persist the late error as a completion anomaly
           // instead of discarding it (PH-124).

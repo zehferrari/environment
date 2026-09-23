@@ -1,5 +1,6 @@
 import { db } from "@/lib/db";
-import { fenceSupersededPmChannelRuns } from "@/lib/agents/pm-channel/supersession";
+import type { Prisma } from "@prisma/client";
+import { fencePendingPmChannelCancellations } from "@/lib/agents/pm-channel/supersession";
 import { writeTaskExecutionState } from "@/lib/agents/watchdog/state";
 import { detectPhaseEInvariants, type PhaseEInvariantFinding } from "@/lib/tasks/orchestrator/phase-e-invariants";
 
@@ -149,23 +150,33 @@ export async function runWorkflowReconciliation(options: {
   let repaired = 0;
   let escalated = 0;
 
-  const tasks = await db.task.findMany({
-    where: {
+  const cursorKey = `workflow-reconciliation-cursor:${options.projectId ?? "all"}`;
+  const savedCursor = dryRun ? null : await db.activityLog.findUnique({ where: { dedupeKey: cursorKey }, select: { payload: true } });
+  let cursor: { updatedAt: Date; id: string } | null = null;
+  try {
+    const value = JSON.parse(savedCursor?.payload ?? "null");
+    if (typeof value?.id === "string" && Number.isFinite(Date.parse(value.updatedAt))) cursor = { id: value.id, updatedAt: new Date(value.updatedAt) };
+  } catch { /* An invalid cursor restarts the oldest-first scan. */ }
+  const candidates: Prisma.TaskWhereInput = {
       deletedAt: null,
+      ...(!dryRun ? { workflowEngine: "orchestrator_v2" } : {}),
       ...(options.projectId ? { projectId: options.projectId } : {}),
       OR: [
-        { status: { in: ["Review", "Done"] } },
-        { status: { in: ["In Progress", "To Do"] } },
+        { status: { in: ["Review", "In Progress", "To Do", ...(dryRun ? ["Done"] : [])] } },
         { repositoryRun: { is: { phase: { in: ["validating", "review_ready", "finalizing"] } } } },
         { workflowOutbox: { some: { status: { in: ["queued", "dispatching", "failed"] } } } },
         { activeWorkflowCycleId: { not: null } },
         { workflowCycles: { some: { status: "open" } } },
         { procedureRuns: { some: { status: { in: ["queued", "running", "operational_error"] } } } },
       ],
-    },
+  };
+  const selection = {
+    where: candidates,
+    orderBy: [{ updatedAt: "asc" as const }, { id: "asc" as const }],
     take: limit,
     select: {
       id: true,
+      updatedAt: true,
       projectId: true,
       epicId: true,
       status: true,
@@ -187,7 +198,7 @@ export async function runWorkflowReconciliation(options: {
       reviewRuns: {
         // Done-state reconciliation needs the immutable completed lease too;
         // filtering it out made every correctly finalized task look incomplete.
-        where: { status: { in: ["validating", "awaiting_review", "accepted", "completed"] } },
+        where: { status: { in: ["validating", "awaiting_review", "accepted", "accepted_pending_owner", "completed"] } },
         orderBy: { createdAt: "desc" },
         select: {
           id: true,
@@ -248,7 +259,9 @@ export async function runWorkflowReconciliation(options: {
         },
       },
     },
-  });
+  } satisfies Prisma.TaskFindManyArgs;
+  let tasks = await db.task.findMany({ ...selection, where: cursor ? { AND: [candidates, { OR: [{ updatedAt: { gt: cursor.updatedAt } }, { updatedAt: cursor.updatedAt, id: { gt: cursor.id } }] }] } : candidates });
+  if (!tasks.length && cursor) tasks = await db.task.findMany(selection);
 
   const findingKeys = new Set<string>();
   const add = (finding: WorkflowReconciliationFinding) => {
@@ -351,7 +364,7 @@ export async function runWorkflowReconciliation(options: {
     }
 
     if (task.status === "Review" && repository?.phase === "review_ready") {
-      const awaiting = task.reviewRuns.some((run) => run.status === "awaiting_review");
+      const awaiting = task.reviewRuns.some((run) => ["awaiting_review", "accepted", "accepted_pending_owner"].includes(run.status));
       if (!awaiting) {
         add({
           kind: "review_lease_missing",
@@ -453,7 +466,7 @@ export async function runWorkflowReconciliation(options: {
 
     // Review with no immutable review lease.
     if (task.status === "Review" && repository?.phase === "review_ready") {
-      const awaiting = task.reviewRuns.some((run) => run.status === "awaiting_review" || run.status === "accepted");
+      const awaiting = task.reviewRuns.some((run) => ["awaiting_review", "accepted", "accepted_pending_owner"].includes(run.status));
       if (!awaiting) {
         add({
           kind: "review_no_lease",
@@ -596,11 +609,11 @@ export async function runWorkflowReconciliation(options: {
     where: {
       cancellationRequestedAt: { lte: staleBefore },
       cancellationAcknowledgedAt: null,
-      supersededByRunId: { not: null },
       ...(options.projectId ? { projectId: options.projectId } : {}),
     },
+    orderBy: [{ cancellationRequestedAt: "asc" }, { id: "asc" }],
     take: Math.min(limit, 20),
-    select: { id: true, taskId: true, projectId: true, supersededByRunId: true, cancellationError: true },
+    select: { id: true, taskId: true, projectId: true, supersededByRunId: true, cancellationError: true, agentSlug: true, gatewayPort: true, sessionKey: true, gatewayDispatchId: true, acceptedAt: true, admittedAt: true, streamingAt: true },
   });
   for (const row of cancellationRows) {
     add({
@@ -678,8 +691,8 @@ export async function runWorkflowReconciliation(options: {
           finding.repaired = true;
         } else if (finding.repair === "retry_cancellation") {
           const row = cancellationRows.find((candidate) => candidate.id === finding.rowId);
-          if (!row?.supersededByRunId) continue;
-          const result = await fenceSupersededPmChannelRuns({ replacementRunId: row.supersededByRunId });
+          if (!row) continue;
+          const result = await fencePendingPmChannelCancellations({ runId: row.id });
           finding.repaired = result.ok;
           if (!result.ok) finding.error = result.error;
         } else if (finding.taskId) {
@@ -707,6 +720,14 @@ export async function runWorkflowReconciliation(options: {
         errors.push(`${finding.kind}/${finding.rowId}: ${finding.error}`);
       }
     }
+  }
+
+  if (!dryRun && tasks.length) {
+    const last = tasks.at(-1)!;
+    const payload = JSON.stringify({ id: last.id, updatedAt: last.updatedAt.toISOString() });
+    await db.activityLog.upsert({ where: { dedupeKey: cursorKey },
+      create: { dedupeKey: cursorKey, kind: "task.workflow.reconciliation_cursor", projectId: options.projectId, payload }, update: { payload },
+    });
   }
 
   return {

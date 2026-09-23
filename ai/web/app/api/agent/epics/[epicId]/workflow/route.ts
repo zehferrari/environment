@@ -1,6 +1,7 @@
 import { revalidatePath } from "next/cache";
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
+import { openEpicReleaseChecks, assertEpicReleaseChecksComplete } from "@/lib/tasks/acceptance";
 import {
   applyPmChannelRunWorkflowAction,
   recordPmChannelRunWorkflowAction,
@@ -353,11 +354,17 @@ export async function POST(
     }
 
     if (action === "completion_review_approve") {
+      const pendingAcceptance = await openEpicReleaseChecks(db, epic.id);
+      if (pendingAcceptance.length) return NextResponse.json({
+        error: "Owner acceptance is still required before Epic release. Record evidence on the listed Task checks.",
+        pendingAcceptance,
+      }, { status: 409 });
       if (!completionReviewReportCanApprove(report)) {
         return NextResponse.json({ error: "Approval requires every requirement and combined validation check to be Pass; use completion_review_reject" }, { status: 400 });
       }
       const reportBody = renderCompletionReviewReport(report, "APPROVED");
       const effectCount = await db.$transaction(async (tx) => {
+        await assertEpicReleaseChecksComplete(tx, epic.id);
         await tx.epic.update({
           where: { id: epic.id },
           data: { completionReviewStatus: "Approval Pending", completionReviewLastError: null },

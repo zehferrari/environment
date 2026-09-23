@@ -35,7 +35,9 @@ async function assertSourceContracts() {
   }
 
   const taskDetail = await readFile("app/(app)/projects/[slug]/tasks/[taskId]/page.tsx", "utf8");
-  assert.match(taskDetail, /submitBrowserStatusOverride/);
+  assert.match(taskDetail, /submitBrowserPlanRevision/);
+  const taskEditor = await readFile("lib/tasks/editor-actions.ts", "utf8");
+  assert.match(taskEditor, /submitBrowserStatusOverride/);
   assert.match(taskDetail, /submitBrowserPlanApproval/);
   assert.match(taskDetail, /TaskHeaderWorkflowActions/);
   assert.doesNotMatch(taskDetail, /moveTaskStatus|applyTaskTransition\(|recordLegacyWorkflowBoundaryInvocation/);
@@ -86,7 +88,7 @@ async function main() {
       data: { username: "agent", email: "agent@example.test", kind: "agent", agentId: agentProfile.id },
     });
     const project = await db.project.create({
-      data: { slug: "phasee-09-browser", name: "Phase E browser adapters" },
+      data: { slug: "phasee-09-browser", name: "Phase E browser adapters", defaultGitUserName: "Test Owner", defaultGitUserEmail: "owner@example.test" },
     });
     const actor = {
       id: human.id,
@@ -175,6 +177,8 @@ async function main() {
         slug: "phasee-09-browser-repository",
         name: "Phase E browser repository workflow",
         repositoryPath: "/srv/Code/test-repository",
+        defaultGitUserName: "Test Owner",
+        defaultGitUserEmail: "owner@example.test",
       },
     });
     const repositoryStartTask = await db.task.create({

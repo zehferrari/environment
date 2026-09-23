@@ -275,7 +275,7 @@ export function guardReviewLease(
     };
   }
   const allowedStatuses = intent === "request_review_changes" || canRetryAcceptedRepositoryReview(state)
-    ? ["awaiting_review", "accepted"]
+    ? ["awaiting_review", "accepted", ...(intent === "request_review_changes" ? ["accepted_pending_owner"] : [])]
     : ["awaiting_review"];
   if (!allowedStatuses.includes(lease.status)) {
     return {
@@ -313,7 +313,7 @@ export function guardSubmitForReviewChecklist(
 export function guardAcceptReviewChecklist(state: TaskStateSnapshot): GuardResult {
   const remaining = (state.openReviewChecklist?.count ?? 0) + (state.openChecklist?.count ?? 0);
   return remaining > 0
-    ? { ok: false, status: "invalid", reason: `[checklist_incomplete] Final acceptance requires the review checklist to be complete. ${remaining} review item(s) remaining; assess the evidence while keeping deferred checks open.` }
+    ? { ok: false, status: "invalid", reason: `[checklist_incomplete] Acceptance requires all implementation and reviewer checks to be complete. ${remaining} item(s) remaining. Owner checks may remain pending under a recorded conditional verdict.` }
     : { ok: true };
 }
 
@@ -431,6 +431,13 @@ export function guardCallbackCorrelation(
     state.activeReviewRun
   ) {
     const lease = state.activeReviewRun;
+    if (intent === "repository_finalization_succeeded" && ((state.openChecklist?.count ?? 0) + (state.openReviewChecklist?.count ?? 0) + (state.openOwnerAcceptance?.count ?? 0) > 0)) {
+      return { ok: false, status: "invalid", reason: "[checklist_incomplete] Finalization requires all task acceptance checks complete." };
+    }
+    if (intent === "repository_finalization_succeeded" && lease.acceptanceChecklistHash &&
+        (lease.acceptanceChecklistHash !== state.acceptanceChecklistHash || lease.acceptancePlanVersion !== (state.actionPlan?.version ?? 0))) {
+      return { ok: false, status: "stale", reason: "[acceptance_changed] The approved plan or acceptance criteria changed after the reviewer verdict." };
+    }
     if (lease.status !== "accepted") {
       return {
         ok: false,
@@ -531,6 +538,16 @@ export function runGuards(
       }
       return { ok: true };
 
+    case "request_plan_revision": {
+      const payload = command.payload;
+      if (!state.actionPlan || !state.approvedOn || state.actionPlan.id !== payload?.actionPlanId || state.actionPlan.version !== payload?.actionPlanVersion) {
+        return { ok: false, status: "stale", reason: "[action_plan_version_conflict] Read the current approved plan before reopening it." };
+      }
+      if ((state.outstandingJobs?.length ?? 0) > 0 || state.activeProcedureRuns?.some((run) => run.status === "running")) {
+        return { ok: false, status: "invalid", reason: "[repository_operation_active] A repository operation is in flight. Reopen the plan after its durable result is recorded." };
+      }
+      return guardStatus(state, command.intent, ["To Do", "In Progress", "Review"]);
+    }
     case "submit_plan":
       // §10.1: status Backlog/To Do, no existing approved plan
       return runGuardsChain([

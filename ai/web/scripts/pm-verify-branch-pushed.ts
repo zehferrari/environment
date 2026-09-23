@@ -66,6 +66,7 @@ import {
   semanticCommitDescriptionWarning,
 } from "@/lib/tasks/repository-validation";
 import { synchronizeEpicChild, renderEpicSyncHandoff } from "@/lib/deploy/epic-child-sync";
+import { withDevPublication, assertDevPublicationCandidate, DevPublicationError } from "@/lib/deploy/dev-publication";
 
 const exec = promisify(execFile);
 const SWITCH_SCRIPT = process.env.PM_SWITCH_SCRIPT ?? "/usr/local/sbin/pm-switch";
@@ -99,6 +100,7 @@ type LocalState = {
   remoteSha: string | null;
   pushed: boolean;
   pushError: string | null;
+  pushDeferred?: boolean;
 };
 type RebuildResult =
   | { attempted: false; reason: string }
@@ -470,19 +472,28 @@ async function publishLocalState(job: BranchVerifyJob, inspected: LocalState): P
   if (
     !state.dirtyStatus &&
     !state.dirtyError &&
-    state.localSha &&
-    state.localSha !== state.remoteSha
+    state.localSha
   ) {
     try {
       // The host pre-push hook blocks PM-managed task refs for interactive
       // agents. This runner is the trusted publication boundary after PM has
       // created and validated the submission commit.
-      await git(commandPath, ["push", "--no-verify", "origin", `${job.branchName}:${job.branchName}`], { timeout: 90_000, maxBuffer: 1024 * 1024 });
-      state.pushed = true;
+      await withDevPublication({
+        projectId: job.projectId, taskId: job.taskId, branch: job.branchName, attemptId: `review:${job.jobId}`,
+        publish: async () => {
+          await assertDevPublicationCandidate({ projectId: job.projectId, repositoryPath: commandPath, branch: job.branchName, sha: state.localSha! });
+          if (state.localSha !== state.remoteSha) await git(commandPath, ["push", "--no-verify", "origin", `${job.branchName}:${job.branchName}`], { timeout: 90_000, maxBuffer: 1024 * 1024 });
+          const remote = await inspectOriginBranch(commandPath, job.branchName);
+          if (!remote.ok || remote.sha !== state.localSha) throw new Error("Origin did not confirm the exact review submission SHA.");
+          return { sha: state.localSha };
+        }, publishedSha: result => result.sha,
+      });
+      state.pushed = state.localSha !== state.remoteSha;
       await fetchVerificationBranch(commandPath, job.branchName, job.baseBranch);
       state.remoteSha = await gitOrNull(commandPath, ["rev-parse", "--verify", `refs/remotes/origin/${job.branchName}`], { timeout: 10_000 });
     } catch (err) {
       state.pushError = trimError(err, 500);
+      state.pushDeferred = err instanceof DevPublicationError && err.retryable;
     }
   }
 
@@ -1043,7 +1054,18 @@ async function main() {
         unlinkSync(jobFile);
         return;
       }
-      if (sync.outcome !== "unchanged") {
+      const canValidateSynchronizedCandidate = sync.outcome === "revalidate" &&
+        (job.validationProfile?.commands.some(command => command.required) ?? false);
+      if (canValidateSynchronizedCandidate) {
+        // Only an installed required application-validation profile can avoid
+        // the handoff. Git cleanliness/ancestry alone is not fresh evidence.
+        preflightState = await inspectLocalState(job, true);
+        preflightBase = await validateEpicBase(job.repositoryPath, job.branchName, epicBase);
+        await db.activityLog.create({ data: {
+          projectId: job.projectId, taskId: job.taskId, userId: actor.id,
+          kind: "pm.repo.epic_sync", payload: JSON.stringify({ jobId: job.jobId, branchName: job.branchName, ...sync, validationProfileVersion: job.validationProfile!.version, validationRequired: true }),
+        } });
+      } else if (sync.outcome !== "unchanged") {
         const body = renderEpicSyncHandoff(sync, job.branchName, preflightBase.baseBranch);
         await db.$transaction([
           db.comment.create({ data: { taskId: job.taskId, userId: actor.id, body } }),
@@ -1271,6 +1293,13 @@ async function main() {
   } else {
     let fetched = await fetchVerificationBranch(job.repositoryPath, job.branchName, job.baseBranch);
     state = await localState(job, false);
+    if (state.pushDeferred && jobFile.endsWith(".running")) {
+      // Keep the exact publication attempt while another task owns Dev or its
+      // pipeline is still verifying. No new task turn or review rejection.
+      renameSync(jobFile, jobFile.slice(0, -".running".length));
+      console.log(JSON.stringify({ ok: false, deferred: true, reason: state.pushError }));
+      return;
+    }
     // A successful recovery push can turn an initial "remote ref not found"
     // into a valid verification state. Resolve/fetch once more before gating.
     if (state.pushed) {
@@ -1372,6 +1401,7 @@ async function main() {
       ? await db.reviewRun.update({
           where: { id: existingRun.id },
           data: {
+            candidateSha,
             baseSha: job.baseSha ?? null,
             repoTouched: !noChangeCandidate && !checkpointBaseline,
             validationOutcome: "pending",

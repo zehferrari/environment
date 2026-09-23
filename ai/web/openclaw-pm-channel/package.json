@@ -1,6 +1,6 @@
 {
   "name": "@mission-control/openclaw-pm-channel",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "type": "module",
   "private": true,
   "description": "Native OpenClaw channel for the Mission Control webapp",
@@ -8,8 +8,12 @@
     "openclaw": ">=2026.5.22"
   },
   "openclaw": {
-    "extensions": ["./index.js"],
-    "runtimeExtensions": ["./index.js"],
+    "extensions": [
+      "./index.js"
+    ],
+    "runtimeExtensions": [
+      "./index.js"
+    ],
     "compat": {
       "pluginApi": ">=2026.5.22",
       "minGatewayVersion": "2026.5.22"

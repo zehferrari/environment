@@ -114,6 +114,7 @@ const ACTION_TO_INTENT: ReadonlyMap<WorkflowPublicAction, TaskWorkflowIntent> = 
   ["approve_plan", "approve_plan"],
   ["submit_plan", "submit_plan"],
   ["request_plan_changes", "request_plan_changes"],
+  ["request_plan_revision", "request_plan_revision"],
   ["accept_plan_review", "accept_plan_review"],
   ["delegate_plan_approval", "delegate_plan_approval"],
   ["assign_task", "assign_task"],
@@ -306,6 +307,7 @@ function buildPayload(
     }
 
     // --- request_plan_changes ---
+    case "request_plan_revision":
     case "request_plan_changes": {
       const actionPlanId = ctx.actionPlanId;
       if (!actionPlanId) return fail("invalid_payload", "actionPlanId is required");
@@ -589,12 +591,14 @@ function buildPayload(
     // --- publish_checkpoint ---
     case "publish_checkpoint": {
       const authorizationCommentId = getString(raw, "authorizationCommentId");
-      if (!authorizationCommentId) return fail("invalid_payload", "authorizationCommentId is required");
+      const standingAuthorizationId = getString(raw, "standingAuthorizationId");
+      if (Boolean(authorizationCommentId) === Boolean(standingAuthorizationId)) return fail("invalid_payload", "Provide exactly one authorizationCommentId or standingAuthorizationId");
       const candidateSha = ctx.candidateSha ?? undefined;
       const baseSha = ctx.baseSha ?? undefined;
       const comment = getString(raw, "comment");
       const payload: PublishCheckpointPayload = {
-        authorizationCommentId,
+        ...(authorizationCommentId ? { authorizationCommentId } : {}),
+        ...(standingAuthorizationId ? { standingAuthorizationId } : {}),
         ...(candidateSha !== undefined ? { candidateSha } : {}),
         ...(baseSha !== undefined ? { baseSha } : {}),
         ...(comment !== undefined ? { comment } : {}),

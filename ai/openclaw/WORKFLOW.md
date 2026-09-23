@@ -244,6 +244,19 @@ Task assignee submits it through the granted workflow endpoint with
 `action=submit_plan` and a structured `actionPlan` object (`summary` plus
 validated `steps`). Free-form text in the Action Plan chat is discussion only;
 it is never executable plan state and does not notify the approver.
+Plan steps explicitly identify `phase` (`implementation` or `acceptance`),
+`responsibleActor` (`assignee`, `reviewer` or `owner`), and the verification
+environment when relevant. Physical owner checks belong to acceptance.
+
+An approved plan can be reopened with `request_plan_revision` (native
+`pm_request_plan_revision`) by the assignee, reviewer or authorised owner.
+Supply the current plan ID/version and a concrete reason. PM preserves the
+worktree and evidence, cancels obsolete execution, revokes that plan's grants,
+and returns the task to planning. Submit a revised plan on the next turn;
+expanded scope still needs approval. Do not ask the owner to reset status.
+Unchanged requirements keep their verified evidence; approval records replaced
+requirements as superseded history, never as completed checks.
+
 The approver chain, in order:
 
 1. **Task reviewer** — the first approver. If the task has a reviewer set,
@@ -955,9 +968,14 @@ the exact silent token and no other text.
   retry or later publication needs a fresh round.
 - `publish_checkpoint` is the narrow exception for an `In Progress`
   code task whose remaining checks require a remotely reachable commit. It
-  requires the exact id of a fresh, single-use owner or PM-validated reviewer authorization
-  comment written after current plan approval and naming the Task source plus
-  target publication branch. PM owns the checkpoint commit. A standalone
+  accepts the `standingAuthorizationId` supplied by current PM context when
+  the owner configured a named development target before plan approval. This
+  grant covers repeated attempts within that exact plan, repository, branch,
+  environment and deployment configuration. Each attempt remains separately
+  audited; revision, reassignment or configuration changes invalidate it.
+  Otherwise use the exact id of a fresh, single-use owner or PM-validated
+  reviewer authorization comment written after plan approval and naming the
+  Task source and target branch. PM owns the checkpoint commit. A standalone
   task publishes its feature branch and retains its original review base; an
   Epic child publishes only the Epic branch and advances its base to that tip,
   and leaves the task/worktree active. It never bypasses the eventual
@@ -965,6 +983,13 @@ the exact silent token and no other text.
 - `review_feedback` returns the task to the **front** of To Do and wakes
   the assignee; the assignee restarts it from `To Do` with `start`.
   There is no Review-resume.
+- Owner checks normally gate task completion. A reviewer can accept the exact
+  candidate conditionally while only owner checks remain. PM records that
+  verdict and waits for owner evidence; the final checkbox resumes the same
+  verdict only if the candidate, plan and requirements still match. It does
+  not generate another reviewer decision. An owner can explicitly configure
+  future Epic plans to gate Epic release instead; those checks stay visible
+  and block Epic completion while reviewed child tasks unblock dependencies.
 - `review_done` accepts the review but repository-backed tasks stay in
   `Review` while PM finalizes publication/merge and local cleanup. Only a
   successful finalization moves the task to `Done`.

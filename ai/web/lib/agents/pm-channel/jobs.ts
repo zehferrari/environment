@@ -33,6 +33,7 @@ import {
   CONTEXT_PRESSURE_RECOVERY_ACTION,
 } from "@/lib/agents/pm-channel/continuations";
 import { resolveAgentTaskAccess } from "@/lib/agents/private-task-access";
+import { channelDispatchAdmission } from "@/lib/agents/pm-channel/dispatch-breaker";
 
 // Idempotency discriminator for the turn-failure retry policy: only
 // PM-generated notification/nudge turns are safe to auto-replay. Stamped at
@@ -42,6 +43,8 @@ export type PmChannelTurnClass = "notification" | "conversation";
 
 export type SendPmChannelTurnRequest = SendPmChannelTurnArgs & {
   turnClass?: PmChannelTurnClass;
+  preserveActiveRuns?: boolean;
+  workflowReason?: string;
 };
 
 type DispatchJobPayload = Omit<SendPmChannelTurnRequest, "fetchImpl">;
@@ -227,6 +230,7 @@ export async function enqueueOpenClawPmChannelTurn(
     projectId: args.projectId ?? null,
     gatewayPort: args.gatewayPort,
     sessionKey: args.sessionKey,
+    preserveActiveRuns: args.preserveActiveRuns,
   });
   if (!run) {
     return {
@@ -246,7 +250,7 @@ export async function enqueueOpenClawPmChannelTurn(
       status: "queued",
       lastError: null,
     },
-    update: {
+    update: args.preserveActiveRuns ? {} : {
       agentSlug: args.agentSlug,
       kind: args.kind,
       payload: JSON.stringify(payload),
@@ -259,7 +263,9 @@ export async function enqueueOpenClawPmChannelTurn(
       lastError: null,
     },
   });
-  await appendAndPublishStatus({ payload, runStatus: "queued" });
+  if (run.status === "queued" || run.status === "waiting_capacity") {
+    await appendAndPublishStatus({ payload, runStatus: run.status });
+  }
   if (inlineWorkerNudgeEnabled()) {
     setTimeout(() => {
       runPmChannelWorkerOnce(`pm-inline:${process.pid}`).catch((err) => {
@@ -270,50 +276,13 @@ export async function enqueueOpenClawPmChannelTurn(
   return { ok: true, status: 202, driver: "openclaw-pm-channel" };
 }
 
-// Dispatch circuit breaker. A dead agent gateway once absorbed 878
-// re-dispatches over 4 days (~40M tokens of prompts) with zero escalation:
-// every run failed, and every failure triggered another full-context send.
-// When the agent's recent runs are ALL failures, suppress further dispatches
-// (recording a visible activity row) and let one probe through per cooldown
-// window so recovery is still automatic once the gateway returns.
-const BREAKER_CONSECUTIVE_FAILURES = 5;
-const BREAKER_PROBE_INTERVAL_MS = 10 * 60 * 1000;
-
-async function channelBreakerOpen(agentSlug: string): Promise<{ open: boolean; failures?: number }> {
-  // Evaluate over TERMINAL runs only (failed/complete). In-flight rows
-  // (queued/accepted/streaming) are upserted from a prior run's row, so
-  // counting them would let a single in-flight probe reopen the gate for
-  // every waiting dispatch. Order by updatedAt, not createdAt: runs are
-  // upserted per target key, so createdAt is frozen at the first-ever
-  // dispatch and the recency check would be permanently true.
-  const recent = await db.pmChannelRun.findMany({
-    where: { agentSlug, status: { in: ["failed", "completed", "timed_out", "cancelled", "superseded"] } },
-    orderBy: { updatedAt: "desc" },
-    take: BREAKER_CONSECUTIVE_FAILURES,
-    select: { status: true },
-  });
-  if (recent.length < BREAKER_CONSECUTIVE_FAILURES) return { open: false };
-  if (!recent.every((run) => run.status === "failed")) return { open: false };
-  // Armed: last N terminal runs all failed. Allow exactly one probe per
-  // interval — suppress while ANY run (including a probe just enqueued as
-  // 'queued') was touched within the window. The enqueue path records a
-  // queued run synchronously, so a probe we let through blocks the next
-  // dispatch until it resolves or the interval elapses; a probe that
-  // completes lands in the terminal set above and closes the gate.
-  const newest = await db.pmChannelRun.findFirst({
-    where: { agentSlug },
-    orderBy: { updatedAt: "desc" },
-    select: { updatedAt: true },
-  });
-  const sinceLast = newest ? Date.now() - newest.updatedAt.getTime() : Number.POSITIVE_INFINITY;
-  if (sinceLast > BREAKER_PROBE_INTERVAL_MS) return { open: false, failures: recent.length };
-  return { open: true, failures: recent.length };
-}
-
 export async function sendOrQueueOpenClawPmChannelTurn(
   args: SendPmChannelTurnRequest,
 ): Promise<SendPmChannelTurnResult> {
-  const breaker = await channelBreakerOpen(args.agentSlug);
+  // Owner instructions must survive gateway outages. Persist them first and
+  // let the worker apply the same bounded transport probe policy at delivery.
+  if (args.preserveActiveRuns) return enqueueOpenClawPmChannelTurn(await prepareCompactTaskTurn(args));
+  const breaker = await channelDispatchAdmission(args);
   if (breaker.open) {
     await db.activityLog.create({
       data: {
@@ -324,7 +293,7 @@ export async function sendOrQueueOpenClawPmChannelTurn(
         payload: JSON.stringify({
           reason: "channel_down_breaker",
           consecutiveFailures: breaker.failures,
-          probeIntervalMs: BREAKER_PROBE_INTERVAL_MS,
+          probeIntervalMs: breaker.probeIntervalMs,
           replyTarget: args.replyTarget,
         }),
       },
@@ -332,11 +301,11 @@ export async function sendOrQueueOpenClawPmChannelTurn(
     return {
       ok: false,
       driver: "openclaw-pm-channel",
-      error: `channel down: last ${breaker.failures} runs for ${args.agentSlug} failed; dispatch suppressed (next probe within ${Math.round(BREAKER_PROBE_INTERVAL_MS / 60000)}m)`,
+      error: `channel down: ${breaker.failures} transport failures for ${args.agentSlug}; dispatch suppressed (one probe per ${Math.round(breaker.probeIntervalMs / 60000)}m)`,
     };
   }
   args = await prepareCompactTaskTurn(args);
-  if (pmAsyncDispatchEnabled()) {
+  if (pmAsyncDispatchEnabled() || args.preserveActiveRuns) {
     return enqueueOpenClawPmChannelTurn(args);
   }
   return sendOpenClawPmChannelTurn(args);
@@ -551,6 +520,34 @@ export async function runPmChannelJob(job: NonNullable<Awaited<ReturnType<typeof
       error: "PM channel dispatch canceled: private or unavailable work cannot be delivered to agents",
     });
   }
+  if (payload.preserveActiveRuns) {
+    const breaker = await channelDispatchAdmission(payload);
+    if (breaker.open) {
+      await db.pmChannelJob.update({ where: { id: job.id }, data: {
+        status: "retryable", availableAt: new Date(Date.now() + 60_000),
+        claimedBy: null, claimedAt: null, attemptCount: { decrement: 1 },
+        lastError: "owner instruction waiting for bounded gateway probe",
+      } });
+      return { ok: true, status: 202, driver: "openclaw-pm-channel" } satisfies SendPmChannelTurnResult;
+    }
+    if (payload.replyTarget.kind === "task-comment" || payload.replyTarget.kind === "task-chat") {
+      const task = await db.task.findUnique({ where: { id: payload.replyTarget.taskId },
+        select: { status: true, assignee: { select: { agent: { select: { slug: true } } } } } });
+      if (task?.status === "In Progress" && task.assignee?.agent?.slug === payload.agentSlug) {
+        const episode = await db.taskExecutionEpisode.findFirst({
+          where: { taskId: payload.replyTarget.taskId, agentSlug: payload.agentSlug, status: "open" },
+          orderBy: { episodeNo: "desc" }, select: { sessionKey: true },
+        });
+        if (episode?.sessionKey && episode.sessionKey !== payload.sessionKey) {
+          payload.sessionKey = episode.sessionKey;
+          await db.$transaction([
+            db.pmChannelJob.update({ where: { id: job.id }, data: { payload: JSON.stringify(payload) } }),
+            db.pmChannelRun.update({ where: { id: job.runId }, data: { sessionKey: episode.sessionKey } }),
+          ]);
+        }
+      }
+    }
+  }
   const fence = await fenceSupersededPmChannelRuns({ replacementRunId: job.runId });
   if (!fence.ok) {
     const error = `replacement dispatch fenced until the superseded process stops: ${fence.error}`;
@@ -635,16 +632,22 @@ export async function runPmChannelJob(job: NonNullable<Awaited<ReturnType<typeof
   );
   const now = new Date();
 
+  const settledDuringDispatch = await db.pmChannelRun.findUnique({ where: { id: job.runId }, select: { status: true, cancellationRequestedAt: true } });
+  if (!settledDuringDispatch || settledDuringDispatch.cancellationRequestedAt || ["completed", "cancelled", "superseded", "timed_out"].includes(settledDuringDispatch.status)) {
+    // A workflow action or revision can settle the job while the HTTP handoff
+    // is in flight. Dispatch bookkeeping must never resurrect that job.
+    return result;
+  }
   if (result.ok) {
-    await db.pmChannelJob.update({
-      where: { id: job.id },
+    const accepted = await db.pmChannelJob.updateMany({
+      where: { id: job.id, status: { in: ["queued", "claimed", "retryable"] }, run: { status: { notIn: ["completed", "cancelled", "superseded", "timed_out"] }, cancellationRequestedAt: null } },
       data: {
         status: "accepted",
         acceptedAt: now,
         lastError: null,
       },
     });
-    await appendAndPublishStatus({ payload, runStatus: "accepted" });
+    if (accepted.count) await appendAndPublishStatus({ payload, runStatus: "accepted" });
     return result;
   }
 
@@ -655,9 +658,9 @@ export async function runPmChannelJob(job: NonNullable<Awaited<ReturnType<typeof
   const jobStatus = exhausted ? "failed" : "retryable";
   const runStatus: "failed" | "queued" = exhausted ? "failed" : "queued";
   const error = clippedError(result.error ?? "PM channel dispatch failed");
-  await db.$transaction([
-    db.pmChannelJob.update({
-      where: { id: job.id },
+  const retryWrites = await db.$transaction([
+    db.pmChannelJob.updateMany({
+      where: { id: job.id, status: { in: ["queued", "claimed", "accepted", "retryable", "failed"] }, run: { status: { notIn: ["completed", "cancelled", "superseded", "timed_out"] }, cancellationRequestedAt: null } },
       data: {
         status: jobStatus,
         availableAt: new Date(now.getTime() + (exhausted ? 0 : retryDelayMs(attemptCount))),
@@ -666,8 +669,8 @@ export async function runPmChannelJob(job: NonNullable<Awaited<ReturnType<typeof
         lastError: error,
       },
     }),
-    db.pmChannelRun.update({
-      where: { id: job.runId },
+    db.pmChannelRun.updateMany({
+      where: { id: job.runId, status: { notIn: ["completed", "cancelled", "superseded", "timed_out"] }, cancellationRequestedAt: null },
       data: {
         status: runStatus,
         error,
@@ -679,6 +682,7 @@ export async function runPmChannelJob(job: NonNullable<Awaited<ReturnType<typeof
       },
     }),
   ]);
+  if (!retryWrites[1].count) return result;
   await appendAndPublishStatus({
     payload,
     runStatus: runStatus,

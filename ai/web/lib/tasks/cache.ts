@@ -191,7 +191,7 @@ async function getRawCachedTaskDetailShell(taskId: string) {
             },
           },
         },
-        reviewRuns: { orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: { id: true, createdAt: true, workflowCycleId: true } },
+        reviewRuns: { orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: { id: true, createdAt: true, workflowCycleId: true, status: true, candidateSha: true } },
         reviewFindings: { orderBy: [{ createdAt: "asc" }, { position: "asc" }], include: { reviewRun: { select: { reviewedAt: true, createdAt: true } } } },
         checklist: {
           orderBy: { rank: "asc" },
@@ -201,7 +201,7 @@ async function getRawCachedTaskDetailShell(taskId: string) {
             completedAt: true,
             minutesSpent: true,
             kind: true,
-            groupKey: true,
+            groupKey: true, responsibleActor: true, verificationEnvironment: true, acceptanceGate: true, completionEvidence: true, supersededReason: true,
             reviewFinding: { select: { id: true, title: true, completionEvidence: true } },
           },
         },
@@ -241,7 +241,7 @@ async function getRawCachedTaskDetailShell(taskId: string) {
                 id: true,
                 stepId: true,
                 title: true,
-                acceptanceCriteria: true,
+                acceptanceCriteria: true, phase: true, responsibleActor: true, verificationEnvironment: true,
                 kind: true,
                 rank: true,
                 assignee: {

@@ -8,6 +8,7 @@ const object = (properties, required = []) => ({ type: "object", properties, req
 const comment = { comment: string };
 const checkpoint = { completedWork: strings, evidence: strings, openChecklist: strings, nextAction: string, risks: strings };
 const plan = object({ summary: string, steps: { type: "array", minItems: 1, maxItems: 20, items: object({
+  phase: { type: "string", enum: ["implementation", "acceptance"] }, responsibleActor: { type: "string", enum: ["assignee", "reviewer", "owner"] }, verificationEnvironment: { type: ["string", "null"] },
   id: string, title: string, acceptanceCriteria: strings, kind: { type: "string", enum: ["sequential", "parallel"] }, assigneeId: { type: ["string", "null"] },
 }, ["id", "title", "acceptanceCriteria", "kind"]) } }, ["summary", "steps"]);
 export const PM_TASK_TOOL_DEFINITIONS = {
@@ -17,6 +18,7 @@ export const PM_TASK_TOOL_DEFINITIONS = {
   accept_plan_review: ["Accept this plan without authorising execution; wait for reporter approval. Do not request changes when the plan is acceptable.", object(comment)],
   attach_file: ["Upload an existing deliverable from your configured agent workspace or OpenClaw media directory. Copy worktree evidence into your workspace first; arbitrary repository paths are not attachment roots. Returns the stored attachment id; uploading does not complete the task.", object({ path: string }, ["path"])],
   approve_plan: ["Approve the current plan as the authorized reviewer; PM prepares the worktree.", object({ constraints: string })],
+  request_plan_revision: ["Reopen the exact approved plan for revision when scope or acceptance needs correction. Preserve existing work and evidence, explain the change, then resubmit a revised plan in the next turn. This does not approve expanded scope.", object(comment, ["comment"])],
   request_plan_changes: ["Return the current Action Plan for one consolidated revision, with exact feedback.", object(comment, ["comment"])],
   review_feedback: ["Return all required corrections together. PM atomically creates pending subtasks from findings before waking the assignee. Stay within approved scope; request a plan revision for expansion.", object({ ...comment, findings: { type: "array", minItems: 1, maxItems: 20, items: object({ title: string, acceptanceCriteria: string, scopeReference: string }, ["title", "acceptanceCriteria", "scopeReference"]) } }, ["comment", "findings"])],
   start: ["Start the approved task. Continue implementation when actionEffect is continue.", object({})],
@@ -35,7 +37,7 @@ export const PM_TASK_TOOL_DEFINITIONS = {
   }, ["comment"])],
   clear_blocker: ["Resolve a recorded blocker with evidence.", object(comment, ["comment"])],
   assign_task: ["Ask PM to select an eligible coding assignee for an unassigned task.", object({ assigneeUsername: string })],
-  publish_checkpoint: ["Publish only the exact checkpoint authorized by a fresh owner or PM-validated reviewer permission grant.", object({ authorizationCommentId: string, ...comment }, ["authorizationCommentId"])],
+  publish_checkpoint: ["Publish a development checkpoint with the active standingAuthorizationId from PM context, or a single-use authorizationCommentId. Supply exactly one. PM serializes the shared environment and verifies the deployed SHA when configured.", object({ authorizationCommentId: string, standingAuthorizationId: string, ...comment })],
 };
 export const PM_TASK_TOOL_NAMES = Object.keys(PM_TASK_TOOL_DEFINITIONS).map((action) => `pm_${action}`);
 
@@ -88,7 +90,7 @@ export function createTaskTools({ context, findTurn, loadMedia, fetchImpl = fetc
         const url = new URL(action === "context" ? runtime.contextUrl : runtime.workflowUrl);
         if (action === "task_note") url.pathname = url.pathname.replace(/\/workflow$/, "/notes");
         if (action === "context" && args.section === "history") url.searchParams.set("history", "full");
-        const planDecision = ["approve_plan", "request_plan_changes", "accept_plan_review"].includes(action);
+        const planDecision = ["approve_plan", "request_plan_changes", "request_plan_revision", "accept_plan_review"].includes(action);
         if (planDecision && !reviewedPlan) throw new Error("Read the current plan with pm_context section=plan before deciding.");
         const planEvidence = planDecision ? { actionPlanId: reviewedPlan.id, actionPlanVersion: reviewedPlan.version } : {};
         let response;

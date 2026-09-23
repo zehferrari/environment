@@ -74,8 +74,16 @@ export function episodeToolCycleBudget() {
  * that falls from Sol to a smaller Ollama model is tightened immediately. The
  * configured environment value remains the absolute operator ceiling.
  */
-export function episodeToolCycleBudgetForModel(provider?: string | null, model?: string | null) {
+export function episodeToolCycleBudgetForModel(provider?: string | null, model?: string | null, effectiveContextLimit?: number | null) {
   const maximum = episodeToolCycleBudget();
+  // Trust the effective runtime cap (after agent/provider limits), not an
+  // advertised catalog window. Defaults remain conservative until measured.
+  if (typeof effectiveContextLimit === "number" && Number.isFinite(effectiveContextLimit) && effectiveContextLimit > 0) {
+    const tier = effectiveContextLimit <= 131_072 ? ["COMPACT", EPISODE_TOOL_CYCLE_BUDGET_COMPACT] as const
+      : effectiveContextLimit < 512_000 ? ["MEDIUM", EPISODE_TOOL_CYCLE_BUDGET_MEDIUM] as const
+        : ["LARGE", EPISODE_TOOL_CYCLE_BUDGET_DEFAULT] as const;
+    return Math.min(maximum, intEnv(`PM_EPISODE_TOOL_CYCLES_${tier[0]}`, tier[1], 1, 5_000));
+  }
   const normalizedProvider = provider?.trim().toLowerCase() ?? "";
   const normalizedModel = model?.trim().toLowerCase() ?? "";
 
@@ -102,10 +110,15 @@ export const EPISODE_CLOSE_REASON = {
   budgetExhausted: "cycle_budget_exhausted",
   toolBudgetExhausted: "tool_cycle_budget_exhausted",
   contextPressureRecovery: "context_pressure_recovery",
+  checkpointAcknowledged: "checkpoint_acknowledged",
   terminalAction: "episode_terminal_action",
   superseded: "superseded",
   canceled: "canceled",
 } as const;
+
+export function episodeCheckpointRequestAt(toolCycleBudget: number) {
+  return Math.min(Math.max(1, toolCycleBudget - 1), Math.max(8, Math.floor(toolCycleBudget * 2 / 3)));
+}
 
 /**
  * What an exhausted PM turn is still allowed to do.
@@ -477,6 +490,19 @@ export async function rollOverTaskExecutionEpisodeForContextPressure(
   return { closed, nextEpisode };
 }
 
+/** Latest-call pressure reported at turn end still needs a durable successor.
+ * Fence the originating message so a late hook cannot close its successor. */
+export async function requestTaskExecutionEpisodeContextRollover(tx: Prisma.TransactionClient, args: {
+  taskId: string; projectId?: string | null; agentSlug: string; messageId: string;
+}) {
+  const existing = await openEpisodeRow(tx, args);
+  if (!existing || existing.messageId !== args.messageId) return null;
+  return rollOverExhaustedEpisode(tx, {
+    ...args, episode: summarizeEpisode(existing), projectId: args.projectId ?? null,
+    closeReason: EPISODE_CLOSE_REASON.contextPressureRecovery, exhaustedByMessageId: args.messageId,
+  });
+}
+
 export interface EpisodeCycleOutcome {
   /** The episode the cycle was counted against. */
   episode: TaskExecutionEpisodeSummary;
@@ -545,8 +571,12 @@ export async function recordTaskExecutionEpisodeCycle(
     select: EPISODE_SELECT,
   });
   const counted = summarizeEpisode(updated);
-
-  if (!countsAgainstBudget || counted.cycleCount < counted.cycleBudget) {
+  // The remaining calls between the checkpoint request and the hard fence
+  // are a bounded grace window. A concrete authored checkpoint acknowledges
+  // the request and hands off cooperatively before an abort is necessary.
+  const checkpointAcknowledged = !countsAgainstBudget && Boolean(args.checkpoint?.nextAction?.trim()) &&
+    counted.toolCycleCount >= episodeCheckpointRequestAt(counted.toolCycleBudget);
+  if (!checkpointAcknowledged && (!countsAgainstBudget || counted.cycleCount < counted.cycleBudget)) {
     return { episode: counted, rolledOver: false, nextEpisode: null };
   }
 
@@ -560,7 +590,7 @@ export async function recordTaskExecutionEpisodeCycle(
     taskId: args.taskId,
     projectId: args.projectId ?? null,
     agentSlug: args.agentSlug,
-    closeReason: EPISODE_CLOSE_REASON.budgetExhausted,
+    closeReason: checkpointAcknowledged ? EPISODE_CLOSE_REASON.checkpointAcknowledged : EPISODE_CLOSE_REASON.budgetExhausted,
     exhaustedByMessageId: args.messageId ?? null,
   });
   return { episode: closed, rolledOver: true, nextEpisode };

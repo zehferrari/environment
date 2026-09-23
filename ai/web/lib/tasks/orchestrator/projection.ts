@@ -378,6 +378,7 @@ export function computeAllowedIntents(
     }
     allowed.push("repository_finalization_succeeded", "repository_finalization_failed");
   }
+  if (state.approvedOn && ["To Do", "In Progress", "Review"].includes(status)) allowed.push("request_plan_revision");
   if (status === "Done") {
     allowed.push("archive_task");
   }
@@ -430,6 +431,7 @@ function isIntentAllowedForRole(intent: TaskWorkflowIntent, role: WorkflowActorR
   }
 
   // Plan-related intents.
+  if (intent === "request_plan_revision") return ["assignee", "reviewer", "reporter", "admin", "operator"].includes(r);
   if (intent === "submit_plan") {
     return r === "assignee" || r === "admin" || r === "operator";
   }

@@ -44,11 +44,11 @@ reply callbacks carry the actual provider/model selected by OpenClaw, including
 fallback changes; do not infer model provenance from the agent's configured
 default.
 
-The final reply callback is the source of truth for success. A stream
-`done` only closes a successful stream after a visible reply was delivered.
-If the turn exits without a visible reply, the plugin posts a stream
-`error` so PM can mark the `PmChannelRun` failed instead of leaving the
-chat UI waiting.
+Successful completion requires a delivered reply, a completed workflow action,
+or OpenClaw's explicit deliberate-silence result. That result becomes a silent
+`NO_REPLY` final before `done`; empty endings and gateway fallback error text
+remain failures. Duplicate terminal callbacks preserve the first completion
+time and disposition. Canceled generations cannot publish late replies.
 
 PM context is attached as supplemental channel context. The plugin keeps
 the visible wake body focused on the current message instead of duplicating
@@ -70,6 +70,11 @@ Minimal `openclaw.json` channel config:
       "callbackToken": "env:PM_OPENCLAW_CHANNEL_TOKEN",
       "callbackUrl": "http://127.0.0.1:3000/api/openclaw/pm-channel/reply",
       "agentId": "main"
+    }
+  },
+  "plugins": {
+    "entries": {
+      "pm": { "enabled": true, "hooks": { "allowConversationAccess": true } }
     }
   }
 }
@@ -148,4 +153,40 @@ calls. Context and successful workflow responses include `executionGuidance`
 with the current episode's remaining calls and `checkpointDue` reminder.
 The steering endpoint reports `queued:false, delivery:workflow_response` for
 this mode; it does not claim live injection or launch/interrupt a CLI session.
-These reminders are advisory; the existing hard episode limit remains.
+An explicit checkpoint with an exact next action after the reminder now
+acknowledges rollover: PM saves it, seals the episode and arms one successor in
+the same transaction. The response says `turnComplete: true`; stop and let PM
+resume. Include durable verification job IDs so the successor retrieves an
+existing result. The remaining calls are a bounded grace window; ignoring the
+request still reaches the hard fence and abort.
+
+## Usage and tool liveness
+
+The managed installer opts PM into `llm_input`/`llm_output` hooks through
+`plugins.entries.pm.hooks.allowConversationAccess`. Both native and scoped HTTP
+turns record numeric billing metadata. Prompt text, assistant text, reasoning,
+credentials and tool arguments are never retained in usage rows.
+
+Attempt billing and context occupancy are separate. Rollover uses a verified
+latest model-call snapshot, including cached reads and writes, or an explicit
+provider `contextUsage` snapshot. Aggregate CLI usage without that snapshot is
+unavailable context, not occupancy. The effective runtime window includes
+model/config/agent limits. Context pressure defaults to 70% and can be tuned
+with `PM_EPISODE_CONTEXT_ROLLOVER_RATIO` (50–95%).
+
+Effective-window fallback budgets default to 18 calls for windows up to 128Ki,
+24 below 512k, and 30 for larger windows. `PM_EPISODE_TOOL_CYCLES_COMPACT`,
+`PM_EPISODE_TOOL_CYCLES_MEDIUM`, and `PM_EPISODE_TOOL_CYCLES_LARGE` tune those
+tiers; `PM_EPISODE_MAX_TOOL_CYCLES` still clamps all tiers. Missing window data
+keeps the conservative provider fallback. Raise limits only after measuring
+completion and repeated work, not just fewer rotations.
+
+Known running tools emit quiet lease heartbeats every 30 seconds. Completion,
+abort, or 15 minutes without tool lifecycle activity stops them, allowing a
+wedged tool to expire normally. Heartbeats do not spend tool budget or create
+stream-history rows. The installer stages `tool-liveness.js` with the plugin.
+
+Verification: `node scripts/pm-runtime-reliability-test.mjs` exercises the
+installed OpenClaw dispatcher with a deterministic resolver and isolated
+state; `node --import tsx scripts/pm-runtime-continuity-test.ts` verifies
+checkpoint persistence and successor scheduling in a disposable database.

@@ -5,6 +5,7 @@ import {
 } from "@/lib/agents/workflow/notifications/task";
 import { startApprovedTodoTaskIfIdle } from "@/lib/tasks/auto-start";
 import { canApproveActionPlanForActor } from "@/lib/tasks/workflow-actors";
+import { taskRecoveryWaitReason } from "@/lib/tasks/recovery-permission";
 import {
   repositoryFinalizationFenceSelect,
   repositoryFinalizationOwnsTask,
@@ -100,7 +101,7 @@ function defaultRequiredAction(status: string, kind: string | undefined): string
     return "The Action Plan is approved. Move the task to In Progress through the workflow endpoint, then start work immediately. Do not post an acknowledgement unless you have new task information to add.";
   }
   if (kind === "pm-in-progress-stale") {
-    return "Continue implementation now. If completed, use ready_for_review with one concise note. Never move incomplete work to Review as a waiting room. Task execution remains with the visible assignee; independent work for another agent must be a separate explicitly assigned PM task. Use flag_blocker only for a human/external dependency. If open checks require unpublished code on a remotely deployable commit, use publish_checkpoint with a fresh explicit active-owner authorization comment id naming the task and target branch; PM publishes the standalone task branch or only the Epic integration branch and keeps the task In Progress. Verify the exact deployed SHA before testing.";
+    return "Continue implementation now. If completed, use ready_for_review with one concise note. Never move incomplete work to Review as a waiting room. Task execution remains with the visible assignee; independent work for another agent must be a separate explicitly assigned PM task. Use flag_blocker only for a human/external dependency. If open checks require unpublished code on a remotely deployable commit, use publish_checkpoint with a valid standingAuthorizationId and fresh publicationAttemptId, or the exact unconsumed owner/reviewer authorizationCommentId for this checkpoint; PM publishes the standalone task branch or only the Epic integration branch and keeps the task In Progress. Verify the exact deployed SHA before testing.";
   }
   if (kind === "pm-blocker-response-awaiting-assignee") {
     return "A decision owner responded after your active blocker. Re-evaluate it now: if the dependency is resolved, call action=clear_blocker with the evidence and resume; otherwise leave the alert set and post only material new blocker evidence.";
@@ -205,6 +206,13 @@ async function main() {
       status: task.status,
       reason: "accepted-repository-finalization-owns-review",
     });
+    return;
+  }
+
+  const recoveryWait = await taskRecoveryWaitReason(task.id, args.agent);
+  if (recoveryWait) {
+    skip({ taskId: task.id, project: task.project.slug, agent: args.agent, kind: args.kind,
+      status: task.status, reason: recoveryWait });
     return;
   }
 
@@ -352,7 +360,7 @@ async function main() {
     kind: sender.kind === "agent" ? "agent" as const : "human" as const,
   };
   let requiredAction = args.requiredAction ?? defaultRequiredAction(task.status, args.kind);
-  let autoStarted = false;
+  const autoStarted = false;
   if (args.kind === "pm-todo-not-started") {
     const autoStart = await startApprovedTodoTaskIfIdle({
       taskId: task.id,
@@ -365,8 +373,9 @@ async function main() {
       selectionReason: "monitor_detected_approved_todo_task_with_idle_lane",
     });
     if (autoStart.started) {
-      autoStarted = true;
-      requiredAction = "PM already moved this approved To Do task to In Progress because you have no other In Progress task. Start implementation now; reply only for new progress, a blocker, or a necessary question.";
+      skip({ taskId: task.id, project: task.project.slug, agent: args.agent, kind: args.kind,
+        status: "In Progress", reason: "durable_start_procedure_owns_task" });
+      return;
     } else if (autoStart.reason === "busy") {
       console.log(JSON.stringify({
         ok: true,

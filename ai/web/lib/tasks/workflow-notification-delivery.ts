@@ -2,7 +2,7 @@ import { db } from "@/lib/db";
 import { canAccessTask, getViewerByUserId, isOwnerUserId } from "@/lib/auth/permissions";
 import { resolveAgentTaskAccess } from "@/lib/agents/private-task-access";
 import { publishBoardTouch } from "@/lib/pm/board-events";
-import { sendWebPushToUser } from "@/lib/push/web-push";
+import { sendWebPushToUser, webPushConfigured } from "@/lib/push/web-push";
 import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
 import { writeDeduplicatedActivity } from "@/lib/tasks/orchestrator/activity-dedup";
 
@@ -36,17 +36,29 @@ export async function deliverTaskWorkflowNotification(
       taskId: args.taskId, projectId: task.projectId, userId: args.actor.id,
       kind: "task.workflow.human_notification",
       dedupeKey: `human-notification:${args.dedupeKey}`,
-      payload: { targetUserId: args.targetUserId, reason: args.reason, channel: "pm", outcome: "delivered" },
+      payload: { targetUserId: args.targetUserId, reason: args.reason, channel: "pm", outcome: "recorded",
+        deviceDelivery: "pending", url: `/projects/${task.project.slug}/tasks/${args.taskId}` },
     });
     publishBoardTouch(task.projectId);
-    // The durable PM activity is the delivery. Device push is best-effort,
-    // uses a stable replacement tag and does not require a subscription.
-    await sendWebPushToUser(args.targetUserId, {
+    // A board activity is not proof the person received an alert. Keep PM
+    // recording and device transport acceptance separate (neither is a read
+    // receipt); missing subscriptions must remain visible to operators.
+    const configured = webPushConfigured();
+    const subscriptions = configured ? await db.webPushSubscription.count({ where: { userId: args.targetUserId } }) : 0;
+    const pushed = await sendWebPushToUser(args.targetUserId, {
       title: "Mission Control",
       body: "A task workflow update is available.",
       url: `/projects/${task.project.slug}/tasks/${args.taskId}`,
       tag: `workflow:${args.dedupeKey}`,
-    }).catch(() => undefined);
+    }).catch(() => ({ sent: 0, pruned: 0 }));
+    const deviceDelivery = pushed.sent > 0 ? "sent"
+      : !configured ? "not_configured" : subscriptions === 0 ? "no_subscription" : "failed";
+    await db.activityLog.updateMany({
+      where: { dedupeKey: `human-notification:${args.dedupeKey}` },
+      data: { payload: JSON.stringify({ targetUserId: args.targetUserId, reason: args.reason,
+        channel: "pm", outcome: "recorded", deviceDelivery, devicesSent: pushed.sent,
+        url: `/projects/${task.project.slug}/tasks/${args.taskId}` }) },
+    });
     return { status: "delivered", channel: "human" };
   }
   if (args.actor.kind === "human" && !await isOwnerUserId(args.actor.id)) {

@@ -193,6 +193,10 @@ model Project {
   deploymentPrTargetBranch            String?                         @map("deployment_pr_target_branch")
   deploymentMode                      String                          @default("pr-only") @map("deployment_mode")
   deploymentOnMerge                   String?                         @map("deployment_on_merge")
+  // Owner-configured, named non-production publication/deployment authority.
+  ownerAcceptancePolicy String @default("task")
+  devPublicationPolicy                String                          @default("single_use")
+  devPublicationConfig                String?
   deploymentPipelineName              String?                         @map("deployment_pipeline_name")
   deploymentHost                      String?                         @map("deployment_host")
   deploymentEnvironment               String?                         @map("deployment_environment")
@@ -755,6 +759,9 @@ model ReviewRun {
   status            String               @default("awaiting_review")
   reviewerId        String?              @map("reviewer_id")
   reviewedAt        DateTime?            @map("reviewed_at")
+  // A real reviewer decision may wait for separately recorded owner checks.
+  acceptancePlanVersion Int?
+  acceptanceChecklistHash String?
   invalidatedAt     DateTime?            @map("invalidated_at")
   invalidatedReason String?              @map("invalidated_reason")
   createdAt         DateTime             @default(now()) @map("created_at")
@@ -1013,6 +1020,14 @@ model TaskExecutionState {
 // Humans tick items in the task editor; the assignee agent ticks them through
 // the native workflow endpoint (action=add_subtask / complete_subtask).
 model SubTask {
+  responsibleActor String @default("assignee")
+  verificationEnvironment String?
+  acceptanceGate String @default("task")
+  planStepKey String?
+  planContentHash String?
+  completionEvidence String?
+  completedById String?
+  supersededReason String?
   reviewFinding ReviewFinding?
   id               String          @id @default(cuid())
   taskId           String
@@ -1114,6 +1129,9 @@ model ActionPlanRevisionStep {
   title              String
   acceptanceCriteria String
   kind               StepKind           @default(sequential)
+  phase              String             @default("implementation")
+  responsibleActor   String             @default("assignee")
+  verificationEnvironment String?
   assigneeId         String?
   assignee           User?              @relation("ActionPlanRevisionStepAssignee", fields: [assigneeId], references: [id])
   rank               Int                @default(0)
@@ -1137,6 +1155,9 @@ model ActionPlanStep {
   title              String
   acceptanceCriteria String // JSON-encoded string[]
   kind               StepKind   @default(sequential)
+  phase              String     @default("implementation")
+  responsibleActor   String     @default("assignee")
+  verificationEnvironment String?
   assigneeId         String?
   assignee           User?      @relation("ActionPlanStepAssignee", fields: [assigneeId], references: [id])
   rank               Int        @default(0)
@@ -1155,6 +1176,65 @@ model ActionPlanStep {
 // belong directly to the project or to one task/epic; taskId + epicId
 // together is rejected server-side since SQLite has no portable check.
 // ------------------------------------------------------------------
+
+// Authorization survives individual publication attempts. Existing plans are
+// never enrolled implicitly; issuance is part of an explicit plan approval.
+model TaskStandingAuthorization {
+  id                String   @id @default(cuid())
+  taskId            String
+  actionPlanId      String
+  actionPlanVersion Int
+  workflowCycleId   String?
+  assigneeId        String?
+  reviewerId        String?
+  grantedById       String
+  repositoryPath    String
+  branch            String
+  configFingerprint String
+  scopeFingerprint  String
+  allowedOperations String
+  target            String
+  environmentId     String
+  status            String   @default("active")
+  revokedAt         DateTime?
+  createdAt         DateTime @default(now())
+  @@index([taskId, actionPlanVersion, status])
+}
+
+// One owner for a shared test environment, across all PM publication paths.
+model DevEnvironmentLease {
+  id            String   @id @default(cuid())
+  environmentId String   @unique
+  taskId        String?
+  grantId       String?
+  attemptId     String
+  state         String   @default("reserved")
+  expiresAt     DateTime
+  expectedSha   String?
+  verifiedSha   String?
+  lastError     String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model DevPublicationAttempt {
+  id                String   @id
+  projectId         String
+  taskId            String?
+  grantId           String?
+  environmentId     String
+  branch            String
+  configFingerprint String
+  state             String   @default("reserved")
+  publishedSha      String?
+  verifiedSha       String?
+  lastError         String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  @@index([taskId, createdAt])
+  @@index([environmentId, state])
+  resultJson String?
+}
 
 model Attachment {
   id          String   @id @default(cuid())

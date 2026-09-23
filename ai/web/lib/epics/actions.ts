@@ -13,6 +13,7 @@ import { revalidatePath } from "next/cache";
 import type { CreateResult } from "@/lib/create/result";
 import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
+import { assertEpicReleaseChecksComplete } from "@/lib/tasks/acceptance";
 import { randomUUID } from "crypto";
 import { sendAgentChatMessage } from "@/lib/agents/chat/actions";
 import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
@@ -974,6 +975,7 @@ export async function updateEpic(formData: FormData) {
 
   let openAssignment: any = null;
   await db.$transaction(async (tx) => {
+    if (statusChanged && status === "Done") await assertEpicReleaseChecksComplete(tx, epicId);
     await tx.epic.update({ where: { id: epicId }, data });
     if (shouldStartDeployReview) {
       await resetEpicActionPlanForDeployReview(tx, {
@@ -1268,6 +1270,7 @@ export async function setEpicStatus(formData: FormData) {
 
   let openAssignment: any = null;
   await db.$transaction(async (tx) => {
+    if (status === "Done") await assertEpicReleaseChecksComplete(tx, epicId);
     await tx.epic.update({
       where: { id: epicId },
       data: {

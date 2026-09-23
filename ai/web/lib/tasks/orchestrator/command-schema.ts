@@ -195,6 +195,13 @@ function validateSubmitPlan(raw: Record<string, unknown>): PayloadValidationResu
       if (!aId.ok) return fail("invalid_payload", `step[${i}].${aId.message}`);
       step["assigneeId"] = aId.value;
     }
+    if (s.phase !== undefined && !["implementation", "acceptance"].includes(String(s.phase))) return fail("invalid_payload", "Invalid step phase");
+    if (s.responsibleActor !== undefined && !["assignee", "reviewer", "owner"].includes(String(s.responsibleActor))) return fail("invalid_payload", "Invalid responsibleActor");
+    if (s.phase !== "acceptance" && s.responsibleActor && s.responsibleActor !== "assignee") return fail("invalid_payload", "Owner/reviewer checks belong to acceptance");
+    if (s.verificationEnvironment != null && (typeof s.verificationEnvironment !== "string" || s.verificationEnvironment.length > 200)) return fail("invalid_payload", "Invalid verificationEnvironment");
+    step.phase = s.phase ?? "implementation";
+    step.responsibleActor = s.responsibleActor ?? (s.phase === "acceptance" ? "reviewer" : "assignee");
+    step.verificationEnvironment = s.verificationEnvironment ?? null;
     steps.push(step);
   }
 
@@ -613,8 +620,11 @@ function validateWorktreeRevalidationFailed(raw: Record<string, unknown>): Paylo
 }
 
 function validatePublishCheckpoint(raw: Record<string, unknown>): PayloadValidationResult {
-  const authorizationCommentId = requireString(raw, "authorizationCommentId", MAX_ID);
+  const authorizationCommentId = optionalString(raw, "authorizationCommentId", MAX_ID);
   if (!authorizationCommentId.ok) return fail("invalid_payload", authorizationCommentId.message);
+  const standingAuthorizationId = optionalString(raw, "standingAuthorizationId", MAX_ID);
+  if (!standingAuthorizationId.ok) return fail("invalid_payload", standingAuthorizationId.message);
+  if (Boolean(authorizationCommentId.value) === Boolean(standingAuthorizationId.value)) return fail("invalid_payload", "Provide exactly one authorizationCommentId or standingAuthorizationId");
   const candidateSha = requireStringOrNull(raw, "candidateSha", MAX_ID);
   if (!candidateSha.ok) return fail("invalid_payload", candidateSha.message);
   const baseSha = requireStringOrNull(raw, "baseSha", MAX_ID);
@@ -623,7 +633,8 @@ function validatePublishCheckpoint(raw: Record<string, unknown>): PayloadValidat
   const comment = requireStringOrNull(raw, "comment", MAX_TEXT);
   if (!comment.ok) return fail("invalid_payload", comment.message);
   return ok({
-    authorizationCommentId: authorizationCommentId.value,
+    ...(authorizationCommentId.value ? { authorizationCommentId: authorizationCommentId.value } : {}),
+    ...(standingAuthorizationId.value ? { standingAuthorizationId: standingAuthorizationId.value } : {}),
     candidateSha: candidateSha.value,
     baseSha: baseSha.value,
     comment: comment.value,
@@ -740,6 +751,7 @@ export function validateCommandPayload(
     case "accept_plan_review":
     case "delegate_plan_approval":
     case "approve_plan": return validateApprovePlan(raw);
+    case "request_plan_revision":
     case "request_plan_changes": return validateRequestPlanChanges(raw);
     case "start_implementation": return validateStartImplementation(raw);
     case "checkpoint": return validateCheckpoint(raw);

@@ -189,6 +189,19 @@ export function decideCommand(
       return { fromStatus: state.status, toStatus: state.status, kernelIntent: "operator_override", cycleOperation: "none", effects,
         evidence: { ...command.evidence ?? {}, decisionActorId, executorActorId }, decisionActorId, executorActorId };
     }
+    case "request_plan_revision": {
+      return {
+        fromStatus: state.status, toStatus: "To Do", kernelIntent: "operator_override",
+        cycleOperation: state.activeWorkflowCycleId ? "close" : "none", cycleOutcome: "changes_requested",
+        taskData: { approvedOn: null, approvedById: null },
+        effects: [
+          { type: "board_touch", key: "plan-revision", payload: {} },
+          ...(state.assigneeId ? [{ type: "task_notification" as const, key: `plan-revision:${command.payload!.actionPlanId}:${command.payload!.actionPlanVersion}`, payload: { taskId: state.id, targetUserId: state.assigneeId, actor: command.actor, reason: "action_plan_feedback_received", body: `The approved plan was reopened. Preserve existing work and verified evidence, address this change, and submit a revised plan for approval.\n\n${command.payload!.reviewerComment}` } }] : []),
+        ],
+        evidence: { ...command.evidence ?? {}, actionPlanId: command.payload!.actionPlanId, actionPlanVersion: command.payload!.actionPlanVersion, reason: command.payload!.reviewerComment, decisionActorId, executorActorId },
+        decisionActorId, executorActorId,
+      };
+    }
     case "request_plan_changes": {
       // Stays in Backlog/To Do. No transition; the decision is recorded as
       // an outbox effect (a feedback notification to the assignee) and an
@@ -407,7 +420,7 @@ export function decideCommand(
         toStatus: "Review",
         kernelIntent: "operator_override", // no status change yet
         cycleOperation: "none",
-        procedureType: "finalize_accepted_review",
+        ...((state.openOwnerAcceptance?.count ?? 0) > 0 ? {} : { procedureType: "finalize_accepted_review" as const }),
         effects,
         evidence: {
           ...command.evidence ?? {},
@@ -415,6 +428,7 @@ export function decideCommand(
           executorActorId,
           reviewRunId: state.activeReviewRun?.id ?? null,
           candidateSha: state.activeReviewRun?.candidateSha ?? null,
+          acceptancePendingOwner: (state.openOwnerAcceptance?.count ?? 0) > 0,
         },
         decisionActorId,
         executorActorId,
@@ -511,7 +525,7 @@ export function decideCommand(
         toStatus: state.status,
         kernelIntent: "operator_override",
         cycleOperation: "none",
-        effects: targetUserId && !["review_permission", "defer_acceptance_check"].includes(command.intent)
+        effects: targetUserId && !(command.intent === "clear_blocker" && targetUserId === command.actor.id) && !["review_permission", "defer_acceptance_check"].includes(command.intent)
           ? [{
               type: "task_notification",
               key: `${command.intent}:${targetUserId}`,
@@ -660,7 +674,8 @@ export function decideCommand(
 
     case "publish_checkpoint": {
       const payload = command.payload ?? {};
-      const authorizationCommentId = String(payload.authorizationCommentId ?? "");
+      const authorizationCommentId = payload.authorizationCommentId;
+      const publicationAttemptId = `checkpoint:${state.id}:${payload.standingAuthorizationId ?? "single-use"}`;
       return {
         fromStatus: state.status,
         toStatus: state.status,
@@ -668,13 +683,15 @@ export function decideCommand(
         cycleOperation: "none",
         effects: [{
           type: "repository_checkpoint",
-          key: `checkpoint:${authorizationCommentId}`,
+          key: payload.standingAuthorizationId ? publicationAttemptId : `checkpoint:${authorizationCommentId}`,
           payload: {
             taskId: state.id,
             projectId: state.projectId,
             requestedByUserId: decisionActorId,
             requestedByUsername: command.actor.username ?? "unknown",
             authorizationCommentId,
+            standingAuthorizationId: payload.standingAuthorizationId,
+            publicationAttemptId: payload.standingAuthorizationId ? publicationAttemptId : undefined,
             note: payload.comment ?? "Authorized intermediate checkpoint",
           },
         }],

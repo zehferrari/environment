@@ -1,3 +1,4 @@
+import { WORKFLOW_PUBLIC_ACTIONS } from "@/lib/tasks/orchestrator/types";
 // ENV-116 — fixture unit tests for the workflow invariant registry.
 //
 // Pure: no database, no Prisma, no network. Every predicate in
@@ -200,31 +201,8 @@ function expectViolations(
     "absent action is not continuation-required",
   );
 
-  // The classification table must cover every action the live endpoint
-  // accepts. Kept in sync by hand; this assertion is the tripwire.
-  const endpointActions = [
-    "start",
-    "checkpoint",
-    "publish_checkpoint",
-    "ready_for_review",
-    "submit_review",
-    "review_feedback",
-    "review_done",
-    "triage_to_todo",
-    "submit_plan",
-    "approve_plan",
-    "request_plan_changes",
-    "assign_task",
-    "assign_after_plan_approval",
-    "add_subtask",
-    "complete_subtask",
-    "remove_subtask",
-    "request_subtask",
-    "request_task",
-    "flag_blocker",
-    "clear_blocker",
-    "flag_extra_work_blocker",
-  ];
+  // Compare against the actual public vocabulary; a stale handwritten list hides new actions.
+  const endpointActions = WORKFLOW_PUBLIC_ACTIONS.filter(action => action !== "override_status");
   for (const action of endpointActions) {
     assert(
       WORKFLOW_ACTION_CLASS[action] != null,

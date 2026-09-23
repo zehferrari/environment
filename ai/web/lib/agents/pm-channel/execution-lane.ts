@@ -80,7 +80,10 @@ export async function reserveExecutionLane(args: {
   });
 
   // Expire stale leases
-  if (existing && existing.expiresAt && existing.expiresAt < now) {
+  const cancellationPending = existing?.runId ? await db.pmChannelRun.count({ where: {
+    id: existing.runId, cancellationRequestedAt: { not: null }, cancellationAcknowledgedAt: null,
+  } }) : 0;
+  if (existing && existing.expiresAt && existing.expiresAt < now && !cancellationPending) {
     await db.agentExecutionLease.update({
       where: { id: existing.id },
       data: { status: "released", releasedAt: now },
@@ -225,10 +228,12 @@ export async function releaseExecutionLanesInTransaction(
   args: { runIds: string[]; releasedAt?: Date },
 ): Promise<number> {
   if (args.runIds.length === 0) return 0;
+  const pending = await tx.pmChannelRun.findMany({ where: { id: { in: args.runIds }, cancellationRequestedAt: { not: null }, cancellationAcknowledgedAt: null }, select: { id: true } });
+  const pendingIds = new Set(pending.map(row => row.id));
   const releasedAt = args.releasedAt ?? new Date();
   const updated = await tx.agentExecutionLease.updateMany({
     where: {
-      runId: { in: args.runIds },
+      runId: { in: args.runIds.filter(id => !pendingIds.has(id)) },
       status: { in: ["reserved", "admitted", "running"] },
     },
     data: { status: "released", releasedAt },
@@ -253,10 +258,8 @@ export async function releaseExecutionLane(args: {
     if (!lane || lane.status === "released") {
       return { released: false, nextRunId: null };
     }
-    await db.agentExecutionLease.update({
-      where: { id: lane.id },
-      data: { status: "released", releasedAt: now },
-    });
+    const released = await db.$transaction(tx => releaseExecutionLanesInTransaction(tx, { runIds: [args.runId], releasedAt: now }));
+    if (!released) return { released: false, nextRunId: null };
 
     // Find the next eligible waiting_capacity job for this agent
     const next = await db.pmChannelRun.findFirst({
@@ -289,6 +292,10 @@ export async function reconcileAbandonedLeases(): Promise<number> {
 
   let released = 0;
   for (const lease of activeLeases) {
+    // A terminal database row or elapsed lease is not proof that its model
+    // process stopped. Keep the lane until the durable cancellation is fenced.
+    if (lease.runId && await db.pmChannelRun.count({ where: { id: lease.runId,
+      cancellationRequestedAt: { not: null }, cancellationAcknowledgedAt: null } })) continue;
     // Check if the lease has expired
     if (lease.expiresAt && lease.expiresAt < now) {
       await db.agentExecutionLease.update({

@@ -42,7 +42,7 @@ import {
 import { getTaskGitChanges, getTaskGitFileDiff } from "@/lib/tasks/git-changes";
 import { canApproveActionPlanForActor, resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { submitBrowserPlanApproval } from "@/lib/tasks/orchestrator/browser-plan-adapter";
-import { getBrowserTaskWorkflowActions } from "@/lib/tasks/orchestrator/browser-review-adapter";
+import { getBrowserTaskWorkflowActions, submitBrowserPlanRevision } from "@/lib/tasks/orchestrator/browser-review-adapter";
 import { effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
 import {
   getCachedLatestRepoVerifyActivity,
@@ -144,6 +144,19 @@ async function requireActorId(): Promise<string> {
 }
 
 // ---- Server actions -------------------------------------------------
+
+async function reopenTaskActionPlan(formData: FormData) {
+  "use server";
+  const actor = await requireActor();
+  const taskId = String(formData.get("taskId") ?? "");
+  const slug = String(formData.get("projectSlug") ?? "");
+  await requireTaskAccess(actor, taskId);
+  if (actor.kind !== "human" || !actor.canAccessOwnerFeatures) throw new Error("Not authorized");
+  const result = await submitBrowserPlanRevision({ actor, taskId, actionPlanId: String(formData.get("actionPlanId") ?? ""), actionPlanVersion: Number(formData.get("actionPlanVersion")), reason: String(formData.get("reason") ?? "").trim() });
+  if (!result.ok) throw new Error(result.message);
+  revalidateTaskShell(taskId);
+  revalidatePath(`/projects/${slug}/tasks/${taskId}`);
+}
 
 async function approveTaskActionPlan(formData: FormData) {
   "use server";
@@ -1922,7 +1935,7 @@ export default async function TaskDetailPage({
                                       <div className="flex flex-wrap items-center gap-2">
                                         <h4 className="font-medium text-text">{step.title}</h4>
                                         <span className="rounded-full border border-line bg-bg-elev px-2 py-0.5 text-nano uppercase tracking-wide text-text-muted">
-                                          {step.kind}
+                                          {step.kind} · {step.phase} · {step.responsibleActor}{step.verificationEnvironment ? ` · ${step.verificationEnvironment}` : ""}
                                         </span>
                                       </div>
                                       {visibleStepAssignee ? (
@@ -1952,6 +1965,17 @@ export default async function TaskDetailPage({
                   ) : null}
                   {!task.approvedOn && task.actionPlan?.reviewedAt ? (
                     <p role="status" className="text-caption text-text-muted">Review accepted — awaiting {task.actionPlan.delegatedApproverId === resolveReviewOwnerId(task) ? "delegated reviewer" : "reporter"} approval. No plan revision is needed.</p>
+                  ) : null}
+                  {viewer.canAccessOwnerFeatures && task.approvedOn && task.actionPlan && ["To Do", "In Progress", "Review"].includes(task.status) ? (
+                    <form action={reopenTaskActionPlan} className="space-y-2 rounded-lg border border-line p-4">
+                      <input type="hidden" name="taskId" value={task.id} />
+                      <input type="hidden" name="projectSlug" value={slug} />
+                      <input type="hidden" name="actionPlanId" value={task.actionPlan.id} />
+                      <input type="hidden" name="actionPlanVersion" value={task.actionPlan.version} />
+                      <label className="block text-caption">Reason for revising the approved plan<input name="reason" required maxLength={2000} className="mt-1 w-full rounded border border-line bg-bg p-2" /></label>
+                      <p className="text-caption text-text-muted">Preserves work and evidence. Execution resumes after the revised plan is approved.</p>
+                      <button type="submit" className="rounded-lg border border-line px-control-x py-control-y text-caption">Reopen plan</button>
+                    </form>
                   ) : null}
                   {canApproveActionPlan ? (
                     <form action={approveTaskActionPlan} className="flex justify-end gap-3">
@@ -1998,6 +2022,7 @@ export default async function TaskDetailPage({
                 name="Sub-Tasks"
                 visible={experience.canViewProjectWorkflow}
               >
+                {task.reviewRuns.at(-1)?.status === "accepted_pending_owner" ? <p role="status" className="mb-4 rounded-lg border border-line p-3 text-caption">Review accepted for candidate {task.reviewRuns.at(-1)?.candidateSha.slice(0, 12)}. Record the pending owner checks below; PM will resume finalization using that recorded review.</p> : null}
                 <TaskChecklist
                   taskId={task.id}
                   projectSlug={slug}
@@ -2016,11 +2041,12 @@ export default async function TaskDetailPage({
                     text: item.text,
                     reviewFinding: item.reviewFinding,
                     groupKey: item.groupKey,
+                    responsibleActor: item.responsibleActor, verificationEnvironment: item.verificationEnvironment, acceptanceGate: item.acceptanceGate, completionEvidence: item.completionEvidence, supersededReason: item.supersededReason, canComplete: item.responsibleActor !== "owner" || viewer.kind === "human" && viewer.canAccessOwnerFeatures,
                     // task shell comes through unstable_cache, which JSON-revives
                     // completedAt as an ISO string; dateIso handles Date|string.
                     completedAt: dateIso(item.completedAt),
                     minutesSpent: item.minutesSpent ?? null,
-                    kind: item.kind === "review" ? ("review" as const) : ("implementation" as const),
+                    kind: item.kind === "superseded" ? ("superseded" as const) : item.kind === "review" ? ("review" as const) : ("implementation" as const),
                   }))}
                   addAction={addSubTaskItem}
                   toggleAction={toggleSubTaskItem}

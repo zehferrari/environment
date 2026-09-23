@@ -1,3 +1,4 @@
+import { validateStandingAuthorization } from "@/lib/tasks/standing-authorization";
 // JSON serializers for the agent-facing PM read API.
 //
 // These are intentionally data-only — no markdown rendering and no
@@ -154,6 +155,7 @@ export interface TaskContextResponse {
   // execution episode must be able to retrieve every acceptance criterion.
   currentBlocker: Awaited<ReturnType<typeof readTaskBlockerState>>;
   currentPermission: Awaited<ReturnType<typeof readTaskBlockerState>>;
+  standingAuthorization: null | { id: string; environmentId: string; target: string; branch: string; allowedOperations: string[]; planVersion: number };
   actionPlan: null | {
     id: string;
     version: number;
@@ -171,12 +173,15 @@ export interface TaskContextResponse {
       title: string;
       acceptanceCriteria: string[];
       kind: string;
+      phase: string;
+      responsibleActor: string;
+      verificationEnvironment: string | null;
       assigneeId: string | null;
       rank: number;
     }>;
   };
   reviewFindings: Array<{ id: string; subTaskId: string | null; reviewRunId: string; candidateSha: string; title: string; acceptanceCriteria: string; scopeReference: string; status: string; completionEvidence: string | null; supersededReason: string | null; ownerInstructionCommentId: string | null }>;
-  checklist: Array<{ id: string; groupKey: string; text: string; done: boolean; minutes: number | null }>;
+  checklist: Array<{ id: string; groupKey: string; text: string; done: boolean; minutes: number | null; kind: string; responsibleActor: string; verificationEnvironment: string | null; acceptanceGate: string; completionEvidence: string | null }>;
   comments: Array<{
     id: string;
     createdAt: string;
@@ -296,7 +301,7 @@ export async function buildTaskContextJson(
             orderBy: { rank: "asc" },
             select: {
               id: true, stepId: true, title: true, acceptanceCriteria: true,
-              kind: true, assigneeId: true, rank: true,
+              kind: true, phase: true, responsibleActor: true, verificationEnvironment: true, assigneeId: true, rank: true,
             },
           },
         },
@@ -304,7 +309,8 @@ export async function buildTaskContextJson(
       reviewFindings: { orderBy: { createdAt: "asc" }, select: { id: true, subTaskId: true, reviewRunId: true, candidateSha: true, title: true, acceptanceCriteria: true, scopeReference: true, status: true, completionEvidence: true, supersededReason: true, ownerInstructionCommentId: true } },
       checklist: {
         orderBy: { rank: "asc" },
-        select: { id: true, groupKey: true, text: true, completedAt: true, minutesSpent: true },
+        where: { kind: { not: "superseded" } },
+        select: { id: true, groupKey: true, text: true, completedAt: true, minutesSpent: true, kind: true, responsibleActor: true, verificationEnvironment: true, acceptanceGate: true, completionEvidence: true },
       },
       assignee: { select: { username: true, kind: true, isOwner: true } },
       actingManager: { select: { username: true, kind: true, isOwner: true } },
@@ -312,6 +318,10 @@ export async function buildTaskContextJson(
     },
   });
   if (!task) return null;
+  const grant = await db.taskStandingAuthorization.findFirst({ where: { taskId, status: "active" }, orderBy: { createdAt: "desc" }, select: { id: true } });
+  const validatedGrant = grant ? await validateStandingAuthorization(db, { taskId, grantId: grant.id }) : null;
+  const standingAuthorization = validatedGrant?.ok ? { id: validatedGrant.grant.id, environmentId: validatedGrant.grant.environmentId, target: validatedGrant.grant.target, branch: validatedGrant.grant.branch, allowedOperations: validatedGrant.config.allowedOperations, planVersion: validatedGrant.grant.actionPlanVersion } : null;
+
 
   const resolvedReviewer = task.actingManager
     ?? (isActionableEpicStatus(task.epic?.status) ? task.epic?.actingManager ?? null : null)
@@ -484,6 +494,7 @@ export async function buildTaskContextJson(
       : null,
     currentBlocker,
     currentPermission: currentBlocker?.permissionRequest ? currentBlocker : null,
+    standingAuthorization,
     actionPlan: task.actionPlan
       ? {
           ...task.actionPlan,
@@ -498,7 +509,7 @@ export async function buildTaskContextJson(
     reviewFindings: task.reviewFindings,
     checklist: task.checklist.map((s) => ({
       id: s.id,
-      groupKey: s.groupKey,
+      groupKey: s.groupKey, kind: s.kind, responsibleActor: s.responsibleActor, verificationEnvironment: s.verificationEnvironment, acceptanceGate: s.acceptanceGate, completionEvidence: s.completionEvidence,
       text: s.text,
       done: s.completedAt !== null,
       minutes: s.minutesSpent ?? null,

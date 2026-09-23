@@ -84,7 +84,7 @@ export async function POST(
     }),
     db.task.findFirst({
       where: { id: taskId, archivedAt: null, deletedAt: null },
-      select: { id: true, project: { select: { slug: true } } },
+      select: { id: true, projectId: true, project: { select: { slug: true } } },
     }),
     resolveEngineOwnership(db, taskId),
     resolveEpisodeRolloverBarrier({ taskId, agentSlug: grantAgentSlug, messageId }),
@@ -162,6 +162,9 @@ export async function POST(
         orchestratorStatus: "operational",
       },
     };
+  }
+  if (result.body.ok !== true) {
+    await db.activityLog.create({ data: { taskId, projectId: task.projectId, userId: agent.user.id, targetAgent: grantAgentSlug, kind: "task.workflow.command_rejected", payload: JSON.stringify({ action, messageId, code: result.body.code, status: result.status }) } }).catch(error => console.error("[pm] workflow rejection audit failed", error));
   }
   if (result.body.ok === true) {
     decorateAuthoritativeAgentResponseCache({ taskId, projectSlug: task.project.slug });

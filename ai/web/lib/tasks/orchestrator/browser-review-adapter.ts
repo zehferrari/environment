@@ -200,3 +200,11 @@ export async function submitBrowserCancelTask(args: {
   });
   return browserResult(result, "The task changed while suspension was pending. Refresh and try again.");
 }
+
+/** Reopens planning without discarding the implementation worktree or evidence. */
+export async function submitBrowserPlanRevision(args: { actor: Viewer; taskId: string; actionPlanId: string; actionPlanVersion: number; reason: string }) {
+  const state = await loadTaskStateSnapshot(args.taskId);
+  if (!state) return { ok: false as const, message: "Task not found.", stale: false };
+  const result = await submitWorkflowCommand({ taskId: args.taskId, intent: "request_plan_revision", actor: workflowActor(args.actor), source: "browser", expectedWorkflowVersion: state.workflowVersion, workflowCycleId: state.activeWorkflowCycleId, idempotencyKey: `browser-plan-revision:${args.actionPlanId}:${args.actionPlanVersion}`, payload: { actionPlanId: args.actionPlanId, actionPlanVersion: args.actionPlanVersion, reviewerComment: args.reason } });
+  return browserResult(result, "The plan changed. Refresh before reopening it.");
+}

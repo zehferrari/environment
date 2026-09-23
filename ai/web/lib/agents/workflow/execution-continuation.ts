@@ -1,6 +1,7 @@
 import { db } from "@/lib/db";
 import type { PmChannelReplyTarget } from "@/lib/agents/pm-channel/openclaw";
-import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
+import { AUTO_CONTINUATION_ACTION } from "@/lib/agents/pm-channel/continuations";
+import { ACTIVE_RUN_STATUSES } from "@/lib/workflow-invariants";
 import {
   activeFormalBlockerStatesByTask,
   formalBlockerNeedsExternalInput,
@@ -126,7 +127,7 @@ export async function continueActionableTaskAfterReply(args: {
         taskId: task.id,
         agentSlug: args.target.agentSlug,
         messageId: { not: args.target.messageId },
-        status: { in: ["queued", "accepted", "streaming"] },
+        status: { in: [...ACTIVE_RUN_STATUSES] },
       },
       select: { id: true },
     });
@@ -171,35 +172,33 @@ export async function continueActionableTaskAfterReply(args: {
       return;
     }
 
-    const continuation = await sendTaskWorkflowNotification({
-      taskId: task.id,
-      targetUserId: task.assigneeId,
-      actor: { id: agent.user.id, kind: "agent", username: args.target.agentSlug },
-      reason: "monitor_recovery",
-      body: [
-        `Your preceding execution turn for "${task.title}" ended with a progress response${args.replyId ? ` in comment ${args.replyId}` : ""}, but the task is still In Progress and repository execution remains active.`,
-        activeBlocker?.permissionGrant?.authorizationCommentId
-          ? `The active permission request is already granted and is agent-actionable now. Use authorization comment ${activeBlocker.permissionGrant.authorizationCommentId} for the exact authorized operation; do not wait for another human response or create a duplicate blocker.`
-          : "No formal blocker is waiting on external input.",
-        "Continue the remaining implementation and live verification now. Do not stop at another progress/status comment: keep working until ready_for_review succeeds or flag_blocker records one precise human/external dependency.",
-      ].join("\n"),
-    });
-    if (!continuation) return;
-    await db.activityLog.create({
-      data: {
-        projectId: task.projectId,
-        taskId: task.id,
-        userId: agent.user.id,
-        kind: "task.workflow.auto_continue",
-        targetAgent: args.target.agentSlug,
-        payload: JSON.stringify({
-          sourceMessageId: args.target.messageId,
-          sourceReplyId: args.replyId,
-          sourceReason: workflowReason,
-          continuationMessageId: continuation.messageId,
-          chainIndex: recentContinuations + 1,
-        }),
-      },
+    // The stream final and durable reply callback can arrive concurrently.
+    // Persist the obligation on their exact source run; the ordinary drain
+    // owns dispatch/retries. A duplicate must never re-arm a dispatched row.
+    await db.$transaction(async tx => {
+      const run = await tx.pmChannelRun.findFirst({ where: {
+        taskId: task.id, agentSlug: args.target.agentSlug, messageId: args.target.messageId,
+        status: "completed", supersededByRunId: null,
+      }, select: { id: true, projectId: true, taskId: true, epicId: true } });
+      if (!run) return;
+      const continuation = await tx.pmChannelContinuation.upsert({
+        where: { runId_messageId_action: { runId: run.id, messageId: args.target.messageId, action: AUTO_CONTINUATION_ACTION } },
+        create: { runId: run.id, projectId: run.projectId, taskId: run.taskId, epicId: run.epicId,
+          agentSlug: args.target.agentSlug, messageId: args.target.messageId, action: AUTO_CONTINUATION_ACTION,
+          status: "queued", availableAt: new Date() },
+        update: {},
+      });
+      await tx.activityLog.upsert({
+        where: { dedupeKey: `auto-continue:${run.id}:${args.target.messageId}` },
+        create: {
+          projectId: task.projectId, taskId: task.id, userId: agent.user!.id,
+          kind: "task.workflow.auto_continue", targetAgent: args.target.agentSlug,
+          dedupeKey: `auto-continue:${run.id}:${args.target.messageId}`,
+          payload: JSON.stringify({ sourceMessageId: args.target.messageId, sourceReplyId: args.replyId,
+            sourceReason: workflowReason, continuationId: continuation.id, chainIndex: recentContinuations + 1 }),
+        },
+        update: {},
+      });
     });
   } catch (error) {
     console.error("[pm] execution auto-continuation failed", args.target.taskId, args.target.agentSlug, error);

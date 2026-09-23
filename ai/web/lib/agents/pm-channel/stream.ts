@@ -1,6 +1,7 @@
 import type { PmChannelReplyTarget } from "@/lib/agents/pm-channel/openclaw";
 
 export type PmChannelStreamEventKind =
+  | "tool:heartbeat"
   | "status"
   | "status:thinking"
   | "status:reading"
@@ -42,6 +43,8 @@ export interface PmChannelStreamInput {
   degradedTelemetry?: boolean;
   seq?: number;
   runStatus?: PmChannelStreamState["runStatus"];
+  /** Internal durable replay snapshot; never accepted from gateway callbacks. */
+  snapshot?: Omit<PmChannelStreamState, "target" | "key" | "seq" | "updatedAt">;
 }
 
 export interface PmChannelStreamState {
@@ -198,6 +201,8 @@ export function applyPmChannelStreamInput(
     key: pmChannelStreamKey(input.target),
   };
   if (input.seq != null) state.seq = input.seq;
+  if (input.snapshot) return { ...state, ...input.snapshot, target: input.target,
+    key: pmChannelStreamKey(input.target), seq: input.seq ?? state.seq, updatedAt: Date.now() };
 
   const lifecycleStatus = statusFromEvent(input);
   const toolStatus = toolStatusFromEvent(input);

@@ -29,6 +29,7 @@ import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { activeFormalBlockerStatesByTask } from "@/lib/tasks/formal-blocker";
 import { effectiveTaskBranchName } from "@/lib/work-items/branches";
 import { findInProgressStartConflict } from "@/lib/tasks/start-conflict";
+import { acceptanceChecklistSnapshot } from "@/lib/tasks/acceptance";
 
 // ---------------------------------------------------------------------------
 // FENCE_ERROR_CODES — local declaration, structurally assignable to 02a's
@@ -416,6 +417,7 @@ async function loadTaskAggregateWithClient(
             baseSha: true,
             repoTouched: true,
             validationOutcome: true,
+            acceptancePlanVersion: true, acceptanceChecklistHash: true,
           },
         })
       : Promise.resolve(null),
@@ -456,7 +458,7 @@ async function loadTaskAggregateWithClient(
         taskId: taskId,
         completedAt: null,
       },
-      select: { id: true, kind: true },
+      select: { id: true, kind: true, responsibleActor: true, acceptanceGate: true },
     }),
 
     client.reviewFinding.findMany({ where: { taskId, status: "open" }, select: { id: true, subTaskId: true } }),
@@ -708,13 +710,18 @@ async function loadTaskAggregateWithClient(
 
     // Open checklist
     openChecklist: {
-      count: new Set([...openChecklist.filter(c => c.kind !== "review").map(c => c.id), ...openFindings.map(f => f.subTaskId ?? f.id)]).size,
-      ids: [...new Set([...openChecklist.filter(c => c.kind !== "review").map(c => c.id), ...openFindings.map(f => f.subTaskId ?? f.id)])],
+      count: new Set([...openChecklist.filter(c => c.kind === "implementation" && c.responsibleActor !== "owner" && c.acceptanceGate === "task").map(c => c.id), ...openFindings.map(f => f.subTaskId ?? f.id)]).size,
+      ids: [...new Set([...openChecklist.filter(c => c.kind === "implementation" && c.responsibleActor !== "owner" && c.acceptanceGate === "task").map(c => c.id), ...openFindings.map(f => f.subTaskId ?? f.id)])],
     },
     openReviewChecklist: {
-      count: openChecklist.filter((c) => c.kind === "review").length,
-      ids: openChecklist.filter((c) => c.kind === "review").map((c) => c.id),
+      count: openChecklist.filter((c) => c.kind === "review" && c.responsibleActor !== "owner" && c.acceptanceGate === "task").length,
+      ids: openChecklist.filter((c) => c.kind === "review" && c.responsibleActor !== "owner" && c.acceptanceGate === "task").map((c) => c.id),
     },
+    openOwnerAcceptance: {
+      count: openChecklist.filter(c => c.kind !== "superseded" && c.responsibleActor === "owner" && c.acceptanceGate === "task").length,
+      ids: openChecklist.filter(c => c.kind !== "superseded" && c.responsibleActor === "owner" && c.acceptanceGate === "task").map(c => c.id),
+    },
+    acceptanceChecklistHash: (await acceptanceChecklistSnapshot(client, taskId)).checklistHash,
 
     // Active blocker (resolved from activity log — formal blocker state)
     activeBlocker: activeBlocker
@@ -796,6 +803,7 @@ async function loadTaskAggregateWithClient(
           baseSha: reviewRun.baseSha,
           repoTouched: reviewRun.repoTouched,
           validationOutcome: reviewRun.validationOutcome,
+          acceptancePlanVersion: reviewRun.acceptancePlanVersion, acceptanceChecklistHash: reviewRun.acceptanceChecklistHash,
         }
       : null,
 
@@ -875,6 +883,19 @@ export async function fenceState(
       expected: `workflowVersion=${command.expectedWorkflowVersion}`,
       actual: `workflowVersion=${aggregate.workflowVersion}`,
     };
+  }
+
+  // Checkboxes may change without bumping workflowVersion. Recheck their
+  // gate and immutable verdict binding under the same write transaction.
+  if (command.intent === "accept_review" || command.intent === "repository_finalization_succeeded") {
+    const pending = aggregate.openChecklist.count + aggregate.openReviewChecklist.count
+      + (command.intent === "repository_finalization_succeeded" ? aggregate.openOwnerAcceptance?.count ?? 0 : 0);
+    if (pending) return { ok: false, code: "stale_version", expected: "all required acceptance checks complete", actual: `${pending} pending checks` };
+    const review = aggregate.activeReviewRun;
+    if (command.intent === "repository_finalization_succeeded" && review?.acceptanceChecklistHash &&
+        (review.acceptanceChecklistHash !== aggregate.acceptanceChecklistHash || review.acceptancePlanVersion !== (aggregate.actionPlan?.version ?? 0))) {
+      return { ok: false, code: "lease_mismatch", expected: "same accepted plan and checklist", actual: "acceptance criteria changed" };
+    }
   }
 
   // 2. Status check — the status must not have changed between snapshot and
@@ -992,7 +1013,7 @@ export async function fenceState(
     }
 
     const allowedLeaseStatuses = command.intent === "request_review_changes" || canRetryAcceptedRepositoryReview(aggregate)
-      ? ["awaiting_review", "accepted"]
+      ? ["awaiting_review", "accepted", ...(command.intent === "request_review_changes" ? ["accepted_pending_owner"] : [])]
       : ["awaiting_review"];
     if (!allowedLeaseStatuses.includes(lease.status)) {
       return {

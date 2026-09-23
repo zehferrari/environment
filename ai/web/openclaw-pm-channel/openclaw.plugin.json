@@ -2,14 +2,17 @@
   "id": "pm",
   "name": "PM Channel",
   "description": "Native local PM chat and task-comment channel for OpenClaw.",
-  "version": "0.1.15",
-  "channels": ["pm"],
+  "version": "0.1.16",
+  "channels": [
+    "pm"
+  ],
   "contracts": {
     "tools": [
       "pm_context",
       "pm_submit_plan",
       "pm_approve_plan",
       "pm_request_plan_changes",
+      "pm_request_plan_revision",
       "pm_review_feedback",
       "pm_start",
       "pm_checkpoint",
@@ -45,14 +48,30 @@
         "type": "object",
         "additionalProperties": true,
         "properties": {
-          "enabled": { "type": "boolean" },
-          "token": { "type": "string" },
-          "callbackToken": { "type": "string" },
-          "callbackUrl": { "type": "string" },
-          "agentId": { "type": "string" },
-          "defaultTo": { "type": "string" },
-          "accounts": { "type": "object" },
-          "defaultAccount": { "type": "string" }
+          "enabled": {
+            "type": "boolean"
+          },
+          "token": {
+            "type": "string"
+          },
+          "callbackToken": {
+            "type": "string"
+          },
+          "callbackUrl": {
+            "type": "string"
+          },
+          "agentId": {
+            "type": "string"
+          },
+          "defaultTo": {
+            "type": "string"
+          },
+          "accounts": {
+            "type": "object"
+          },
+          "defaultAccount": {
+            "type": "string"
+          }
         }
       },
       "uiHints": {

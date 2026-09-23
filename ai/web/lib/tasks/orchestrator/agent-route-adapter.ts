@@ -298,7 +298,7 @@ export async function submitAuthoritativeAgentWorkflowAction(args: {
   // An exact approval retry must reuse the original server snapshot rather than
   // fingerprinting the version advanced by that same successful approval.
   // The orchestrator still verifies the complete fingerprint and actor.
-  const priorPlanReceipt = ["approve_plan", "accept_plan_review", "request_plan_changes"].includes(args.action)
+  const priorPlanReceipt = ["approve_plan", "accept_plan_review", "request_plan_changes", "request_plan_revision"].includes(args.action)
     ? await db.taskWorkflowCommandReceipt.findUnique({ where: { taskId_idempotencyKey: { taskId: args.taskId, idempotencyKey } }, select: { actorUserId: true, expectedWorkflowVersion: true, workflowCycleId: true } })
     : null;
   const replaySnapshot = priorPlanReceipt?.actorUserId === args.agent.id ? priorPlanReceipt : null;

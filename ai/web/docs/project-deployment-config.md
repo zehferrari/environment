@@ -61,6 +61,72 @@ changes uncommitted/unpushed, and call `ready_for_review` again. PM owns the
 submission commit and publication. Reviewers should treat protected-branch
 failures as workflow blockers, not as missing commits or credential issues.
 
+## Bounded Dev publication
+
+Owner-only Project Settings offers `devPublicationPolicy`: `single_use` (the
+default) or `standing`. Standing grants are issued only at a new explicit plan
+approval with an assigned implementation owner. Existing approved plans are
+not enrolled by a configuration change. A grant binds the task, plan content
+and revision, assignee, reviewer, exact branch/repository and registered Dev
+configuration. Reassignment, scope/configuration changes or revocation refuse
+future publication. Production and protected branches cannot use this grant.
+
+`devPublicationConfig` is an owner-managed JSON object, for example:
+
+```json
+{
+  "environment": "development",
+  "environmentId": "shared-v23-dev",
+  "target": "https://dev.example.test",
+  "repositoryPath": "/srv/Code/example",
+  "allowedOperations": ["publish", "deploy"],
+  "publishTriggersDeployment": true,
+  "configurationFiles": [
+    { "path": "bitbucket-pipelines.yml", "sha256": "<actual SHA-256 of the approved file>" }
+  ],
+  "devOnCheckpoint": null,
+  "verify": {
+    "executable": "/usr/local/sbin/example-dev-receipt",
+    "args": ["{sha}", "{branch}", "{target}", "{environmentId}"],
+    "timeoutSeconds": 30
+  }
+}
+```
+
+`configurationFiles` pins every repository file controlling deployment effects,
+including pipeline files and scripts invoked by them. The runner compares the
+exact candidate bytes before pushing. A deployment-triggering push requires
+at least one pinned file and the `deploy` operation. `devOnCheckpoint`, when
+configured, uses the same command shape as `verify` and must be idempotent by
+SHA. Commands are executed without a shell, from installed root-owned executables
+outside the mutable repository; generic interpreter commands are refused.
+Credentials remain in the runner environment, never configuration, prompts or
+task output. Each command has a maximum 60-second timeout; readiness can retry.
+
+The verifier must return one JSON object containing the exact deployed `sha`,
+`environmentId` and `target`. Successful exit alone does not prove deployment.
+All PM publication paths use the same environment reservation, including review
+submission, checkpoints, Epic integration and deployment-PR preparation. Use
+the same `environmentId` for projects sharing a target. Task-owned reservations
+remain held through implementation/reviewer verification and release at task
+completion/cancellation only after exact-SHA verification. The same task can
+publish another approved iteration. Taskless publication releases after the
+registered receipt. Other publishers outside PM must participate in the same
+coordination; an application reservation cannot fence an independent CI trigger.
+
+Each publication attempt has its own durable identity and stored Git result.
+Retries reconcile that result and do not absorb later edits or rerun an
+uncertain deployment command. Failed verification retains the reservation;
+expiry does not let another task overwrite an uncertain deployment. Checkpoint
+jobs retry readiness for up to an hour, then preserve the reservation and report
+the exact failure for recovery. The existing per-request grants retain their
+single-use lifecycle. No Dev policy or target is enabled automatically.
+
+`ownerAcceptancePolicy` independently controls new plan approvals: `task` keeps
+owner checks at task acceptance; `epic_release` carries explicitly identified
+child owner checks to Epic release acceptance. Changing the setting does not
+waive, complete or relocate existing checks.
+
 ## Approval flow
 
 When deployment is approved, Monitor checks the project repository for uncommitted local changes before pushing or opening a PR. A clean worktree is pushed and opened as a deployment PR immediately. A dirty worktree creates a pending row in the Epic/Task Development tab; an authorized human must approve the local commit before Monitor commits the changes as the reporter, pushes the branch, and opens the PR.

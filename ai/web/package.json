@@ -189,7 +189,15 @@
     "test:pm-turn-effort": "node --import tsx scripts/pm-turn-effort-test.ts",
     "test:reviewer-permission": "node --import tsx scripts/reviewer-permission-test.ts",
     "test:standalone-checkpoint": "tsx scripts/standalone-checkpoint-test.ts",
-    "test:wdt-planning": "node --import tsx scripts/wdt-planning-workflow-test.ts"
+    "test:wdt-planning": "node --import tsx scripts/wdt-planning-workflow-test.ts",
+    "test:active-plan-revision": "node --import tsx scripts/active-plan-revision-test.ts",
+    "test:notification-autonomy": "node --import tsx scripts/notification-autonomy-test.ts",
+    "test:standing-authorization": "node --import tsx scripts/standing-authorization-test.ts",
+    "test:pm-runtime-reliability": "node scripts/pm-runtime-reliability-test.mjs",
+    "test:pm-runtime-continuity": "node --import tsx scripts/pm-runtime-continuity-test.ts",
+    "test:review-findings": "node --import tsx scripts/review-findings-test.ts",
+    "test:acceptance-lifecycle": "node --import tsx scripts/acceptance-lifecycle-test.ts",
+    "test:monitor-recovery": "python3 ../openclaw/tests/ai-monitor-pm-recovery-test.py"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.7.4",

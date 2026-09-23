@@ -27,6 +27,8 @@ import type {
   TaskWorkflowCommand,
 } from "@/lib/tasks/orchestrator/types";
 import type { TaskAggregate } from "@/lib/tasks/orchestrator/state";
+import { acceptanceChecklistSnapshot } from "@/lib/tasks/acceptance";
+import { releaseTaskDevLease } from "@/lib/deploy/dev-publication";
 
 function isPrismaUniqueConstraintError(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error
@@ -180,6 +182,10 @@ export async function executeDecisionWrites(args: {
     }
   }
 
+  if (decision.toStatus === "Done" || command.intent === "cancel_task") {
+    await releaseTaskDevLease(tx, { taskId: command.taskId });
+  }
+
   if (decision.cycleOperation === "open" && cycleId && transitionId) {
     await tx.taskWorkflowCycle.update({
       where: { id: cycleId },
@@ -203,26 +209,45 @@ export async function executeDecisionWrites(args: {
       where: {
         taskId: command.taskId,
         status: command.intent === "request_review_changes"
-          ? { in: ["awaiting_review", "accepted"] }
+          ? { in: ["awaiting_review", "accepted", "accepted_pending_owner"] }
           : "awaiting_review",
       },
       orderBy: { createdAt: "desc" },
       take: 1,
     });
     if (lease) {
+      const acceptance = command.intent === "accept_review" ? await acceptanceChecklistSnapshot(tx, command.taskId) : null;
+      if (acceptance) {
+        const pendingOwner = await tx.subTask.count({ where: { taskId: command.taskId,
+          kind: { not: "superseded" }, responsibleActor: "owner", acceptanceGate: "task", completedAt: null } });
+        decision.evidence.acceptancePendingOwner = pendingOwner > 0;
+        decision.procedureType = pendingOwner ? undefined : "finalize_accepted_review";
+      }
       await tx.reviewRun.updateMany({
         where: {
           id: lease.id,
           status: command.intent === "request_review_changes"
-            ? { in: ["awaiting_review", "accepted"] }
+            ? { in: ["awaiting_review", "accepted", "accepted_pending_owner"] }
             : "awaiting_review",
         },
         data: {
-          status: command.intent === "request_review_changes" ? "changes_requested" : "accepted",
+          status: command.intent === "request_review_changes" ? "changes_requested" : decision.evidence.acceptancePendingOwner ? "accepted_pending_owner" : "accepted",
           reviewerId: decision.decisionActorId,
           reviewedAt: new Date(),
+          ...(acceptance ? { acceptancePlanVersion: acceptance.planVersion, acceptanceChecklistHash: acceptance.checklistHash } : {}),
         },
       });
+      if (command.intent === "accept_review" && decision.evidence.acceptancePendingOwner) {
+        const owners = await tx.user.findMany({ where: { kind: "human", isOwner: true, status: "active" }, select: { id: true } });
+        await enqueueWorkflowEffects(tx, {
+          taskId: command.taskId, projectId: args.state.projectId,
+          aggregateVersion: workflowVersion, workflowCycleId: cycleId,
+          effects: owners.map(owner => ({ type: "task_notification" as const, key: `owner-acceptance:${lease.id}:${owner.id}`, payload: {
+            taskId: command.taskId, targetUserId: owner.id, actor: command.actor, reason: "owner_acceptance_required",
+            body: "The reviewer accepted the current candidate. Complete the remaining owner acceptance checks with observed evidence to let PM finalize this recorded verdict.",
+          } })),
+        });
+      }
     }
   }
 

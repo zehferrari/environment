@@ -1,3 +1,4 @@
+import { maintainPmRuntimeHistory } from "@/lib/agents/pm-channel/retention";
 import { bootstrapOwner } from "@/lib/agents/auth/bootstrap-owner";
 import { syncAgents } from "@/lib/agents/management/sync";
 import { purgeBin } from "@/lib/bin/purge";
@@ -197,7 +198,13 @@ try {
 } catch (err) {
   console.error("[pm] boot direct chat bin purge failed:", err);
 }
+async function maintainRuntimeHistory() {
+  try { console.log("[pm] runtime retention:", JSON.stringify(await maintainPmRuntimeHistory())); }
+  catch (error) { console.error("[pm] runtime retention failed:", error); }
+}
+await maintainRuntimeHistory();
 setInterval(async () => {
+  await maintainRuntimeHistory();
   try {
     const r = await autoArchiveDoneTasks();
     console.log("[pm] periodic auto archive:", JSON.stringify(r));

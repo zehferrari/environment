@@ -10,7 +10,7 @@ import { newTaskWorkflowOwnership } from "@/lib/tasks/orchestrator/ownership";
 import { createHash } from "node:crypto";
 
 import { db } from "@/lib/db";
-import { createSubTaskItem, setSubTaskCompletion } from "@/lib/tasks/subtasks";
+import { createSubTaskItem } from "@/lib/tasks/subtasks";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -20,6 +20,9 @@ export interface ActionPlanStepInput {
   acceptanceCriteria: string[];
   kind: "sequential" | "parallel";
   assigneeId?: string | null;
+  phase?: "implementation" | "acceptance";
+  responsibleActor?: "assignee" | "reviewer" | "owner";
+  verificationEnvironment?: string | null;
 }
 
 export interface ActionPlanInput {
@@ -46,6 +49,9 @@ export interface PersistedActionPlan {
     kind: "sequential" | "parallel";
     assigneeId: string | null;
     rank: number;
+    phase?: string;
+    responsibleActor?: string;
+    verificationEnvironment?: string | null;
   }>;
 }
 
@@ -142,7 +148,14 @@ export function validateActionPlanInput(
       }
     }
 
+    if (step.phase !== undefined && !["implementation", "acceptance"].includes(String(step.phase))) errors.push({ field: `${prefix}.phase`, message: "phase must be implementation or acceptance" });
+    if (step.responsibleActor !== undefined && !["assignee", "reviewer", "owner"].includes(String(step.responsibleActor))) errors.push({ field: `${prefix}.responsibleActor`, message: "responsibleActor must be assignee, reviewer or owner" });
+    if (step.phase !== "acceptance" && step.responsibleActor && step.responsibleActor !== "assignee") errors.push({ field: `${prefix}.responsibleActor`, message: "Owner/reviewer checks belong to acceptance" });
+    if (step.verificationEnvironment != null && (typeof step.verificationEnvironment !== "string" || step.verificationEnvironment.length > 200)) errors.push({ field: `${prefix}.verificationEnvironment`, message: "verificationEnvironment must be a string of at most 200 characters" });
     validatedSteps.push({
+      phase: step.phase === "acceptance" ? "acceptance" : "implementation",
+      responsibleActor: step.responsibleActor === "owner" ? "owner" : step.responsibleActor === "reviewer" || step.phase === "acceptance" && !step.responsibleActor ? "reviewer" : "assignee",
+      verificationEnvironment: typeof step.verificationEnvironment === "string" ? step.verificationEnvironment.trim() || null : null,
       id: stepId,
       title: step.title.trim(),
       acceptanceCriteria: Array.isArray(step.acceptanceCriteria)
@@ -227,6 +240,9 @@ export async function persistActionPlan(args: {
     title: step.title,
     acceptanceCriteria: JSON.stringify(step.acceptanceCriteria),
     kind: step.kind,
+    phase: step.phase ?? "implementation",
+    responsibleActor: step.responsibleActor ?? (step.phase === "acceptance" ? "reviewer" : "assignee"),
+    verificationEnvironment: step.verificationEnvironment ?? null,
     assigneeId: step.assigneeId ?? null,
     rank: index + 1,
   }));
@@ -245,6 +261,14 @@ export async function persistActionPlan(args: {
       await tx.actionPlanRevision.updateMany({
         where: { actionPlanId: existing.id, status: "draft" },
         data: { status: "superseded" },
+      });
+      // Retain the old approved requirement fingerprint on its checklist row.
+      // Draft edits do not waive or complete any requirement. Approval below
+      // reconciles unchanged evidence and explicitly supersedes changed rows.
+      const previousSteps = await tx.actionPlanStep.findMany({ where: { actionPlanId: existing.id } });
+      for (const step of previousSteps) await tx.subTask.updateMany({
+        where: { actionPlanStepId: step.id, planContentHash: null },
+        data: { planStepKey: step.stepId, planContentHash: planStepFingerprint(step) },
       });
       await tx.actionPlanStep.deleteMany({ where: { actionPlanId: existing.id } });
       const updated = await tx.actionPlan.update({
@@ -335,7 +359,7 @@ export async function persistActionPlan(args: {
       acceptanceCriteria: parseAcceptanceCriteria(s.acceptanceCriteria),
       kind: s.kind,
       assigneeId: s.assigneeId,
-      rank: s.rank,
+      rank: s.rank, phase: s.phase, responsibleActor: s.responsibleActor, verificationEnvironment: s.verificationEnvironment,
     })),
   };
 }
@@ -359,7 +383,7 @@ export async function markActionPlanRevisionRequired(args: {
   }
   await client.actionPlan.update({
     where: { id: plan.id },
-    data: { status: "revision_required", approvedOn: null, approvedById: null },
+    data: { status: "revision_required", approvedOn: null, approvedById: null, reviewedAt: null, reviewedById: null, delegatedApproverId: null, delegatedById: null },
   });
   return { actionPlanId: plan.id, version: plan.version, changed: true };
 }
@@ -413,44 +437,24 @@ export async function createChecklistAndDelegatableTasksFromPlan(args: {
   let checklistCreated = 0;
   let delegatableCreated = 0;
 
+  const taskPolicy = await client.task.findUniqueOrThrow({ where: { id: args.taskId }, select: { epicId: true, projectId: true, project: { select: { ownerAcceptancePolicy: true } } } });
+  const oldRows = await client.subTask.findMany({ where: { taskId: args.taskId, planStepKey: { not: null }, kind: { not: "superseded" } } });
+  for (const row of oldRows) {
+    const matching = plan.steps.find(step => step.stepId === row.planStepKey && planStepFingerprint(step) === row.planContentHash);
+    if (matching) continue;
+    await client.subTask.update({ where: { id: row.id }, data: { kind: "superseded", groupKey: `superseded:${row.id}`, actionPlanStepId: null, supersededReason: `Replaced by explicitly approved Action Plan revision ${plan.version}` } });
+    await client.activityLog.create({ data: { taskId: args.taskId, projectId: taskPolicy.projectId, userId: args.approvedById, kind: "task.subtask.superseded", payload: JSON.stringify({ subTaskId: row.id, planVersion: plan.version, previousRequirementHash: row.planContentHash, completedAt: row.completedAt }) } });
+  }
   for (const step of plan.steps) {
-    // A planning turn from an older client may already have created the exact
-    // checklist row before plan approval. Adopt that unlinked row instead of
-    // duplicating it when the structured plan is approved. New clients are
-    // blocked from pre-approval checklist writes, but this keeps recovery of
-    // existing tasks lossless.
-    const existingUnlinked = await client.subTask.findFirst({
-      where: {
-        taskId: args.taskId,
-        kind: "implementation",
-        actionPlanStepId: null,
-        text: step.title,
-      },
-      select: { id: true },
-    });
-    if (existingUnlinked) {
-      // If a repair revision deliberately repeats a completed step title,
-      // reuse the unique checklist row but reopen it. Leaving it completed
-      // would make the new revision look done before implementation starts.
-      await setSubTaskCompletion({
-        subTaskId: existingUnlinked.id,
-        completed: false,
-        actorUserId: args.approvedById,
-        expectTaskId: args.taskId,
-        client,
-      });
-      await client.subTask.update({
-        where: { id: existingUnlinked.id },
-        data: { actionPlanStepId: step.id },
-      });
+    const hash = planStepFingerprint(step);
+    const checklistKind = step.phase === "acceptance" ? "review" : "implementation";
+    const acceptanceGate = step.responsibleActor === "owner" && taskPolicy.epicId && taskPolicy.project.ownerAcceptancePolicy === "epic_release" ? "epic_release" : "task";
+    const unchanged = oldRows.find(row => row.planStepKey === step.stepId && row.planContentHash === hash);
+    if (unchanged) {
+      await client.subTask.update({ where: { id: unchanged.id }, data: { actionPlanStepId: step.id } });
     } else {
-      const checklistItem = await createSubTaskItem({
-        taskId: args.taskId,
-        text: step.title,
-        actorUserId: args.approvedById,
-        actionPlanStepId: step.id,
-        client,
-      });
+      const checklistItem = await createSubTaskItem({ taskId: args.taskId, text: step.title, kind: checklistKind, actorUserId: args.approvedById, actionPlanStepId: step.id, groupKey: `plan:${plan.version}`, client });
+      if (checklistItem) await client.subTask.update({ where: { id: checklistItem.id }, data: { planStepKey: step.stepId, planContentHash: hash, responsibleActor: step.responsibleActor, verificationEnvironment: step.verificationEnvironment, acceptanceGate } });
       if (checklistItem?.created) checklistCreated++;
     }
 
@@ -458,7 +462,7 @@ export async function createChecklistAndDelegatableTasksFromPlan(args: {
     // chooses the initial owner; a parallel step without one is still a real
     // unassigned child task. Sequential steps never become child tasks merely
     // because an assignee was accidentally supplied.
-    if (step.kind === "parallel") {
+    if (step.kind === "parallel" && step.phase === "implementation") {
       // Check if a child task already exists for this step (idempotent)
       const existingChild = await client.task.findFirst({
         where: {
@@ -510,4 +514,9 @@ export function parseAcceptanceCriteria(raw: string): string[] {
   } catch {
     return [];
   }
+}
+
+/** Stable acceptance identity; completion is reusable only for this exact requirement. */
+export function planStepFingerprint(step: { title: string; acceptanceCriteria: string; kind: string; phase: string; responsibleActor: string; verificationEnvironment: string | null; assigneeId: string | null }) {
+  return createHash("sha256").update(JSON.stringify([step.title, step.acceptanceCriteria, step.kind, step.phase, step.responsibleActor, step.verificationEnvironment, step.assigneeId])).digest("hex");
 }

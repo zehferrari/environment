@@ -975,7 +975,9 @@ async function main(): Promise<void> {
       const progress = await readTaskProgress(db, task.id);
       c.assertEqual(progress.status, "In Progress", "the task never fell out of execution");
       c.assertEqual(progress.checklist, 4, "every checklist item from every episode survived");
-      c.assertEqual(progress.comments, 2, "so did the durable reply each episode ended with");
+      c.assertEqual(progress.comments, 0, "autonomous progress stays out of discussion comments");
+      const finalThinking = await db.taskThinkingSnapshot.count({ where: { run: { taskId: task.id }, finalReceivedAt: { not: null }, progress: { not: "" } } });
+      c.assertEqual(finalThinking, 2, "the durable final narrative from each episode survives in Thinking");
       c.assertEqual(progress.alertReporter, false, "and no human had to be pulled in");
 
       const lane = await readRunState(db, { taskId: task.id });
