@@ -34,6 +34,7 @@ import {
   useSortable,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
+import { useToast } from "@/components/toast";
 import { CSS } from "@dnd-kit/utilities";
 
 // Mirrors SubTaskKind in lib/tasks/subtasks.ts (not imported: that module is
@@ -46,6 +47,7 @@ export type ChecklistItem = {
   completedAt: string | null;
   minutesSpent: number | null;
   kind: ChecklistKind;
+  reviewFinding?: { id: string; completionEvidence: string | null } | null;
 };
 
 type Props = {
@@ -78,6 +80,7 @@ export default function TaskChecklist({
   removeAction,
   reorderAction,
 }: Props) {
+  const toast = useToast();
   const [order, setOrder] = useState(items);
   const [text, setText] = useState("");
   // null = follow the status-based default (review while the task is in
@@ -99,18 +102,19 @@ export default function TaskChecklist({
   const totalMinutes = order.reduce((sum, i) => sum + (i.minutesSpent ?? 0), 0);
 
   const submitToggle = useCallback(
-    (id: string, completed: boolean, minutesSpent?: number | null) => {
+    (id: string, completed: boolean, minutesSpent?: number | null, completionEvidence?: string) => {
       const fd = new FormData();
       fd.set("taskId", taskId);
       fd.set("projectSlug", projectSlug);
       fd.set("subTaskId", id);
       fd.set("completed", completed ? "1" : "0");
+      if (completionEvidence) fd.set("completionEvidence", completionEvidence);
       if (minutesSpent !== undefined) fd.set("minutesSpent", String(minutesSpent ?? 0));
-      startTransition(() => {
-        void toggleAction(fd);
+      startTransition(async () => {
+        try { await toggleAction(fd); } catch (error) { setOrder(items); toast.show({ message: error instanceof Error ? error.message : "Could not save checklist change." }); }
       });
     },
-    [taskId, projectSlug, toggleAction],
+    [taskId, projectSlug, toggleAction, items, toast],
   );
 
   // Drags are section-local. Persist a full-task order (implementation block
@@ -133,6 +137,8 @@ export default function TaskChecklist({
   const toggle = useCallback(
     (item: ChecklistItem) => {
       const completed = !item.completedAt;
+      const evidence = item.reviewFinding && completed ? window.prompt("Describe the correction and verification evidence:")?.trim() : undefined;
+      if (item.reviewFinding && completed && !evidence) return;
       setOrder((prev) =>
         prev.map((i) =>
           i.id === item.id
@@ -144,7 +150,7 @@ export default function TaskChecklist({
             : i,
         ),
       );
-      submitToggle(item.id, completed);
+      submitToggle(item.id, completed, undefined, evidence);
     },
     [submitToggle],
   );
@@ -453,9 +459,10 @@ function ChecklistRow({
       <button
         type="button"
         onClick={onRemove}
+        disabled={!!item.reviewFinding}
         className="grid h-11 w-11 shrink-0 place-items-center rounded-md text-text-muted hover:bg-crit/10 hover:text-crit md:h-auto md:w-auto md:px-1.5 md:py-1"
         aria-label={`Remove "${item.text}"`}
-        title="Remove"
+        title={item.reviewFinding ? "Review corrections require an explicit reviewer supersession decision; they cannot be deleted." : "Remove"}
       >
         <TrashIcon />
       </button>

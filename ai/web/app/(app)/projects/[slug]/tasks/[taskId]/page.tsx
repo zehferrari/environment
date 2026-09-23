@@ -536,7 +536,7 @@ async function toggleSubTaskItem(formData: FormData) {
   if (!taskId || !slug || !subTaskId) return;
   const ctx = await resolveChecklistContext(taskId, slug);
   if (!ctx) return;
-  await setSubTaskCompletion({ subTaskId, completed, minutesSpent, actorUserId: ctx.actor.id, expectTaskId: taskId });
+  await setSubTaskCompletion({ subTaskId, completed, minutesSpent, completionEvidence: String(formData.get("completionEvidence") ?? ""), actorUserId: ctx.actor.id, expectTaskId: taskId });
   revalidateChecklist(slug, taskId, ctx.task.projectId);
 }
 
@@ -2005,6 +2005,7 @@ export default async function TaskDetailPage({
                   items={task.checklist.map((item) => ({
                     id: item.id,
                     text: item.text,
+                    reviewFinding: item.reviewFinding,
                     // task shell comes through unstable_cache, which JSON-revives
                     // completedAt as an ISO string; dateIso handles Date|string.
                     completedAt: dateIso(item.completedAt),
@@ -2016,6 +2017,17 @@ export default async function TaskDetailPage({
                   removeAction={removeSubTaskItem}
                   reorderAction={reorderChecklist}
                 />
+                {task.reviewFindings.length ? <section className="mt-6 space-y-3" aria-label="Review corrections">
+                  <h3 className="font-semibold">Review corrections</h3>
+                  {task.reviewFindings.map(finding => <article key={finding.id} className="rounded-lg border border-line p-3">
+                    <p className="font-medium">{finding.title} <span className="text-caption text-text-muted">— {finding.status}</span></p>
+                    <p className="mt-2 whitespace-pre-wrap text-caption">{finding.acceptanceCriteria}</p>
+                    <p className="mt-2 text-caption text-text-muted">Scope: {finding.scopeReference}</p>
+                    <p className="text-caption text-text-muted">Reviewed candidate: {finding.candidateSha.slice(0, 12)}</p>
+                    {finding.completionEvidence ? <p className="mt-2 whitespace-pre-wrap text-caption">Evidence: {finding.completionEvidence}</p> : null}
+                    {finding.supersededReason ? <p className="mt-2 whitespace-pre-wrap text-caption">Superseded: {finding.supersededReason}</p> : null}
+                  </article>)}
+                </section> : null}
               </RoleVisibleTabPanel>
 
               <TabPanel name="Attachments">

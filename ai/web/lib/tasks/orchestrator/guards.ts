@@ -311,7 +311,7 @@ export function guardSubmitForReviewChecklist(
 }
 
 export function guardAcceptReviewChecklist(state: TaskStateSnapshot): GuardResult {
-  const remaining = state.openReviewChecklist?.count ?? 0;
+  const remaining = (state.openReviewChecklist?.count ?? 0) + (state.openChecklist?.count ?? 0);
   return remaining > 0
     ? { ok: false, status: "invalid", reason: `[checklist_incomplete] Final acceptance requires the review checklist to be complete. ${remaining} review item(s) remaining; assess the evidence while keeping deferred checks open.` }
     : { ok: true };
@@ -715,6 +715,7 @@ export function runGuards(
     case "complete_subtask":
     case "remove_subtask": {
       const kind = command.payload?.subtaskKind;
+      if (command.intent === "remove_subtask" && command.payload?.supersededReason) return guardStatus(state, command.intent, ["To Do", "In Progress", "Review"]);
       if (kind === "review") return { ok: true };
       return runGuardsChain([
         guardStatus(state, command.intent, ["To Do", "In Progress"]),

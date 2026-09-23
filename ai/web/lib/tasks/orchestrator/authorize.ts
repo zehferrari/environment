@@ -677,7 +677,7 @@ export function authorizeCommand(
     case "complete_subtask":
     case "remove_subtask": {
       const subtaskKind = command.payload?.subtaskKind;
-      if (subtaskKind === "review") {
+      if (subtaskKind === "review" || (command.intent === "remove_subtask" && command.payload?.supersededReason)) {
         const reviewerId = resolveReviewOwnerId({
           actingManagerId: state.actingManagerId,
           reporterId: state.reporterId,

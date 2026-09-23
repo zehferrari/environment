@@ -1,3 +1,4 @@
+import type { ReviewFindingInput } from "./types";
 import type { Viewer } from "@/lib/auth/permissions";
 import {
   authorizeCommand,
@@ -80,6 +81,7 @@ function browserResult(result: Awaited<ReturnType<typeof submitWorkflowCommand>>
  * preservation, and assignee notification remain owned by the orchestrator.
  */
 export async function submitBrowserReviewChanges(args: {
+  findings: ReviewFindingInput[];
   actor: Viewer;
   taskId: string;
   expectedWorkflowVersion: number;
@@ -123,6 +125,7 @@ export async function submitBrowserReviewChanges(args: {
       reviewRunId: args.reviewRunId,
       candidateSha: args.candidateSha,
       reviewerComment,
+      findings: args.findings,
     },
   });
 

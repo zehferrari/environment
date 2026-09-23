@@ -349,8 +349,9 @@ Two distinct decomposition levels, each with its own creator and gate:
   + `kind` + `completedAt` + optional `minutesSpent`), not child Tasks —
   they have no assignee, reviewer, status, key, or board presence.
 - Subtasks come in two kinds sharing the same table: `implementation`
-  (default) and `review`. Implementation subtasks may be created only by
-  the task assignee, only after the Task Action Plan is approved. Review
+  (default) and `review`. Ordinary implementation subtasks may be created only by
+  the task assignee, only after the Task Action Plan is approved. PM also
+  creates correction subtasks atomically from structured reviewer feedback. Review
   subtasks may be created only by the resolved reviewer.
 - **Reviewers keep the same discipline as assignees**: before starting a
   review, add one `review` subtask per topic you will address
@@ -369,8 +370,17 @@ Two distinct decomposition levels, each with its own creator and gate:
     call → `flag_extra_work_blocker` (`{comment=reason}`); PM raises it to the
     owner and the reviewer/reporter. Every request carries a described reason.
 - When a task bounces back from `Review` (reviewer `review_feedback` →
-  front of To Do), the assignee adds a subtask per feedback item so the
-  progress bar stays honest.
+  front of To Do), the reviewer must supply structured `findings` with
+  `title`, `acceptanceCriteria`, and `scopeReference`. PM atomically creates
+  pending implementation correction subtasks before waking the assignee;
+  do not recreate them. This is a reviewed correction handoff, not authority
+  to expand the approved scope. Extra scope still requires a plan revision.
+- Correction subtasks require `completionEvidence` on `complete_subtask`: name
+  the fix and verification. They cannot be deleted to bypass resubmission. A
+  later owner instruction may supersede a correction: the independent reviewer
+  calls `remove_subtask` with `supersededReason` and the exact
+  `ownerInstructionCommentId`. PM retains the finding as superseded and removes
+  only its pending checklist row; it never marks unperformed work complete.
 - The assignee must tick each subtask `Done` (`complete_subtask`) **the
   moment it completes** — never in a batch at the end.
   `ready_for_review` is **rejected while open implementation subtasks

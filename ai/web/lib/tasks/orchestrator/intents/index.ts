@@ -1,3 +1,4 @@
+import { createReviewFindingChecklist } from "@/lib/tasks/review-findings";
 import { deferAcceptanceCheckExecutor } from "./defer-acceptance-check";
 import { reviewPermissionExecutor } from "./review-permission";
 import { permissionRequiresOwner } from "@/lib/tasks/permission-review";
@@ -304,6 +305,7 @@ async function supersedeCycleMechanicalWork(
 }
 
 const requestReviewChangesExecutor: IntentExecutor<"request_review_changes"> = async (context) => {
+  if (context.command.payload.reviewRunId !== context.state.activeReviewRun?.id || context.command.payload.candidateSha !== context.state.activeReviewRun?.candidateSha) return { status: "stale", domainCode: "cycle_mismatch", reason: "The reviewed candidate changed. Read the current review before requesting corrections." };
   if (
     context.state.activeReviewRun?.status === "accepted" &&
     context.state.activeWorkflowCycleId
@@ -317,6 +319,7 @@ const requestReviewChangesExecutor: IntentExecutor<"request_review_changes"> = a
       effectTypes: ["review_finalize"],
     });
   }
+  await createReviewFindingChecklist(context.tx, { taskId: context.state.id, reviewRunId: context.state.activeReviewRun!.id, candidateSha: context.command.payload.candidateSha, reviewerId: context.command.actor.id, findings: context.command.payload.findings });
   await createWorkflowComment(context, context.command.payload.reviewerComment);
   return context.helpers.executeDecisionWrites();
 };
@@ -997,6 +1000,7 @@ const completeSubtaskExecutor: IntentExecutor<"complete_subtask"> = async (conte
   const updated = await setSubTaskCompletion({
     subTaskId: context.command.payload.subtaskId,
     completed: context.command.payload.completed,
+    completionEvidence: context.command.payload.completionEvidence,
     minutesSpent: context.command.payload.minutesSpent ?? undefined,
     actorUserId: context.decision.decisionActorId,
     expectTaskId: context.command.taskId,
@@ -1008,6 +1012,8 @@ const completeSubtaskExecutor: IntentExecutor<"complete_subtask"> = async (conte
 
 const removeSubtaskExecutor: IntentExecutor<"remove_subtask"> = async (context) => {
   const removed = await deleteSubTaskItem({
+    supersededReason: context.command.payload.supersededReason,
+    ownerInstructionCommentId: context.command.payload.ownerInstructionCommentId,
     subTaskId: context.command.payload.subtaskId,
     actorUserId: context.decision.decisionActorId,
     expectTaskId: context.command.taskId,

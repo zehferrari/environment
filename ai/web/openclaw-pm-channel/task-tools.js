@@ -18,10 +18,11 @@ export const PM_TASK_TOOL_DEFINITIONS = {
   attach_file: ["Upload an existing deliverable from your configured agent workspace or OpenClaw media directory. Copy worktree evidence into your workspace first; arbitrary repository paths are not attachment roots. Returns the stored attachment id; uploading does not complete the task.", object({ path: string }, ["path"])],
   approve_plan: ["Approve the current plan as the authorized reviewer; PM prepares the worktree.", object({ constraints: string })],
   request_plan_changes: ["Return the current Action Plan for one consolidated revision, with exact feedback.", object(comment, ["comment"])],
-  review_feedback: ["Request specific changes to the reviewed implementation.", object(comment, ["comment"])],
+  review_feedback: ["Return all required corrections together. PM atomically creates pending subtasks from findings before waking the assignee. Stay within approved scope; request a plan revision for expansion.", object({ ...comment, findings: { type: "array", minItems: 1, maxItems: 20, items: object({ title: string, acceptanceCriteria: string, scopeReference: string }, ["title", "acceptanceCriteria", "scopeReference"]) } }, ["comment", "findings"])],
   start: ["Start the approved task. Continue implementation when actionEffect is continue.", object({})],
   checkpoint: ["Save decisions, file/test evidence and the exact next action before a handoff.", object(checkpoint, ["nextAction"])],
-  complete_subtask: ["Record completed checklist work without ending the working session.", object({ subtaskId: string, completed: { type: "boolean" }, minutesSpent: { type: "number" } }, ["subtaskId"])],
+  complete_subtask: ["Record completed checklist work without ending the working session.", object({ subtaskId: string, completed: { type: "boolean" }, minutesSpent: { type: "number" }, completionEvidence: string }, ["subtaskId"])],
+  remove_subtask: ["Supersede an obsolete review correction only as independent reviewer, citing a later owner instruction and your rationale. PM retains the finding as superseded, never completed. Ordinary checklist removal remains restricted to its responsible actor.", object({ subtaskId: string, supersededReason: string, ownerInstructionCommentId: string }, ["subtaskId", "supersededReason", "ownerInstructionCommentId"])],
   add_subtask: ["Add a necessary implementation or review checklist item.", object({ subtaskText: string, subtaskKind: { type: "string", enum: ["implementation", "review"] } }, ["subtaskText"])],
   ready_for_review: ["Submit completed work and test evidence. PM owns commit, validation and publication.", object({ ...comment, repoTouched: { type: "boolean" } }, ["comment"])],
   review_done: ["Accept the reviewed candidate with concise evidence; PM finalizes the repository.", object(comment, ["comment"])],
@@ -111,7 +112,7 @@ export function createTaskTools({ context, findTurn, loadMedia, fetchImpl = fetc
         if (action === "context" && response.ok) {
           reviewedPlan = result.actionPlan ? { id: result.actionPlan.id, version: result.actionPlan.version } : null;
           if (args.section === "plan") data = { actionPlan: result.actionPlan };
-          else if (args.section !== "history") data = { task: result.task, actionPlan: result.actionPlan, checklist: result.checklist, recentComments: result.recentComments, currentThread: result.currentThread, executionGuidance: result.executionGuidance };
+          else if (args.section !== "history") data = { task: result.task, actionPlan: result.actionPlan, checklist: result.checklist, reviewFindings: result.reviewFindings, recentComments: result.recentComments, currentThread: result.currentThread, executionGuidance: result.executionGuidance };
         }
         // Only the trusted successful mutation response can close this turn.
         // A context document, denied request, or late old generation cannot.

@@ -672,6 +672,8 @@ function FabForm(props: {
   const formRef = useRef<HTMLFormElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [taskActions, setTaskActions] = useState<BrowserTaskWorkflowActions | null>(null);
+  const [reviewFindings, setReviewFindings] = useState([{ title: "", acceptanceCriteria: "", scopeReference: "" }]);
+  useEffect(() => { setReviewFindings([{ title: "", acceptanceCriteria: "", scopeReference: "" }]); }, [attachTarget.taskId]);
   const [workflowAction, setWorkflowAction] = useState<"reset" | "cancel" | "feedback" | "accept" | null>(null);
   const formId = `create-fab-${form}`;
   const actionFor: Record<FormKind, (fd: FormData) => Promise<CreateResult>> = {
@@ -727,6 +729,7 @@ function FabForm(props: {
     setWorkflowAction(null);
     await submit(async (formData) => {
       formData.set("workflowAction", action);
+      if (action === "feedback") formData.set("reviewFindings", JSON.stringify(reviewFindings));
       return performTaskCommentWorkflowAction(formData);
     }, formEl);
   };
@@ -1053,6 +1056,19 @@ function FabForm(props: {
             className="w-full resize-none rounded-lg border border-line bg-bg px-2 py-1.5 text-caption outline-none focus:border-accent"
           />
         </Field>
+      ) : null}
+
+      {form === "comment" && taskActions?.canRequestChanges ? (
+        <details className="rounded-lg border border-line p-3">
+          <summary>Corrections required for “Isn’t Ready Yet”</summary>
+          <p className="my-2 text-caption text-text-muted">Each correction becomes a pending subtask. Reference the approved scope; request a revised plan for additional scope.</p>
+          {reviewFindings.map((finding, index) => <fieldset key={index} className="my-3 space-y-2">
+            <legend>Correction {index + 1}</legend>
+            {([['title', 'Required change'], ['acceptanceCriteria', 'How to verify completion'], ['scopeReference', 'Approved scope reference']] as const).map(([key, label]) => <label key={key} className="block text-caption">{label}<textarea aria-label={`${label} ${index + 1}`} value={finding[key]} rows={2} maxLength={key === 'title' ? 300 : key === 'scopeReference' ? 1000 : 2000} onChange={event => setReviewFindings(rows => rows.map((row, i) => i === index ? { ...row, [key]: event.target.value } : row))} className="block w-full rounded border border-line bg-bg p-2" /></label>)}
+            {reviewFindings.length > 1 ? <button type="button" onClick={() => setReviewFindings(rows => rows.filter((_, i) => i !== index))}>Remove correction</button> : null}
+          </fieldset>)}
+          <button type="button" disabled={reviewFindings.length >= 20} onClick={() => setReviewFindings(rows => [...rows, {title: '', acceptanceCriteria: '', scopeReference: ''}])}>Add correction</button>
+        </details>
       ) : null}
 
         <div className="flex flex-nowrap justify-end gap-2 overflow-x-auto pt-1">

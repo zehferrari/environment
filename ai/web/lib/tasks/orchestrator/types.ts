@@ -273,7 +273,10 @@ export type SubmitForReviewPayload = {
   comment?: string | null;
 };
 
+export type ReviewFindingInput = { title: string; acceptanceCriteria: string; scopeReference: string };
+
 export type RequestReviewChangesPayload = {
+  findings: ReviewFindingInput[];
   reviewRunId: string;
   candidateSha: string;
   /** Non-empty reviewer comment within size limit. */
@@ -445,6 +448,7 @@ export type AddSubtaskPayload = {
 };
 
 export type CompleteSubtaskPayload = {
+  completionEvidence?: string;
   subtaskId: string;
   subtaskKind: WorkflowSubtaskKind;
   completed: boolean;
@@ -452,6 +456,8 @@ export type CompleteSubtaskPayload = {
 };
 
 export type RemoveSubtaskPayload = {
+  supersededReason?: string;
+  ownerInstructionCommentId?: string;
   subtaskId: string;
   subtaskKind: WorkflowSubtaskKind;
 };

@@ -196,8 +196,8 @@ test("validateCommandPayload: submit_for_review allows durable procedure candida
 });
 
 test("validateCommandPayload: request_review_changes requires non-empty reviewerComment", () => {
-  expectFail(validateCommandPayload("request_review_changes", { reviewRunId: "r1", candidateSha: "abc", reviewerComment: "" }), "invalid_payload");
-  expectOk(validateCommandPayload("request_review_changes", { reviewRunId: "r1", candidateSha: "abc", reviewerComment: "Needs work" }));
+  expectFail(validateCommandPayload("request_review_changes", { reviewRunId: "r1", candidateSha: "abc", findings: [{ title: "Required correction", acceptanceCriteria: "Demonstrate the correction with a regression check.", scopeReference: "Approved implementation scope" }], reviewerComment: "" }), "invalid_payload");
+  expectOk(validateCommandPayload("request_review_changes", { reviewRunId: "r1", candidateSha: "abc", findings: [{ title: "Required correction", acceptanceCriteria: "Demonstrate the correction with a regression check.", scopeReference: "Approved implementation scope" }], reviewerComment: "Needs work" }));
 });
 
 test("validateCommandPayload: accept_review requires reviewRunId + candidateSha", () => {
@@ -333,7 +333,7 @@ test("normalizePublicAction: ready_for_review and submit_review both → submit_
 
 test("normalizePublicAction: review_feedback → request_review_changes", () => {
   const ctx = makeAuthCtx({ reviewRunId: "r1", candidateSha: "abc" });
-  const r = normalizePublicAction("review_feedback", { reviewerComment: "Fix this" }, ctx);
+  const r = normalizePublicAction("review_feedback", { findings: [{ title: "Required correction", acceptanceCriteria: "Demonstrate the correction with a regression check.", scopeReference: "Approved implementation scope" }], reviewerComment: "Fix this" }, ctx);
   assert.ok(r.ok);
   assert.equal(r.command.intent, "request_review_changes");
 });
@@ -448,7 +448,7 @@ test("validateCommandPayload: empty-string jobId/candidateSha/baseSha normalized
 
 test("normalizePublicAction: is a pure function (no side effects)", () => {
   const ctx = makeAuthCtx();
-  const rawBody = { reviewerComment: "test" };
+  const rawBody = { findings: [{ title: "Required correction", acceptanceCriteria: "Demonstrate the correction with a regression check.", scopeReference: "Approved implementation scope" }], reviewerComment: "test" };
   const r1 = normalizePublicAction("review_feedback", { ...rawBody }, { ...ctx, reviewRunId: "r1", candidateSha: "abc" });
   const r2 = normalizePublicAction("review_feedback", { ...rawBody }, { ...ctx, reviewRunId: "r1", candidateSha: "abc" });
   // Same inputs → same output (deterministic).
@@ -505,7 +505,7 @@ test("DOMAIN_ERROR_HTTP_STATUS maps error codes correctly", () => {
 console.log("\nStep 5: Cross-transport parity tests");
 
 test("Cross-transport: same valid payload produces same command shape regardless of source", () => {
-  const rawBody = { reviewerComment: "Needs work" };
+  const rawBody = { findings: [{ title: "Required correction", acceptanceCriteria: "Demonstrate the correction with a regression check.", scopeReference: "Approved implementation scope" }], reviewerComment: "Needs work" };
   const ctxBase = makeAuthCtx({ reviewRunId: "r1", candidateSha: "abc" });
 
   const results = TRANSPORT_SOURCES.map(({ source }) =>
@@ -531,7 +531,7 @@ test("Cross-transport: same valid payload produces same command shape regardless
 });
 
 test("Cross-transport: malformed payload rejected identically", () => {
-  const rawBody = { reviewerComment: "" }; // empty comment is invalid
+  const rawBody = { findings: [{ title: "Required correction", acceptanceCriteria: "Demonstrate the correction with a regression check.", scopeReference: "Approved implementation scope" }], reviewerComment: "" }; // empty comment is invalid
   const ctxBase = makeAuthCtx({ reviewRunId: "r1", candidateSha: "abc" });
 
   const results = TRANSPORT_SOURCES.map(({ source }) =>
@@ -566,7 +566,7 @@ test("Cross-transport: unknown action rejected identically", () => {
 
 test("Cross-transport: idempotency fingerprint stable across replays", () => {
   const ctx = makeAuthCtx({ candidateSha: "abc", baseSha: "def", reviewRunId: "r1" });
-  const rawBody = { repoTouched: true, reviewerComment: "test" };
+  const rawBody = { repoTouched: true, findings: [{ title: "Required correction", acceptanceCriteria: "Demonstrate the correction with a regression check.", scopeReference: "Approved implementation scope" }], reviewerComment: "test" };
 
   // Create two commands via different transports but same logical content.
   const r1 = normalizePublicAction("review_feedback", rawBody, ctx);
@@ -592,14 +592,14 @@ test("Cross-transport: idempotency fingerprint stable across replays", () => {
 
 test("Cross-transport: oversized strings rejected in all transports", () => {
   const longString = "x".repeat(10_001);
-  const rawBody = { reviewerComment: longString };
+  const rawBody = { findings: [{ title: "Required correction", acceptanceCriteria: "Demonstrate the correction with a regression check.", scopeReference: "Approved implementation scope" }], reviewerComment: longString };
   const ctx = makeAuthCtx({ reviewRunId: "r1", candidateSha: "abc" });
 
   for (const { source, name } of TRANSPORT_SOURCES) {
     const r = normalizePublicAction("review_feedback", rawBody, { ...ctx, source });
     // The normalizer doesn't enforce size limits (that's command-schema.ts).
     // But command-schema does. Test command-schema rejection:
-    const v = validateCommandPayload("request_review_changes", { reviewRunId: "r1", candidateSha: "abc", reviewerComment: longString });
+    const v = validateCommandPayload("request_review_changes", { reviewRunId: "r1", candidateSha: "abc", findings: [{ title: "Required correction", acceptanceCriteria: "Demonstrate the correction with a regression check.", scopeReference: "Approved implementation scope" }], reviewerComment: longString });
     expectFail(v, "invalid_payload");
   }
 });
@@ -644,7 +644,7 @@ function getValidRawBodyForAction(action: WorkflowPublicAction): Record<string, 
     case "ready_for_review":
     case "submit_review": return { repoTouched: true };
     case "request_plan_changes":
-    case "review_feedback": return { reviewerComment: "Fix this" };
+    case "review_feedback": return { findings: [{ title: "Required correction", acceptanceCriteria: "Demonstrate the correction with a regression check.", scopeReference: "Approved implementation scope" }], reviewerComment: "Fix this" };
     case "review_done": return {};
     case "triage_to_todo": return {};
     case "approve_plan": return { actionPlanId: "p1", actionPlanVersion: 1 };

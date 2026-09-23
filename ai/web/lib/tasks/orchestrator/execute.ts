@@ -4,6 +4,7 @@
 // mutation is reached through exactly one executor in the closed intents
 // registry and receives only the transaction client plus refreshed state.
 
+import { ReviewCorrectionError } from "@/lib/tasks/review-findings-input";
 import { countsAgainstWorkflowEpisodeBudget } from "@/lib/agents/pm-channel/runtime-policy";
 import { db } from "@/lib/db";
 import type { Prisma } from "@prisma/client";
@@ -63,6 +64,7 @@ export async function executeWorkflowCommand(
     }
     return committed;
   } catch (error) {
+    if (error instanceof ReviewCorrectionError) return { status: "invalid", reason: error.message, domainCode: "invalid_payload" };
     if (error instanceof IntentReceiptResolution) return error.result;
     if (error instanceof PmChannelExecutionContextError) {
       if (error.reason === "fenced" || error.reason === "already_consumed") {

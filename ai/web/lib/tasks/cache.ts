@@ -191,6 +191,7 @@ async function getRawCachedTaskDetailShell(taskId: string) {
             },
           },
         },
+        reviewFindings: { orderBy: { createdAt: "asc" } },
         checklist: {
           orderBy: { rank: "asc" },
           select: {
@@ -199,6 +200,7 @@ async function getRawCachedTaskDetailShell(taskId: string) {
             completedAt: true,
             minutesSpent: true,
             kind: true,
+            reviewFinding: { select: { id: true, completionEvidence: true } },
           },
         },
         actionPlan: {

@@ -510,6 +510,7 @@ model Task {
   // child-Task hierarchy above (parentTaskId) — that is now dormant. See SubTask.
   actionPlan             ActionPlan?
   actionPlanRevisions    ActionPlanRevision[]
+  reviewFindings         ReviewFinding[]
   checklist              SubTask[]                    @relation("TaskChecklist")
   repositoryRun          TaskRepositoryRun?
   executionEpisodes      TaskExecutionEpisode[]
@@ -739,6 +740,7 @@ model TaskRepositoryRun {
 // approve this row's candidateSha, never a moving branch name. A new candidate
 // creates a new ReviewRun and invalidates any older awaiting-review row.
 model ReviewRun {
+  findings ReviewFinding[]
   id                String               @id @default(cuid())
   taskId            String               @map("task_id")
   task              Task                 @relation(fields: [taskId], references: [id], onDelete: Cascade)
@@ -1011,6 +1013,7 @@ model TaskExecutionState {
 // Humans tick items in the task editor; the assignee agent ticks them through
 // the native workflow endpoint (action=add_subtask / complete_subtask).
 model SubTask {
+  reviewFinding ReviewFinding?
   id               String          @id @default(cuid())
   taskId           String
   task             Task            @relation("TaskChecklist", fields: [taskId], references: [id], onDelete: Cascade)
@@ -2209,4 +2212,34 @@ model TaskThinkingSnapshot {
   lastSeq         Int          @default(0)
   finalReceivedAt DateTime?
   updatedAt       DateTime     @updatedAt
+}
+
+// Immutable review finding, with a separately tracked resolution. Superseding
+// removes only its pending checklist row, retaining the decision and evidence.
+model ReviewFinding {
+  id String @id @default(cuid())
+  taskId String
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  reviewRunId String
+  reviewRun ReviewRun @relation(fields: [reviewRunId], references: [id], onDelete: Cascade)
+  position Int
+  candidateSha String
+  reviewerId String
+  title String
+  acceptanceCriteria String
+  scopeReference String
+  actionPlanId String?
+  actionPlanVersion Int?
+  subTaskId String? @unique
+  subTask SubTask? @relation(fields: [subTaskId], references: [id], onDelete: SetNull)
+  status String @default("open")
+  completionEvidence String?
+  supersededReason String?
+  ownerInstructionCommentId String?
+  resolvedById String?
+  resolvedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([reviewRunId, position])
+  @@index([taskId, status])
 }

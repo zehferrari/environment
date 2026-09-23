@@ -397,6 +397,7 @@ async function loadTaskAggregateWithClient(
     activeCycle,
     activeProcedures,
     openChecklist,
+    openFindings,
     dependencies,
     assignee,
     pmChannelRun,
@@ -457,6 +458,8 @@ async function loadTaskAggregateWithClient(
       },
       select: { id: true, kind: true },
     }),
+
+    client.reviewFinding.findMany({ where: { taskId, status: "open" }, select: { id: true, subTaskId: true } }),
 
     // Unresolved prerequisites (via TaskDependency)
     client.taskDependency.findMany({
@@ -705,8 +708,8 @@ async function loadTaskAggregateWithClient(
 
     // Open checklist
     openChecklist: {
-      count: openChecklist.filter((c) => c.kind !== "review").length,
-      ids: openChecklist.filter((c) => c.kind !== "review").map((c) => c.id),
+      count: new Set([...openChecklist.filter(c => c.kind !== "review").map(c => c.id), ...openFindings.map(f => f.subTaskId ?? f.id)]).size,
+      ids: [...new Set([...openChecklist.filter(c => c.kind !== "review").map(c => c.id), ...openFindings.map(f => f.subTaskId ?? f.id)])],
     },
     openReviewChecklist: {
       count: openChecklist.filter((c) => c.kind === "review").length,

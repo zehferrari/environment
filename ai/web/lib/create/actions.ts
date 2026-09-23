@@ -430,6 +430,7 @@ export async function performTaskCommentWorkflowAction(formData: FormData): Prom
           reviewRunId: available.reviewRunId,
           candidateSha: available.candidateSha,
           reviewerComment: body,
+          findings: JSON.parse(String(formData.get("reviewFindings") ?? "null")),
         });
       } else {
         if (!available.canAccept) return { ok: false, error: "This review can no longer be accepted." };

@@ -916,3 +916,25 @@ reviewer-only `defer_acceptance_check` action takes `blockerCommentId`,
 open approved-plan checklist item to final review while retaining the pending
 check. The approved scope must justify deferral; this never grants production
 permission or completes the check.
+
+
+### Structured review corrections
+
+`review_feedback` requires `findings: [{title, acceptanceCriteria, scopeReference}]`
+(1–20 items). The canonical review decision atomically creates pending
+implementation subtasks, preserves the reviewed candidate/plan reference, and
+queues the assignee handoff. Comment-only feedback is rejected without moving
+the task. Browser, native tools, and scoped HTTP share this contract.
+
+`complete_subtask` requires `completionEvidence` for a correction. Open findings
+block resubmission and acceptance even if their checklist row is accidentally
+removed elsewhere. Ordinary deletion is rejected. An independent reviewer may
+use `remove_subtask` with `supersededReason` and a later owner-authored
+`ownerInstructionCommentId` to supersede obsolete work; the finding remains
+visible as superseded. That decision authorizes no expanded implementation.
+The Sub-Tasks tab shows criteria, scope, candidate, evidence and supersession
+reasons; context reads expose `reviewFindings` outside clipped comment history.
+
+Deployment requires migration `20260923010000_review_findings`, a PM rebuild,
+and PM channel plugin 0.1.15 on all agent gateways. Historical feedback is not
+automatically interpreted or converted; reconcile it with current owner scope.

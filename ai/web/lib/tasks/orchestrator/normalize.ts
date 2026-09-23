@@ -372,7 +372,7 @@ function buildPayload(
       if (!candidateSha) return fail("invalid_payload", "candidateSha is required");
       const reviewerComment = getString(raw, "reviewerComment") ?? getString(raw, "comment");
       if (!reviewerComment) return fail("invalid_payload", "reviewerComment is required");
-      const payload: RequestReviewChangesPayload = { reviewRunId, candidateSha, reviewerComment };
+      const payload: RequestReviewChangesPayload = { reviewRunId, candidateSha, reviewerComment, findings: raw.findings as RequestReviewChangesPayload["findings"] };
       return payload;
     }
 
@@ -624,6 +624,7 @@ function buildPayload(
       const minutesSpent = getNumber(raw, "minutesSpent");
       const payload: CompleteSubtaskPayload = {
         subtaskId, subtaskKind, completed,
+        completionEvidence: getString(raw, "completionEvidence"),
         ...(minutesSpent !== undefined ? { minutesSpent } : {}),
       };
       return payload;
@@ -635,7 +636,7 @@ function buildPayload(
       if (!subtaskId) return fail("invalid_payload", "subtaskId is required");
       const subtaskKind = ctx.subtaskKind;
       if (!subtaskKind) return fail("invalid_payload", "subtaskId must identify a sub-task on this task");
-      const payload: RemoveSubtaskPayload = { subtaskId, subtaskKind };
+      const payload: RemoveSubtaskPayload = { subtaskId, subtaskKind, supersededReason: getString(raw, "supersededReason"), ownerInstructionCommentId: getString(raw, "ownerInstructionCommentId") };
       return payload;
     }
 

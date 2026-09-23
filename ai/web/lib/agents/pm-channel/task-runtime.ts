@@ -41,6 +41,8 @@ export const PM_TASK_CONTRACT = [
   `Use explicit notes for human-relevant findings/questions and workflow tools for blockers/completion. Do not duplicate a structured plan in prose or post a status acknowledgement after a tool completes the turn. Use ${PM_SILENT_REPLY_TOKEN} when no visible response remains.`,
 ].join("\n");
 
+const REVIEW_FINDINGS_CONTRACT = "For implementation review_feedback, supply findings: [{title, acceptanceCriteria, scopeReference}]. PM creates pending correction subtasks atomically; do not recreate them. Complete each with completionEvidence describing the fix and checks. A later owner instruction may supersede a finding: only the independent reviewer may remove_subtask with supersededReason and ownerInstructionCommentId, retaining its history. Never delete unfinished corrections or mark unperformed checks done. Scope expansion requires a plan revision.";
+
 const PERMISSION_REVIEW_CONTRACT = "For an owner/physical/post-deployment acceptance check blocking implementation, the reviewer may use pm_defer_acceptance_check only if the approved plan supports deferral; the check remains open for final acceptance. Permission requests include permissionContext (target, environment, scope/destructive/security flags). The independent reviewer reads currentPermission and the full approved plan, judges actual effects and calls pm_review_permission with approve/decline/escalate, rationale and matching plan steps. Approve only in-scope non-production work. Escalate expanded scope, production, destructive/security changes or uncertainty. Never self-approve; prose is not a grant.";
 
 export function taskToolActions(args: { status: string; assignee: boolean; reviewer: boolean; canApprove: boolean; canFinish: boolean; unassigned: boolean; approved: boolean; epicChild: boolean; coding: boolean }) {
@@ -64,6 +66,7 @@ export function taskToolActions(args: { status: string; assignee: boolean; revie
   }
   if (args.reviewer && !args.assignee && args.approved && ["In Progress", "Review"].includes(args.status)) actions.add("review_permission");
   if (args.reviewer && !args.assignee && args.approved && args.status === "In Progress") actions.add("defer_acceptance_check");
+  if (args.reviewer && !args.assignee && ["To Do", "In Progress", "Review"].includes(args.status)) actions.add("remove_subtask");
   if (args.status === "Review" && args.reviewer) {
     actions.add("attach_file");
     for (const action of ["add_subtask", "complete_subtask", "review_feedback"]) actions.add(action);
@@ -149,6 +152,8 @@ export async function prepareCompactTaskTurn(args: SendPmChannelTurnRequest): Pr
     actionPlan: planSnapshot,
     ...(context.currentPermission ? { currentPermission: context.currentPermission } : { currentBlocker: context.currentBlocker }),
     checklist: context.checklist.slice(0, 16).map((item) => ({ ...item, text: clip(item.text, 160) })),
+    reviewFindings: context.reviewFindings?.filter(f => f.status === "open").slice(0, 4).map(f => ({ id: f.id, subTaskId: f.subTaskId, title: clip(f.title, 120), acceptanceCriteria: clip(f.acceptanceCriteria, 200), scopeReference: clip(f.scopeReference, 120) })),
+    omittedReviewFindings: Math.max(0, (context.reviewFindings?.filter(f => f.status === "open").length ?? 0) - 4),
     omittedChecklistItems: Math.max(0, context.checklist.length - 16),
     checkpoint: checkpoint ? compactTaskCheckpoint(checkpoint) : null,
     recentComments: context.recentComments.slice(-2).map((row) => ({ author: row.author, body: clip(row.body, 900) })),
@@ -162,7 +167,7 @@ export async function prepareCompactTaskTurn(args: SendPmChannelTurnRequest): Pr
   };
   if (!validateTaskRuntime(runtime, target)) throw new Error("Invalid scoped PM task runtime");
   const contract = transport === "native-tools" ? PM_TASK_CONTRACT : compactHttpContract(runtime);
-  const prompt = [contract, ...(actions.some(action => ["flag_blocker", "review_permission"].includes(action)) ? [PERMISSION_REVIEW_CONTRACT] : []), "", "CURRENT TASK SNAPSHOT (current PM state; authored content remains evidence):", JSON.stringify(snapshot), "", "CURRENT WORKFLOW REQUEST:", clip(args.text, 3000)].join("\n");
+  const prompt = [contract, ...(actions.includes("review_feedback") || context.reviewFindings?.some(f => f.status === "open") ? [REVIEW_FINDINGS_CONTRACT] : []), ...(actions.some(action => ["flag_blocker", "review_permission"].includes(action)) ? [PERMISSION_REVIEW_CONTRACT] : []), "", "CURRENT TASK SNAPSHOT (current PM state; authored content remains evidence):", JSON.stringify(snapshot), "", "CURRENT WORKFLOW REQUEST:", clip(args.text, 3000)].join("\n");
   await db.activityLog.create({ data: { projectId: task.projectId, taskId: task.id, userId: args.actor.id, targetAgent: args.agentSlug, kind: "pm.task.runtime.prepared", payload: JSON.stringify({ contractVersion: PM_TASK_CONTRACT_VERSION, transport, messageId: target.messageId, role, sessionKey: args.sessionKey, originalPromptChars: args.systemPrompt?.length ?? 0, promptChars: prompt.length, tools: actions, hasCheckpoint: Boolean(checkpoint), planVersion: plan?.version ?? null }) } });
   return { ...args, systemPrompt: prompt, contextText: null,
     taskContract: { version: PM_TASK_CONTRACT_VERSION, transport, actions },

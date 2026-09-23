@@ -174,7 +174,7 @@ async function main() {
       expectedWorkflowVersion: 1,
       idempotencyKey: "orch07:feedback",
       source: "agent",
-      payload: { reviewRunId: "rr-2", candidateSha: "cand-2", reviewerComment: "Needs changes" },
+      payload: { reviewRunId: (await db.reviewRun.findFirstOrThrow({ where: { taskId: task2.id } })).id, candidateSha: "cand-2", findings: [{ title: "Required correction", acceptanceCriteria: "Demonstrate the correction with a regression check.", scopeReference: "Approved implementation scope" }], reviewerComment: "Needs changes" },
     });
     assert.equal(feedback.status, "accepted", "request_review_changes accepted");
     // Run the procedure.
@@ -275,7 +275,7 @@ async function main() {
       payload: {
         reviewRunId: acceptedLease.id,
         candidateSha: acceptedLease.candidateSha,
-        reviewerComment: "Please return this to implementation.",
+        findings: [{ title: "Required correction", acceptanceCriteria: "Demonstrate the correction with a regression check.", scopeReference: "Approved implementation scope" }], reviewerComment: "Please return this to implementation.",
       },
     });
     assert.equal(nonReviewerReopen.status, "forbidden", "a different human cannot revoke accepted review");
@@ -291,7 +291,7 @@ async function main() {
       payload: {
         reviewRunId: acceptedLease.id,
         candidateSha: acceptedLease.candidateSha,
-        reviewerComment: "Finalization is stuck; return this task to To Do so the assignee can continue.",
+        findings: [{ title: "Required correction", acceptanceCriteria: "Demonstrate the correction with a regression check.", scopeReference: "Approved implementation scope" }], reviewerComment: "Finalization is stuck; return this task to To Do so the assignee can continue.",
       },
     });
     assert.equal(acceptedFeedback.status, "accepted", "the human reviewer can revoke stuck accepted finalization");

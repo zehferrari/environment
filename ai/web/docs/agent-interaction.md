@@ -732,8 +732,12 @@ remains actionable (`In Progress`, no external-input blocker, repository phase a
 PM settles the old run and promptly queues the next turn. The chain is capped at eight turns per twenty minutes and never runs
 alongside an existing active turn.
 When a task returns from Review (`review_feedback` places it at the front of
-To Do), add a sub-task per feedback item
-before starting so the bar reflects the remaining work. The task context also
+To Do), PM atomically creates pending correction subtasks from the reviewer’s
+required `findings` (`title`, `acceptanceCriteria`, `scopeReference`). Do not
+recreate them. Resolve each using `complete_subtask` with `completionEvidence`;
+open corrections block resubmission. The reviewer may supersede an obsolete
+correction using `remove_subtask`, a `supersededReason`, and a later owner
+`ownerInstructionCommentId`; its finding history remains visible. The task context also
 shows **Blocked by** when the task has an open hard-dependency; the workflow
 `start` action refuses such a task until its blocker reaches Done. Epic
 implementation tasks can be created only by the Epic acting manager, only

@@ -175,6 +175,7 @@ export interface TaskContextResponse {
       rank: number;
     }>;
   };
+  reviewFindings: Array<{ id: string; subTaskId: string | null; reviewRunId: string; candidateSha: string; title: string; acceptanceCriteria: string; scopeReference: string; status: string; completionEvidence: string | null; supersededReason: string | null; ownerInstructionCommentId: string | null }>;
   checklist: Array<{ id: string; text: string; done: boolean; minutes: number | null }>;
   comments: Array<{
     id: string;
@@ -300,6 +301,7 @@ export async function buildTaskContextJson(
           },
         },
       },
+      reviewFindings: { orderBy: { createdAt: "asc" }, select: { id: true, subTaskId: true, reviewRunId: true, candidateSha: true, title: true, acceptanceCriteria: true, scopeReference: true, status: true, completionEvidence: true, supersededReason: true, ownerInstructionCommentId: true } },
       checklist: {
         orderBy: { rank: "asc" },
         select: { id: true, text: true, completedAt: true, minutesSpent: true },
@@ -493,6 +495,7 @@ export async function buildTaskContextJson(
           })),
         }
       : null,
+    reviewFindings: task.reviewFindings,
     checklist: task.checklist.map((s) => ({
       id: s.id,
       text: s.text,

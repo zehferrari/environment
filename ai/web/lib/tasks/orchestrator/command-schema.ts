@@ -8,6 +8,7 @@
 // Untrusted client-provided fields (actor role, owner IDs, project IDs) are
 // explicitly rejected — only server-resolved values are accepted.
 
+import { parseReviewFindings } from "@/lib/tasks/review-findings-input";
 import { permissionContextFromValue, validatePermissionReview } from "@/lib/tasks/permission-review";
 
 import type {
@@ -305,7 +306,9 @@ function validateRequestReviewChanges(raw: Record<string, unknown>): PayloadVali
   if (!comment.ok) return fail("invalid_payload", comment.message);
   if (comment.value.length === 0) return fail("invalid_payload", "reviewerComment must not be empty");
 
-  return ok({ reviewRunId: reviewRunId.value, candidateSha: candidateSha.value, reviewerComment: comment.value });
+  const findings = parseReviewFindings(raw.findings);
+  if (!findings.ok) return fail("invalid_payload", findings.message);
+  return ok({ reviewRunId: reviewRunId.value, candidateSha: candidateSha.value, reviewerComment: comment.value, findings: findings.items });
 }
 
 function validateAcceptReview(raw: Record<string, unknown>): PayloadValidationResult {
@@ -652,6 +655,9 @@ function validateCompleteSubtask(raw: Record<string, unknown>): PayloadValidatio
 
   const payload: Record<string, unknown> = { subtaskId: subtaskId.value, subtaskKind, completed: completed.value };
   if (minutesSpent.value !== null) payload["minutesSpent"] = minutesSpent.value;
+  const evidence = optionalString(raw, "completionEvidence", MAX_TEXT);
+  if (!evidence.ok) return fail("invalid_payload", evidence.message);
+  if (evidence.value !== undefined) payload.completionEvidence = evidence.value;
   return ok(payload);
 }
 
@@ -662,7 +668,11 @@ function validateRemoveSubtask(raw: Record<string, unknown>): PayloadValidationR
   if (subtaskKind !== "implementation" && subtaskKind !== "review") {
     return fail("invalid_payload", "subtaskKind must be implementation or review");
   }
-  return ok({ subtaskId: subtaskId.value, subtaskKind });
+  const reason = optionalString(raw, "supersededReason", MAX_TEXT);
+  const instruction = optionalString(raw, "ownerInstructionCommentId", MAX_ID);
+  if (!reason.ok) return fail("invalid_payload", reason.message);
+  if (!instruction.ok) return fail("invalid_payload", instruction.message);
+  return ok({ subtaskId: subtaskId.value, subtaskKind, supersededReason: reason.value, ownerInstructionCommentId: instruction.value });
 }
 
 function validateRequestSubtask(raw: Record<string, unknown>): PayloadValidationResult {
