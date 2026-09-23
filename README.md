@@ -65,6 +65,7 @@ Every Markdown doc in the tree, grouped by folder. Agent-facing files (copied in
 | [`ai/web/docs/pm-task-runtime.md`](./ai/web/docs/pm-task-runtime.md) | Compact task runtime: active thinkpad configuration, native tools, session budgets, measurements and rollback. |
 | [`ai/web/docs/agent-model-upgrades.md`](./ai/web/docs/agent-model-upgrades.md) | Model promotion UI/CLI, provider fallback rotation, role-based effort and Ollama mapping limits. |
 | [`ai/web/docs/audits/openclaw-openai-upgrade-2026-09-10.md`](./ai/web/docs/audits/openclaw-openai-upgrade-2026-09-10.md) | OpenClaw 2026.9.3 upgrade: Codex dependency, OAuth route, PM compatibility, verified backups and recovery. |
+| [`ai/web/docs/audits/v23-43-reviewer-permissions-2026-09-23.md`](./ai/web/docs/audits/v23-43-reviewer-permissions-2026-09-23.md) | Scoped reviewer permission decisions, escalation, single-use checkpoint grants and runtime rollout. |
 | [`ai/web/docs/audits/wdt-9-planning-workflow-2026-09-22.md`](./ai/web/docs/audits/wdt-9-planning-workflow-2026-09-22.md) | WDT-9 planning loop, explicit review decisions, revision-scoped delegation, attachments and capacity recovery. |
 | [`ai/web/docs/audits/ph-192-contract-blocker-2026-09-14.md`](./ai/web/docs/audits/ph-192-contract-blocker-2026-09-14.md) | PH-192 transaction-ID rejection and deterministic blocker recovery. |
 | [`ai/web/docs/audits/ph-193-standalone-publication-2026-09-14.md`](./ai/web/docs/audits/ph-193-standalone-publication-2026-09-14.md) | PH-193 origin-publication recovery and standalone remote-verification checkpoints. |

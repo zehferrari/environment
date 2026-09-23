@@ -119,6 +119,7 @@ export const WORKFLOW_ACTION_CLASS: Readonly<
   assign_after_plan_approval: "episode-terminal",
   request_subtask: "episode-terminal",
   request_task: "episode-terminal",
+  review_permission: "episode-terminal",
   flag_blocker: "episode-terminal",
   flag_extra_work_blocker: "episode-terminal",
 };

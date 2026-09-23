@@ -498,6 +498,7 @@ export function decideCommand(
       };
     }
 
+    case "review_permission":
     case "raise_blocker":
     case "clear_blocker": {
       // No status change. Blocker state is recorded as evidence + activity.
@@ -509,7 +510,7 @@ export function decideCommand(
         toStatus: state.status,
         kernelIntent: "operator_override",
         cycleOperation: "none",
-        effects: targetUserId
+        effects: targetUserId && command.intent !== "review_permission"
           ? [{
               type: "task_notification",
               key: `${command.intent}:${targetUserId}`,

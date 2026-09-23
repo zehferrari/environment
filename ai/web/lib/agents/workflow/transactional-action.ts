@@ -93,6 +93,7 @@ const INTENT_PUBLIC_ACTIONS: Readonly<
   submit_for_review: ["ready_for_review", "submit_review"],
   request_review_changes: ["review_feedback"],
   accept_review: ["review_done"],
+  review_permission: ["review_permission"],
   raise_blocker: ["flag_blocker"],
   clear_blocker: ["clear_blocker"],
   triage_task: ["triage_to_todo"],

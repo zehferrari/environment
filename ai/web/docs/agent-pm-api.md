@@ -899,3 +899,13 @@ agent has saved one: complete `completedWork`, `evidence`, `openChecklist`,
 already carry the full next action and bounded sections; request full history
 only for a specific omitted detail. Checkpoints remain agent-authored evidence,
 not permission to act outside the current task's approved scope.
+
+### Permission decisions
+
+Task JSON includes `currentPermission` independently of clipped recent activity:
+current blocker identity, full permission request/context, latest reviewer decision
+and any grant. An independent reviewer uses `review_permission` with
+`blockerCommentId`, `decision` (`approve`/`decline`/`escalate`), `rationale`,
+`actionPlanId`, `actionPlanVersion`, and `planStepIds`. Approvals require matching
+approved scope and a named non-production target. See the
+[V23-43 audit](audits/v23-43-reviewer-permissions-2026-09-23.md).

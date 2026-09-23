@@ -645,6 +645,13 @@ export function runGuards(
       ]);
     }
 
+    case "review_permission":
+      return runGuardsChain([
+        guardStatus(state, command.intent, ["In Progress", "Review"]),
+        guardApprovedPlan(state, command.intent),
+        guardCyclePrecondition(state, command.intent, command.workflowCycleId),
+      ]);
+
     case "raise_blocker":
       return runGuardsChain([
         guardStatus(state, command.intent, ["In Progress", "To Do", "Review"]),

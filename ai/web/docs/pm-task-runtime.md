@@ -322,7 +322,7 @@ can be updated independently.
 ### Publishing before remote verification
 
 Coding assignees can use `publish_checkpoint` for an In Progress standalone
-task as well as an Epic child, with a fresh owner authorization. Standalone
+task as well as an Epic child, with a fresh owner or PM-validated reviewer authorization. Standalone
 publication pushes the task feature branch and preserves the original review
 base; Epic-child publication uses the Epic integration branch. Both keep the
 task active and require the remaining checks before `ready_for_review`.
@@ -346,3 +346,13 @@ The watchdog schedules one verification wake after the settings are repaired;
 the agent clears the matching blocker through the normal workflow. Typed failed
 procedure steps resume only while their original task/cycle is current.
 See [WDT-10 audit](audits/wdt-10-configuration-recovery-2026-09-22.md).
+
+### Scoped reviewer permissions (2026-09-23)
+
+PM channel 0.1.13 adds `pm_review_permission` for the independent reviewer during
+In Progress or Review. Each request gets a deliberate scope assessment against
+the approved plan; this is not automatic approval. See the
+[V23-43 audit](audits/v23-43-reviewer-permissions-2026-09-23.md) for request fields,
+plan/cycle fences, owner escalation and rollout checks. `currentPermission` in
+the compact snapshot and task read API includes the exact request, latest
+reviewer decision and any grant even when older history has been clipped.

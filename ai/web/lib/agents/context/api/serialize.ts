@@ -18,6 +18,7 @@
 // its context window rediscovering old work. `history=full` remains available
 // for explicit historical investigation, but must never be the routine path.
 
+import { readTaskPermissionState } from "@/lib/tasks/permission-state";
 import { db } from "@/lib/db";
 import { latestTaskExecutionCheckpoint, type TaskExecutionEpisodeSummary } from "@/lib/agents/episodes/lifecycle";
 import { parseAcceptanceCriteria } from "@/lib/tasks/action-plan-store";
@@ -151,6 +152,7 @@ export interface TaskContextResponse {
   };
   // Canonical plan, independent of clipped discussion/history. A fresh
   // execution episode must be able to retrieve every acceptance criterion.
+  currentPermission: Awaited<ReturnType<typeof readTaskPermissionState>>;
   actionPlan: null | {
     id: string;
     version: number;
@@ -476,6 +478,7 @@ export async function buildTaskContextJson(
           deployReviewer: actor(task.epic.deployReviewer),
         }
       : null,
+    currentPermission: await readTaskPermissionState(taskId),
     actionPlan: task.actionPlan
       ? {
           ...task.actionPlan,

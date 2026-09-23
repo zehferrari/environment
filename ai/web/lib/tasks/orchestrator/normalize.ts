@@ -11,6 +11,7 @@
 // CRITICAL: This is ONE exported normalizer with NO transport-specific
 // variants. Wiring transports to import it is PHASEE-08/09 scope.
 
+import { validatePermissionReview, type PermissionReview } from "@/lib/tasks/permission-review";
 import type {
   AgentExecutionContext,
   DomainErrorCode,
@@ -122,6 +123,7 @@ const ACTION_TO_INTENT: ReadonlyMap<WorkflowPublicAction, TaskWorkflowIntent> = 
   ["remove_subtask", "remove_subtask"],
   ["request_subtask", "request_subtask"],
   ["request_task", "request_task"],
+  ["review_permission", "review_permission"],
   ["flag_blocker", "raise_blocker"],
   ["clear_blocker", "clear_blocker"],
   ["flag_extra_work_blocker", "raise_scope_blocker"],
@@ -238,6 +240,7 @@ function stripUntrusted(rawBody: Record<string, unknown>): Record<string, unknow
 // ---------------------------------------------------------------------------
 
 type BuiltPayload =
+  | PermissionReview
   | SubmitPlanPayload
   | ApprovePlanPayload
   | RequestPlanChangesPayload
@@ -382,6 +385,12 @@ function buildPayload(
       return payload;
     }
 
+    case "review_permission": {
+      const error = validatePermissionReview(raw);
+      if (error) return fail("invalid_payload", error);
+      return { blockerCommentId: raw.blockerCommentId, decision: raw.decision, rationale: raw.rationale, actionPlanId: raw.actionPlanId, actionPlanVersion: raw.actionPlanVersion, planStepIds: raw.planStepIds } as PermissionReview;
+    }
+
     // --- raise_blocker ---
     case "raise_blocker": {
       const comment = getString(raw, "comment");
@@ -391,19 +400,20 @@ function buildPayload(
       const blockerReport = suppliedReport ?? (permissionKind
         ? {
             blockedOn: "permission",
-            requestedActor: "the task reporter",
+            requestedActor: "the task reviewer",
             requestedAction: permissionScope ?? comment ?? "Grant the requested permission.",
             evidence: comment ?? permissionScope ?? "Permission is required by policy.",
             diagnosticsAttempted: [
-              "No agent-side retry can grant this permission; the scope is owner-authorized by design.",
+              "No agent-side retry can grant this permission; the independent reviewer must assess the scope before granting permission.",
             ],
-            resumeCondition: `The task reporter grants "${permissionScope ?? comment ?? "the requested permission"}" on the blocker comment.`,
+            resumeCondition: `The reviewer assesses and grants "${permissionScope ?? comment ?? "the requested permission"}" on the blocker comment.`,
             reporterCanResolve: true,
           }
         : null);
       if (!blockerReport) return fail("invalid_payload", "blockerReport is required");
       const payload: RaiseBlockerPayload = {
         blockerReport: blockerReport as RaiseBlockerPayload["blockerReport"],
+        ...(raw.permissionContext !== undefined ? { permissionContext: raw.permissionContext as RaiseBlockerPayload["permissionContext"] } : {}),
         ...(comment !== undefined ? { comment } : {}),
         ...(permissionKind !== undefined ? { permissionKind } : {}),
         ...(permissionScope !== undefined ? { permissionScope } : {}),

@@ -590,9 +590,16 @@ Latency / PM queue/status names:
    include `permissionKind=reporter_approval` and an exact `permissionScope`;
    use `permissionKind=publish_checkpoint` for the validated Epic checkpoint
    path. PM links the board control to the exact blocker comment and renders a
-   scoped reporter grant action there. Permission-only rounds notify that
-   reporter, not a reviewer/Epic-manager coding agent; advisory work must not
-   blur the visible assignee boundary. Never classify mixed, uncertain, or
+   scoped grant action there. Include `permissionContext` with environment,
+   exact target, and changesScope/destructive/securitySensitive flags. PM routes
+   the request to the independent reviewer acting as manager. Read the full
+   approved plan and actual request effects, then call `review_permission` with
+   approve, decline or escalate, a scope rationale, current plan id/version and
+   matching planStepIds. Approve routine non-production work only within the
+   approved scope. Escalate production, destructive/security changes, expanded
+   scope, missing context or uncertainty to the reporter. Plain comments are
+   never grants; the assignee cannot self-approve. A decline closes the request
+   without authorizing it; an escalation leaves it waiting for the reporter. Never classify mixed, uncertain, or
    agent-actionable work as permission-only. Before flagging a credential/login
    blocker, re-read and retry the exact account identifier and endpoint from trusted task context;
    a guessed shorthand username is not blocker evidence. A decision-owner
@@ -653,9 +660,9 @@ Latency / PM queue/status names:
     after review; only the Epic branch reaches origin. Do not create or update
     a pull request. PR creation and landing are human-only.
     If a standalone task needs a published commit for remaining remote
-    verification, use `publish_checkpoint` while `In Progress`. When owner
+    verification, use `publish_checkpoint` while `In Progress`. When scoped
     authorization is the missing dependency, call `flag_blocker` with
-    `permissionKind=publish_checkpoint`. Cite the resulting fresh owner
+    `permissionKind=publish_checkpoint`. Cite the resulting fresh owner or PM-validated reviewer
     `authorizationCommentId` naming the Task and target task branch. PM commits
     and pushes that feature branch, verifies origin, and leaves the checklist
     and original review base intact. Verify the test environment serves that
@@ -670,10 +677,10 @@ Latency / PM queue/status names:
     report an actual pipeline/deployed-SHA failure as a general external
     blocker if necessary. Only when the current task has unpublished work use
     `publish_checkpoint` instead of committing, pushing, or submitting
-    incomplete work. When owner authorization is then the sole missing
+    incomplete work. When scoped authorization is then the sole missing
     dependency, call `flag_blocker` with
     `permissionKind=publish_checkpoint`; PM presents the validated grant on the
-    exact blocker comment. The resulting fresh active-owner authorization
+    exact blocker comment. The resulting fresh owner or PM-validated reviewer authorization
     names the Task key/branch and target Epic branch; cite that exact
     `authorizationCommentId` and give a concise reason. The authorization is
     single-use. PM creates the
@@ -694,7 +701,7 @@ Latency / PM queue/status names:
     `ready_for_review` normally; PM recognizes an unchanged published
     checkpoint baseline and finalizes it through the no-change cleanup path.
     Never checkpoint ordinary progress or act
-    without the explicit owner authorization.
+    without explicit owner or PM-validated reviewer authorization.
 15. On completion, tick any remaining implementation subtasks
     (`ready_for_review` is rejected while open ones exist), then move
     request validation through the PM workflow endpoint and include
@@ -923,7 +930,7 @@ the exact silent token and no other text.
   belongs to the resolved reviewer/manager role.
 - Formal blockers store their exact comment identity. The board alert is an
   action that opens the Comments tab and focuses that comment. A blocker whose
-  only dependency is structured reporter permission exposes a scoped grant
+  only dependency is structured permission exposes a scoped grant
   action on the comment; granting wakes the existing assignee, makes the round
   agent-actionable, and remains single-use/idempotent. The assignee clears a
   non-checkpoint blocker after verification. A checkpoint attempt closes the
@@ -931,7 +938,7 @@ the exact silent token and no other text.
   retry or later publication needs a fresh round.
 - `publish_checkpoint` is the narrow exception for an `In Progress`
   code task whose remaining checks require a remotely reachable commit. It
-  requires the exact id of a fresh, single-use active-owner authorization
+  requires the exact id of a fresh, single-use owner or PM-validated reviewer authorization
   comment written after current plan approval and naming the Task source plus
   target publication branch. PM owns the checkpoint commit. A standalone
   task publishes its feature branch and retains its original review base; an

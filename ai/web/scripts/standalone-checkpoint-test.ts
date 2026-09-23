@@ -125,7 +125,31 @@ async function main() {
         assert.equal(receipt.publishedBranch, 'integration');
         assert.equal(receipt.publishedSha, await git(liveWt, 'rev-parse', 'HEAD'));
         assert.ok(taskToolActions({ status: 'In Progress', assignee: true, reviewer: false, canApprove: false, canFinish: false, unassigned: false, approved: true, epicChild: false, coding: true }).includes('publish_checkpoint'));
-        console.log('PASS standalone checkpoint: exact feature push, replay preserves later edits, production/Epic guards, divergence refusal, owner grant + orchestrator + repository runner, incomplete verification retained and full review base preserved.');
+        // A later checkpoint is deliberately adjudicated by the independent reviewer.
+        const reviewerAgent = await db.agent.create({ data: { slug: 'reviewer', name: 'Reviewer', role: 'coding' } });
+        const reviewer = await db.user.create({ data: { username: 'reviewer', email: 'reviewer@checkpoint.invalid', kind: 'agent', agentId: reviewerAgent.id } });
+        await db.task.update({ where: { id: task.id }, data: { actingManagerId: reviewer.id } });
+        const plan = await db.actionPlan.create({ data: { taskId: task.id, summary: 'Dev browser verification', status: 'approved', approvedOn: new Date(), steps: { create: { stepId: 'dev', title: 'Verify Dev preview', acceptanceCriteria: '["Check actual deployed revision"]' } } } });
+        await writeFile(`${liveWt}/reviewed.txt`, 'reviewer-approved follow-up\n');
+        const raisedAgain = await command('raise_blocker', { permissionKind: 'publish_checkpoint', permissionScope: 'Publish CHK-1 to Dev for the approved checks', permissionContext: { environment: 'development', target: 'dev.example.test', changesScope: false, destructive: false, securitySensitive: false }, blockerReport: { blockedOn: 'permission', requestedActor: 'reviewer', requestedAction: 'Authorize Dev checkpoint', evidence: 'Local follow-up needs Dev verification', diagnosticsAttempted: ['Compared SHA'], resumeCondition: 'Scoped reviewer grant', reporterCanResolve: true } }, 'reviewer-round');
+        assert.equal(raisedAgain.status, 'accepted', JSON.stringify(raisedAgain));
+        const { readTaskPermissionState } = await import('@/lib/tasks/permission-state');
+        const pending = await readTaskPermissionState(task.id);
+        assert.ok(pending);
+        const reviewed = await submitWorkflowCommand({ taskId: task.id, intent: 'review_permission', actor: { id: reviewer.id, kind: 'agent', username: 'reviewer', role: 'reviewer', codingCapability: true }, source: 'operator', expectedWorkflowVersion: 0, workflowCycleId: cycle.id, idempotencyKey: 'reviewer-approve', payload: { blockerCommentId: pending.commentId!, decision: 'approve', rationale: 'Approved Dev verification step requires this follow-up. Do not authorize production or unrelated changes.', actionPlanId: plan.id, actionPlanVersion: plan.version, planStepIds: ['dev'] } });
+        assert.equal(reviewed.status, 'accepted', JSON.stringify(reviewed));
+        const reviewerAuthorization = (await readTaskPermissionState(task.id))?.grant?.authorizationCommentId;
+        assert.ok(reviewerAuthorization);
+        const requested = await command('publish_checkpoint', { authorizationCommentId: reviewerAuthorization }, 'reviewer-publish');
+        assert.equal(requested.status, 'accepted', JSON.stringify(requested));
+        const published = await runEpicMergeSpoolJob({ kind: 'checkpoint', jobId: `checkpoint-${task.id}`, taskId: task.id, projectId: project.id, requestedByUserId: worker.id, requestedByUsername: 'worker', authorizationCommentId: reviewerAuthorization, note: 'Scoped reviewer approval', enqueuedAt: new Date().toISOString() });
+        assert.equal(published.outcome, 'published', JSON.stringify(published));
+        assert.equal(await readTaskPermissionState(task.id), null, 'reviewer round closes on publication');
+        const replayedPublication = await runEpicMergeSpoolJob({ kind: 'checkpoint', jobId: `checkpoint-${task.id}`, taskId: task.id, projectId: project.id, requestedByUserId: worker.id, requestedByUsername: 'worker', authorizationCommentId: reviewerAuthorization, note: 'Duplicate job delivery', enqueuedAt: new Date().toISOString() });
+        assert.equal(replayedPublication.outcome, 'done', JSON.stringify(replayedPublication));
+        assert.equal((await db.task.findUniqueOrThrow({ where: { id: task.id } })).alertReporter, false, 'successful replay must not raise a false authorization failure');
+        assert.equal((await db.task.findUniqueOrThrow({ where: { id: task.id } })).status, 'In Progress');
+        console.log('PASS standalone checkpoint: exact feature push, replay preserves later edits, production/Epic guards, divergence refusal, owner and scoped reviewer grants + orchestrator + repository runner, incomplete verification retained and full review base preserved.');
     }
     finally {
         await db.$disconnect();

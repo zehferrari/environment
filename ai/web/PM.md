@@ -480,7 +480,7 @@ should expose the change or blocker rather than silently broaden scope.
 
 A standalone code Task can also need a published commit before its remaining
 browser checks can run. While it is `In Progress`, use `publish_checkpoint`
-with a fresh active-owner authorization naming the Task and its target task
+with a fresh owner or PM-validated reviewer authorization naming the Task and its target task
 branch. The permission blocker records these branch identities so its grant
 button can authorize the exact publication. PM commits the registered worktree,
 pushes the exact SHA to the standalone feature branch without force, and verifies

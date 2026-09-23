@@ -1,3 +1,6 @@
+import { reviewPermissionExecutor } from "./review-permission";
+import { permissionRequiresOwner } from "@/lib/tasks/permission-review";
+import { isReviewerCheckpointAuthorization } from "@/lib/tasks/reviewer-checkpoint-authorization";
 import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { canRetryAcceptedRepositoryReview } from "@/lib/tasks/repository-finalization";
 import {
@@ -603,11 +606,13 @@ const raiseBlockerExecutor: IntentExecutor<"raise_blocker"> = async (context) =>
       context.command.payload.permissionKind &&
       activeBlocker.permissionRequest?.kind === context.command.payload.permissionKind &&
       activeBlocker.permissionRequest.scope === (context.command.payload.permissionScope ?? report.requestedAction) &&
+      JSON.stringify(activeBlocker.permissionRequest.context ?? null) === JSON.stringify(context.command.payload.permissionContext ?? null) &&
       !activeBlocker.permissionGrant?.authorizationCommentId,
     );
     if (samePermissionRound) {
       // Record the exact command receipt/episode disposition without creating
       // a second blocker comment or replacing the active permission round.
+      context.decision.effects = [];
       return context.helpers.executeDecisionWrites();
     }
     return {
@@ -633,6 +638,7 @@ const raiseBlockerExecutor: IntentExecutor<"raise_blocker"> = async (context) =>
     ? {
         kind: context.command.payload.permissionKind,
         scope: context.command.payload.permissionScope ?? report.requestedAction,
+        context: context.command.payload.permissionContext ?? null,
         ...(checkpointTask ? {
           taskKey: checkpointTask.workItemKey,
           taskBranch: effectiveTaskBranchName(checkpointTask),
@@ -645,10 +651,18 @@ const raiseBlockerExecutor: IntentExecutor<"raise_blocker"> = async (context) =>
     permissionRequest,
     blockerReport: report,
   });
+  const reviewer = context.state.resolvedReviewOwnerId && context.state.resolvedReviewOwnerId !== context.state.assigneeId
+    ? await context.tx.user.findFirst({ where: { id: context.state.resolvedReviewOwnerId, status: "active" }, select: { id: true } }) : null;
   await context.tx.task.update({
     where: { id: context.command.taskId },
-    data: { alertReporter: true },
+    data: { alertReporter: !permissionRequest || permissionRequiresOwner(permissionRequest.context) || !reviewer },
   });
+  context.decision.effects = context.decision.effects.map(effect => effect.type === "task_notification" ? {
+    ...effect, key: `${effect.key}:blocker:${comment.id}`,
+    payload: { ...effect.payload, ...(permissionRequest ? { targetUserId: reviewer?.id ?? context.state.reporterId } : {}), body: permissionRequest
+      ? `Permission request ${comment.id}: ${permissionRequest.scope}. Read the current approved plan and request context. As reviewer, use review_permission to explicitly approve an in-scope non-production request, decline it, or escalate it to the reporter with your rationale. Do not ask the owner again for routine work within the approved scope. Missing context, scope changes, production, destructive or security-sensitive actions require escalation. Never self-approve.`
+      : effect.payload.body },
+  } : effect);
   return context.helpers.executeDecisionWrites();
 };
 
@@ -887,17 +901,18 @@ const publishCheckpointExecutor: IntentExecutor<"publish_checkpoint"> = async (c
       user: { select: { kind: true, status: true, isOwner: true } },
     },
   });
+  const reviewerGrant = authorization && await isReviewerCheckpointAuthorization(context.tx, context.command.taskId, context.command.payload.authorizationCommentId);
   if (
     !task?.approvedOn ||
     !authorization ||
     authorization.taskId !== context.command.taskId ||
     authorization.deletedAt ||
     authorization.createdAt < task.approvedOn ||
-    !isActiveOwnerPrincipal(authorization.user)
+    (!isActiveOwnerPrincipal(authorization.user) && !reviewerGrant)
   ) {
     return {
       status: "forbidden",
-      reason: "Checkpoint authorization is not a live owner grant for this approved task.",
+      reason: "Checkpoint authorization is not a live owner or scoped reviewer grant for this approved task.",
       domainCode: "not_authorized",
     };
   }
@@ -918,7 +933,7 @@ const publishCheckpointExecutor: IntentExecutor<"publish_checkpoint"> = async (c
       domainCode: "cycle_mismatch",
     };
   }
-  const explicitAuthorization = validateCheckpointAuthorizationText({
+  const explicitAuthorization = reviewerGrant ? { ok: true as const } : validateCheckpointAuthorizationText({
     body: authorization.body,
     taskKey: task.workItemKey,
     taskBranch,
@@ -1046,6 +1061,7 @@ export const INTENT_EXECUTORS = {
   submit_for_review: submitForReviewExecutor,
   request_review_changes: requestReviewChangesExecutor,
   accept_review: acceptReviewExecutor,
+  review_permission: reviewPermissionExecutor,
   raise_blocker: raiseBlockerExecutor,
   clear_blocker: clearBlockerExecutor,
   cancel_task: cancelTaskExecutor,

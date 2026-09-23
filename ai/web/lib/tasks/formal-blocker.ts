@@ -1,3 +1,4 @@
+import { permissionContextFromValue, type PermissionContext } from "@/lib/tasks/permission-review";
 import { isGitIdentityBlocker } from "@/lib/tasks/git-identity";
 
 type TaskActivityKindRow = {
@@ -21,6 +22,7 @@ export const BLOCKER_PERMISSION_KINDS = [
 export type BlockerPermissionKind = (typeof BLOCKER_PERMISSION_KINDS)[number];
 
 export type BlockerPermissionRequest = {
+  context?: PermissionContext | null;
   kind: BlockerPermissionKind;
   scope: string;
   taskKey?: string | null;
@@ -156,6 +158,7 @@ export function blockerMetadataFromPayload(payload: string | null | undefined): 
     commentId,
     permissionRequest: {
       kind: request.kind,
+      context: permissionContextFromValue(request.context),
       scope: request.scope.trim(),
       taskKey: typeof request.taskKey === "string" ? request.taskKey : null,
       taskBranch: typeof request.taskBranch === "string" ? request.taskBranch : null,

@@ -542,6 +542,10 @@ export function authorizeCommand(
       };
     }
 
+    case "review_permission": {
+      const allowed = actor.id !== state.assigneeId && actor.id === resolvePlanOwnerIdFromSnapshot(state);
+      return { allowed, reason: allowed ? "ok" : "not_reviewer", decisionActorId: allowed ? actor.id : null, executorActorId: null };
+    }
     case "raise_blocker": {
       // Raising a blocker is assignee-owned (the assignee reports blockers).
       if (!canSubmitImplementationIntent(state, actor)) {

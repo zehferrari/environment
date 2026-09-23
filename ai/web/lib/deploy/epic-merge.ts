@@ -1,3 +1,4 @@
+import { isReviewerCheckpointAuthorization } from "@/lib/tasks/reviewer-checkpoint-authorization";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync } from "node:fs";
@@ -1410,52 +1411,8 @@ async function executeCheckpointJob(
   if (!actor) {
     return fail(monitor.ok ? "No active Monitor Agent is available." : monitor.error);
   }
-  if (!task.approvedOn) return fail("The Task Action Plan is no longer approved.");
-  if (task.assigneeId !== job.requestedByUserId) {
-    return fail("The agent that requested this checkpoint is no longer the task assignee.");
-  }
-  if (task.epic && task.epic.status !== "In Progress") {
-    return fail("An Epic-child checkpoint requires its Epic to remain In Progress.");
-  }
-  if (task.repositoryRun?.phase !== "active") return fail("The checkpoint repository run is no longer active.");
-
-  const authorization = await db.comment.findUnique({
-    where: { id: job.authorizationCommentId },
-    select: {
-      taskId: true,
-      body: true,
-      createdAt: true,
-      deletedAt: true,
-      user: { select: { id: true, kind: true, status: true, isOwner: true } },
-    },
-  });
-  if (
-    !authorization ||
-    authorization.taskId !== task.id ||
-    authorization.deletedAt ||
-    authorization.createdAt < task.approvedOn ||
-    !isActiveOwnerPrincipal(authorization.user)
-  ) {
-    return fail("The checkpoint authorization comment is missing, deleted, predates plan approval, or was not written by the active Mission Control owner.");
-  }
-
-  const repositoryPath = task.repositoryRun?.repositoryPath ?? task.project.repositoryPath;
-  const worktreePath = task.repositoryRun?.worktreePath;
-  const taskBranch = task.repositoryRun?.branchName ?? effectiveTaskBranchName(task);
-  const epicBranch = task.epic ? task.repositoryRun?.epicBranch ?? effectiveEpicBranchName(task.epic) : null;
-  const publishedBranch = epicBranch ?? taskBranch;
-  if (!repositoryPath || !worktreePath || !taskBranch || !publishedBranch) {
-    return fail("The active repository path, worktree, task branch, or Epic branch is missing.");
-  }
-  const explicitAuthorization = validateCheckpointAuthorizationText({
-    body: authorization.body,
-    taskKey: task.workItemKey,
-    taskBranch,
-    epicBranch,
-  });
-  if (!explicitAuthorization.ok) {
-    return fail(`The cited owner comment is not an explicit checkpoint capability: ${explicitAuthorization.reason}`);
-  }
+  // A completed grant has deliberately closed its blocker. A replay repairs
+  // settlement only; it must not reauthorize or republish under that spent grant.
   const priorSuccessfulUses = await db.activityLog.findMany({
     where: { taskId: task.id, kind: "pm.repo.checkpoint.ok" },
     select: { payload: true },
@@ -1489,6 +1446,54 @@ async function executeCheckpointJob(
         ? "reconciled the consumed checkpoint blocker after an earlier successful publication"
         : "checkpoint authorization was already published and its permission round was already settled",
     };
+  }
+
+  if (!task.approvedOn) return fail("The Task Action Plan is no longer approved.");
+  if (task.assigneeId !== job.requestedByUserId) {
+    return fail("The agent that requested this checkpoint is no longer the task assignee.");
+  }
+  if (task.epic && task.epic.status !== "In Progress") {
+    return fail("An Epic-child checkpoint requires its Epic to remain In Progress.");
+  }
+  if (task.repositoryRun?.phase !== "active") return fail("The checkpoint repository run is no longer active.");
+
+  const authorization = await db.comment.findUnique({
+    where: { id: job.authorizationCommentId },
+    select: {
+      taskId: true,
+      body: true,
+      createdAt: true,
+      deletedAt: true,
+      user: { select: { id: true, kind: true, status: true, isOwner: true } },
+    },
+  });
+  const reviewerGrant = authorization && await isReviewerCheckpointAuthorization(db, task.id, job.authorizationCommentId);
+  if (
+    !authorization ||
+    authorization.taskId !== task.id ||
+    authorization.deletedAt ||
+    authorization.createdAt < task.approvedOn ||
+    (!isActiveOwnerPrincipal(authorization.user) && !reviewerGrant)
+  ) {
+    return fail("The checkpoint authorization comment is missing, deleted, predates plan approval, or is not a live owner/scoped reviewer grant.");
+  }
+
+  const repositoryPath = task.repositoryRun?.repositoryPath ?? task.project.repositoryPath;
+  const worktreePath = task.repositoryRun?.worktreePath;
+  const taskBranch = task.repositoryRun?.branchName ?? effectiveTaskBranchName(task);
+  const epicBranch = task.epic ? task.repositoryRun?.epicBranch ?? effectiveEpicBranchName(task.epic) : null;
+  const publishedBranch = epicBranch ?? taskBranch;
+  if (!repositoryPath || !worktreePath || !taskBranch || !publishedBranch) {
+    return fail("The active repository path, worktree, task branch, or Epic branch is missing.");
+  }
+  const explicitAuthorization = reviewerGrant ? { ok: true as const } : validateCheckpointAuthorizationText({
+    body: authorization.body,
+    taskKey: task.workItemKey,
+    taskBranch,
+    epicBranch,
+  });
+  if (!explicitAuthorization.ok) {
+    return fail(`The cited owner comment is not an explicit checkpoint capability: ${explicitAuthorization.reason}`);
   }
   if (isProtectedBranch(task.project.agentChangeBlockedBranches, publishedBranch)) {
     return fail(`The publication branch ${publishedBranch} is protected from agent-originated repository changes.`);
@@ -1545,7 +1550,7 @@ async function executeCheckpointJob(
     "",
     `- Task checkpoint: \`${checkpoint.checkpointSha.slice(0, 10)}\``,
     `- Published branch tip: \`${checkpoint.epicSha.slice(0, 10)}\``,
-    `- Owner authorization comment: \`${job.authorizationCommentId}\``,
+    `- Authorization comment: \`${job.authorizationCommentId}\``,
     "- The task remains In Progress; its task branch and worktree remain active. Verification and independent review are still required.",
     "",
     job.note,

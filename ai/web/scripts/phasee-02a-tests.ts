@@ -146,16 +146,17 @@ test("isOperationalIntent identifies operational intents", () => {
   assert.ok(!isOperationalIntent("accept_review"));
 });
 
-test("WORKFLOW_PUBLIC_ACTIONS includes all 22 cross-transport public actions", () => {
-  assert.equal(WORKFLOW_PUBLIC_ACTIONS.length, 22);
+test("WORKFLOW_PUBLIC_ACTIONS includes the complete cross-transport public vocabulary", () => {
+
   const required = [
     "start", "checkpoint", "publish_checkpoint", "ready_for_review",
     "submit_review", "review_feedback", "review_done", "triage_to_todo",
     "approve_plan", "request_plan_changes", "submit_plan", "assign_task", "assign_after_plan_approval",
     "add_subtask", "complete_subtask", "remove_subtask", "request_subtask",
     "request_task", "flag_blocker", "clear_blocker", "flag_extra_work_blocker",
-    "override_status",
+    "override_status", "accept_plan_review", "delegate_plan_approval", "review_permission",
   ];
+  assert.deepEqual([...WORKFLOW_PUBLIC_ACTIONS].sort(), required.sort());
   for (const a of required) {
     assert.ok(WORKFLOW_PUBLIC_ACTIONS.includes(a as WorkflowPublicAction), `Missing action: ${a}`);
   }
@@ -603,7 +604,7 @@ test("Cross-transport: oversized strings rejected in all transports", () => {
   }
 });
 
-test("Cross-transport: all 22 public actions map to canonical intents", () => {
+test("Cross-transport: all public actions map to canonical intents", () => {
   const ctx = makeAuthCtx({ candidateSha: "abc", baseSha: "def", reviewRunId: "r1", actionPlanId: "p1", actionPlanVersion: 1 });
   for (const action of WORKFLOW_PUBLIC_ACTIONS) {
     const r = normalizePublicAction(action, getValidRawBodyForAction(action), ctx);
@@ -635,6 +636,7 @@ test("Validation rejects client-supplied workflowVersion", () => {
 
 function getValidRawBodyForAction(action: WorkflowPublicAction): Record<string, unknown> {
   switch (action) {
+    case "review_permission": return { blockerCommentId: "c1", decision: "approve", rationale: "Approved dev verification step", actionPlanId: "p1", actionPlanVersion: 1, planStepIds: ["s1"] };
     case "start": return {};
     case "checkpoint": return { nextAction: "continue" };
     case "publish_checkpoint": return { authorizationCommentId: "c1" };

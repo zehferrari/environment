@@ -468,8 +468,8 @@ async function sectionB(): Promise<void> {
     assertEqual(drained.dispatched, 1, "the drain dispatched exactly one continuation turn");
     assertEqual(
       drained.superseded,
-      1,
-      "the second continuation is superseded: the first one's run is now the active turn",
+      0,
+      "same-source continuations coalesce into the dispatched successor rather than superseding it",
     );
     assert(
       (await db.agentChatMessage.count()) > messagesBefore,

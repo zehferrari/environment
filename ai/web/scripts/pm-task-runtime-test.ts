@@ -204,7 +204,7 @@ async function main() {
     assert.equal(cli.payload.taskContract.transport, "scoped-http");
     assert.ok(cli.payload.systemPrompt.includes("Native PM tools are not available"));
     assert.ok(!cli.payload.systemPrompt.includes("Use native pm_* tools."));
-    assert.ok(cli.payload.systemPrompt.length < 20_000);
+    assert.ok(cli.payload.systemPrompt.length < 20_000, `CLI snapshot bounded: ${cli.payload.systemPrompt.length}`);
     const cliCapability = JSON.parse(cli.payload.systemPrompt.split("HTTP WORKFLOW CAPABILITY (private; never include credentials in replies, logs or repository files):\n")[1].split("\n")[0]);
     assert.equal(cliCapability.commonBody.messageId, cli.payload.replyTarget.messageId);
     assert.ok(cliCapability.contextUrl.includes("grant="));

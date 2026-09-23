@@ -8,6 +8,8 @@
 // Untrusted client-provided fields (actor role, owner IDs, project IDs) are
 // explicitly rejected — only server-resolved values are accepted.
 
+import { permissionContextFromValue, validatePermissionReview } from "@/lib/tasks/permission-review";
+
 import type {
   TaskWorkflowIntent,
   DomainErrorCode,
@@ -362,6 +364,11 @@ function validateRaiseBlocker(raw: Record<string, unknown>): PayloadValidationRe
 
   const payload: Record<string, unknown> = { blockerReport };
 
+  if (raw.permissionContext !== undefined && raw.permissionContext !== null) {
+    const context = permissionContextFromValue(raw.permissionContext);
+    if (!context) return fail("invalid_payload", "Invalid permissionContext: name the environment, target and risk flags");
+    payload.permissionContext = context;
+  }
   // Optional permission fields
   const permissionKind = raw["permissionKind"];
   if (permissionKind !== undefined) {
@@ -729,6 +736,10 @@ export function validateCommandPayload(
     case "submit_for_review": return validateSubmitForReview(raw);
     case "request_review_changes": return validateRequestReviewChanges(raw);
     case "accept_review": return validateAcceptReview(raw);
+    case "review_permission": {
+      const error = validatePermissionReview(raw);
+      return error ? fail("invalid_payload", error) : ok(raw);
+    }
     case "raise_blocker": return validateRaiseBlocker(raw);
     case "clear_blocker": return validateClearBlocker(raw);
     case "cancel_task": return validateCancelTask(raw);

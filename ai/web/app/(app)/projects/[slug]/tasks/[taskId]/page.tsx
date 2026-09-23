@@ -26,6 +26,7 @@ import {
   activeFormalBlockersByTask,
   blockerPermissionGrantForComment,
 } from "@/lib/tasks/formal-blocker";
+import { permissionRequiresOwner, permissionReviewForComment } from "@/lib/tasks/permission-review";
 import { applyBlockerPermissionGrant } from "@/lib/tasks/blocker-permission-grant";
 import {
   createSubTaskItem,
@@ -409,7 +410,7 @@ async function grantBlockerPermission(formData: FormData) {
       throw new Error("The checkpoint permission request no longer matches the task's active repository state.");
     }
     body = [
-      `@${task.assignee.username} I hereby authorize PM to publish and deploy the current checkpoint for ${task.workItemKey ?? taskBranch} / ${taskBranch} to ${epicBranch ? `the Epic branch ${epicBranch}` : `the standalone task branch ${taskBranch}`}.`,
+      `@${task.assignee.username} I hereby authorize PM to publish the current checkpoint for ${task.workItemKey ?? taskBranch} / ${taskBranch} to ${epicBranch ? `the Epic branch ${epicBranch}` : `the standalone task branch ${taskBranch}`}.`,
       `This authorization is limited to the permission requested in blocker comment ${blockerCommentId}: ${request.scope}`,
       "Use this comment as authorizationCommentId and proceed now. PM closes this permission round automatically when the checkpoint attempt succeeds or fails; any later publication requires a fresh blocker and grant.",
     ].join("\n\n");
@@ -939,6 +940,8 @@ export default async function TaskDetailPage({
     allActivity.map((row) => ({ taskId: task.id, kind: row.kind, payload: row.payload, createdAt: row.createdAt })),
     task.comments.map((comment) => ({ id: comment.id, taskId: task.id, createdAt: comment.createdAt })),
   ).get(task.id) ?? null;
+  const permissionReviewDecision = activeFormalBlocker?.commentId ? permissionReviewForComment(allActivity, activeFormalBlocker.commentId) : null;
+  const permissionNeedsReporter = !resolveReviewOwnerId(task) || resolveReviewOwnerId(task) === task.assigneeId || permissionRequiresOwner(activeFormalBlocker?.permissionRequest?.context) || permissionReviewDecision?.decision === "escalate";
   const activeBlockerPermissionGrant = activeFormalBlocker?.commentId
     ? blockerPermissionGrantForComment(allActivity, activeFormalBlocker.commentId)
     : null;
@@ -2148,7 +2151,8 @@ export default async function TaskDetailPage({
                           data-blocker-permission-action
                           className="mt-3 border-t border-crit/20 pt-3"
                         >
-                          <p className="text-caption font-semibold text-crit">Reporter permission required</p>
+                          <p className="text-caption font-semibold text-crit">{permissionNeedsReporter ? "Reporter decision required" : "Awaiting reviewer scope assessment"}</p>
+                          {permissionReviewDecision ? <p className="mt-1 text-caption text-text-muted">Reviewer: {permissionReviewDecision.rationale}</p> : null}
                           <p className="mt-1 text-caption text-text-muted">
                             {activeFormalBlocker.permissionRequest.scope}
                           </p>
@@ -2167,14 +2171,14 @@ export default async function TaskDetailPage({
                                 type="submit"
                                 className="rounded-lg bg-crit px-control-x py-control-y text-caption font-semibold text-on-crit shadow-[var(--shadow-xs)] transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-crit/60"
                               >
-                                Grant requested permission
+                                {permissionNeedsReporter ? "Grant requested permission" : "Approve now (reporter override)"}
                               </button>
                             </form>
                           ) : (
                             <p className="mt-2 text-caption text-text-muted">
                               {activeFormalBlocker.permissionRequest.kind === "publish_checkpoint"
-                                ? "The task reporter must also be the active Mission Control owner to grant checkpoint publication."
-                                : "Waiting for the task reporter to grant this permission."}
+                                ? "Awaiting a scoped reviewer decision, or an owner grant when this request exceeds reviewer authority."
+                                : "The reviewer assesses the approved scope first; requests outside their authority go to the reporter."}
                             </p>
                           )}
                         </div>

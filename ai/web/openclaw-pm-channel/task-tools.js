@@ -25,13 +25,15 @@ export const PM_TASK_TOOL_DEFINITIONS = {
   add_subtask: ["Add a necessary implementation or review checklist item.", object({ subtaskText: string, subtaskKind: { type: "string", enum: ["implementation", "review"] } }, ["subtaskText"])],
   ready_for_review: ["Submit completed work and test evidence. PM owns commit, validation and publication.", object({ ...comment, repoTouched: { type: "boolean" } }, ["comment"])],
   review_done: ["Accept the reviewed candidate with concise evidence; PM finalizes the repository.", object(comment, ["comment"])],
-  flag_blocker: ["Record a concrete external blocker after diagnosis, or request scoped owner permission.", object({
+  review_permission: ["As the independent reviewer, assess this exact request against the current approved plan. Explicitly approve routine non-production work, decline it, or escalate scope, production, destructive/security changes or uncertainty to the reporter. Read the full request and plan first; no automatic approvals.", object({ blockerCommentId: string, decision: { type: "string", enum: ["approve", "decline", "escalate"] }, rationale: string, actionPlanId: string, actionPlanVersion: { type: "integer" }, planStepIds: strings }, ["blockerCommentId", "decision", "rationale", "actionPlanId", "actionPlanVersion", "planStepIds"])],
+  flag_blocker: ["Record a concrete external blocker after diagnosis, or request a scoped reviewer permission decision.", object({
     ...comment, blockerReport: object({ blockedOn: { type: "string", enum: ["person", "permission", "external_service", "decision", "dependency"] }, requestedActor: string, requestedAction: string, evidence: string, diagnosticsAttempted: strings, resumeCondition: string, reporterCanResolve: { type: "boolean" } }),
     permissionKind: { type: "string", enum: ["reporter_approval", "publish_checkpoint"] }, permissionScope: string,
+    permissionContext: object({ environment: { type: "string", enum: ["local", "development", "test", "staging", "production", "unknown"] }, target: string, changesScope: { type: "boolean" }, destructive: { type: "boolean" }, securitySensitive: { type: "boolean" } }, ["environment", "target", "changesScope", "destructive", "securitySensitive"]),
   }, ["comment"])],
   clear_blocker: ["Resolve a recorded blocker with evidence.", object(comment, ["comment"])],
   assign_task: ["Ask PM to select an eligible coding assignee for an unassigned task.", object({ assigneeUsername: string })],
-  publish_checkpoint: ["Publish only the exact checkpoint authorized by a fresh owner permission comment.", object({ authorizationCommentId: string, ...comment }, ["authorizationCommentId"])],
+  publish_checkpoint: ["Publish only the exact checkpoint authorized by a fresh owner or PM-validated reviewer permission grant.", object({ authorizationCommentId: string, ...comment }, ["authorizationCommentId"])],
 };
 export const PM_TASK_TOOL_NAMES = Object.keys(PM_TASK_TOOL_DEFINITIONS).map((action) => `pm_${action}`);
 

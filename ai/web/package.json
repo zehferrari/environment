@@ -187,6 +187,7 @@
     "report:pm-task-workflow": "node scripts/pm-task-workflow-report.mjs",
     "test:model-rotation": "node --import tsx scripts/model-rotation-test.ts",
     "test:pm-turn-effort": "node --import tsx scripts/pm-turn-effort-test.ts",
+    "test:reviewer-permission": "node --import tsx scripts/reviewer-permission-test.ts",
     "test:standalone-checkpoint": "tsx scripts/standalone-checkpoint-test.ts",
     "test:wdt-planning": "node --import tsx scripts/wdt-planning-workflow-test.ts"
   },

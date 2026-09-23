@@ -61,7 +61,10 @@ export type AgentExecutionContext = {
 // to canonical domain intents.
 // ---------------------------------------------------------------------------
 
+import type { PermissionContext, PermissionReview } from "@/lib/tasks/permission-review";
+
 export const WORKFLOW_PUBLIC_ACTIONS = [
+  "review_permission",
   "start",
   "checkpoint",
   "publish_checkpoint",
@@ -101,6 +104,7 @@ export type WorkflowPublicAction = (typeof WORKFLOW_PUBLIC_ACTIONS)[number];
 // ---------------------------------------------------------------------------
 
 export const TASK_WORKFLOW_INTENTS = [
+  "review_permission",
   // Decision intents (human/agent)
   "submit_plan",
   "approve_plan",
@@ -280,6 +284,7 @@ export type AcceptReviewPayload = {
 };
 
 export type RaiseBlockerPayload = {
+  permissionContext?: PermissionContext | null;
   blockerReport: {
     blockedOn: "person" | "permission" | "external_service" | "decision" | "dependency";
     requestedActor: string | null;
@@ -505,6 +510,7 @@ interface IntentPayloadMap {
   submit_for_review: SubmitForReviewPayload;
   request_review_changes: RequestReviewChangesPayload;
   accept_review: AcceptReviewPayload;
+  review_permission: PermissionReview;
   raise_blocker: RaiseBlockerPayload;
   clear_blocker: ClearBlockerPayload;
   cancel_task: CancelTaskPayload;

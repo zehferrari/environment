@@ -170,10 +170,7 @@ export type TaskAggregate = TaskStateSnapshot & {
       resumeCondition: string;
       reporterCanResolve: boolean;
     } | null;
-    permissionRequest: {
-      kind: string;
-      scope: string;
-    } | null;
+    permissionRequest: import("@/lib/tasks/formal-blocker").BlockerPermissionRequest | null;
     permissionGrant: {
       authorizationCommentId: string | null;
       grantedAt: Date | null;
@@ -728,8 +725,7 @@ async function loadTaskAggregateWithClient(
           report: activeBlocker.report,
           permissionRequest: activeBlocker.permissionRequest
             ? {
-                kind: activeBlocker.permissionRequest.kind,
-                scope: activeBlocker.permissionRequest.scope,
+                ...activeBlocker.permissionRequest,
               }
             : null,
           permissionGrant: activeBlocker.permissionGrant
