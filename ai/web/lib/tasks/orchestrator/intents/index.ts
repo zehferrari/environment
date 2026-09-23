@@ -1,3 +1,4 @@
+import { deferAcceptanceCheckExecutor } from "./defer-acceptance-check";
 import { reviewPermissionExecutor } from "./review-permission";
 import { permissionRequiresOwner } from "@/lib/tasks/permission-review";
 import { isReviewerCheckpointAuthorization } from "@/lib/tasks/reviewer-checkpoint-authorization";
@@ -1061,6 +1062,7 @@ export const INTENT_EXECUTORS = {
   submit_for_review: submitForReviewExecutor,
   request_review_changes: requestReviewChangesExecutor,
   accept_review: acceptReviewExecutor,
+  defer_acceptance_check: deferAcceptanceCheckExecutor,
   review_permission: reviewPermissionExecutor,
   raise_blocker: raiseBlockerExecutor,
   clear_blocker: clearBlockerExecutor,

@@ -139,6 +139,7 @@ const CHECKPOINTS: Readonly<Record<string, string>> = {
   assign_after_plan_approval: "task_assigned",
   request_subtask: "subtask_requested",
   request_task: "task_requested",
+  defer_acceptance_check: "acceptance_check_deferred",
   review_permission: "permission_review_recorded",
   flag_blocker: "blocker_raised",
   flag_extra_work_blocker: "extra_work_blocker_raised",

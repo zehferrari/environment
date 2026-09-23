@@ -123,6 +123,7 @@ const ACTION_TO_INTENT: ReadonlyMap<WorkflowPublicAction, TaskWorkflowIntent> = 
   ["remove_subtask", "remove_subtask"],
   ["request_subtask", "request_subtask"],
   ["request_task", "request_task"],
+  ["defer_acceptance_check", "defer_acceptance_check"],
   ["review_permission", "review_permission"],
   ["flag_blocker", "raise_blocker"],
   ["clear_blocker", "clear_blocker"],
@@ -385,6 +386,11 @@ function buildPayload(
       return payload;
     }
 
+    case "defer_acceptance_check": {
+      const error = validatePermissionReview({ ...raw, decision: "escalate", planStepIds: [] });
+      if (error || !getString(raw, "subtaskId")) return fail("invalid_payload", error ?? "subtaskId is required");
+      return { blockerCommentId: raw.blockerCommentId, subtaskId: raw.subtaskId, rationale: raw.rationale, actionPlanId: raw.actionPlanId, actionPlanVersion: raw.actionPlanVersion } as { blockerCommentId: string; subtaskId: string; rationale: string; actionPlanId: string; actionPlanVersion: number };
+    }
     case "review_permission": {
       const error = validatePermissionReview(raw);
       if (error) return fail("invalid_payload", error);

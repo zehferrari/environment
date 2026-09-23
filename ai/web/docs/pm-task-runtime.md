@@ -349,7 +349,7 @@ See [WDT-10 audit](audits/wdt-10-configuration-recovery-2026-09-22.md).
 
 ### Scoped reviewer permissions (2026-09-23)
 
-PM channel 0.1.13 adds `pm_review_permission` for the independent reviewer during
+PM channel 0.1.14 adds `pm_review_permission` for the independent reviewer during
 In Progress or Review. Each request gets a deliberate scope assessment against
 the approved plan; this is not automatic approval. See the
 [V23-43 audit](audits/v23-43-reviewer-permissions-2026-09-23.md) for request fields,

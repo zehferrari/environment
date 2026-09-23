@@ -542,6 +542,7 @@ export function authorizeCommand(
       };
     }
 
+    case "defer_acceptance_check":
     case "review_permission": {
       const allowed = actor.id !== state.assigneeId && actor.id === resolvePlanOwnerIdFromSnapshot(state);
       return { allowed, reason: allowed ? "ok" : "not_reviewer", decisionActorId: allowed ? actor.id : null, executorActorId: null };

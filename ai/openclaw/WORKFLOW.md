@@ -1359,3 +1359,14 @@ entry reaches a terminal status (`DONE`, `RESOLVED`, `CLOSED`,
 - Credentials, billing, account access, or approvals are needed.
 - The requested action conflicts with documented rules.
 - The task cannot proceed safely.
+
+### Reviewer classification of final acceptance checks
+
+When an approved plan explicitly separates an owner, physical-device or
+post-deployment acceptance check from implementation completion, the reviewer
+can use `defer_acceptance_check` on the exact blocking checklist item. Read the
+criteria and decide deliberately; supply blockerCommentId, subtaskId, current
+actionPlanId/version and rationale. This moves the existing open item to the
+review checklist and unblocks implementation submission. It keeps final
+acceptance pending and authorizes no production operation. Never mark an
+unperformed check complete to get past a workflow gate.

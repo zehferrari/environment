@@ -736,6 +736,11 @@ export function validateCommandPayload(
     case "submit_for_review": return validateSubmitForReview(raw);
     case "request_review_changes": return validateRequestReviewChanges(raw);
     case "accept_review": return validateAcceptReview(raw);
+    case "defer_acceptance_check": {
+      const error = validatePermissionReview({ ...raw, decision: "escalate", planStepIds: [] });
+      const subtask = requireString(raw, "subtaskId", MAX_ID);
+      return error ? fail("invalid_payload", error) : !subtask.ok ? fail("invalid_payload", subtask.message) : ok(raw);
+    }
     case "review_permission": {
       const error = validatePermissionReview(raw);
       return error ? fail("invalid_payload", error) : ok(raw);

@@ -645,6 +645,9 @@ export function runGuards(
       ]);
     }
 
+    case "defer_acceptance_check":
+      return runGuardsChain([guardStatus(state, command.intent, ["In Progress"]), guardApprovedPlan(state, command.intent), guardCyclePrecondition(state, command.intent, command.workflowCycleId)]);
+
     case "review_permission":
       return runGuardsChain([
         guardStatus(state, command.intent, ["In Progress", "Review"]),

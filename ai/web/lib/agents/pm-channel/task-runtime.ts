@@ -41,7 +41,7 @@ export const PM_TASK_CONTRACT = [
   `Use explicit notes for human-relevant findings/questions and workflow tools for blockers/completion. Do not duplicate a structured plan in prose or post a status acknowledgement after a tool completes the turn. Use ${PM_SILENT_REPLY_TOKEN} when no visible response remains.`,
 ].join("\n");
 
-const PERMISSION_REVIEW_CONTRACT = "Permission requests include permissionContext (target, environment, scope/destructive/security flags). The independent reviewer reads currentPermission and the full approved plan, judges actual effects and calls pm_review_permission with approve/decline/escalate, rationale and matching plan steps. Approve only in-scope non-production work. Escalate expanded scope, production, destructive/security changes or uncertainty. Never self-approve; prose is not a grant.";
+const PERMISSION_REVIEW_CONTRACT = "For an owner/physical/post-deployment acceptance check blocking implementation, the reviewer may use pm_defer_acceptance_check only if the approved plan supports deferral; the check remains open for final acceptance. Permission requests include permissionContext (target, environment, scope/destructive/security flags). The independent reviewer reads currentPermission and the full approved plan, judges actual effects and calls pm_review_permission with approve/decline/escalate, rationale and matching plan steps. Approve only in-scope non-production work. Escalate expanded scope, production, destructive/security changes or uncertainty. Never self-approve; prose is not a grant.";
 
 export function taskToolActions(args: { status: string; assignee: boolean; reviewer: boolean; canApprove: boolean; canFinish: boolean; unassigned: boolean; approved: boolean; epicChild: boolean; coding: boolean }) {
   const actions = new Set(["context"]);
@@ -63,6 +63,7 @@ export function taskToolActions(args: { status: string; assignee: boolean; revie
     if (args.coding) actions.add("publish_checkpoint");
   }
   if (args.reviewer && !args.assignee && args.approved && ["In Progress", "Review"].includes(args.status)) actions.add("review_permission");
+  if (args.reviewer && !args.assignee && args.approved && args.status === "In Progress") actions.add("defer_acceptance_check");
   if (args.status === "Review" && args.reviewer) {
     actions.add("attach_file");
     for (const action of ["add_subtask", "complete_subtask", "review_feedback"]) actions.add(action);
@@ -146,7 +147,7 @@ export async function prepareCompactTaskTurn(args: SendPmChannelTurnRequest): Pr
     workMode: task.project.workMode,
     attachmentGate: { required: task.reviewAttachmentRequired, attached: task._count.attachments },
     actionPlan: planSnapshot,
-    currentPermission: context.currentPermission,
+    ...(context.currentPermission ? { currentPermission: context.currentPermission } : { currentBlocker: context.currentBlocker }),
     checklist: context.checklist.slice(0, 16).map((item) => ({ ...item, text: clip(item.text, 160) })),
     omittedChecklistItems: Math.max(0, context.checklist.length - 16),
     checkpoint: checkpoint ? compactTaskCheckpoint(checkpoint) : null,

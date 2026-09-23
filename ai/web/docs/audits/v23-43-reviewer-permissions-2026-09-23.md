@@ -34,7 +34,7 @@ trusting request flags, and records an explicit `approve`, `decline`, or
 - Native tools and scoped HTTP share the same orchestrator. The compact runtime
   and read API carry `currentPermission`, independently of clipped history.
 
-PM channel plugin 0.1.13 exposes the new tool. No database migration is required.
+PM channel plugin 0.1.14 exposes the new tool. No database migration is required.
 Deploy the webapp and reload the plugin on enabled gateways; propagate shared
 WORKFLOW.md through the managed worktree reconciliation. Existing grants are
 not replayed and no previous request is automatically approved.
@@ -45,3 +45,14 @@ checkpoint admission/single-use and runner authority revocation. Existing
 checkpoint, permission-grant, action-effect and native-tool tests cover the
 unchanged owner path and transport contracts. Real scope judgment remains the
 reviewer's responsibility; PM enforces the recorded authority boundaries.
+
+The final live check also found a later, different blocker: approved plan v2
+step 6 explicitly says owner-owned post-deployment cut-over is not part of
+implementation completion, but its linked checklist row was `implementation`.
+`defer_acceptance_check` lets the independent reviewer explicitly move that
+open linked item to `review`, citing the exact blocker, checklist item, plan
+revision and rationale. It preserves the row, criteria link and incomplete
+state. The exact implementation blocker closes and the assignee is notified;
+`guardAcceptReviewChecklist` still prevents Done until final acceptance. No
+production action or completed check is manufactured. This action applies only
+to In Progress tasks with a decision/person blocker and current approved plan.

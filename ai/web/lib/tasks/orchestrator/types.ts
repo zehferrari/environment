@@ -65,6 +65,7 @@ import type { PermissionContext, PermissionReview } from "@/lib/tasks/permission
 
 export const WORKFLOW_PUBLIC_ACTIONS = [
   "review_permission",
+  "defer_acceptance_check",
   "start",
   "checkpoint",
   "publish_checkpoint",
@@ -105,6 +106,7 @@ export type WorkflowPublicAction = (typeof WORKFLOW_PUBLIC_ACTIONS)[number];
 
 export const TASK_WORKFLOW_INTENTS = [
   "review_permission",
+  "defer_acceptance_check",
   // Decision intents (human/agent)
   "submit_plan",
   "approve_plan",
@@ -510,6 +512,7 @@ interface IntentPayloadMap {
   submit_for_review: SubmitForReviewPayload;
   request_review_changes: RequestReviewChangesPayload;
   accept_review: AcceptReviewPayload;
+  defer_acceptance_check: { blockerCommentId: string; subtaskId: string; actionPlanId: string; actionPlanVersion: number; rationale: string };
   review_permission: PermissionReview;
   raise_blocker: RaiseBlockerPayload;
   clear_blocker: ClearBlockerPayload;

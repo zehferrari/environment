@@ -16,7 +16,7 @@ async function main() {
   try {
     const { submitWorkflowCommand } = await import("@/lib/tasks/orchestrator");
     const { openTaskWorkflowCycle } = await import("@/lib/tasks/workflow-cycle");
-    const { readTaskPermissionState } = await import("@/lib/tasks/permission-state");
+    const { readTaskPermissionState, readTaskBlockerState } = await import("@/lib/tasks/permission-state");
     const { isReviewerCheckpointAuthorization } = await import("@/lib/tasks/reviewer-checkpoint-authorization");
     const { normalizePublicAction } = await import("@/lib/tasks/orchestrator/normalize");
     const { validateCheckpointAuthorizationText } = await import("@/lib/deploy/checkpoint-authorization");
@@ -31,16 +31,16 @@ async function main() {
     const project = await db.project.create({ data: { slug: "permissions", name: "Permissions", workMode: "code", repositoryPath: "/tmp/permission-repo", deploymentProductionBranch: "main" } });
     let seq = 0;
     const routine = { environment: "development", target: "dev.example.test / task branch", changesScope: false, destructive: false, securitySensitive: false };
-    async function fixture(permissionKind = "publish_checkpoint", permissionContext: unknown = routine) {
+    async function fixture(permissionKind: string | null = "publish_checkpoint", permissionContext: unknown = routine) {
       const task = await db.task.create({ data: { projectId: project.id, title: "Preview verification", workItemKey: `PER-${++seq}`, branchName: `test-${seq}`, status: "In Progress", approvedOn: new Date(), assigneeId: worker.id, actingManagerId: reviewer.id, reporterId: owner.id } });
       const plan = await db.actionPlan.create({ data: { taskId: task.id, summary: "Verify on Dev", status: "approved", approvedOn: new Date(), contentHash: "hash", steps: { create: { stepId: "verify", title: "Verify on Dev", acceptanceCriteria: '["Use the reviewed dev preview"]' } } } });
       const cycle = await db.$transaction(tx => openTaskWorkflowCycle(tx, { taskId: task.id, openedWorkflowVersion: 0 }));
       assert.ok(cycle);
       await db.taskRepositoryRun.create({ data: { taskId: task.id, workflowCycleId: cycle.id, repositoryPath: "/tmp/permission-repo", worktreePath: `/tmp/permission-repo.worktrees/test-${seq}`, branchName: task.branchName!, phase: "active", baseSha: "a".repeat(40) } });
       const command = async (intent: string, payload: unknown, user = reviewer, key = `${intent}-${++seq}`) => submitWorkflowCommand({ taskId: task.id, intent, actor: { id: user.id, kind: "agent", username: user.username, codingCapability: true, role: user.id === worker.id ? "assignee" : "reviewer" }, source: "operator", expectedWorkflowVersion: (await db.task.findUniqueOrThrow({ where: { id: task.id } })).workflowVersion, workflowCycleId: cycle.id, idempotencyKey: key, payload } as TaskWorkflowCommand);
-      const raised = await command("raise_blocker", { permissionKind, permissionContext, permissionScope: "Publish the current branch for Dev verification", blockerReport: { blockedOn: "permission", requestedActor: "reviewer", requestedAction: "Approve Dev verification", evidence: "Preview is missing latest code", diagnosticsAttempted: ["Compared deployed SHA"], resumeCondition: "A scoped permission grant is recorded", reporterCanResolve: true } }, worker);
+      const raised = await command("raise_blocker", { permissionKind, permissionContext, permissionScope: "Publish the current branch for Dev verification", blockerReport: { blockedOn: permissionKind ? "permission" : "decision", requestedActor: "reviewer", requestedAction: "Approve Dev verification", evidence: "Preview is missing latest code", diagnosticsAttempted: ["Compared deployed SHA"], resumeCondition: "A scoped permission grant is recorded", reporterCanResolve: true } }, worker);
       assert.equal(raised.status, "accepted", JSON.stringify(raised));
-      const active = await readTaskPermissionState(task.id);
+      const active = await readTaskBlockerState(task.id);
       assert.ok(active);
       const review = { blockerCommentId: active.commentId, decision: "approve", rationale: "This exact Dev preview publication is necessary for the approved verify step, has no production effects and changes no scope.", actionPlanId: plan.id, actionPlanVersion: plan.version, planStepIds: ["verify"] };
       return { task, plan, cycle, command, review };
@@ -88,6 +88,23 @@ async function main() {
     assert.ok(actions.includes("review_permission"));
     const normalized = normalizePublicAction("review_permission", f.review, { taskId: f.task.id, actorId: reviewer.id, actorKind: "agent", actorUsername: "reviewer", expectedWorkflowVersion: 0, workflowCycleId: f.cycle.id, idempotencyKey: "normalize", messageId: null, source: "agent" });
     assert.equal(normalized.ok, true);
+    const acceptance = await fixture(null, null);
+    const step = await db.actionPlanStep.findFirstOrThrow({ where: { actionPlanId: acceptance.plan.id } });
+    const item = await db.subTask.create({ data: { taskId: acceptance.task.id, actionPlanStepId: step.id, text: "Owner post-deployment check; excluded from implementation", kind: "implementation" } });
+    const defer = { blockerCommentId: acceptance.review.blockerCommentId, subtaskId: item.id, actionPlanId: acceptance.plan.id, actionPlanVersion: acceptance.plan.version, rationale: "The approved criteria separate owner rollout acceptance from implementation. Keep it pending in Review." };
+    assert.equal((await acceptance.command("defer_acceptance_check", defer, worker)).status, "forbidden");
+    assert.equal((await acceptance.command("defer_acceptance_check", { ...defer, actionPlanVersion: 99 })).status, "stale");
+    const deferred = await acceptance.command("defer_acceptance_check", defer);
+    assert.equal(deferred.status, "accepted", JSON.stringify(deferred));
+    const retained = await db.subTask.findUniqueOrThrow({ where: { id: item.id } });
+    assert.equal(retained.kind, "review"); assert.equal(retained.completedAt, null);
+    assert.equal(retained.actionPlanStepId, step.id);
+    assert.equal(await readTaskBlockerState(acceptance.task.id), null);
+    const { loadTaskAggregate } = await import("@/lib/tasks/orchestrator/state");
+    const { guardAcceptReviewChecklist } = await import("@/lib/tasks/orchestrator/guards");
+    const state = await loadTaskAggregate(acceptance.task.id);
+    assert.ok(state); assert.equal(state.openChecklist.count, 0);
+    assert.equal(guardAcceptReviewChecklist(state).ok, false, "deferred acceptance continues to block Done");
     console.log("Reviewer permission integration: scope, roles, escalation, decline, replay, publication and revocation passed");
   } finally { await db.$disconnect(); await rm(root, { recursive: true, force: true }); }
 }

@@ -909,3 +909,10 @@ and any grant. An independent reviewer uses `review_permission` with
 `actionPlanId`, `actionPlanVersion`, and `planStepIds`. Approvals require matching
 approved scope and a named non-production target. See the
 [V23-43 audit](audits/v23-43-reviewer-permissions-2026-09-23.md).
+
+`currentBlocker` also exposes non-permission decision/person blockers. The
+reviewer-only `defer_acceptance_check` action takes `blockerCommentId`,
+`subtaskId`, `actionPlanId`, `actionPlanVersion`, and `rationale`. It moves an
+open approved-plan checklist item to final review while retaining the pending
+check. The approved scope must justify deferral; this never grants production
+permission or completes the check.

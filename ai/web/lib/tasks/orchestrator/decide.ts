@@ -498,6 +498,7 @@ export function decideCommand(
       };
     }
 
+    case "defer_acceptance_check":
     case "review_permission":
     case "raise_blocker":
     case "clear_blocker": {
@@ -510,7 +511,7 @@ export function decideCommand(
         toStatus: state.status,
         kernelIntent: "operator_override",
         cycleOperation: "none",
-        effects: targetUserId && command.intent !== "review_permission"
+        effects: targetUserId && !["review_permission", "defer_acceptance_check"].includes(command.intent)
           ? [{
               type: "task_notification",
               key: `${command.intent}:${targetUserId}`,

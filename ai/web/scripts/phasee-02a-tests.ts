@@ -154,7 +154,7 @@ test("WORKFLOW_PUBLIC_ACTIONS includes the complete cross-transport public vocab
     "approve_plan", "request_plan_changes", "submit_plan", "assign_task", "assign_after_plan_approval",
     "add_subtask", "complete_subtask", "remove_subtask", "request_subtask",
     "request_task", "flag_blocker", "clear_blocker", "flag_extra_work_blocker",
-    "override_status", "accept_plan_review", "delegate_plan_approval", "review_permission",
+    "override_status", "accept_plan_review", "delegate_plan_approval", "review_permission", "defer_acceptance_check",
   ];
   assert.deepEqual([...WORKFLOW_PUBLIC_ACTIONS].sort(), required.sort());
   for (const a of required) {
@@ -636,6 +636,7 @@ test("Validation rejects client-supplied workflowVersion", () => {
 
 function getValidRawBodyForAction(action: WorkflowPublicAction): Record<string, unknown> {
   switch (action) {
+    case "defer_acceptance_check": return { blockerCommentId: "c1", subtaskId: "s1", actionPlanId: "p1", actionPlanVersion: 1, rationale: "Owner acceptance remains open" };
     case "review_permission": return { blockerCommentId: "c1", decision: "approve", rationale: "Approved dev verification step", actionPlanId: "p1", actionPlanVersion: 1, planStepIds: ["s1"] };
     case "start": return {};
     case "checkpoint": return { nextAction: "continue" };
