@@ -1025,6 +1025,7 @@ model SubTask {
   // topics-to-address list created when the task reaches Review. The board
   // card shows the progress of whichever kind matches the task's column.
   kind             String          @default("implementation")
+  groupKey         String          @default("initial")
   // null = open; a timestamp = done. This is the "hidden field with the
   // timestamp when it was complete" — surfaced only as a checkbox + progress.
   completedAt      DateTime?
@@ -1036,7 +1037,7 @@ model SubTask {
   createdAt        DateTime        @default(now())
   updatedAt        DateTime        @updatedAt
 
-  @@unique([taskId, kind, text])
+  @@unique([taskId, kind, groupKey, text])
   @@index([taskId])
   @@index([taskId, kind])
 }

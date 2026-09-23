@@ -12,11 +12,10 @@ export async function createReviewFindingChecklist(tx: Prisma.TransactionClient,
   const review = await tx.reviewRun.findFirst({ where: { id: args.reviewRunId, taskId: args.taskId, candidateSha: args.candidateSha } });
   if (!review) throw new ReviewCorrectionError("The review candidate changed; refresh before submitting findings.");
   const plan = await tx.actionPlan.findUnique({ where: { taskId: args.taskId }, select: { id: true, version: true } });
-  const count = await tx.reviewFinding.count({ where: { taskId: args.taskId } });
   for (const [position, input] of parsed.items.entries()) {
     const existing = await tx.reviewFinding.findUnique({ where: { reviewRunId_position: { reviewRunId: review.id, position } } });
     if (existing) throw new ReviewCorrectionError("Review findings already recorded; replay the original decision instead of replacing them.");
-    const item = await createSubTaskItem({ taskId: args.taskId, text: `Correction ${count + position + 1}: ${input.title}`, actorUserId: args.reviewerId, kind: "implementation", client: tx });
+    const item = await createSubTaskItem({ taskId: args.taskId, text: input.title, groupKey: `feedback:${review.id}`, actorUserId: args.reviewerId, kind: "implementation", client: tx });
     if (!item?.created) throw new ReviewCorrectionError("Correction checklist item already exists; no partial review was saved.");
     await tx.reviewFinding.create({ data: {
       ...input, taskId: args.taskId, reviewRunId: review.id, position, candidateSha: review.candidateSha,

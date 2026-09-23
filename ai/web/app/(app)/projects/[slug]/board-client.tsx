@@ -158,8 +158,8 @@ function formatMinutes(total: number): string {
 // Sub-task progress for a board card (ENV-60/61): a solid bar whose colour
 // names the phase — In Progress fills green against a dark track, Review fills
 // orange against a grey one. Column-aware: In Progress cards track the
-// assignee's implementation checklist; Review cards track the reviewer's
-// topics-to-address list (a task freshly in Review shows no bar until the
+// assignee's latest feedback group (initial requirements before feedback);
+// Review cards track only the latest review's topics (no bar until the
 // first review item exists). Other columns show no bar. The readout carries
 // both the percentage and the raw count; rolled-up time stays in the tooltip.
 function SubtaskProgress({ task }: { task: Task }) {
@@ -168,7 +168,7 @@ function SubtaskProgress({ task }: { task: Task }) {
       ? {
           total: task.subtaskImplTotal,
           done: task.subtaskImplDone,
-          noun: "sub-tasks done",
+          noun: "sub-tasks done in current group",
           fill: "var(--status-progress)",
           track: "var(--color-line-strong)",
         }
@@ -176,7 +176,7 @@ function SubtaskProgress({ task }: { task: Task }) {
         ? {
             total: task.subtaskReviewTotal,
             done: task.subtaskReviewDone,
-            noun: "review topics addressed",
+            noun: "topics addressed in current review",
             fill: "var(--status-review)",
             track: "var(--color-line)",
           }

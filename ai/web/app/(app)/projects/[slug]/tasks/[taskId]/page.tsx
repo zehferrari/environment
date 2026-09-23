@@ -2002,10 +2002,20 @@ export default async function TaskDetailPage({
                   taskId={task.id}
                   projectSlug={slug}
                   taskStatus={task.status}
+                  reviewRounds={task.reviewRuns.map(round => ({ id: round.id, requestedAt: dateIso(round.createdAt), current: round.id === task.reviewRuns.at(-1)?.id }))}
+                  findings={task.reviewFindings.map(finding => ({
+                    id: finding.id, reviewRunId: finding.reviewRunId,
+                    requestedAt: dateIso(finding.reviewRun.reviewedAt ?? finding.reviewRun.createdAt),
+                    subTaskId: finding.subTaskId, title: finding.title,
+                    acceptanceCriteria: finding.acceptanceCriteria, scopeReference: finding.scopeReference,
+                    candidateSha: finding.candidateSha, status: finding.status,
+                    completionEvidence: finding.completionEvidence, supersededReason: finding.supersededReason,
+                  }))}
                   items={task.checklist.map((item) => ({
                     id: item.id,
                     text: item.text,
                     reviewFinding: item.reviewFinding,
+                    groupKey: item.groupKey,
                     // task shell comes through unstable_cache, which JSON-revives
                     // completedAt as an ISO string; dateIso handles Date|string.
                     completedAt: dateIso(item.completedAt),
@@ -2017,17 +2027,7 @@ export default async function TaskDetailPage({
                   removeAction={removeSubTaskItem}
                   reorderAction={reorderChecklist}
                 />
-                {task.reviewFindings.length ? <section className="mt-6 space-y-3" aria-label="Review corrections">
-                  <h3 className="font-semibold">Review corrections</h3>
-                  {task.reviewFindings.map(finding => <article key={finding.id} className="rounded-lg border border-line p-3">
-                    <p className="font-medium">{finding.title} <span className="text-caption text-text-muted">— {finding.status}</span></p>
-                    <p className="mt-2 whitespace-pre-wrap text-caption">{finding.acceptanceCriteria}</p>
-                    <p className="mt-2 text-caption text-text-muted">Scope: {finding.scopeReference}</p>
-                    <p className="text-caption text-text-muted">Reviewed candidate: {finding.candidateSha.slice(0, 12)}</p>
-                    {finding.completionEvidence ? <p className="mt-2 whitespace-pre-wrap text-caption">Evidence: {finding.completionEvidence}</p> : null}
-                    {finding.supersededReason ? <p className="mt-2 whitespace-pre-wrap text-caption">Superseded: {finding.supersededReason}</p> : null}
-                  </article>)}
-                </section> : null}
+
               </RoleVisibleTabPanel>
 
               <TabPanel name="Attachments">

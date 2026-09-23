@@ -1,3 +1,4 @@
+import { normalizeSubTaskKind, resolveSubTaskGroupKey } from "@/lib/tasks/subtasks";
 import { revalidatePath } from "next/cache";
 import { createHash } from "node:crypto";
 import { db } from "@/lib/db";
@@ -369,9 +370,11 @@ export async function submitAuthoritativeAgentWorkflowAction(args: {
   // authoritative command above.
   if ((result.status === "accepted" || result.status === "replayed") && args.action === "add_subtask") {
     const text = typeof args.rawBody.subtaskText === "string" ? args.rawBody.subtaskText.trim() : "";
+    const kind = normalizeSubTaskKind(args.rawBody.subtaskKind);
+    const groupKey = await resolveSubTaskGroupKey({ taskId: args.taskId, kind });
     const subtask = text
       ? await db.subTask.findFirst({
-          where: { taskId: args.taskId, text },
+          where: { taskId: args.taskId, text, kind, groupKey },
           orderBy: { createdAt: "desc" },
           select: { id: true, kind: true },
         })

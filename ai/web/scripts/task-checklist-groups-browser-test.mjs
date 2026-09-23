@@ -1,0 +1,48 @@
+import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+import http from 'node:http';
+const {chromium}=await import(process.env.PM_BROWSER_DRIVER || 'playwright-core');
+const base=fileURLToPath(new URL('..',import.meta.url));
+const require=createRequire(base+'/package.json');
+const {build}=createRequire(require.resolve('tsx'))('esbuild');
+const bundle=await build({entryPoints:[base+'/scripts/fixtures/task-checklist-groups-browser.jsx'],bundle:true,write:false,jsx:'automatic',define:{'process.env.NODE_ENV':'"production"'},plugins:[{name:'imports',setup(b){
+ b.onResolve({filter:/^@\//},a=>{const stem=base+'/'+a.path.slice(2);for(const suffix of ['', '.ts','.tsx'])if(existsSync(stem+suffix))return {path:stem+suffix};});
+ b.onResolve({filter:/^next\/link$/},()=>({path:'link',namespace:'stub'}));
+ b.onLoad({filter:/.*/,namespace:'stub'},()=>({contents:'import React from "react";export default function Link(p){return React.createElement("a",p)}',loader:'jsx',resolveDir:base}));
+}}]});
+const server=http.createServer((req,res)=>{if(req.url==='/bundle.js'){res.setHeader('content-type','text/javascript');return res.end(bundle.outputFiles[0].contents);}res.end('<style>body{font:16px sans-serif;width:850px;margin:20px}section{border:1px solid #ccc;padding:16px;margin:16px}li{display:flex;gap:16px;padding:16px}details{margin-top:16px}button{padding:8px}</style><div id="root"></div><script src="/bundle.js"></script>');});
+await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));let browser;
+try{
+ browser=await chromium.launch({executablePath:process.env.PM_BROWSER_BIN||'/usr/bin/chromium',headless:true,args:['--disable-dev-shm-usage']});
+ const page=await browser.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
+ await page.goto(`http://127.0.0.1:${server.address().port}`);
+ await page.getByRole('region',{name:'Feedback 2',exact:true}).waitFor();
+ assert.deepEqual(await page.locator('h3').allTextContents(),['Initial requirements','Feedback 1','Feedback 2','Feedback 3','Review and acceptance']);
+ assert.equal(await page.getByText(/Correction \d+:/).count(),0,'internal uniqueness labels are not names in the UI');
+ const first=page.getByRole('region',{name:'Feedback 1',exact:true});
+ const second=page.getByRole('region',{name:'Feedback 2',exact:true});
+ assert.match(await first.textContent(),/1\/2/);assert.match(await second.textContent(),/0\/1/);
+ assert.equal(await first.getByRole('checkbox',{name:'Mark "Reconcile paid totals" done'}).count(),1);
+ assert.equal(await second.getByRole('checkbox',{name:'Mark "Reconcile paid totals" done'}).count(),1,'same name in a later review remains separate work');
+ const archived=page.getByRole('region',{name:'Feedback 3',exact:true});
+ assert.equal(await archived.getByRole('checkbox').count(),0);
+ await archived.locator('summary').click();assert.match(await archived.textContent(),/Owner changed the requirement/);
+ await first.scrollIntoViewIfNeeded();
+ const handles=first.getByRole('button',{name:'Drag to reorder'});
+ const from=await handles.nth(0).boundingBox(),to=await handles.nth(1).boundingBox();
+ await page.mouse.move(from.x+from.width/2,from.y+from.height/2);await page.mouse.down();await page.mouse.move(from.x+from.width/2,from.y+from.height/2+8,{steps:3});await page.waitForTimeout(150);await page.mouse.move(to.x+to.width/2,to.y+to.height/2+10,{steps:12});await page.waitForTimeout(250);await page.mouse.up();
+ await page.waitForFunction(()=>window.lastOrder?.[2]==='d');
+ assert.deepEqual(await page.evaluate(()=>window.lastOrder),['initial','b','d','a','review'],'drag changes only this feedback group');
+ // Let the drag sensor release its post-drop click suppression before a new action.
+ await page.waitForTimeout(100);
+ page.once('dialog',dialog=>dialog.accept('Verified payment reconciliation on the current candidate.'));
+ await first.getByRole('checkbox',{name:'Mark "Reconcile paid totals" done'}).check();
+ await page.waitForFunction(()=>window.received.some(row=>row.subTaskId==='a'),null,{timeout:5000}).catch(async error=>{console.error(await page.evaluate(()=>({received:window.received,text:document.body.innerText})),errors);throw error;});
+ const sent=await page.evaluate(()=>window.received.find(row=>row.subTaskId==='a'));
+ assert.equal(sent.completionEvidence,'Verified payment reconciliation on the current candidate.');
+ assert.match(await first.textContent(),/2\/2/);assert.match(await second.textContent(),/0\/1/);
+ assert.deepEqual(errors,[]);
+ console.log('PASS checklist groups: chronological feedback, clear names, isolated progress/reordering, completion evidence and superseded history');
+}finally{if(browser)await browser.close();await new Promise(resolve=>server.close(resolve));}

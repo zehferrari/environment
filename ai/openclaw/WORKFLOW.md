@@ -381,6 +381,14 @@ Two distinct decomposition levels, each with its own creator and gate:
   calls `remove_subtask` with `supersededReason` and the exact
   `ownerInstructionCommentId`. PM retains the finding as superseded and removes
   only its pending checklist row; it never marks unperformed work complete.
+- PM groups subtasks into **Initial requirements**, one **Feedback** group per
+  request for changes, and one **Review** group per review run. Use clear titles
+  without `Correction N:` prefixes. New implementation items join the latest
+  feedback group; new review topics join the current review. A repeated topic in
+  a later review is new pending work, not the old completed item. Board progress
+  counts only the current group (seven initial items plus three corrections
+  shows `x/3` during correction work). Historical groups and evidence remain;
+  all unresolved implementation work still gates resubmission.
 - The assignee must tick each subtask `Done` (`complete_subtask`) **the
   moment it completes** — never in a batch at the end.
   `ready_for_review` is **rejected while open implementation subtasks
@@ -390,9 +398,8 @@ Two distinct decomposition levels, each with its own creator and gate:
   tick the last open implementation subtask, call `ready_for_review` in
   the same turn — the workflow token is reusable and the
   `complete_subtask` response tells you when you are clear.
-- A task's board card shows a segmented progress bar (one node per
-  subtask, filling on an orange→green gradient as completion rises). To
-  Do reads as an empty bar.
+- A task's board card shows the current group's progress in In Progress
+  and Review. Other columns show no progress bar.
 - Subtasks are checklist/progress rows and must not be used as the next
   Epic implementation task. After `review_done`, PM assigns the next
   unassigned top-level `To Do` task in the same Epic — never a

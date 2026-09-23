@@ -47,6 +47,29 @@ export function stripStepNumber(text: string): string {
   return text.replace(/^\s*\d+[.)]\s+/, "").trim();
 }
 
+export async function resolveSubTaskGroupKey(args: {
+  taskId: string; kind?: SubTaskKind; groupKey?: string; actionPlanStepId?: string | null; client?: TxClient;
+}): Promise<string> {
+  const client = args.client ?? db;
+  const kind = normalizeSubTaskKind(args.kind);
+  let groupKey = args.groupKey ?? "initial";
+  if (!args.groupKey && !args.actionPlanStepId) {
+    if (kind === "review") {
+      const task = await client.task.findUnique({ where: { id: args.taskId }, select: { activeWorkflowCycleId: true, status: true } });
+      const round = task?.status === "Review" ? await client.reviewRun.findFirst({
+        where: { taskId: args.taskId, ...(task.activeWorkflowCycleId ? { workflowCycleId: task.activeWorkflowCycleId } : {}) },
+        orderBy: { createdAt: "desc" }, select: { id: true },
+      }) : null;
+      if (round) groupKey = `review:${round.id}`;
+    } else {
+      const feedback = await client.reviewFinding.findFirst({ where: { taskId: args.taskId }, orderBy: { reviewRun: { createdAt: "desc" } }, select: { reviewRunId: true } });
+      if (feedback) groupKey = `feedback:${feedback.reviewRunId}`;
+    }
+  }
+
+  return groupKey;
+}
+
 export async function createSubTaskItem(args: {
   taskId: string;
   text: string;
@@ -54,17 +77,19 @@ export async function createSubTaskItem(args: {
   completedAt?: Date | null;
   kind?: SubTaskKind;
   actionPlanStepId?: string | null;
+  groupKey?: string;
   client?: TxClient;
 }): Promise<{ id: string; created: boolean } | null> {
   const client = args.client ?? db;
   const text = args.text.trim().slice(0, MAX_SUBTASK_TEXT);
   if (!text) return null;
   const kind = normalizeSubTaskKind(args.kind);
+  const groupKey = await resolveSubTaskGroupKey({ ...args, kind, client });
 
   const existing = await client.subTask.findFirst({
     where: args.actionPlanStepId
       ? { actionPlanStepId: args.actionPlanStepId }
-      : { taskId: args.taskId, kind, text },
+      : { taskId: args.taskId, kind, groupKey, text },
     select: { id: true },
   });
   if (existing) return { id: existing.id, created: false };
@@ -83,6 +108,7 @@ export async function createSubTaskItem(args: {
       taskId: args.taskId,
       text,
       kind,
+      groupKey,
       actionPlanStepId: args.actionPlanStepId ?? null,
       rank: (agg._max.rank ?? 0) + 1,
       completedAt: args.completedAt ?? null,
@@ -95,7 +121,7 @@ export async function createSubTaskItem(args: {
       taskId: args.taskId,
       userId: args.actorUserId,
       kind: "task.subtask.add",
-      payload: JSON.stringify({ subTaskId: item.id, text, kind }),
+      payload: JSON.stringify({ subTaskId: item.id, text, kind, groupKey }),
     },
   });
   return { id: item.id, created: true };

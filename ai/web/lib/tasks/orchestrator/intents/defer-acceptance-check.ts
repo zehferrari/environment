@@ -16,7 +16,7 @@ export const deferAcceptanceCheckExecutor: IntentExecutor<"defer_acceptance_chec
   if (!item || item.actionPlanStep?.actionPlanId !== plan.id) {
     return { status: "invalid", domainCode: "invalid_payload", reason: "Only an open check linked to the current approved plan may be deferred." };
   }
-  const duplicate = await tx.subTask.findFirst({ where: { taskId: state.id, kind: "review", text: item.text } });
+  const duplicate = await tx.subTask.findFirst({ where: { taskId: state.id, kind: "review", groupKey: item.groupKey, text: item.text } });
   if (duplicate) return { status: "invalid", domainCode: "invalid_payload", reason: "A matching review check already exists; reconcile it explicitly before deferring." };
   await tx.subTask.update({ where: { id: item.id }, data: { kind: "review" } });
   const body = `Deferred to final acceptance, still open: ${item.text}\n\nReviewer assessment: ${rationale}\n\nThis changes the checklist phase only. The owner action remains pending; no production operation or completion is authorized.`;

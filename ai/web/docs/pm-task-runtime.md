@@ -378,3 +378,28 @@ reasons; context reads expose `reviewFindings` outside clipped comment history.
 Deployment requires migration `20260923010000_review_findings`, a PM rebuild,
 and PM channel plugin 0.1.15 on all agent gateways. Historical feedback is not
 automatically interpreted or converted; reconcile it with current owner scope.
+
+
+### Checklist groups and board progress
+
+Sub-Tasks displays Initial requirements, chronological Feedback groups, and
+separate Review groups. Each request for changes creates its own feedback group;
+each review run gets independent review topics. Titles need no global numbering.
+Repeated titles are idempotent within a group but become new work in later groups.
+Context checklist rows expose `groupKey` (`initial`, `feedback:<reviewRunId>`,
+`review:<reviewRunId>`); PM assigns this server-side, not from agent input.
+
+Project and workspace board cards count only the latest feedback group in
+In Progress (initial requirements before feedback), and only the latest review
+in Review. Seven completed initial items followed by three requested updates
+shows `x/3`, not `7+x/10`. An empty new review shows no progress bar rather than
+reusing the previous review's completed topics. Historical completion, evidence,
+supersession and total logged time remain available; completion gates still check
+all outstanding work.
+
+Migration `20260923020000_subtask_groups` backfills correction groups from recorded
+findings and review topics from the review existing at creation. Deferred plan
+acceptance checks stay separate. Rebuild/restart PM after migration; no plugin
+upgrade is required. Verify with `scripts/checklist-groups-test.ts` and
+`scripts/task-checklist-groups-browser-test.mjs` (set `PM_BROWSER_DRIVER` to an
+installed Playwright driver when it is not a local dependency).

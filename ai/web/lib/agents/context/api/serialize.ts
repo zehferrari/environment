@@ -176,7 +176,7 @@ export interface TaskContextResponse {
     }>;
   };
   reviewFindings: Array<{ id: string; subTaskId: string | null; reviewRunId: string; candidateSha: string; title: string; acceptanceCriteria: string; scopeReference: string; status: string; completionEvidence: string | null; supersededReason: string | null; ownerInstructionCommentId: string | null }>;
-  checklist: Array<{ id: string; text: string; done: boolean; minutes: number | null }>;
+  checklist: Array<{ id: string; groupKey: string; text: string; done: boolean; minutes: number | null }>;
   comments: Array<{
     id: string;
     createdAt: string;
@@ -304,7 +304,7 @@ export async function buildTaskContextJson(
       reviewFindings: { orderBy: { createdAt: "asc" }, select: { id: true, subTaskId: true, reviewRunId: true, candidateSha: true, title: true, acceptanceCriteria: true, scopeReference: true, status: true, completionEvidence: true, supersededReason: true, ownerInstructionCommentId: true } },
       checklist: {
         orderBy: { rank: "asc" },
-        select: { id: true, text: true, completedAt: true, minutesSpent: true },
+        select: { id: true, groupKey: true, text: true, completedAt: true, minutesSpent: true },
       },
       assignee: { select: { username: true, kind: true, isOwner: true } },
       actingManager: { select: { username: true, kind: true, isOwner: true } },
@@ -498,6 +498,7 @@ export async function buildTaskContextJson(
     reviewFindings: task.reviewFindings,
     checklist: task.checklist.map((s) => ({
       id: s.id,
+      groupKey: s.groupKey,
       text: s.text,
       done: s.completedAt !== null,
       minutes: s.minutesSpent ?? null,

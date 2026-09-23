@@ -7,6 +7,9 @@
 // the native workflow endpoint. The server is the source of truth — optimistic
 // edits are replaced by the revalidated list on the next render.
 //
+// Implementation items are grouped by their origin: initial requirements,
+// then one immutable review run per feedback round. Review/acceptance topics
+// remain a separate phase. Completion evidence and workflow gates are preserved.
 // Items carry a `kind`: "implementation" is the assignee's In Progress
 // breakdown, "review" is the reviewer's topics-to-address list. The two phases
 // render as separate titled sections, each with its own progress summary; the
@@ -47,7 +50,22 @@ export type ChecklistItem = {
   completedAt: string | null;
   minutesSpent: number | null;
   kind: ChecklistKind;
-  reviewFinding?: { id: string; completionEvidence: string | null } | null;
+  groupKey?: string;
+  reviewFinding?: { id: string; title: string; completionEvidence: string | null } | null;
+};
+
+export type ChecklistFinding = {
+  id: string;
+  reviewRunId: string;
+  requestedAt: string | null;
+  subTaskId: string | null;
+  title: string;
+  acceptanceCriteria: string;
+  scopeReference: string;
+  candidateSha: string;
+  status: string;
+  completionEvidence: string | null;
+  supersededReason: string | null;
 };
 
 type Props = {
@@ -55,6 +73,8 @@ type Props = {
   projectSlug: string;
   taskStatus: string;
   items: ChecklistItem[];
+  findings?: ChecklistFinding[];
+  reviewRounds?: Array<{ id: string; requestedAt: string | null; current: boolean }>;
   addAction: (formData: FormData) => Promise<void>;
   toggleAction: (formData: FormData) => Promise<void>;
   removeAction: (formData: FormData) => Promise<void>;
@@ -75,6 +95,8 @@ export default function TaskChecklist({
   projectSlug,
   taskStatus,
   items,
+  findings = [],
+  reviewRounds = [],
   addAction,
   toggleAction,
   removeAction,
@@ -94,9 +116,21 @@ export default function TaskChecklist({
     setOrder(items);
   }, [items]);
 
-  const implementation = order.filter((i) => i.kind !== "review");
-  const review = order.filter((i) => i.kind === "review");
-  const showReview = review.length > 0 || taskStatus === "Review";
+  const groupKeyFor = (item: ChecklistItem) => {
+    const finding = findings.find(finding => finding.subTaskId === item.id);
+    return item.groupKey ?? (finding ? `feedback:${finding.reviewRunId}` : "initial");
+  };
+  const initial = order.filter(item => item.kind !== "review" && groupKeyFor(item) === "initial");
+  const feedback = [...new Set(findings.map(finding => finding.reviewRunId))].map(id => {
+    const groupFindings = findings.filter(finding => finding.reviewRunId === id);
+    return { id, requestedAt: groupFindings[0].requestedAt, findings: groupFindings,
+      items: order.filter(item => groupKeyFor(item) === `feedback:${id}`) };
+  }).sort((a, b) => (a.requestedAt ?? "").localeCompare(b.requestedAt ?? "") || a.id.localeCompare(b.id));
+  const review = order.filter(item => item.kind === "review" && groupKeyFor(item) === "initial");
+  const showReview = review.length > 0 || (taskStatus === "Review" && reviewRounds.length === 0);
+  const reviews = reviewRounds.map((round, index) => ({ ...round, number: index + 1,
+    items: order.filter(item => item.kind === "review" && groupKeyFor(item) === `review:${round.id}`),
+  })).filter(round => round.items.length > 0 || (round.current && taskStatus === "Review"));
   const addKind: ChecklistKind =
     kindOverride ?? (taskStatus === "Review" ? "review" : "implementation");
   const totalMinutes = order.reduce((sum, i) => sum + (i.minutesSpent ?? 0), 0);
@@ -117,21 +151,19 @@ export default function TaskChecklist({
     [taskId, projectSlug, toggleAction, items, toast],
   );
 
-  // Drags are section-local. Persist a full-task order (implementation block
-  // then review block) so a within-section reorder keeps global ranks
-  // consistent for both phases.
+  // Replace only this group's slots; all other groups keep their order.
   const reorderSection = useCallback(
-    (kind: ChecklistKind, next: ChecklistItem[]) => {
-      const other = order.filter((i) =>
-        kind === "review" ? i.kind !== "review" : i.kind === "review",
-      );
-      const full = kind === "review" ? [...other, ...next] : [...next, ...other];
+    (next: ChecklistItem[]) => {
+      const ids = new Set(next.map(item => item.id));
+      let index = 0;
+      const full = order.map(item => ids.has(item.id) ? next[index++] : item);
       setOrder(full);
-      startTransition(() => {
-        void reorderAction(full.map((t) => t.id));
+      startTransition(async () => {
+        try { await reorderAction(full.map(item => item.id)); }
+        catch (error) { setOrder(items); toast.show({ message: error instanceof Error ? error.message : "Could not reorder subtasks." }); }
       });
     },
-    [order, reorderAction],
+    [order, reorderAction, items, toast],
   );
 
   const toggle = useCallback(
@@ -214,28 +246,52 @@ export default function TaskChecklist({
       </div>
 
       <p className="mb-3 text-micro text-text-muted">
-        Implementation steps are the assignee&rsquo;s In&nbsp;Progress breakdown;
-        review topics are the reviewer&rsquo;s points to address. Tick items off
-        as they land and record the minutes — the board card shows whichever
-        list matches its column.
+        Initial requirements come first, followed by the changes requested in each
+        feedback round. Each group tracks its own progress; the board shows
+        only the current implementation or review group.
       </p>
 
       <div className="space-y-5">
         <ChecklistSection
-          title="Implementation"
-          emptyLabel="No implementation steps yet."
-          items={implementation}
-          onReorder={(next) => reorderSection("implementation", next)}
+          title="Initial requirements"
+          emptyLabel="No initial requirements yet."
+          items={initial}
+          onReorder={reorderSection}
           onToggle={toggle}
           onRemove={remove}
           onSetMinutes={setMinutes}
         />
+        {feedback.map((group, index) => (
+          <ChecklistSection
+            key={group.id}
+            title={`Feedback ${index + 1}`}
+            description={group.requestedAt ? `Changes requested ${new Intl.DateTimeFormat("en-AU", { timeZone: "Australia/Brisbane", dateStyle: "medium", timeStyle: "short" }).format(new Date(group.requestedAt))}` : "Requested changes"}
+            emptyLabel="No active subtasks remain in this feedback round."
+            items={group.items}
+            findings={group.findings}
+            onReorder={reorderSection}
+            onToggle={toggle}
+            onRemove={remove}
+            onSetMinutes={setMinutes}
+          />
+        ))}
+        {reviews.map(round => <ChecklistSection
+          key={round.id}
+          title={`Review ${round.number}`}
+          description={round.current ? "Current review" : "Earlier review"}
+          emptyLabel="No topics added for this review yet."
+          items={round.items}
+          onReorder={reorderSection}
+          onToggle={toggle}
+          onRemove={remove}
+          onSetMinutes={setMinutes}
+        />)}
         {showReview ? (
           <ChecklistSection
-            title="Review"
+            title="Review and acceptance"
             emptyLabel="No review topics yet."
             items={review}
-            onReorder={(next) => reorderSection("review", next)}
+            onReorder={reorderSection}
             onToggle={toggle}
             onRemove={remove}
             onSetMinutes={setMinutes}
@@ -292,6 +348,8 @@ export default function TaskChecklist({
 // (minutes, bar, done/total) and its own drag-to-reorder scope.
 function ChecklistSection({
   title,
+  description,
+  findings = [],
   emptyLabel,
   items,
   onReorder,
@@ -300,6 +358,8 @@ function ChecklistSection({
   onSetMinutes,
 }: {
   title: string;
+  description?: string;
+  findings?: ChecklistFinding[];
   emptyLabel: string;
   items: ChecklistItem[];
   onReorder: (next: ChecklistItem[]) => void;
@@ -325,7 +385,8 @@ function ChecklistSection({
   };
 
   return (
-    <section>
+    <section aria-label={title}>
+      {description ? <p className="mb-1 text-caption text-text-muted">{description}</p> : null}
       <div className="mb-2 flex items-center justify-between gap-3">
         <h3 className="text-caption font-semibold uppercase tracking-wider text-text-muted">
           {title}
@@ -384,6 +445,19 @@ function ChecklistSection({
           </SortableContext>
         </DndContext>
       )}
+      {findings.length > 0 ? <details className="mt-2 rounded-lg border border-line p-3">
+        <summary className="cursor-pointer text-caption">Feedback details{findings.some(f => f.status === "superseded") ? ` · ${findings.filter(f => f.status === "superseded").length} superseded` : ""}</summary>
+        <div className="mt-3 space-y-3">
+          {findings.map(finding => <article key={finding.id}>
+            <p className="font-medium">{finding.title} <span className="text-caption text-text-muted">— {finding.status}</span></p>
+            <p className="mt-1 whitespace-pre-wrap text-caption">{finding.acceptanceCriteria}</p>
+            <p className="mt-1 text-caption text-text-muted">Scope: {finding.scopeReference}</p>
+            <p className="text-caption text-text-muted">Reviewed candidate: {finding.candidateSha.slice(0, 12)}</p>
+            {finding.completionEvidence ? <p className="mt-1 whitespace-pre-wrap text-caption">Evidence: {finding.completionEvidence}</p> : null}
+            {finding.supersededReason ? <p className="mt-1 whitespace-pre-wrap text-caption">Superseded: {finding.supersededReason}</p> : null}
+          </article>)}
+        </div>
+      </details> : null}
     </section>
   );
 }
@@ -444,14 +518,14 @@ function ChecklistRow({
         type="checkbox"
         checked={done}
         onChange={onToggle}
-        aria-label={done ? `Mark "${item.text}" not done` : `Mark "${item.text}" done`}
+        aria-label={done ? `Mark "${(item.reviewFinding?.title ?? item.text)}" not done` : `Mark "${(item.reviewFinding?.title ?? item.text)}" done`}
         className="h-6 w-6 shrink-0 accent-text-accent md:h-4 md:w-4"
       />
       <span
         className={`min-w-0 flex-1 ${done ? "text-text-muted line-through" : ""}`}
         title={item.completedAt ? `Completed ${item.completedAt}` : undefined}
       >
-        {item.text}
+        {(item.reviewFinding?.title ?? item.text)}
       </span>
       {done ? (
         <MinutesInput minutes={item.minutesSpent} onCommit={onSetMinutes} />
@@ -461,7 +535,7 @@ function ChecklistRow({
         onClick={onRemove}
         disabled={!!item.reviewFinding}
         className="grid h-11 w-11 shrink-0 place-items-center rounded-md text-text-muted hover:bg-crit/10 hover:text-crit md:h-auto md:w-auto md:px-1.5 md:py-1"
-        aria-label={`Remove "${item.text}"`}
+        aria-label={`Remove "${(item.reviewFinding?.title ?? item.text)}"`}
         title={item.reviewFinding ? "Review corrections require an explicit reviewer supersession decision; they cannot be deleted." : "Remove"}
       >
         <TrashIcon />

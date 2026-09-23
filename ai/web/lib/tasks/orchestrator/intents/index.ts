@@ -976,23 +976,13 @@ const publishCheckpointExecutor: IntentExecutor<"publish_checkpoint"> = async (c
 };
 
 const addSubtaskExecutor: IntentExecutor<"add_subtask"> = async (context) => {
-  const existing = await context.tx.subTask.findFirst({
-    where: {
-      taskId: context.command.taskId,
-      kind: context.command.payload.subtaskKind,
-      text: context.command.payload.subtaskText,
-    },
-    select: { id: true },
+  await createSubTaskItem({
+    taskId: context.command.taskId,
+    text: context.command.payload.subtaskText,
+    actorUserId: context.decision.decisionActorId,
+    kind: context.command.payload.subtaskKind,
+    client: context.tx,
   });
-  if (!existing) {
-    await createSubTaskItem({
-      taskId: context.command.taskId,
-      text: context.command.payload.subtaskText,
-      actorUserId: context.decision.decisionActorId,
-      kind: context.command.payload.subtaskKind,
-      client: context.tx,
-    });
-  }
   return context.helpers.executeDecisionWrites();
 };
 

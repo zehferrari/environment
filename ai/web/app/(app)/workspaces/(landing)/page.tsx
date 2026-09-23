@@ -1,3 +1,4 @@
+import { activeChecklistProgress, checklistProgressSelect } from "@/lib/tasks/checklist-progress";
 import Link from "next/link";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
@@ -191,7 +192,7 @@ export default async function WorkspacesLandingPage({ searchParams }: { searchPa
               actingManager: { select: actorSelect },
             },
           },
-          checklist: { select: { completedAt: true, minutesSpent: true, kind: true } },
+          ...checklistProgressSelect,
           // ENV-123 — drives the board's execution badge. Only the state word
           // is needed here; the full four-line strip lives on the task page.
           executionState: { select: { state: true, reasonDetail: true } },
@@ -281,10 +282,7 @@ export default async function WorkspacesLandingPage({ searchParams }: { searchPa
               createdBy: taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter, actorVisibility),
               updatedBy: taskActivityActors.updatedBy.get(t.id) ?? taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter, actorVisibility),
               epicTitle: t.epic?.title ?? null,
-              subtaskImplTotal: actorVisibility.excludeAgentRecords ? 0 : t.checklist.filter((c) => c.kind !== "review").length,
-              subtaskImplDone: actorVisibility.excludeAgentRecords ? 0 : t.checklist.filter((c) => c.kind !== "review" && c.completedAt !== null).length,
-              subtaskReviewTotal: actorVisibility.excludeAgentRecords ? 0 : t.checklist.filter((c) => c.kind === "review").length,
-              subtaskReviewDone: actorVisibility.excludeAgentRecords ? 0 : t.checklist.filter((c) => c.kind === "review" && c.completedAt !== null).length,
+              ...activeChecklistProgress(t, actorVisibility.excludeAgentRecords),
               subtaskMinutes: actorVisibility.excludeAgentRecords ? 0 : t.checklist.reduce((sum, c) => sum + (c.minutesSpent ?? 0), 0),
               blockedByKeys,
               hasActiveBlocker: actorVisibility.excludeAgentRecords ? false : activeFormalBlockers.has(t.id),
