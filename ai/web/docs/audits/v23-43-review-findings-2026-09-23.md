@@ -44,3 +44,13 @@ failure after the first insertion (no partial subtasks, comments or handoff).
 Existing review/finalization, native tool and compact-runtime tests exercise
 compatibility. Real scope judgment and evidence assessment remain the agents'
 responsibility.
+
+Live verification restored V23-43’s three historical correction groups as pending
+rows, attributed to the owner-requested repair, and queued both agents. Asdrubal
+reconciled the fee-only instruction and independently reproduced a remaining
+manual-fee-change finalization rejection, so he retained that finding. His
+explicit decision-note calls exposed a separate middleware omission: POST
+`/api/agent/tasks/:id/notes` redirected to browser login. The exact POST route
+now reaches its existing scoped-token/role/live-run authorization; unsupported
+methods and sibling routes remain protected. Middleware boundary tests and the
+provider-neutral task-note authorization suite cover this delivery path.

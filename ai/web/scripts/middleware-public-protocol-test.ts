@@ -26,7 +26,16 @@ async function main() {
     "task-scoped agent attachment uploads bypass browser login and authenticate in their route",
   );
 
-  console.log("middleware-public-protocol-test: ok");
+  const { middleware: handle } = await import("../middleware");
+  const { NextRequest } = await import("next/server");
+  const notePath = "http://localhost/api/agent/tasks/task-1/notes";
+  const note = await handle(new NextRequest(notePath, { method: "POST" }));
+  assert.equal(note.headers.get("x-middleware-next"), "1", "notes reach their token-authenticated handler without a browser session");
+  for (const [url, method] of [[notePath, "GET"], [notePath + "/extra", "POST"], ["http://localhost/api/agent/tasks/task-1/other", "POST"]]) {
+    const denied = await handle(new NextRequest(url, { method }));
+    assert.equal(denied.status, 307, "unsupported methods and sibling paths retain browser auth");
+  }
+  console.log("middleware-public-protocol-test: ok (including exact task-note POST boundary)");
 }
 
 main().catch((error) => {

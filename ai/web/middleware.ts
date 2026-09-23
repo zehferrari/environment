@@ -54,6 +54,10 @@ function isTokenScopedTaskWorkflow(path: string) {
   return /^\/api\/agent\/tasks\/[^/]+\/workflow$/.test(path);
 }
 
+function isTokenScopedTaskNote(req: NextRequest, path: string) {
+  return req.method === "POST" && /^\/api\/agent\/tasks\/[^/]+\/notes$/.test(path);
+}
+
 function isTokenScopedTaskAttachmentUpload(req: NextRequest, path: string) {
   return req.method === "POST"
     && /^\/api\/agent\/tasks\/[^/]+\/attachments$/.test(path);
@@ -105,6 +109,7 @@ function isTokenScopedAgentCallback(req: NextRequest, path: string) {
     isTokenScopedProjectProposal(path) ||
     isTokenScopedBillingRoute(req, path) ||
     isTokenScopedTaskWorkflow(path) ||
+    isTokenScopedTaskNote(req, path) ||
     isTokenScopedTaskAttachmentUpload(req, path) ||
     isTokenScopedTaskWorkflowTurnRequest(path) ||
     isTokenScopedEpicWorkflow(path) ||
