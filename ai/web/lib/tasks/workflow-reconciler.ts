@@ -255,6 +255,8 @@ export async function runWorkflowReconciliation(options: {
           intent: true,
           status: true,
           transitionId: true,
+          expectedWorkflowVersion: true,
+          resultingWorkflowVersion: true,
           createdAt: true,
         },
       },
@@ -582,6 +584,8 @@ export async function runWorkflowReconciliation(options: {
             intent: lastReceipt.intent,
             status: lastReceipt.status,
             transitionId: lastReceipt.transitionId,
+            expectedWorkflowVersion: lastReceipt.expectedWorkflowVersion,
+            resultingWorkflowVersion: lastReceipt.resultingWorkflowVersion,
             createdAt: lastReceipt.createdAt,
           }
         : null,

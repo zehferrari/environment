@@ -70,6 +70,8 @@ export interface WatchdogRunRecord {
   acceptedAt?: number | null; // ENV-159: legacy compatibility read (optional post-migration)
   streamingAt: number | null;
   lastEventAt: number | null;
+  heartbeatAt?: number | null;
+  leaseExpiresAt?: number | null;
   /** Most recent workflow action recorded against this run, settling or not. */
   lastAction: string | null;
   lastActionAt: number | null;
@@ -189,7 +191,7 @@ function stallGrace(snapshot: WatchdogSnapshot): number {
 }
 
 function leaseAnchor(run: WatchdogRunRecord): number {
-  return run.lastEventAt ?? run.streamingAt ?? run.admittedAt ?? run.acceptedAt ?? run.createdAt;
+  return run.heartbeatAt ?? run.lastEventAt ?? run.streamingAt ?? run.admittedAt ?? run.acceptedAt ?? run.createdAt;
 }
 
 /** Reuses the invariant module's lease derivation so the two cannot drift. */
@@ -208,6 +210,8 @@ function leaseIsExpired(run: WatchdogRunRecord, snapshot: WatchdogSnapshot): boo
       completedAt: null,
       failedAt: null,
       lastEventAt: run.lastEventAt,
+      heartbeatAt: run.heartbeatAt,
+      leaseExpiresAt: run.leaseExpiresAt,
       settledByAction: run.settledByAction,
       finalResponseText: null,
       disposition: run.disposition,

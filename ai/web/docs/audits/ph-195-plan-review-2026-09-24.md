@@ -1,4 +1,4 @@
-# PH-195 plan review and checklist progress — 2026-09-24
+# PH-195 plan review, checklist progress and stalled badges — 2026-09-24
 
 ## Observed failure
 
@@ -88,6 +88,43 @@ Deployment is deferred at the operator's request. No `pm-switch`, gateway
 reinstallation, live workflow recovery or database mutation was performed by
 this change. Both fixes remain together on `fix/plan-review-handoff` in the
 `fix_plan-review-handoff` worktree.
+
+## False stalled board badges
+
+The board displays `TaskExecutionState.state`; it does not infer stalled status
+from the age of the card or the most recent comment. The watchdog and workflow
+reconciler write that state. Review tasks and formal external blockers have
+separate waiting/blocked states, and Done cards do not display the badge.
+
+Read-only inspection of PH-195 found a `stale_receipt_without_transition`
+reconciliation alarm for its successful `submit_plan` receipt. Same-state
+commands intentionally commit their domain writes and receipt without creating
+a board transition or advancing the workflow version. The reconciler incorrectly
+required a transition for every successful receipt and could overwrite `running`
+with `stalled` until the watchdog corrected it again. It now checks the receipt's
+expected and resulting versions; actual version advances without a transition
+still raise an alarm. Plan submissions, checkpoints and checklist updates no
+longer trigger this false diagnosis.
+
+The watchdog also omitted authoritative heartbeat and lease-expiry columns from
+its snapshot. It now uses both, retaining the established fallback for legacy
+rows. Current runs and open continuations are loaded separately from bounded
+recent history, so old completed rows cannot crowd out active work and a run
+older than the history window remains visible. Archived tasks are excluded.
+A real expired lease still produces a stalled state.
+
+Changed execution-state writes publish the board refresh event and invalidate
+the task shell after persistence. Identical observations remain no-ops. In-process
+SSE subscribers refresh immediately through the existing debounce; out-of-process
+writes rely on the existing visible-board polling fallback. Recovery clears the
+stalled reason, detector and obsolete recovery description on the next watchdog
+pass. These changes require the later authorized PM rollout; no live state was
+rewritten during this investigation.
+
+Regression coverage uses disposable SQLite databases for same-state receipts,
+a current run older than the history window, a deliberately tiny history cap,
+fresh heartbeats and leases, actual lease expiry, queued continuations after
+closed history, and board notifications when the stalled badge turns on/off.
 
 ## Validation
 

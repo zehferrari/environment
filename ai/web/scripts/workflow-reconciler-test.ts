@@ -224,6 +224,24 @@ async function main() {
       },
     });
 
+    // Same-state commands commit a receipt without a board transition.
+    // This was repeatedly overwriting a working task's execution state as stalled.
+    const working = await db.task.create({
+      data: { projectId: project.id, title: "Checkpoint while working", status: "In Progress" },
+    });
+    const workingCycle = await db.taskWorkflowCycle.create({ data: {
+      taskId: working.id, sequence: 1, openedWorkflowVersion: 1,
+    } });
+    await db.task.update({ where: { id: working.id }, data: { activeWorkflowCycleId: workingCycle.id } });
+    await db.taskExecutionState.create({
+      data: { taskId: working.id, projectId: project.id, state: "running", reasonCode: "active_run" },
+    });
+    await db.taskWorkflowCommandReceipt.create({ data: {
+      taskId: working.id, idempotencyKey: "checkpoint", requestFingerprint: "checkpoint",
+      intent: "checkpoint", source: "test", status: "completed", result: "{}",
+      expectedWorkflowVersion: 5, resultingWorkflowVersion: 5, createdAt: stale,
+    } });
+
     const dry = await runWorkflowReconciliation({ projectId: project.id, now, dryRun: true });
     assert(dry.findings.some((row) => row.kind === "repository_projection_stale" && row.taskId === validating.id));
     assert(dry.findings.some((row) =>
@@ -258,6 +276,10 @@ async function main() {
     assert.equal((await db.task.findUniqueOrThrow({ where: { id: missingLease.id } })).alertReporter, false);
 
     const applied = await runWorkflowReconciliation({ projectId: project.id, now, dryRun: false });
+    assert.equal(dry.findings.some((row) => row.taskId === working.id), false,
+      "a same-state command must not generate a reconciliation alarm");
+    assert.equal((await db.taskExecutionState.findUniqueOrThrow({ where: { taskId: working.id } })).state,
+      "running", "reconciliation must preserve active execution after a checkpoint");
     assert(applied.repaired >= 4);
     assert.equal(
       (await db.workflowOutbox.findUniqueOrThrow({ where: { id: verifyEffect.id } })).status,

@@ -403,6 +403,20 @@ function invariantInput(overrides: Partial<PhaseEInvariantInput> = {}): PhaseEIn
   assertEqual(finding, null, "no receipt → no finding");
 }
 
+// Commands that keep the workflow version deliberately have no transition.
+for (const intent of ["submit_plan", "checkpoint", "complete_subtask", "submit_for_review"]) {
+  const receipt = {
+    idempotencyKey: `same-state-${intent}`, intent, status: "completed",
+    transitionId: null, expectedWorkflowVersion: 5, resultingWorkflowVersion: 5,
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+  };
+  assertEqual(detectStaleReceiptWithoutTransition(invariantInput({ lastReceipt: receipt })),
+    null, `${intent} without a status transition is valid`);
+  assert(detectStaleReceiptWithoutTransition(invariantInput({
+    lastReceipt: { ...receipt, resultingWorkflowVersion: 6 },
+  })) !== null, "a version advance still requires a transition");
+}
+
 // --- detectProcedureRunWithoutCycle ---
 
 {
