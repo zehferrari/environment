@@ -35,6 +35,8 @@ export type PhaseEInvariantInput = {
     intent: string;
     status: string;
     transitionId: string | null;
+    expectedWorkflowVersion?: number;
+    resultingWorkflowVersion?: number;
     createdAt: Date;
   } | null;
   activeProcedureRuns: Array<{
@@ -66,13 +68,17 @@ export function detectEngineOwnershipMismatch(
 
 /**
  * Detect a stale receipt without a corresponding transition.
- * A receipt with status "accepted" or "completed" should have a transitionId.
+ * Only a receipt that advances the workflow version owes a transition.
+ * Same-state commands (plans, checkpoints, checklist edits) commit receipts
+ * and domain writes without creating a board transition.
  */
 export function detectStaleReceiptWithoutTransition(
   input: PhaseEInvariantInput,
 ): PhaseEInvariantFinding | null {
   if (!input.lastReceipt) return null;
   const receipt = input.lastReceipt;
+  if (Number.isInteger(receipt.expectedWorkflowVersion)
+    && receipt.expectedWorkflowVersion === receipt.resultingWorkflowVersion) return null;
   if (
     (receipt.status === "accepted" || receipt.status === "completed") &&
     !receipt.transitionId

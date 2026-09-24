@@ -79,6 +79,9 @@ async function main() {
   const record=snapshot.tasks.find(t=>t.id===failedTask.id)!;record.planReviewAccepted=true;assert.ok(!detectWatchdogFindings(snapshot).some(f=>f.taskId===failedTask.id&&f.detectorId==='stalled_plan_review'));assert.equal(healthyExecutionState(record,snapshot).reasonCode,'awaiting_plan_approval');
   record.acceptedReviewerCanApprove=true;
   assert.ok(detectWatchdogFindings(snapshot).some(f=>f.taskId===failedTask.id&&f.detectorId==='stalled_plan_review'), 'accepted review must not hide a failed turn when that reviewer can approve');
+  const silentReview=snapshot.runs.find(r=>r.id==='failed-review')!;
+  silentReview.status='completed';silentReview.disposition='failed';
+  assert.ok(detectWatchdogFindings(snapshot).some(f=>f.taskId===failedTask.id&&f.detectorId==='stalled_plan_review'), 'completed transport with a missing decision remains stalled');
   console.log('PASS Backlog handoff failure and human-wait distinction');
   const {reserveExecutionLane}=await import('@/lib/agents/pm-channel/execution-lane');const {claimNextPmChannelJob,runPmChannelJob}=await import('@/lib/agents/pm-channel/jobs');
   await db.pmChannelJob.updateMany({data:{status:'complete'}});

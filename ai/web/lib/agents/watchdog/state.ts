@@ -14,6 +14,8 @@
 import type { Prisma } from "@prisma/client";
 
 import { db } from "@/lib/db";
+import { publishBoardTouch } from "@/lib/pm/board-events";
+import { revalidateTaskShellIfAvailable } from "@/lib/tasks/cache";
 
 export const EXECUTION_STATES = [
   "running",
@@ -129,6 +131,12 @@ export async function writeTaskExecutionState(
     create: { taskId: write.taskId, ...next },
     update: next,
   });
+  // Notify only after an autocommit write is durable. Transactional callers
+  // own publication after their commit. Identical observations returned above.
+  if (client === db) {
+    publishBoardTouch(next.projectId);
+    revalidateTaskShellIfAvailable(write.taskId);
+  }
   return true;
 }
 

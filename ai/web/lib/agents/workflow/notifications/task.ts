@@ -384,6 +384,7 @@ export async function sendTaskWorkflowNotification(args: {
         commitPrefix: true,
         workItemKey: true,
         approvedOn: true,
+        actionPlan: { select: { id: true, version: true } },
         reviewAttachmentRequired: true,
         _count: { select: { attachments: true } },
         deletedAt: true,
@@ -685,6 +686,10 @@ export async function sendTaskWorkflowNotification(args: {
     turnClass: "notification" as const,
     workflowReason: args.reason,
     ...(["backlog_plan_requested", "action_plan_feedback_received"].includes(args.reason) ? { expectedWorkflowAction: "submit_plan" as const } : {}),
+    ...(args.reason === "action_plan_review_requested" && task.actionPlan ? {
+      expectedWorkflowAction: "review_plan" as const,
+      expectedActionPlan: { id: task.actionPlan.id, version: task.actionPlan.version },
+    } : {}),
     text: args.body,
     contextText: nullPmContextText(),
     systemPrompt: buildUnifiedPmTurnSystemPrompt({

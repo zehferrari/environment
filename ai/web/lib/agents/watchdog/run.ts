@@ -11,6 +11,7 @@
 // watchdog at all.
 
 import { db } from "@/lib/db";
+import { ACTIVE_RUN_STATUSES } from "@/lib/workflow-invariants";
 import { canApproveActionPlanForActor } from "@/lib/tasks/workflow-actors";
 import { recoverGitIdentityBlockers } from "@/lib/tasks/git-identity-recovery";
 import { recoveryPermissionWaitReason } from "@/lib/tasks/recovery-permission";
@@ -23,6 +24,7 @@ import {
   hasDurableRecoveryProgress,
   healthyExecutionState,
   WATCHDOG_BLOCKER_LOOP_WINDOW_MS,
+  OPEN_CONTINUATION_STATUSES,
   type WatchdogFinding,
   type WatchdogSnapshot,
   type WatchdogTaskRecord,
@@ -39,7 +41,7 @@ import {
 } from "@/lib/agents/watchdog/repairs";
 import { writeTaskExecutionState } from "@/lib/agents/watchdog/state";
 
-/** Rows pulled per table per pass. */
+/** Task and history row cap; current runs and continuations are loaded separately. */
 const WATCHDOG_TAKE = 500;
 /** Repairs executed per pass, across all tasks. */
 const WATCHDOG_MAX_REPAIRS = 20;
@@ -100,6 +102,7 @@ export async function loadWatchdogSnapshot(
   const taskRows = await db.task.findMany({
     where: {
       deletedAt: null,
+      archivedAt: null,
       status: { in: ["Backlog", "To Do", "In Progress", "Review"] },
       ...(options.projectId ? { projectId: options.projectId } : {}),
     },
@@ -137,34 +140,42 @@ export async function loadWatchdogSnapshot(
     };
   }
 
-  const [runRows, continuationRows, activityRows] = await Promise.all([
+  const runSelect = {
+    id: true,
+    taskId: true,
+    agentSlug: true,
+    status: true,
+    sessionKey: true,
+    createdAt: true,
+    admittedAt: true,
+    acceptedAt: true, // ENV-159: legacy compatibility read
+    streamingAt: true,
+    lastEventAt: true,
+    heartbeatAt: true,
+    leaseExpiresAt: true,
+    lastAction: true,
+    lastActionAt: true,
+    settledByAction: true,
+    disposition: true,
+    provider: true,
+    model: true,
+    blockedByTaskId: true,
+  } as const;
+
+  const [historyRunRows, activeRunRows, continuationRows, activityRows] = await Promise.all([
     db.pmChannelRun.findMany({
       where: { taskId: { in: taskIds }, createdAt: { gte: since } },
-      orderBy: { createdAt: "asc" },
+      orderBy: { createdAt: "desc" },
       take,
-      select: {
-        id: true,
-        taskId: true,
-        agentSlug: true,
-        status: true,
-        sessionKey: true,
-        createdAt: true,
-        admittedAt: true,
-        acceptedAt: true, // ENV-159: legacy compatibility read
-        streamingAt: true,
-        lastEventAt: true,
-        lastAction: true,
-        lastActionAt: true,
-        settledByAction: true,
-        disposition: true,
-        provider: true,
-        model: true,
-        blockedByTaskId: true,
-      },
+      select: runSelect,
+    }),
+    // A capped history must never hide a current run or a queued successor.
+    db.pmChannelRun.findMany({
+      where: { taskId: { in: taskIds }, status: { in: [...ACTIVE_RUN_STATUSES] } },
+      select: runSelect,
     }),
     db.pmChannelContinuation.findMany({
-      where: { taskId: { in: taskIds } },
-      take,
+      where: { taskId: { in: taskIds }, status: { in: [...OPEN_CONTINUATION_STATUSES] } },
       select: {
         id: true,
         taskId: true,
@@ -181,6 +192,8 @@ export async function loadWatchdogSnapshot(
       select: { taskId: true, kind: true, payload: true, createdAt: true },
     }),
   ]);
+
+  const runRows = [...new Map([...historyRunRows, ...activeRunRows].map(run => [run.id, run])).values()];
 
   const blockerStates = activeFormalBlockerStatesByTask(activityRows);
   const recoveryWaits = new Map(await Promise.all([...blockerStates].map(async ([taskId, blocker]) =>
@@ -254,9 +267,11 @@ export async function loadWatchdogSnapshot(
       sessionKey: run.sessionKey,
       createdAt: run.createdAt.getTime(),
       admittedAt: ms(run.admittedAt ?? run.acceptedAt),
-    acceptedAt: ms(run.acceptedAt),
+      acceptedAt: ms(run.acceptedAt),
       streamingAt: ms(run.streamingAt),
       lastEventAt: ms(run.lastEventAt),
+      heartbeatAt: ms(run.heartbeatAt),
+      leaseExpiresAt: ms(run.leaseExpiresAt),
       lastAction: run.lastAction,
       lastActionAt: ms(run.lastActionAt),
       settledByAction: run.settledByAction,

@@ -66,7 +66,7 @@ async function main(): Promise<void> {
     await migrateDeploy(dbUrl);
 
     const { db } = await import("@/lib/db");
-    const { runWorkflowWatchdog } = await import("@/lib/agents/watchdog/run");
+    const { runWorkflowWatchdog, loadWatchdogSnapshot } = await import("@/lib/agents/watchdog/run");
     const { WATCHDOG_CONTINUATION_ACTION, watchdogRecoveryBudget } = await import(
       "@/lib/agents/watchdog/repairs"
     );
@@ -306,6 +306,62 @@ async function main(): Promise<void> {
       0,
       "the dry run wrote no outbox row",
     );
+
+    // ---------------- current evidence survives bounded history ----------------
+    const activeProject = await db.project.create({ data: { slug: "active", name: "Active" } });
+    const activeTask = await db.task.create({ data: {
+      projectId: activeProject.id, title: "Long-running work", status: "In Progress",
+      assigneeId: agentUser.id, approvedOn: stalled,
+    } });
+    const old = new Date(now - 4 * 24 * 60 * MINUTE);
+    const live = await makeRun({ taskId: activeTask.id, messageId: "old-live", status: "streaming", at: old });
+    await db.pmChannelRun.update({ where: { id: live.id }, data: {
+      streamingAt: old, provider: "test", model: "test", heartbeatAt: new Date(now),
+      leaseExpiresAt: new Date(now + MINUTE),
+    } });
+    const history = await makeRun({ taskId: activeTask.id, messageId: "recent-history", status: "completed", at: stalled });
+    await makeRun({ taskId: activeTask.id, messageId: "newer-history", status: "completed", at: new Date(now - MINUTE) });
+    const snapshot = await loadWatchdogSnapshot({ projectId: activeProject.id, now: new Date(now), take: 1 });
+    assert(snapshot.runs.some((run) => run.id === live.id), "a current run older than the history window is retained");
+    assertEqual(snapshot.runs.length, 2, "bounded recent history is merged with current runs");
+    const { subscribeBoardTouch } = await import("@/lib/pm/board-events");
+    let touches = 0;
+    const unsubscribe = subscribeBoardTouch(activeProject.id, () => { touches += 1; });
+    await writeTaskExecutionState({ taskId: activeTask.id, projectId: activeProject.id,
+      state: "stalled", reasonCode: "expired_run_lease", detectorId: "expired_lease",
+      recoveryAction: "stale run settled", recoveryAt: new Date(now - MINUTE) });
+    const activePass = () => runWorkflowWatchdog({ projectId: activeProject.id, now: new Date(now), take: 1, maxRepairs: 0 });
+    let report = await activePass();
+    assertEqual(report.errors.length, 0, "active snapshot pass has no errors");
+    let recovered = await db.taskExecutionState.findUniqueOrThrow({ where: { taskId: activeTask.id } });
+    assertEqual(recovered.state, "running", "a fresh lease clears a false stalled tag despite an old lastEventAt");
+    assertEqual(recovered.detectorId, null, "recovery clears the stale detector");
+    assertEqual(recovered.recoveryAction, null, "recovery clears the stale repair description");
+    assertEqual(recovered.recoveryAt, null, "recovery clears the stale repair timestamp");
+    assertEqual(touches, 2, "both enabling and clearing the stalled badge notify the board");
+    await activePass();
+    assertEqual(touches, 2, "unchanged state does not churn board events");
+    // Legacy runs without an explicit expiry still use the most recent heartbeat.
+    await db.pmChannelRun.update({ where: { id: live.id }, data: { leaseExpiresAt: null } });
+    report = await activePass();
+    assertEqual(report.outcomes[0].state, "running", "heartbeat keeps a legacy lease live");
+    // Explicit expired leases remain authoritative even with a recent heartbeat.
+    await db.pmChannelRun.update({ where: { id: live.id }, data: { leaseExpiresAt: new Date(now - 1) } });
+    report = await activePass();
+    assertEqual(report.outcomes[0].state, "stalled", "an actually expired lease still enables the badge");
+    assertEqual(report.outcomes[0].reasonCode, "expired_run_lease", "the real expiry is diagnosed");
+    await db.pmChannelRun.update({ where: { id: live.id }, data: { status: "completed" } });
+    // Closed continuation history must not hide the scheduled next turn.
+    await db.pmChannelContinuation.createMany({ data: ["completed", "completed", "queued"].map((status, i) => ({
+      taskId: activeTask.id, projectId: activeProject.id, runId: history.id, agentSlug: AGENT_SLUG,
+      messageId: `continuation-${i}`, action: "checkpoint", status, availableAt: new Date(now),
+    })) });
+    report = await activePass();
+    assertEqual(report.counts.continuations, 1, "only open continuations occupy the snapshot");
+    recovered = await db.taskExecutionState.findUniqueOrThrow({ where: { taskId: activeTask.id } });
+    assertEqual(recovered.state, "running", "a scheduled continuation clears stalled state");
+    assertEqual(recovered.reasonCode, "continuation_scheduled", "the scheduled successor is visible beyond the history cap");
+    unsubscribe();
 
     console.log(`[workflow-watchdog-db] OK — ${checks} checks passed`);
   } finally {
