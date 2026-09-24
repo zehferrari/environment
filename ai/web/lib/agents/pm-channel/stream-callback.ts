@@ -482,7 +482,6 @@ export async function applyPmChannelStreamCallback(args: {
     const persisted = await appendPmChannelStreamEventForTarget({ target, event });
     const state = publishPmChannelStreamEvent({ target, event, seq: persisted.seq });
     await recordStreamTransport(target, transportMode);
-  if (["final", "done", "turn:terminal"].includes(event)) await flagMissingTaskPlanOutcome(target);
     // ENV-159 Step 5: context:usage carries token/window usage. When context
     // pressure is high (usage approaching window limit), trigger episode
     // rollover with context_pressure_recovery as the primary signal.
@@ -677,6 +676,7 @@ export async function applyPmChannelStreamCallback(args: {
   ) {
     await recordPmChannelRunEvent({ target, event });
     await recordStreamTransport(target, transportMode);
+    if (event === "final") await flagMissingTaskPlanOutcome(target);
     return { status: 200, body: { ok: true, silent: true } };
   }
 
@@ -726,6 +726,7 @@ export async function applyPmChannelStreamCallback(args: {
     error: stringField(args.payload.error, 2_000),
   });
   await recordStreamTransport(target, transportMode);
+  if (["final", "done", "turn:terminal"].includes(event)) await flagMissingTaskPlanOutcome(target);
   if (event === "error") {
     await recordStreamError(target, state.error ?? stringField(args.payload.error, 2_000));
   }

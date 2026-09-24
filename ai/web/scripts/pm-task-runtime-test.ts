@@ -25,6 +25,13 @@ async function main() {
   try {
     const { sendTaskWorkflowNotification } = await import("@/lib/agents/workflow/notifications/task");
     const { prepareCompactTaskTurn, PM_TASK_CONTRACT_VERSION } = await import("@/lib/agents/pm-channel/task-runtime");
+    const assertIncrementalChecklistContract = (prompt: string) => {
+      assert.match(prompt, /as soon as an item's implementation and its own acceptance checks are finished, call pm_complete_subtask/);
+      assert.match(prompt, /before starting the next item or saving a checkpoint/);
+      assert.match(prompt, /Never batch completed items at the end/);
+      assert.match(prompt, /completedWork does not tick the checklist/);
+      assert.match(prompt, /never tick an unperformed check/);
+    };
     const owner = await db.user.create({ data: { username: "owner", email: "owner@runtime.invalid", kind: "human", isOwner: true } });
     const project = await db.project.create({ data: { slug: "runtime", name: "Runtime" } });
     const workerAgent = await db.agent.create({ data: { slug: "worker", name: "Worker", role: "coding" } });
@@ -229,6 +236,30 @@ async function main() {
     const auditText = JSON.stringify(await db.activityLog.findMany({ where: { taskId: task.id, kind: { in: ["pm.task.runtime.prepared", "task.workflow.outcome_missing"] } } }));
     assert.ok(!auditText.includes(grant.commonBody.token));
     console.log("PASS CLI compact HTTP plan submission, missing-outcome alert, replay and secret-free diagnostics");
+    // The compact runtime replaces the legacy prompt, so exercise the actual
+    // generated implementation notification for both transports. Planning
+    // turns do not need these additional execution instructions.
+    const executionTask = await db.task.create({ data: {
+      title: "Update each item as it finishes", projectId: project.id,
+      status: "In Progress", approvedOn: new Date(), assigneeId: worker.id,
+      actingManagerId: reviewer.id, reporterId: owner.id,
+    } });
+    for (const backend of ["openai/test", "claude-cli/test"]) {
+      await setBackend("worker", backend);
+      const key = `incremental-checklist:${backend}`;
+      await sendTaskWorkflowNotification({ taskId: executionTask.id, targetUserId: worker.id,
+        actor, reason: "monitor_recovery", body: "Resume the next unfinished checklist item.", dedupeKey: key });
+      const message = await db.agentChatMessage.findUniqueOrThrow({ where: { workflowDedupeKey: key } });
+      const run = await db.pmChannelRun.findFirstOrThrow({ where: { messageId: message.id } });
+      const job = await db.pmChannelJob.findUniqueOrThrow({ where: { runId: run.id } });
+      const payload = JSON.parse(job.payload);
+      assertIncrementalChecklistContract(payload.systemPrompt);
+      assert.ok(payload.taskContract.actions.includes("complete_subtask"));
+      if (backend === "claude-cli/test") assert.match(payload.systemPrompt, /Mark this item complete immediately/);
+      await db.pmChannelRun.update({ where: { id: run.id }, data: { status: "completed" } });
+      await db.pmChannelJob.update({ where: { id: job.id }, data: { status: "complete" } });
+    }
+    console.log("PASS native and scoped HTTP execution turns require per-item completion before subsequent work");
     await setBackend("worker", "openai/test");
     await db.task.update({ where: { id: task.id }, data: { private: true } });
     await assert.rejects(prepareCompactTaskTurn(first.payload), /authorized/);

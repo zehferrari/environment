@@ -862,16 +862,40 @@ async function pmRunSettlementSlice() {
     assertActionResult(added.body, "add_subtask", "continue");
     await assertContinued("wf-assignee", addGrant, "add_subtask");
 
+    // Completing one item must publish progress while later work remains open.
+    const laterStep = await db.subTask.create({ data: {
+      taskId: task.id, text: "Verify the next independent change", kind: "implementation", rank: 999,
+    } });
     // complete_subtask (assignee)
     const completeGrant = await grantFor("wf-assignee");
     const completed = await call("wf-assignee", completeGrant, {
       action: "complete_subtask",
       subtaskId: added.body.subtaskId,
+      completionEvidence: "Implemented step one and passed its focused check.",
       minutesSpent: 3,
     });
     assert(completed.status === 202, `complete_subtask must succeed (got ${completed.status}: ${JSON.stringify(completed.body)})`);
     assertActionResult(completed.body, "complete_subtask", "continue");
     await assertContinued("wf-assignee", completeGrant, "complete_subtask");
+    const completedItem = await db.subTask.findUniqueOrThrow({ where: { id: String(added.body.subtaskId) } });
+    assert(completedItem.completedAt !== null, "first item is persisted immediately while the task is still running");
+    assert(completedItem.completionEvidence === "Implemented step one and passed its focused check.", "each completion retains its own evidence");
+    assert((await db.subTask.findUniqueOrThrow({ where: { id: laterStep.id } })).completedAt === null, "later verification remains pending");
+    assert((await db.task.findUniqueOrThrow({ where: { id: task.id } })).status === "In Progress", "incremental completion does not end implementation");
+    const checkpoint = await call("wf-assignee", completeGrant, {
+      action: "checkpoint", completedWork: ["Step one implemented and checked off"],
+      openChecklist: [laterStep.text], nextAction: "Implement and verify the next item",
+    });
+    assert(checkpoint.status === 202, `checkpoint after incremental completion must succeed: ${JSON.stringify(checkpoint.body)}`);
+    assert((await db.subTask.findUniqueOrThrow({ where: { id: laterStep.id } })).completedAt === null, "checkpoint prose cannot complete pending checklist work");
+    const nextCompleted = await call("wf-assignee", completeGrant, {
+      action: "complete_subtask", subtaskId: laterStep.id,
+      completionEvidence: "Implemented the next change and passed its separate check.",
+    });
+    assert(nextCompleted.status === 202, "the same working turn can record the next item when it finishes");
+    assertActionResult(nextCompleted.body, "complete_subtask", "continue");
+    assert((await db.subTask.findUniqueOrThrow({ where: { id: String(added.body.subtaskId) } })).completedAt?.getTime() === completedItem.completedAt?.getTime(), "later completion preserves the first item's original timestamp");
+
 
     // remove_subtask (assignee) — obsolete/duplicate checklist cleanup must
     // be possible through the same agent workflow capability.

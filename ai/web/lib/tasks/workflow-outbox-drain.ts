@@ -126,6 +126,20 @@ async function dispatch(row: OutboxRow) {
     return;
   }
   if (row.effectType === "task_notification") {
+    // Recovery belongs to the exact pending review, not a replacement plan or
+    // a reassigned reviewer that happens to occupy the same Backlog task.
+    if (payload.expectedActionPlan && typeof payload.expectedActionPlan === "object") {
+      const expected = payload.expectedActionPlan as { id?: string; version?: number };
+      const { resolveReviewOwnerId, canApproveActionPlanForActor } = await import("./workflow-actors");
+      const task = await db.task.findUnique({ where: { id: row.taskId }, include: {
+        actionPlan: true, epic: true, project: true,
+      } });
+      if (!task || task.archivedAt || task.deletedAt || task.approvedOn
+        || task.actionPlan?.id !== expected.id || task.actionPlan?.version !== expected.version
+        || task.actionPlan?.status !== "draft"
+        || resolveReviewOwnerId(task) !== payload.targetUserId
+        || (task.actionPlan.reviewedAt && !canApproveActionPlanForActor(task, task.actionPlan.reviewedById ?? ""))) return;
+    }
     const actorRaw = payload.actor;
     if (!actorRaw || typeof actorRaw !== "object" || Array.isArray(actorRaw)) {
       throw new Error("Task notification outbox payload has no actor.");

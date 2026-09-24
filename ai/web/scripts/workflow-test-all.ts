@@ -22,6 +22,8 @@ import { spawn } from "node:child_process";
 const SUITES: readonly string[] = [
   // Structural guard first — fast, no database.
   "test:workflow-boundary",
+  "test:plan-review-outcome",
+  "test:pm-continuation-coalescing",
   "test:phasee-12-drain",
   // Kernel + invariants.
   "test:workflow-invariants",

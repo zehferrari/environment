@@ -12,8 +12,8 @@ export function checkpointGuidance(episode: {
     toolCallsRemaining: remaining,
     checkpointDue,
     instruction: checkpointDue
-      ? "Save a checkpoint now with completed work, evidence, risks, durable verification job IDs and the exact next action. The acknowledged checkpoint ends this episode; when turnComplete is true, stop. PM resumes the next episode from the saved state. The remaining tool calls are a hard grace limit."
-      : "Save a checkpoint at each meaningful boundary and at least every 6 tool calls; do not wait for a live reminder.",
+      ? "Save a checkpoint now with completed work, evidence, risks, durable verification job IDs and the exact next action. The acknowledged checkpoint ends this episode; when turnComplete is true, stop. PM resumes the next episode from the saved state. Checkpoint prose does not tick checklist items; include any pending completion update in the exact next action. The remaining tool calls are a hard grace limit."
+      : "Record each finished item with complete_subtask and its evidence before starting the next item or saving a checkpoint; do not batch updates at task end. Save a checkpoint at each meaningful boundary and at least every 6 tool calls; do not wait for a live reminder.",
   };
 }
 

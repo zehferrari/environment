@@ -30,6 +30,9 @@ async function main() {
     assert.equal(checkpointGuidance(episode)?.checkpointDue, true);
     assert.equal(checkpointGuidance(episode)?.toolCallsRemaining, 8);
     assert.equal(checkpointGuidance({ ...episode, toolCycleCount: 5 })?.checkpointDue, false);
+    assert.match(checkpointGuidance({ ...episode, toolCycleCount: 5 })!.instruction, /Record each finished item with complete_subtask/);
+    assert.match(checkpointGuidance(episode)!.instruction, /Checkpoint prose does not tick checklist items/);
+    assert.match(checkpointGuidance({ ...episode, toolCycleCount: 24 })!.instruction, /Save a checkpoint now/);
     assert.equal(checkpointGuidance({ ...episode, status: "closed" }), null);
     const project = await db.project.create({ data: { name: "Test", slug: "test" } });
     const task = await db.task.create({ data: { title: "Scoped guidance", projectId: project.id } });

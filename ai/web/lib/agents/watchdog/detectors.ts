@@ -771,7 +771,7 @@ const STALLED_PLAN_REVIEW: WatchdogDetector = {
     if (liveRunTaskIds(snapshot).has(task.id) || openContinuationTaskIds(snapshot).has(task.id)) return [];
     if (idleSince(task, snapshot) < stallGrace(snapshot)) return [];
     const latest = snapshot.runs.filter((r) => r.taskId === task.id).sort((a, b) => b.createdAt - a.createdAt)[0];
-    const failed = latest && ["failed", "timed_out"].includes(latest.status);
+    const failed = latest && (["failed", "timed_out"].includes(latest.status) || latest.disposition === "failed");
     const loop = (task.planVersion ?? 0) >= 4;
     if (!failed && !loop) return [];
     return [{ detectorId: "stalled_plan_review", taskId: task.id, runId: latest?.id ?? null,
