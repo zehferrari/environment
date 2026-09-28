@@ -165,20 +165,22 @@ export async function setSubTaskCompletion(args: {
   if (args.expectTaskId && item.taskId !== args.expectTaskId) return null;
 
   const finding = item.reviewFinding;
-  const evidence = args.completionEvidence?.trim();
+  const evidence = args.completionEvidence?.trim() || undefined;
   if (item.kind === "superseded") throw new ReviewCorrectionError("This checklist requirement was superseded by an approved plan revision.");
   if (item.responsibleActor === "owner") {
     const actor = await client.user.findUnique({ where: { id: args.actorUserId }, select: { kind: true, isOwner: true, status: true } });
     if (actor?.kind !== "human" || !actor.isOwner || actor.status !== "active") throw new ReviewCorrectionError("Only an active human owner can record or reopen owner acceptance.");
-    if (args.completed && (!item.completedAt || evidence !== undefined) && (!evidence || evidence.length > 10000)) {
-      throw new ReviewCorrectionError("Owner acceptance requires completionEvidence describing the check and observed result (maximum 10000 characters).");
+    // The authenticated owner's checkbox is the acceptance. Additional notes
+    // are optional; completedById, completedAt and the activity retain its audit.
+    if (args.completed && evidence && evidence.length > 10000) {
+      throw new ReviewCorrectionError("Owner acceptance notes must not exceed 10000 characters.");
     }
     if (!args.completed && item.completedAt && item.acceptanceGate === "task") {
       const finalizing = await client.reviewRun.findFirst({ where: { taskId: item.taskId, status: { in: ["accepted", "completed"] } }, select: { id: true } });
       if (finalizing) throw new ReviewCorrectionError("This owner check belongs to an accepted verdict. Request review feedback or an Action Plan revision before reopening accepted task requirements.");
     }
   }
-  if (finding && args.completed && (!item.completedAt || finding.status !== "resolved") && (!evidence || evidence.length > 10000)) {
+  if (finding && item.responsibleActor !== "owner" && args.completed && (!item.completedAt || finding.status !== "resolved") && (!evidence || evidence.length > 10000)) {
     throw new ReviewCorrectionError("This correction requires completionEvidence describing the fix and verification before it can be marked complete.");
   }
   const wasDone = item.completedAt !== null;

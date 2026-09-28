@@ -1,7 +1,7 @@
 import type { Prisma } from "@prisma/client";
-import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { activeFormalBlockersByTask, blockerPermissionGrantForComment } from "@/lib/tasks/formal-blocker";
 import { permissionRequiresOwner } from "@/lib/tasks/permission-review";
+import { resolvePermissionReviewerId } from "@/lib/tasks/permission-reviewer";
 import { effectiveEpicBranchName, effectiveTaskBranchName } from "@/lib/work-items/branches";
 
 /** Rechecked at admission AND runner execution. Agent prose alone is never a grant. */
@@ -14,7 +14,7 @@ export async function isReviewerCheckpointAuthorization(client: Prisma.Transacti
     epic: { select: { status: true, actingManagerId: true, workItemKey: true, branchName: true } },
   } });
   if (!task || task.status !== "In Progress" || !task.approvedOn || task.actionPlan?.status !== "approved") return false;
-  const reviewerId = resolveReviewOwnerId({ actingManagerId: task.actingManagerId, reporterId: task.reporterId, epic: task.epic });
+  const reviewerId = await resolvePermissionReviewerId(task, client);
   if (!reviewerId || reviewerId === task.assigneeId) return false;
   const authorization = await client.comment.findFirst({ where: { id: commentId, taskId, deletedAt: null }, select: { userId: true, createdAt: true, user: { select: { status: true } } } });
   if (!authorization || authorization.userId !== reviewerId || authorization.user.status !== "active" || authorization.createdAt < task.approvedOn) return false;

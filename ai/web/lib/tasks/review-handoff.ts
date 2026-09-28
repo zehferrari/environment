@@ -102,9 +102,16 @@ export async function recordTaskReviewOperationalError(args: {
 }) {
   const task = await db.task.findUnique({
     where: { id: args.taskId },
-    select: { id: true, projectId: true, workflowVersion: true, repositoryRun: { select: { phase: true } } },
+    select: { id: true, projectId: true, workflowVersion: true, activeWorkflowCycleId: true,
+      repositoryRun: { select: { phase: true } },
+      reviewRuns: { where: { status: "accepted" }, orderBy: { createdAt: "desc" }, take: 1,
+        select: { id: true, reviewerId: true, workflowCycleId: true, candidateSha: true } } },
   });
   if (!task) return;
+  const review = task.reviewRuns[0];
+  const recoveryActor = args.actor ?? (review?.reviewerId ? await db.user.findUnique({
+    where: { id: review.reviewerId }, select: { id: true, kind: true, username: true },
+  }) : null);
   await db.$transaction(async (tx) => {
     await tx.task.update({ where: { id: task.id }, data: { alertReporter: true } });
     await tx.activityLog.create({
@@ -125,7 +132,16 @@ export async function recordTaskReviewOperationalError(args: {
       taskId: task.id,
       projectId: task.projectId,
       aggregateVersion: task.workflowVersion,
-      effects: [{ type: "board_touch", key: `board-operational-error:${task.repositoryRun?.phase ?? "unknown"}`, payload: {} }],
+      workflowCycleId: task.activeWorkflowCycleId,
+      effects: [{ type: "board_touch", key: `board-operational-error:${task.repositoryRun?.phase ?? "unknown"}`, payload: {} },
+        ...(!args.retryPending && recoveryActor && review?.reviewerId && review.workflowCycleId === task.activeWorkflowCycleId ? [{
+          type: "task_notification" as const, key: `finalization-recovery:${review.id}:${args.error}`,
+          payload: { taskId: task.id, targetUserId: review.reviewerId,
+            actor: recoveryActor, reason: "review_requested",
+            body: `Finalization of your accepted candidate ${review.candidateSha} failed: ${args.error}\nInspect and repair only the reported operational condition. Once the same reviewed candidate is ready, call review_done to retry PM finalization. Do not ask the owner to re-tick acceptance or manually merge/push. Do not retry an unchanged failure or discard real unreviewed edits; use review_feedback for substantive corrections.`,
+          },
+        }] : []),
+      ],
     });
   });
   await drainWorkflowOutbox({ limit: 1 }).catch(() => {});

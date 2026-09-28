@@ -958,7 +958,7 @@ async function pmRunSettlementSlice() {
     assert(activeFlagged.status === 202, `flag_blocker must succeed (got ${activeFlagged.status}: ${JSON.stringify(activeFlagged.body)})`);
     assertActionResult(activeFlagged.body, "flag_blocker", "wait");
     await assertSettled("wf-assignee", activeBlockerGrant, "flag_blocker");
-    assert((await db.task.findUniqueOrThrow({ where: { id: task.id } })).alertReporter, "flag_blocker must set alertReporter");
+    assert(!(await db.task.findUniqueOrThrow({ where: { id: task.id } })).alertReporter, "permission blocker must await reviewer assessment before alerting the reporter");
     const formalBlocker = await db.activityLog.findFirstOrThrow({
       where: { taskId: task.id, kind: "task.blocker" },
       orderBy: { createdAt: "desc" },

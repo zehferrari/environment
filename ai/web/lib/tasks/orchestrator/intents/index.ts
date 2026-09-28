@@ -3,7 +3,6 @@ import { createStandingAuthorizationForApprovedPlan, validateStandingAuthorizati
 import { createReviewFindingChecklist } from "@/lib/tasks/review-findings";
 import { deferAcceptanceCheckExecutor } from "./defer-acceptance-check";
 import { reviewPermissionExecutor } from "./review-permission";
-import { permissionRequiresOwner } from "@/lib/tasks/permission-review";
 import { isReviewerCheckpointAuthorization } from "@/lib/tasks/reviewer-checkpoint-authorization";
 import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { canRetryAcceptedRepositoryReview } from "@/lib/tasks/repository-finalization";
@@ -84,6 +83,22 @@ async function createDomainActivity(
 }
 
 const submitPlanExecutor: IntentExecutor<"submit_plan"> = async (context) => {
+  if (context.command.actor.kind === "agent") {
+    const previous = await context.tx.actionPlan.findUnique({ where: { taskId: context.command.taskId },
+      select: { steps: { select: { stepId: true, responsibleActor: true } } } });
+    const previousOwnerSteps = new Set(previous?.steps.filter(s => s.responsibleActor === "owner").map(s => s.stepId));
+    const newOwnerSteps = context.command.payload.actionPlan.steps.filter(s => s.responsibleActor === "owner" && !previousOwnerSteps.has(s.id));
+    if (previous?.steps.some(s => s.responsibleActor === "reviewer") && newOwnerSteps.length) {
+      const commentId = context.command.payload.actionPlan.ownerInstructionCommentId;
+      const instruction = commentId ? await context.tx.comment.findFirst({ where: {
+        id: commentId, taskId: context.command.taskId, deletedAt: null,
+        user: { kind: "human", isOwner: true, status: "active" },
+      }, select: { id: true } }) : null;
+      if (!instruction) return { status: "invalid", domainCode: "invalid_payload",
+        reason: "Agent verification cannot be reassigned to the owner without an explicit owner task instruction (actionPlan.ownerInstructionCommentId). Keep it with the reviewer and resolve the access blocker; a tool-policy denial is not owner acceptance.",
+      };
+    }
+  }
   const plan = await persistActionPlan({
     taskId: context.command.taskId,
     input: context.command.payload.actionPlan,
@@ -691,15 +706,17 @@ const raiseBlockerExecutor: IntentExecutor<"raise_blocker"> = async (context) =>
     permissionRequest,
     blockerReport: report,
   });
-  const reviewer = context.state.resolvedReviewOwnerId && context.state.resolvedReviewOwnerId !== context.state.assigneeId
-    ? await context.tx.user.findFirst({ where: { id: context.state.resolvedReviewOwnerId, status: "active" }, select: { id: true } }) : null;
+  const reviewerId = context.state.resolvedPermissionReviewerId;
   await context.tx.task.update({
     where: { id: context.command.taskId },
-    data: { alertReporter: !permissionRequest || permissionRequiresOwner(permissionRequest.context) || !reviewer },
+    // The reviewer assesses even requests that may need escalation. Do not
+    // simultaneously ask the owner before that assessment has happened.
+    data: { alertReporter: !permissionRequest || !reviewerId || reviewerId === context.state.reporterId
+      || context.state.alertReporter },
   });
   context.decision.effects = context.decision.effects.map(effect => effect.type === "task_notification" ? {
     ...effect, key: `${effect.key}:blocker:${comment.id}`,
-    payload: { ...effect.payload, ...(permissionRequest ? { targetUserId: reviewer?.id ?? context.state.reporterId } : {}), body: permissionRequest
+    payload: { ...effect.payload, ...(permissionRequest ? { targetUserId: reviewerId ?? context.state.reporterId } : {}), body: permissionRequest
       ? `Permission request ${comment.id}: ${permissionRequest.scope}. Read the current approved plan and request context. As reviewer, use review_permission to explicitly approve an in-scope non-production request, decline it, or escalate it to the reporter with your rationale. Do not ask the owner again for routine work within the approved scope. Missing context, scope changes, production, destructive or security-sensitive actions require escalation. Never self-approve.`
       : effect.payload.body },
   } : effect);

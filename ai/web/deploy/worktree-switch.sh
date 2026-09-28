@@ -41,6 +41,7 @@ git_in() {
 
 KEY="${1:?usage: worktree-switch.sh <key> <branch|status|off|on>}"
 ACTION="${2:?usage: worktree-switch.sh <key> <branch|status|off|on>}"
+SOURCE_BRANCH="${3:-}" # Runner-selected existing local branch, never a new branch.
 [[ "$KEY" =~ ^[a-z0-9_-]+$ ]] || die "bad key '$KEY'"
 ENV_FILE="$ENV_DIR/$KEY.env"
 [[ -r "$ENV_FILE" ]] || die "no env file $ENV_FILE (install the project's contract first)"
@@ -61,12 +62,29 @@ flock -x 9
 
 # ---- resolve a target argument to an absolute worktree root ---------------
 resolve_worktree() {
-  local t="$1" p
+  local t="$1" p name expected common repo_common
+  if [[ -n "$SOURCE_BRANCH" ]]; then
+    git_in "$REPO" check-ref-format --branch "$SOURCE_BRANCH" >/dev/null || die "invalid branch"
+    git_in "$REPO" show-ref --verify --quiet "refs/heads/$SOURCE_BRANCH" || die "local branch no longer exists: $SOURCE_BRANCH"
+    name="${SOURCE_BRANCH//\//_}"
+    case "$name" in on|off|status) name="preview-$name" ;; esac
+    [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "unsupported worktree name"
+    expected="$WT_ROOT/$name"
+    [[ "$t" == "$expected" ]] || die "branch/worktree target mismatch"
+    # A stale request must never adopt or replace a colliding path.
+    [[ ! -e "$expected" && ! -L "$expected" ]] || die "worktree target already exists; refresh the preview list"
+    log "Preparing worktree for $SOURCE_BRANCH …" >&2
+    git_in "$REPO" worktree add -- "$expected" "$SOURCE_BRANCH" >&2 || die "could not prepare worktree for $SOURCE_BRANCH"
+  fi
   if   [[ -d "$t" ]];            then p="$t"
   elif [[ -d "$WT_ROOT/$t" ]];   then p="$WT_ROOT/$t"
   else die "cannot resolve worktree '$t' (looked for ./$t and $WT_ROOT/$t)"; fi
   p="$(readlink -f "$p")" || die "worktree path does not resolve: $t"
-  [[ "$p" == "$WT_ROOT"/* || "$p" == "$WT_ROOT" ]] || die "refused: $p not under $WT_ROOT"
+  [[ "$p" == "$WT_ROOT"/* ]] || die "refused: $p not under $WT_ROOT"
+  [[ "$(git_in "$p" rev-parse --show-toplevel)" == "$p" && -f "$p/.git" ]] || die "not a registered linked worktree: $p"
+  common="$(git_in "$p" rev-parse --path-format=absolute --git-common-dir)"
+  repo_common="$(git_in "$REPO" rev-parse --path-format=absolute --git-common-dir)"
+  [[ "$(readlink -f "$common")" == "$(readlink -f "$repo_common")" ]] || die "worktree belongs to another repository"
   printf '%s\n' "$p"
 }
 
@@ -95,6 +113,17 @@ node_switch() {
   [[ -d "$app" ]] || die "app dir not found: $app"
   branch="$(branch_of "$wt")"; [[ -n "$branch" && "$branch" != "HEAD" ]] || die "cannot resolve branch for $wt"
   slug="${branch//\//_}"
+
+  # New preview worktrees share the configured runtime environment. Never
+  # overwrite a worktree's own configuration or copy secrets into source.
+  local shared_env="${PREVIEW_ENV_FILE:-$WT_ROOT/main/${APP_SUBDIR:+$APP_SUBDIR/}.env}"
+  if [[ ! -e "$app/.env" && ! -L "$app/.env" && -f "$shared_env" ]]; then
+    ln -s "$shared_env" "$app/.env"
+  fi
+  if [[ ! -d "$app/node_modules" ]]; then
+    log "Installing dependencies in $app …"
+    ( cd "$app" && pnpm install --frozen-lockfile )
+  fi
 
   db_url="-"
   if [[ "${DB_ENGINE:-none}" == "sqlite" ]]; then

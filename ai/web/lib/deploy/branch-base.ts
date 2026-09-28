@@ -3,6 +3,16 @@ import { promisify } from "node:util";
 
 const exec = promisify(execFile);
 
+/** A reopened task's recorded base can be its own unmerged candidate. Only
+ * the integration target can establish that an Epic child has nothing to merge. */
+export function isNoChangeReviewCandidate(args: {
+  createdCommit: boolean; baseSha: string | null | undefined; localSha: string | null;
+  dirty: boolean; epicChild: boolean; epicBaseSha: string | null;
+}) {
+  return Boolean(!args.createdCommit && args.baseSha && args.localSha === args.baseSha && !args.dirty &&
+    (!args.epicChild || args.localSha === args.epicBaseSha));
+}
+
 export type BranchBaseValidation = {
   ok: boolean;
   baseBranch: string;

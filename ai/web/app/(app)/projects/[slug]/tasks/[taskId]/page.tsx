@@ -1,5 +1,6 @@
 import TaskThinkingPanel from "@/components/task-thinking-panel";
 import { notFound } from "next/navigation";
+import Link from "next/link";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
 import {
@@ -26,7 +27,8 @@ import {
   activeFormalBlockersByTask,
   blockerPermissionGrantForComment,
 } from "@/lib/tasks/formal-blocker";
-import { permissionRequiresOwner, permissionReviewForComment } from "@/lib/tasks/permission-review";
+import { permissionReviewForComment } from "@/lib/tasks/permission-review";
+import { resolvePermissionReviewerId } from "@/lib/tasks/permission-reviewer";
 import { applyBlockerPermissionGrant } from "@/lib/tasks/blocker-permission-grant";
 import {
   createSubTaskItem,
@@ -954,7 +956,8 @@ export default async function TaskDetailPage({
     task.comments.map((comment) => ({ id: comment.id, taskId: task.id, createdAt: comment.createdAt })),
   ).get(task.id) ?? null;
   const permissionReviewDecision = activeFormalBlocker?.commentId ? permissionReviewForComment(allActivity, activeFormalBlocker.commentId) : null;
-  const permissionNeedsReporter = !resolveReviewOwnerId(task) || resolveReviewOwnerId(task) === task.assigneeId || permissionRequiresOwner(activeFormalBlocker?.permissionRequest?.context) || permissionReviewDecision?.decision === "escalate";
+  const permissionReviewerId = activeFormalBlocker?.permissionRequest ? await resolvePermissionReviewerId(task) : null;
+  const permissionNeedsReporter = !permissionReviewerId || permissionReviewerId === task.reporterId || permissionReviewDecision?.decision === "escalate";
   const activeBlockerPermissionGrant = activeFormalBlocker?.commentId
     ? blockerPermissionGrantForComment(allActivity, activeFormalBlocker.commentId)
     : null;
@@ -1727,6 +1730,13 @@ export default async function TaskDetailPage({
                         did about it. Sits above "Blocked by" because a blocked
                         task is a subset of "not executing". */}
                     {canSeeAgentContent ? <TaskExecutionStrip executionState={task.executionState} /> : null}
+                    {canSeeAgentContent && task.status === "Review" && task.reviewRuns.at(-1)?.status === "accepted_pending_owner" ? (
+                      <p role="status" className="rounded-lg border border-warn/30 bg-warn/5 p-3 text-caption">
+                        Code review accepted. Awaiting your acceptance of the remaining checks in{" "}
+                        <Link className="underline" href={`/projects/${slug}/tasks/${task.id}?tab=Sub-Tasks`}>Sub-Tasks</Link>.
+                        {" "}Click each checkbox when accepted; no evidence note is required.
+                      </p>
+                    ) : null}
 
                     {/* Multi-prerequisite editor (ENV-159 step 8).
                         Replaces the legacy single-value blockedById panel.
@@ -2022,7 +2032,7 @@ export default async function TaskDetailPage({
                 name="Sub-Tasks"
                 visible={experience.canViewProjectWorkflow}
               >
-                {task.reviewRuns.at(-1)?.status === "accepted_pending_owner" ? <p role="status" className="mb-4 rounded-lg border border-line p-3 text-caption">Review accepted for candidate {task.reviewRuns.at(-1)?.candidateSha.slice(0, 12)}. Record the pending owner checks below; PM will resume finalization using that recorded review.</p> : null}
+                {task.reviewRuns.at(-1)?.status === "accepted_pending_owner" ? <p role="status" className="mb-4 rounded-lg border border-line p-3 text-caption">Code review accepted for candidate {task.reviewRuns.at(-1)?.candidateSha.slice(0, 12)} — awaiting owner acceptance. Click each remaining owner check below when you accept it. No evidence note is required; PM will then finalize this recorded review.</p> : null}
                 <TaskChecklist
                   taskId={task.id}
                   projectSlug={slug}
@@ -2198,7 +2208,7 @@ export default async function TaskDetailPage({
                             <p className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-ok/30 bg-ok/10 px-3 py-2 text-caption font-semibold text-ok">
                               Permission granted — the assignee has been notified.
                             </p>
-                          ) : viewer.id === task.reporterId && (
+                          ) : permissionNeedsReporter && viewer.id === task.reporterId && (
                             activeFormalBlocker.permissionRequest.kind !== "publish_checkpoint" || viewer.canAccessOwnerFeatures
                           ) ? (
                             <form action={grantBlockerPermission} className="mt-2">
@@ -2209,7 +2219,7 @@ export default async function TaskDetailPage({
                                 type="submit"
                                 className="rounded-lg bg-crit px-control-x py-control-y text-caption font-semibold text-on-crit shadow-[var(--shadow-xs)] transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-crit/60"
                               >
-                                {permissionNeedsReporter ? "Grant requested permission" : "Approve now (reporter override)"}
+                                Grant requested permission
                               </button>
                             </form>
                           ) : (

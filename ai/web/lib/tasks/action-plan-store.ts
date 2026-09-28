@@ -28,6 +28,7 @@ export interface ActionPlanStepInput {
 export interface ActionPlanInput {
   summary: string;
   steps: ActionPlanStepInput[];
+  ownerInstructionCommentId?: string;
 }
 
 export interface PersistedActionPlan {
@@ -166,8 +167,12 @@ export function validateActionPlanInput(
     });
   }
 
+  if (raw.ownerInstructionCommentId !== undefined && (typeof raw.ownerInstructionCommentId !== "string" || !raw.ownerInstructionCommentId.trim() || raw.ownerInstructionCommentId.length > 100)) {
+    errors.push({ field: "ownerInstructionCommentId", message: "Must identify the owner's task instruction" });
+  }
   if (errors.length > 0) return { errors };
-  return { summary: (raw.summary as string).trim(), steps: validatedSteps };
+  return { summary: (raw.summary as string).trim(), steps: validatedSteps,
+    ...(typeof raw.ownerInstructionCommentId === "string" ? { ownerInstructionCommentId: raw.ownerInstructionCommentId.trim() } : {}) };
 }
 
 // ── Persist structured action plan ──────────────────────────────────────

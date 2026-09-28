@@ -39,8 +39,12 @@ async function main() {
   assert.equal((await progress()).subtaskReviewTotal,1);assert.equal((await progress()).subtaskReviewDone,0);
   await db.$transaction(tx=>createReviewFindingChecklist(tx,{taskId:task.id,reviewRunId:round3.id,candidateSha:'c',reviewerId:owner.id,findings:[findings[0]]}));
   counts=await progress();assert.equal(counts.subtaskImplTotal,1);assert.equal(counts.subtaskImplDone,0,'new feedback remains open even if same title was completed earlier');
+  await db.subTask.create({data:{taskId:task.id,text:'Owner editor acceptance',kind:'review',groupKey:'initial',responsibleActor:'owner'}});
+  await db.reviewRun.update({where:{id:round3.id},data:{status:'accepted_pending_owner'}});
+  assert.equal((await progress()).ownerAcceptancePending,true,'board distinguishes completed review from owner wait');
+  assert.equal((await progress()).subtaskReviewTotal,2,'initial owner checks stay visible during later review rounds');
   const privateCounts=activeChecklistProgress(await db.task.findUniqueOrThrow({where:{id:task.id},include:checklistProgressSelect}),true);
-  assert.ok(Object.values(privateCounts).every(value=>value===0),'customer-safe views still hide agent progress');
+  assert.ok(Object.values(privateCounts).every(value=>value===0 || value===false),'customer-safe views still hide agent progress');
   assert.equal(await db.subTask.count({where:{taskId:task.id,groupKey:'initial',completedAt:{not:null}}}),7,'original history retained');
   console.log('PASS active checklist groups: 7 initial → 1/3 feedback, repeated titles, fresh review progress, empty rounds, privacy and retained history');
  } finally {await db.$disconnect();await rm(root,{recursive:true,force:true});}

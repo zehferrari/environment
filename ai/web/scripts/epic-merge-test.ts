@@ -1,6 +1,6 @@
 import assert from "node:assert";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, chmodSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -338,6 +338,11 @@ async function main() {
     const candidateWt = join(root, "candidate-wt");
     git(cloneDir, "branch", "feat-candidate", "main");
     git(cloneDir, "worktree", "add", candidateWt, "feat-candidate");
+    mkdirSync(join(candidateWt, "public"), { recursive: true });
+    writeFileSync(join(candidateWt, "package.json"), JSON.stringify({ version: "1.0.0" }));
+    writeFileSync(join(candidateWt, "public/version.json"), JSON.stringify({ version: "1.0.0", commit: "abcdef0", builtAt: "2026-09-01T00:00:00.000Z" }));
+    git(candidateWt, "add", "package.json", "public/version.json");
+    git(candidateWt, "commit", "-m", "version generator fixture");
     const candidateSha = git(candidateWt, "rev-parse", "HEAD");
     let candidate = await inspectValidatedCandidateWorktree({
       worktreePath: candidateWt,
@@ -345,6 +350,29 @@ async function main() {
       candidateSha,
     });
     assert(candidate.ok, "the exact clean reviewed candidate must pass the finalization fence");
+
+    const versionFile = join(candidateWt, "public/version.json");
+    const generated = { version: "1.0.0", commit: candidateSha.slice(0, 7), builtAt: "2026-09-28T00:00:00.000Z" };
+    const inspect = () => inspectValidatedCandidateWorktree({ worktreePath: candidateWt, taskBranch: "feat-candidate", candidateSha });
+    writeFileSync(versionFile, JSON.stringify(generated));
+    assert((await inspect()).ok, "a build stamp for this exact candidate must not strand finalization");
+    assert.equal(readFileSync(versionFile, "utf8"), JSON.stringify(generated), "inspection must not mutate the worktree");
+    git(candidateWt, "add", "public/version.json");
+    assert(!(await inspect()).ok, "staged metadata is unreviewed work");
+    git(candidateWt, "reset", "HEAD", "--", "public/version.json");
+    for (const invalid of [ { ...generated, version: "2.0.0" }, { ...generated, commit: "fffffff" }, { ...generated, builtAt: "invalid" }, { ...generated, extra: true } ]) {
+      writeFileSync(versionFile, JSON.stringify(invalid));
+      assert(!(await inspect()).ok, "arbitrary edits at the generated path must be rejected");
+    }
+    writeFileSync(versionFile, JSON.stringify(generated));
+    chmodSync(versionFile, 0o755);
+    assert(!(await inspect()).ok, "mode changes must be rejected");
+    chmodSync(versionFile, 0o644);
+    rmSync(versionFile);
+    symlinkSync("../package.json", versionFile);
+    assert(!(await inspect()).ok, "symlinks must be rejected");
+    rmSync(versionFile);
+    writeFileSync(versionFile, JSON.stringify(generated));
 
     writeFileSync(join(candidateWt, "unreviewed.txt"), "dirty\n");
     candidate = await inspectValidatedCandidateWorktree({
@@ -354,6 +382,7 @@ async function main() {
     });
     assert(!candidate.ok && /changed after review validation/i.test(candidate.reason), "dirty work must invalidate review");
     git(candidateWt, "clean", "-f");
+    git(candidateWt, "restore", "public/version.json");
 
     git(candidateWt, "commit", "--allow-empty", "-m", "unreviewed candidate");
     candidate = await inspectValidatedCandidateWorktree({

@@ -94,7 +94,7 @@ export async function requestWorktreeSwitch(
   if (!wt) throw new Error(`Unknown worktree: ${target}`);
   const rebuild = Boolean(opts.rebuild && wt.served && state.siteActive);
   if (wt.served && state.siteActive && !rebuild) throw new Error(`${wt.name} is already live.`);
-  if (!wt.ready) {
+  if (!wt.ready && !wt.canPrepare) {
     throw new Error(`${wt.name} has no node_modules — run 'pnpm install' in its app dir first.`);
   }
 
@@ -155,7 +155,7 @@ export async function requestLocalWorktreeRemoval(
 
   const normalizedTarget = target.trim();
   const worktree = displayWorktreesForRepo(state.worktrees, repoKey).find((item) => item.name === normalizedTarget);
-  if (!worktree || !isLinkedWorktreePath(worktree.path) || !pathIsInside(project.worktreesRoot, worktree.path)) {
+  if (!worktree || worktree.needsWorktree || !isLinkedWorktreePath(worktree.path) || !pathIsInside(project.worktreesRoot, worktree.path)) {
     throw new Error("Unknown managed local worktree.");
   }
   if (worktree.served || (state.served && path.resolve(worktree.path) === path.resolve(state.served))) {

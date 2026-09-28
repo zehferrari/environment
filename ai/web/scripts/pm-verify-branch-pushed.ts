@@ -33,6 +33,7 @@ import {
 import path from "node:path";
 import { promisify } from "node:util";
 import { db } from "@/lib/db";
+import { isNoChangeReviewCandidate } from "@/lib/deploy/branch-base";
 import {
   BRANCH_VERIFY_DIR,
   enqueueBranchVerifyJob,
@@ -1330,13 +1331,11 @@ async function main() {
   const branchSynced = epicMode
     ? !state.remoteSha
     : !state.localSha || !state.remoteSha || state.localSha === state.remoteSha;
-  const noChangeCandidate = Boolean(
-    !commitResult.created &&
-    job.baseSha &&
-    state.localSha === job.baseSha &&
-    !state.dirtyStatus &&
-    !state.dirtyError,
-  );
+  const noChangeCandidate = isNoChangeReviewCandidate({
+    createdCommit: commitResult.created, baseSha: job.baseSha, localSha: state.localSha,
+    dirty: Boolean(state.dirtyStatus || state.dirtyError), epicChild: epicMode,
+    epicBaseSha: baseValidation.originBaseSha,
+  });
   const gitVerifiedOk =
     !fetchError &&
     !logError &&

@@ -30,6 +30,7 @@ import { activeFormalBlockerStatesByTask } from "@/lib/tasks/formal-blocker";
 import { effectiveTaskBranchName } from "@/lib/work-items/branches";
 import { findInProgressStartConflict } from "@/lib/tasks/start-conflict";
 import { acceptanceChecklistSnapshot } from "@/lib/tasks/acceptance";
+import { resolvePermissionReviewerId } from "@/lib/tasks/permission-reviewer";
 
 // ---------------------------------------------------------------------------
 // FENCE_ERROR_CODES — local declaration, structurally assignable to 02a's
@@ -618,6 +619,7 @@ async function loadTaskAggregateWithClient(
     approvedById: task.approvedById,
     activeWorkflowCycleId: task.activeWorkflowCycleId,
     resolvedReviewOwnerId,
+    resolvedPermissionReviewerId: await resolvePermissionReviewerId(task, client),
 
     // Extended task fields
     rank: task.rank,

@@ -362,6 +362,20 @@ assertEqual(
   assertEqual(findings.length, 0, "a genuine external blocker is waiting on purpose");
 }
 
+// A reopened plan exists, but still needs an assignee submission.
+for (const status of ["To Do", "Backlog"]) {
+  const pending = task({ status, approvedOn: null, planStatus: "revision_required", planVersion: 1 });
+  const detect = (runs: WatchdogRunRecord[] = [], continuations: WatchdogContinuationRecord[] = []) =>
+    detectWatchdogFindings(snapshot({ tasks: [pending], runs, continuations }))
+      .filter(f => f.detectorId === "assigned_todo_plan_missing");
+  assertEqual(detect()[0]?.reasonCode, "action_plan_revision_pending", `${status}: detect the missing revision despite an existing plan`);
+  assertEqual(detect()[0]?.repair, "request_plan", "recovery requests assignee submission");
+  assertEqual(detect([run()]).length, 0, "a live planning turn prevents duplicate recovery");
+  assertEqual(detect([], [continuation()]).length, 0, "scheduled continuation prevents duplicate recovery");
+  const submitted = detectWatchdogFindings(snapshot({ tasks: [{ ...pending, planStatus: "draft" }] }));
+  assert(!submitted.some(f => f.repair === "request_plan"), "submitted draft belongs to the reviewer");
+}
+
 // ------------------------------------------------------------------
 // 3 — start happened, nothing followed
 // ------------------------------------------------------------------

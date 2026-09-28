@@ -1995,6 +1995,9 @@ async function executeFinalizeJob(
       }
       return { taskId: task.id, outcome: "operational-error" as const, reason, attempt };
     }
+    await recordTaskReviewOperationalError({
+      taskId: task.id, actor, error: reason, preserveValidationOutcome: true,
+    });
     await db.comment.create({
       data: {
         taskId: task.id,

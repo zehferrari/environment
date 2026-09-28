@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { rm, realpath } from "node:fs/promises";
+import { rm, realpath, readFile, lstat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -56,6 +56,27 @@ export type ValidatedCandidateWorktreeInspection =
   | { ok: true; sha: string }
   | { ok: false; reason: string };
 
+// WDT builds regenerate this tracked metadata file. Accept only the exact
+// generator shape for this candidate, never arbitrary edits to the same path.
+async function hasOnlyGeneratedVersionChange(worktree: string, head: string, dirty: string) {
+  if (dirty !== "M public/version.json") return false;
+  try {
+    if (await git(worktree, ["diff", "--cached", "--name-only"])) return false;
+    const raw = await git(worktree, ["diff", "--raw", "--", "public/version.json"]);
+    if (!raw.startsWith(":100644 100644 ")) return false;
+    const file = join(worktree, "public/version.json");
+    if (!(await lstat(file)).isFile()) return false;
+    const current = JSON.parse(await readFile(file, "utf8"));
+    const previous = JSON.parse(await git(worktree, ["show", `${head}:public/version.json`]));
+    const pkg = JSON.parse(await git(worktree, ["show", `${head}:package.json`]));
+    const shape = (v: Record<string, unknown>) => v && !Array.isArray(v) &&
+      Object.keys(v).sort().join(",") === "builtAt,commit,version";
+    return Boolean(shape(current) && shape(previous) && current.version === pkg.version &&
+      typeof current.commit === "string" && /^[0-9a-f]{7,40}$/.test(current.commit) && head.startsWith(current.commit) &&
+      typeof current.builtAt === "string" && !Number.isNaN(Date.parse(current.builtAt)));
+  } catch { return false; }
+}
+
 // A review approves one exact commit in one registered task worktree. This
 // check belongs next to the Git primitives so every finalizer can apply the
 // same last-moment fence before it mutates an Epic or remote branch.
@@ -70,7 +91,7 @@ export async function inspectValidatedCandidateWorktree(args: {
       git(args.worktreePath, ["rev-parse", "HEAD"]),
       git(args.worktreePath, ["branch", "--show-current"]),
     ]);
-    if (dirty) {
+    if (dirty && !await hasOnlyGeneratedVersionChange(args.worktreePath, head, dirty)) {
       return {
         ok: false,
         reason: "The task worktree changed after review validation. Commit and validate the new candidate before finalization.",

@@ -227,7 +227,7 @@ export default function WorktreeSwitcher({
                   ) : null}
                   {!w.ready ? (
                     <span className="rounded-full bg-warn/15 px-2 py-0.5 text-nano font-semibold uppercase tracking-wider text-warn">
-                      needs install
+                      {w.needsWorktree ? "branch" : "needs install"}
                     </span>
                   ) : null}
                 </div>
@@ -239,12 +239,12 @@ export default function WorktreeSwitcher({
                 <button
                   type="button"
                   onClick={() => serve(w.name, live)}
-                  disabled={busy || !w.ready}
+                  disabled={busy || (!w.ready && !w.canPrepare)}
                   className="rounded-lg border border-line px-control-x py-control-y text-body font-medium text-text hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-line disabled:hover:text-text"
                 >
-                  {live ? "Rebuild live" : "Serve live"}
+                  {live ? "Rebuild live" : w.needsWorktree ? "Create & serve" : "Serve live"}
                 </button>
-                {canRemove && !w.served && !protectedBranchNames.has(w.branch.toLowerCase()) ? (
+                {canRemove && !w.needsWorktree && !w.served && !protectedBranchNames.has(w.branch.toLowerCase()) ? (
                   <button
                     type="button"
                     onClick={() => setRemoveTarget(w)}
@@ -261,7 +261,8 @@ export default function WorktreeSwitcher({
         })}
       </ul>
       <p className="text-caption text-text-muted">
-        Builds the chosen worktree and points the live site at it, or rebuilds
+        Creates the worktree and installs dependencies when needed, then builds
+        and points the live site at it, or rebuilds
         the current live worktree (≈1–2 min; the site restarts, so it briefly
         blips).{" "}
         {branchDatabases

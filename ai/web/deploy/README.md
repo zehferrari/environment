@@ -100,6 +100,22 @@ the update. The installers also create root-owned operation locks under
 Generic project spools are private to the runner and the configured PM web
 user (`PM_WEB_USER`, default `karen`) through ACLs.
 
+Generic project previews also list local Git branches that do not yet have a
+worktree, including integration branches for Epics that are still In Progress.
+**Create & serve** creates a registered checkout of that existing branch under
+the project's worktree root, then follows the normal build/switch flow. No Epic
+completion or acceptance is required. Branches already checked out elsewhere,
+colliding paths, and unsupported worktree names are excluded. Merely opening
+the selector does not create a checkout or change the live site.
+
+For Node projects, missing dependencies are installed with `pnpm install
+--frozen-lockfile`. If the checkout has no `.env`, the switcher links
+`PREVIEW_ENV_FILE` (defaults to the main worktree's app `.env`) without replacing
+existing configuration. SQLite migrations/builds still use the branch's own
+database. A failed preparation/build leaves the previous live target selected.
+Run `pnpm test:worktree-preview` to exercise inventory, preparation, retry, and
+path guards in temporary repositories.
+
 If a switch or local removal reports `WORKTREE_LOCK_FILE missing`, the generic
 stack was only partially upgraded: the helper is newer than that project's env
 contract, and the operation lock may not exist. Do not retry the removal until

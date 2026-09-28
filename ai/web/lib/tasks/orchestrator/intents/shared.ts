@@ -244,7 +244,7 @@ export async function executeDecisionWrites(args: {
           aggregateVersion: workflowVersion, workflowCycleId: cycleId,
           effects: owners.map(owner => ({ type: "task_notification" as const, key: `owner-acceptance:${lease.id}:${owner.id}`, payload: {
             taskId: command.taskId, targetUserId: owner.id, actor: command.actor, reason: "owner_acceptance_required",
-            body: "The reviewer accepted the current candidate. Complete the remaining owner acceptance checks with observed evidence to let PM finalize this recorded verdict.",
+            body: "Code review is accepted. Open the task checklist and click each remaining owner check when you accept it. No evidence note is required; PM then finalizes the recorded verdict.",
           } })),
         });
       }

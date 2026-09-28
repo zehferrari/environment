@@ -187,6 +187,23 @@ def worktrees(served_root):
         w["ready"] = (not ready_marker) or os.path.isdir(os.path.join(w["path"], ready_marker))
         w["served"] = (w["path"] == served_root)
         w.setdefault("branch", "?")
+        w["canPrepare"] = DRIVER == "node-service"
+    # Integration branches can exist without a checkout while their Epic is
+    # still being built. Offer them too; creation happens only on Serve live.
+    attached = {w["branch"] for w in res}
+    names = {w["name"] for w in res}
+    refs = git(REPO, ["for-each-ref", "--format=%(refname:short) %(objectname:short=10)", "refs/heads/"], timeout=20)
+    for line in refs.stdout.splitlines():
+        branch, head = line.split(" ", 1)
+        name = branch.replace("/", "_")
+        if name in ("on", "off", "status"):
+            name = "preview-" + name
+        target = os.path.join(WT_ROOT, name)
+        if branch in attached or name in names or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name) or os.path.lexists(target):
+            continue
+        res.append({"path": target, "name": name, "branch": branch, "head": head,
+                    "ready": False, "served": False, "needsWorktree": True, "canPrepare": True})
+        names.add(name)
     return res
 
 
@@ -214,7 +231,7 @@ def write_state(job):
 
 def run_remove(req):
     target = str(req.get("target", "")).strip()
-    valid = {w["name"] for w in worktrees(None)}
+    valid = {w["name"] for w in worktrees(None) if not w.get("needsWorktree")}
     started = now()
     if target not in valid:
         return {"id": req["id"], "state": "error", "action": "remove", "target": target,
@@ -313,15 +330,18 @@ def run_action(req):
                 "updatedAt": now(), "log": ""}
 
     # switch
-    valid = {w["name"] for w in worktrees(None)} | {w["path"] for w in worktrees(None)}
-    if target not in valid:
+    selected = next((w for w in worktrees(None) if target in (w["name"], w["path"])), None)
+    if not selected:
         return {"id": req["id"], "state": "error", "action": "switch", "target": target,
                 "message": f"Unknown worktree: {target}", "startedAt": started,
                 "updatedAt": now(), "log": ""}
     write_state({"id": req["id"], "state": "building", "action": "switch", "target": target,
                  "message": f"Building & switching to {target}…", "startedAt": started,
                  "updatedAt": now(), "log": ""})
-    proc = subprocess.run([SWITCH_SCRIPT, KEY, target], capture_output=True, text=True)
+    command = [SWITCH_SCRIPT, KEY, selected["path"]]
+    if selected.get("needsWorktree"):
+        command.append(selected["branch"])
+    proc = subprocess.run(command, capture_output=True, text=True)
     tail = "\n".join(ANSI.sub("", (proc.stdout or "") + (proc.stderr or "")).splitlines()[-40:])
     if proc.returncode == 0:
         if DRIVER == "nginx-docroot":

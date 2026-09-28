@@ -976,7 +976,7 @@ async function main(): Promise<void> {
     // request is what this case replays through the real route.
     //
     // The contract being protected: raising a blocker pauses the work without
-    // ending the episode. Status holds, the reporter alert is raised, and the
+    // ending the episode. Status holds, the reviewer is notified first, and the
     // action classifies as `wait` — not `finish`, which would let a blocked
     // task look like a delivered one.
     // ------------------------------------------------------------------
@@ -1010,7 +1010,7 @@ async function main(): Promise<void> {
 
       const blocked = await readTaskProgress(db, seededTask.id);
       c.assertEqual(blocked.status, "In Progress", "a blocked task stays In Progress — Review is for finished work");
-      c.assertEqual(blocked.alertReporter, true, "the reporter alert is raised, so a human is actually woken");
+      c.assertEqual(blocked.alertReporter, false, "permission assessment goes to the reviewer before alerting the owner");
 
       const blockedState = await readRunState(db, { taskId: seededTask.id });
       const blockerRun = blockedState.runs.find((row) => row.messageId === turn.messageId);

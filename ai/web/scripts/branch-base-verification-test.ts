@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  isNoChangeReviewCandidate,
   fetchVerificationBase,
   fetchVerificationBranch,
   resolveEpicVerificationBase,
@@ -11,6 +12,13 @@ import {
   validateLocalBranchBase,
   validateOriginBase,
 } from "../lib/deploy/branch-base";
+
+const unchanged = { createdCommit: false, baseSha: "candidate", localSha: "candidate", dirty: false, epicChild: true, epicBaseSha: "older-epic" };
+assert.equal(isNoChangeReviewCandidate(unchanged), false, "plan revision must not discard unmerged Epic-child commits");
+assert.equal(isNoChangeReviewCandidate({ ...unchanged, epicBaseSha: "candidate" }), true);
+assert.equal(isNoChangeReviewCandidate({ ...unchanged, epicBaseSha: null }), false);
+assert.equal(isNoChangeReviewCandidate({ ...unchanged, epicChild: false }), true);
+assert.equal(isNoChangeReviewCandidate({ ...unchanged, epicBaseSha: "candidate", dirty: true }), false);
 
 function git(cwd: string, args: string[]) {
   return execFileSync("git", ["-C", cwd, ...args], {

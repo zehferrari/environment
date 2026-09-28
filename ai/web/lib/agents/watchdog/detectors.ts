@@ -358,14 +358,16 @@ const IN_PROGRESS_NO_ACTIVE_RUN: WatchdogDetector = {
 const ASSIGNED_TODO_PLAN_MISSING: WatchdogDetector = {
   id: "assigned_todo_plan_missing",
   statement:
-    "An assigned To Do task with no durable structured Action Plan gets a bounded plan-submission turn.",
+    "An assigned task with a missing or revision-required Action Plan gets a bounded plan-submission turn.",
   detect: (snapshot) => {
     const live = liveRunTaskIds(snapshot);
+    const scheduled = openContinuationTaskIds(snapshot);
     const findings: WatchdogFinding[] = [];
     for (const task of snapshot.tasks) {
-      if (task.status !== "To Do" || !task.assigneeSlug) continue;
-      if (task.approvedOn || task.hasActionPlan) continue;
-      if (live.has(task.id)) continue;
+      const revisionRequired = task.planStatus === "revision_required";
+      if (!(task.status === "To Do" || (revisionRequired && task.status === "Backlog")) || !task.assigneeSlug) continue;
+      if (task.approvedOn || (task.hasActionPlan && !revisionRequired)) continue;
+      if (live.has(task.id) || scheduled.has(task.id)) continue;
       if (idleSince(task, snapshot) < stallGrace(snapshot)) continue;
       findings.push({
         detectorId: "assigned_todo_plan_missing",
@@ -373,8 +375,9 @@ const ASSIGNED_TODO_PLAN_MISSING: WatchdogDetector = {
         runId: null,
         agentSlug: task.assigneeSlug,
         state: "stalled",
-        reasonCode: "structured_action_plan_missing",
-        reasonDetail: "the assigned task has no submitted structured Action Plan",
+        reasonCode: revisionRequired ? "action_plan_revision_pending" : "structured_action_plan_missing",
+        reasonDetail: revisionRequired ? "the assignee has not submitted the requested Action Plan revision"
+          : "the assigned task has no submitted structured Action Plan",
         repair: "request_plan",
         priority: 65,
       });

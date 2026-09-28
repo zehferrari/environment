@@ -890,6 +890,12 @@ exists), in both recent and full history modes. It contains `id`, `version`,
 clipped discussion history. Read it when an inline episode brief omits later
 steps; never reconstruct acceptance criteria from chat excerpts.
 
+When revising a reviewer plan to add owner acceptance checks, an agent must
+include `actionPlan.ownerInstructionCommentId`, referencing an active human
+owner's non-deleted instruction on this task. A browser/tool policy denial is
+an access blocker to resolve, not consent to transfer verification to the owner.
+Keep agent-verifiable checks with the reviewer or Epic manager.
+
 ### Execution checkpoint retrieval
 
 A task read with `history=full` includes `checkpoint` when the authenticated
@@ -910,12 +916,23 @@ and any grant. An independent reviewer uses `review_permission` with
 approved scope and a named non-production target. See the
 [V23-43 audit](audits/v23-43-reviewer-permissions-2026-09-23.md).
 
+Permission requests first notify the available independent task reviewer, with
+the acting Epic manager as fallback when the reviewer is missing, inactive or
+self-assigned. PM waits for that assessment before showing an owner grant
+request. Explicit escalation, or no available independent reviewer/manager,
+notifies the owner. This routing does not broaden what agents may authorize.
+
 `currentBlocker` also exposes non-permission decision/person blockers. The
 reviewer-only `defer_acceptance_check` action takes `blockerCommentId`,
-`subtaskId`, `actionPlanId`, `actionPlanVersion`, and `rationale`. It moves an
+`subtaskId`, `actionPlanId`, `actionPlanVersion`, and `rationale`, with optional
+`responsibleActor` (`reviewer` or `owner`). It moves an
 open approved-plan checklist item to final review while retaining the pending
 check. The approved scope must justify deferral; this never grants production
-permission or completes the check.
+permission or completes the check. Agent-verifiable checks default to the
+reviewer (acting Epic manager fallback); explicit owner requirements retain
+their owner. Use `owner` only for checks explicitly assigned to the owner or
+requiring human access/authorization. The human owner's checkbox is sufficient
+to record acceptance; extra evidence text is optional.
 
 
 ### Structured review corrections

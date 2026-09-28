@@ -1249,7 +1249,7 @@ export default async function EpicDetailPage({
                     {pendingReleaseChecks.length > 0 ? (
                       <div className="space-y-2 rounded-card border border-amber-500/40 bg-amber-500/[0.08] p-card text-caption">
                         <div className="font-semibold">Owner acceptance required for release</div>
-                        <p>Child Tasks can finish and integrate. These checks must have recorded evidence before this Epic can complete.</p>
+                        <p>Child Tasks can finish and integrate. Accept these checks on their Tasks before this Epic can complete.</p>
                         <ul className="list-disc space-y-1 pl-4">
                           {pendingReleaseChecks.map(check => <li key={check.id}>
                             <Link className="underline" href={`/projects/${slug}/tasks/${check.taskId}`}>

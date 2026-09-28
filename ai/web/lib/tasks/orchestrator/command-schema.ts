@@ -207,9 +207,11 @@ function validateSubmitPlan(raw: Record<string, unknown>): PayloadValidationResu
 
   const inReplyTo = optionalString(raw, "inReplyToMessageId", MAX_ID);
   if (!inReplyTo.ok) return fail("invalid_payload", inReplyTo.message);
+  const ownerInstruction = optionalString(ap, "ownerInstructionCommentId", MAX_ID);
+  if (!ownerInstruction.ok) return fail("invalid_payload", ownerInstruction.message);
 
   const payload: Record<string, unknown> = {
-    actionPlan: { summary: summary.value, steps },
+    actionPlan: { summary: summary.value, steps, ...(ownerInstruction.value ? { ownerInstructionCommentId: ownerInstruction.value } : {}) },
   };
   if (inReplyTo.value !== undefined) payload["inReplyToMessageId"] = inReplyTo.value;
   return ok(payload);
@@ -759,6 +761,7 @@ export function validateCommandPayload(
     case "request_review_changes": return validateRequestReviewChanges(raw);
     case "accept_review": return validateAcceptReview(raw);
     case "defer_acceptance_check": {
+      if (raw.responsibleActor !== undefined && !["reviewer", "owner"].includes(String(raw.responsibleActor))) return fail("invalid_payload", "responsibleActor must be reviewer or owner");
       const error = validatePermissionReview({ ...raw, decision: "escalate", planStepIds: [] });
       const subtask = requireString(raw, "subtaskId", MAX_ID);
       return error ? fail("invalid_payload", error) : !subtask.ok ? fail("invalid_payload", subtask.message) : ok(raw);

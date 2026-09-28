@@ -29,6 +29,8 @@ export type SwitchWorktree = {
   head: string;
   ready: boolean; // node_modules present -> buildable
   served: boolean;
+  needsWorktree?: boolean; // Existing local branch, checkout created on selection.
+  canPrepare?: boolean; // Runner can create the checkout/install dependencies.
 };
 
 export type SwitchJobState = "idle" | "queued" | "building" | "working" | "done" | "error";

@@ -11,14 +11,33 @@ import { obsoleteTaskNotificationReason, agentDeliveryOutcome, type Notification
 // Outbox delivery has different semantics from a direct agent wake: humans
 // use PM activity + optional Web Push, and deliberate no-ops never retry.
 export async function deliverTaskWorkflowNotification(
-  args: Parameters<typeof sendTaskWorkflowNotification>[0] & { dedupeKey: string; workflowCycleId?: string | null },
+  args: Parameters<typeof sendTaskWorkflowNotification>[0] & {
+    dedupeKey: string;
+    workflowCycleId?: string | null;
+    expectedPlanRevision?: { id: string; version: number };
+  },
 ): Promise<NotificationOutcome> {
   const task = await db.task.findUnique({
     where: { id: args.taskId },
-    select: { status: true, deletedAt: true, activeWorkflowCycleId: true, projectId: true, project: { select: { slug: true } } },
+    select: { status: true, deletedAt: true, archivedAt: true, approvedOn: true, assigneeId: true,
+      actionPlan: { select: { id: true, version: true, status: true } },
+      activeWorkflowCycleId: true, projectId: true, project: { select: { slug: true } } },
   });
-  if (!task || task.deletedAt) return { status: "skipped", reason: "task_removed" };
-  const obsolete = obsoleteTaskNotificationReason(args.reason, task.status, args.workflowCycleId, task.activeWorkflowCycleId);
+  if (!task || task.deletedAt || task.archivedAt) return { status: "skipped", reason: "task_removed" };
+  let deliveryCycleId = args.workflowCycleId;
+  if (args.expectedPlanRevision) {
+    const expected = args.expectedPlanRevision;
+    if (args.reason !== "action_plan_feedback_received" || task.approvedOn
+      || task.assigneeId !== args.targetUserId || task.actionPlan?.status !== "revision_required"
+      || task.actionPlan.id !== expected.id || task.actionPlan.version !== expected.version
+      || !["Backlog", "To Do"].includes(task.status)) {
+      return { status: "skipped", reason: "plan_revision_superseded" };
+    }
+    // Reopening a plan closes the execution cycle on purpose. This handoff
+    // belongs to the pending plan revision, not the execution cycle it ended.
+    deliveryCycleId = null;
+  }
+  const obsolete = obsoleteTaskNotificationReason(args.reason, task.status, deliveryCycleId, task.activeWorkflowCycleId);
   if (obsolete) return { status: "skipped", reason: obsolete };
   const target = await db.user.findUnique({
     where: { id: args.targetUserId },

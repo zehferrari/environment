@@ -220,6 +220,7 @@ export type WorkflowSubtaskKind = "implementation" | "review";
 export type SubmitPlanPayload = {
   actionPlan: {
     summary: string;
+    ownerInstructionCommentId?: string;
     steps: Array<{
       id: string;
       title: string;
@@ -525,7 +526,7 @@ interface IntentPayloadMap {
   submit_for_review: SubmitForReviewPayload;
   request_review_changes: RequestReviewChangesPayload;
   accept_review: AcceptReviewPayload;
-  defer_acceptance_check: { blockerCommentId: string; subtaskId: string; actionPlanId: string; actionPlanVersion: number; rationale: string };
+  defer_acceptance_check: { blockerCommentId: string; subtaskId: string; actionPlanId: string; actionPlanVersion: number; rationale: string; responsibleActor?: "reviewer" | "owner" };
   review_permission: PermissionReview;
   raise_blocker: RaiseBlockerPayload;
   clear_blocker: ClearBlockerPayload;
@@ -767,6 +768,7 @@ export type TaskStateSnapshot = {
   approvedById: string | null;
   activeWorkflowCycleId: string | null;
   resolvedReviewOwnerId: string | null;
+  resolvedPermissionReviewerId?: string | null;
   activeReviewRun?: {
     id: string;
     status: string;

@@ -84,10 +84,10 @@ The updated native tool description requires staging the PM channel plugin
 and restarting gateways during a later authorized rollout. The compact runtime
 and HTTP schema changes load with PM; no installation is performed here.
 
-Deployment is deferred at the operator's request. No `pm-switch`, gateway
-reinstallation, live workflow recovery or database mutation was performed by
-this change. Both fixes remain together on `fix/plan-review-handoff` in the
-`fix_plan-review-handoff` worktree.
+Deployment was initially deferred at the operator's request. The initial
+change performed no live workflow recovery. The operator subsequently merged
+`fix/plan-review-handoff`; merged main `b8d121d8` and the gateway tool description
+were deployed, and the local feature worktree was removed before this follow-up.
 
 ## False stalled board badges
 
@@ -126,10 +126,49 @@ a current run older than the history window, a deliberately tiny history cap,
 fresh heartbeats and leases, actual lease expiry, queued continuations after
 closed history, and board notifications when the stalled badge turns on/off.
 
+## Reopened-plan handoff follow-up
+
+At 01:08:52 UTC, Barekbaal requested a revision of the approved plan's s5
+verification requirements because PH-158/PH-152 tests were unavailable on the
+current base. Reopening correctly cleared approval, closed execution cycle
+`cmuetz5bn4iejovbycusxd109`, preserved work and returned PH-195 to To Do.
+The assignee notification `cmueu2xy24j3vovbyayneu04i` retained that cycle ID,
+so delivery skipped it as `workflow_cycle_superseded`. No revised plan was
+submitted. Subsequent reviewer notifications could not advance a plan still
+marked `revision_required`, and missing-plan recovery ignored existing plans.
+
+Revision notifications now carry the exact plan ID/version. Delivery rechecks
+that the same assignee still owns an unapproved, revision-required plan in
+Backlog/To Do before allowing this handoff across the closed execution cycle.
+Ordinary cycle fencing remains intact. The watchdog detects missing revisions
+and queues one durable recovery per revision and assignee. It preserves the
+plan, approval boundary and prior work, suppresses recovery during active work,
+and prevents stale reviewer wakes until the revised draft has been submitted.
+
+The active-plan regression now drains the actual cycle-closing outbox effect,
+checks the assignee's planning capability, submits revision 2 through the
+orchestrator, and observes its reviewer handoff. It also checks delivery replay,
+bounded recovery, assignment/version/approval/archive fences and preservation
+of completed evidence and owner acceptance requirements.
+
+The operator authorized this follow-up directly on `main`, a rebuild and an
+assignee wake. `pm-switch --database=main main` deployed the tested local changes
+at 01:47:13 UTC with the operational database and no pending migrations.
+Receipt: `2026-09-24T014713Z-main-b8d121d8338c.receipt` (9 dirty paths; this
+follow-up remains uncommitted). Backup:
+`/srv/Data/pm/backups/wt-main-before-revision-handoff-20260924T014425Z.db`.
+Public login and a hashed CSS asset returned 200; both PM services were active.
+The startup watchdog delivered recovery `cmuevg7x50006ovlxb8614ce4` to Barekbaal,
+run `db79d7f4-3580-4b3f-b11d-5d88cba36899`, with `submit_plan` capability.
+The explicit recovery check returned a no-op because that turn was already
+active; the run reached streaming and recorded tool activity. No plan approval
+or checklist completion was manufactured by the recovery.
+
 ## Validation
 
 - Full combined workflow gate: 71/71 suites passed.
 - TypeScript (`tsc --noEmit --incremental false`) passed.
 - ESLint passed for the changed JavaScript and TypeScript files.
-- `git diff --check` passed. Production behavior remains unverified until the
-  operator chooses to deploy these changes.
+- `git diff --check` passed. The production revision handoff reached active
+  assignee execution; the agent's eventual revised-plan decision is separate
+  from this deployment and recovery check.

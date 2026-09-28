@@ -1,6 +1,6 @@
 import type { IntentExecutor } from "./types";
 
-/** Reviewer judgment about phase, never evidence of completion or a production grant. */
+/** Reviewer judgment about phase and responsibility, never completion or a production grant. */
 export const deferAcceptanceCheckExecutor: IntentExecutor<"defer_acceptance_check"> = async context => {
   const { state, command, tx, decision } = context;
   const { blockerCommentId, subtaskId, actionPlanId, actionPlanVersion, rationale } = command.payload;
@@ -18,13 +18,23 @@ export const deferAcceptanceCheckExecutor: IntentExecutor<"defer_acceptance_chec
   }
   const duplicate = await tx.subTask.findFirst({ where: { taskId: state.id, kind: "review", groupKey: item.groupKey, text: item.text } });
   if (duplicate) return { status: "invalid", domainCode: "invalid_payload", reason: "A matching review check already exists; reconcile it explicitly before deferring." };
-  await tx.subTask.update({ where: { id: item.id }, data: { kind: "review" } });
-  const body = `Deferred to final acceptance, still open: ${item.text}\n\nReviewer assessment: ${rationale}\n\nThis changes the checklist phase only. The owner action remains pending; no production operation or completion is authorized.`;
+  // Moving verification to Review does not make it human work. Preserve an
+  // explicit owner requirement; otherwise the independent reviewer (including
+  // the Epic manager fallback) owns it unless a human-only check is identified.
+  const ownerRequired = item.responsibleActor === "owner" || item.actionPlanStep.responsibleActor === "owner";
+  const responsibleActor = command.payload.responsibleActor ?? (ownerRequired ? "owner" : "reviewer");
+  if (ownerRequired && responsibleActor !== "owner") return {
+    status: "invalid", domainCode: "invalid_payload", reason: "This check explicitly requires owner acceptance. Revise the approved requirement before delegating it.",
+  };
+  await tx.subTask.update({ where: { id: item.id }, data: {
+    kind: "review", responsibleActor, acceptanceGate: item.acceptanceGate,
+  } });
+  const body = `Deferred to final acceptance, still open: ${item.text}\n\nReviewer assessment: ${rationale}\n\nResponsible actor: ${responsibleActor === "owner" ? "owner" : "task reviewer or acting Epic manager"}. Acceptance remains pending; no production operation or completion is authorized.`;
   const comment = await tx.comment.create({ data: { taskId: state.id, userId: command.actor.id, body,
     authorAgentSlug: command.actor.kind === "agent" ? command.actor.username : null, commentKind: "workflow_action",
     runId: command.executionContext?.pmChannelRunId ?? null }, select: { id: true } });
   await tx.activityLog.create({ data: { projectId: state.projectId, taskId: state.id, userId: command.actor.id,
-    kind: "task.acceptance_check.deferred", payload: JSON.stringify({ ...command.payload, commentId: comment.id, completed: false, cycleId: state.activeCycle?.id }) } });
+    kind: "task.acceptance_check.deferred", payload: JSON.stringify({ ...command.payload, responsibleActor, commentId: comment.id, completed: false, cycleId: state.activeCycle?.id }) } });
   await tx.activityLog.create({ data: { projectId: state.projectId, taskId: state.id, userId: command.actor.id,
     kind: "task.blocker.cleared", payload: JSON.stringify({ blockerCommentId, commentId: comment.id, action: "acceptance_check_deferred", resolution: rationale }) } });
   await tx.task.update({ where: { id: state.id }, data: { alertReporter: false } });

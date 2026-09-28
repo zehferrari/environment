@@ -389,9 +389,10 @@ function buildPayload(
     }
 
     case "defer_acceptance_check": {
+      if (raw.responsibleActor !== undefined && !["reviewer", "owner"].includes(String(raw.responsibleActor))) return fail("invalid_payload", "responsibleActor must be reviewer or owner");
       const error = validatePermissionReview({ ...raw, decision: "escalate", planStepIds: [] });
       if (error || !getString(raw, "subtaskId")) return fail("invalid_payload", error ?? "subtaskId is required");
-      return { blockerCommentId: raw.blockerCommentId, subtaskId: raw.subtaskId, rationale: raw.rationale, actionPlanId: raw.actionPlanId, actionPlanVersion: raw.actionPlanVersion } as { blockerCommentId: string; subtaskId: string; rationale: string; actionPlanId: string; actionPlanVersion: number };
+      return { blockerCommentId: raw.blockerCommentId, subtaskId: raw.subtaskId, rationale: raw.rationale, actionPlanId: raw.actionPlanId, actionPlanVersion: raw.actionPlanVersion, ...(raw.responsibleActor !== undefined ? { responsibleActor: raw.responsibleActor } : {}) } as { blockerCommentId: string; subtaskId: string; rationale: string; actionPlanId: string; actionPlanVersion: number; responsibleActor?: "reviewer" | "owner" };
     }
     case "review_permission": {
       const error = validatePermissionReview(raw);

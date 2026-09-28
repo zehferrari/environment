@@ -532,6 +532,7 @@ async function sectionB(): Promise<void> {
         messageId: "effect-review-rollover",
         action: "episode_rollover",
         status: "queued",
+        availableAt: new Date(Date.now() - 1000),
       },
     });
     const reviewDrain = await drainPmChannelContinuations();

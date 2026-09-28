@@ -126,6 +126,13 @@ async function dispatch(row: OutboxRow) {
     return;
   }
   if (row.effectType === "task_notification") {
+    let expectedPlanRevision: { id: string; version: number } | undefined;
+    if (payload.expectedPlanRevision !== undefined) {
+      const expected = payload.expectedPlanRevision as { id?: unknown; version?: unknown } | null;
+      if (!expected || typeof expected.id !== "string" || typeof expected.version !== "number"
+        || !Number.isInteger(expected.version)) throw new TerminalWorkflowEffectError("Invalid plan revision notification scope.");
+      expectedPlanRevision = { id: expected.id, version: expected.version };
+    }
     // Recovery belongs to the exact pending review, not a replacement plan or
     // a reassigned reviewer that happens to occupy the same Backlog task.
     if (payload.expectedActionPlan && typeof payload.expectedActionPlan === "object") {
@@ -157,6 +164,7 @@ async function dispatch(row: OutboxRow) {
       body: String(payload.body),
       dedupeKey: row.dedupeKey,
       workflowCycleId: row.workflowCycleId,
+      expectedPlanRevision,
     });
     if (delivered.status === "permanent_failure") throw new TerminalWorkflowEffectError(delivered.error);
     if (delivered.status === "retryable_failure") throw new Error(delivered.error);

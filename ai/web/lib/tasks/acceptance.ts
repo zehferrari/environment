@@ -30,5 +30,5 @@ export async function openEpicReleaseChecks(client: Client, epicId: string) {
 
 export async function assertEpicReleaseChecksComplete(client: Client, epicId: string) {
   const pending = await openEpicReleaseChecks(client, epicId);
-  if (pending.length) throw new Error(`[owner_acceptance_pending] Epic release requires ${pending.length} acceptance check(s): ${pending.map(c => `${c.task.workItemKey ?? c.task.title}: ${c.text}`).join("; ")}. Record the responsible owner's evidence on each Task.`);
+  if (pending.length) throw new Error(`[owner_acceptance_pending] Epic release requires ${pending.length} acceptance check(s): ${pending.map(c => `${c.task.workItemKey ?? c.task.title}: ${c.text}`).join("; ")}. The responsible owner must accept each check on its Task.`);
 }

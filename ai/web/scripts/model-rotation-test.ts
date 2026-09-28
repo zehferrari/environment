@@ -31,7 +31,7 @@ async function main() {
   await mkdir(path.join(root, "test"));
   const file = path.join(root, "test/openclaw.json");
   const aux = { id: "google-workspace", model: "ollama/untouched" };
-  const cfg = { agents: { defaults: { model: { primary: base.defaultModel, fallbacks: base.fallbacks }, models: { "openai/old": { agentRuntime: { id: "codex" } } } }, list: [{ id: "main", model: { primary: base.active, fallbacks: base.fallbacks } }, aux] },
+  const cfg = { agents: { defaults: { model: { primary: base.defaultModel, fallbacks: base.fallbacks }, models: { "openai/old": { agentRuntime: { id: "codex" } } }, modelPolicy: { allow: ["openai/old", "ollama/*"] } }, list: [{ id: "main", model: { primary: base.active, fallbacks: base.fallbacks } }, aux] },
     models: { providers: { openai: { apiKey: "FAKE_SECRET", models: [{ id: "old", name: "old", contextWindow: 999, agentRuntime: { id: "codex" } }] } } }, unrelated: { secret: "KEEP_PRIVATE" } };
   await writeFile(file, JSON.stringify(cfg), { mode: 0o640 });
   const { db } = await import("../lib/db");
@@ -63,6 +63,7 @@ async function main() {
     assert.deepEqual(after.agents.defaults.model, { primary: "openai/new", fallbacks: rotated.after.fallbacks });
     assert.deepEqual(after.agents.list[0].model, after.agents.defaults.model);
     assert.deepEqual(after.agents.defaults.models["openai/new"].agentRuntime, { id: "codex" });
+    assert.deepEqual(after.agents.defaults.modelPolicy, { allow: ["openai/old", "ollama/*", "openai/new"] });
     assert.deepEqual(after.agents.list[1], aux);
     assert.deepEqual(after.unrelated, cfg.unrelated);
     assert.equal(after.models.providers.openai.apiKey, "FAKE_SECRET");
@@ -76,15 +77,16 @@ async function main() {
     assert.ok(!JSON.stringify(logs).includes("KEEP_PRIVATE"));
     await assert.rejects(promoteAgentModel("test", "openai", "third", preview.revision), /Config changed/);
     // Migrated keyed agents must change their actual override as well as defaults.
-    const keyed = { ...cfg, agents: { defaults: cfg.agents.defaults, entries: { main: cfg.agents.list[0], auxiliary: aux } } };
+    const keyed = { ...cfg, agents: { defaults: cfg.agents.defaults, entries: { main: { ...cfg.agents.list[0], modelPolicy: { allow: ["openai/*"] } }, auxiliary: aux } } };
     await writeFile(file, JSON.stringify(keyed));
     const keyedPreview = await previewAgentModelRotation("test", "openai", "new");
     await promoteAgentModel("test", "openai", "new", keyedPreview.revision);
     const keyedAfter = JSON.parse(await readFile(file, "utf8"));
     assert.deepEqual(keyedAfter.agents.entries.main.model, keyedAfter.agents.defaults.model);
+    assert.deepEqual(keyedAfter.agents.entries.main.modelPolicy, { allow: ["openai/*"] });
     assert.deepEqual(keyedAfter.agents.entries.auxiliary, aux);
     assert.equal(keyedAfter.agents.list, undefined);
-    console.log("PASS: provider rotation, no-op, namespaces, busy/stale/lock guards, config preservation, permissions, restart and audit redaction");
+    console.log("PASS: provider rotation, no-op, namespaces, busy/stale/lock guards, config preservation, model policy allowlist, permissions, restart and audit redaction");
   } finally { globalThis.fetch = originalFetch; await rm(root, { recursive: true, force: true }); await db.$disconnect(); }
 }
 main().catch((err) => { console.error(err); process.exitCode = 1; });

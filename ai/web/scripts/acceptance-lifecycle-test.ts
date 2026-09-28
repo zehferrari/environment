@@ -64,15 +64,17 @@ async function main() {
     assert.equal(await taskRecoveryWaitReason(f.task.id, "reviewer"), "accepted_review_awaits_owner_evidence");
     assert.equal(await db.workflowOutbox.count({ where: { taskId: f.task.id, effectType: "task_notification" } }), 1);
     for (const actor of [worker, reviewer, outsider]) await assert.rejects(setSubTaskCompletion({ subTaskId: f.check.id, completed: true, actorUserId: actor.id, completionEvidence: "Claimed evidence" }), /human owner/);
-    await assert.rejects(setSubTaskCompletion({ subTaskId: f.check.id, completed: true, actorUserId: owner.id }), /completionEvidence/);
     await assert.rejects(deleteSubTaskItem({ subTaskId: f.check.id, actorUserId: owner.id }), /cannot be deleted/);
-    await Promise.all([1, 2].map(() => setSubTaskCompletion({ subTaskId: f.check.id, completed: true, actorUserId: owner.id, completionEvidence: "Device A confirmed result at the reviewed candidate." })));
+    await Promise.all([undefined, ""].map(completionEvidence => setSubTaskCompletion({ subTaskId: f.check.id, completed: true, actorUserId: owner.id, completionEvidence })));
     assert.equal(await db.taskProcedureRun.count({ where: { taskId: f.task.id, type: "finalize_accepted_review" } }), 1);
     const accepted = await db.reviewRun.findUniqueOrThrow({ where: { id: f.review.id } });
     assert.equal(accepted.status, "accepted"); assert.equal(accepted.reviewerId, reviewer.id);
     await assert.rejects(setSubTaskCompletion({ subTaskId: f.check.id, completed: false, actorUserId: owner.id }), /accepted verdict/);
     const item = await db.subTask.findUniqueOrThrow({ where: { id: f.check.id } });
-    assert.equal(item.completedById, owner.id); assert.match(item.completionEvidence!, /Device A/);
+    assert.equal(item.completedById, owner.id); assert.ok(item.completedAt);
+    assert.equal(item.completionEvidence, null, "owner click records acceptance without inventing verification evidence");
+    assert.equal(await db.activityLog.count({ where: { taskId: f.task.id, kind: "task.subtask.complete", userId: owner.id } }), 1,
+      "duplicate owner clicks retain a single acceptance audit");
     const audit = await db.activityLog.findFirstOrThrow({ where: { taskId: f.task.id, kind: "task.review.owner_acceptance_completed" } });
     assert.equal(audit.userId, owner.id); assert.equal(JSON.parse(audit.payload!).reviewerId, reviewer.id);
     await import("@/lib/tasks/orchestrator/handlers");
@@ -99,7 +101,7 @@ async function main() {
     await assertEpicReleaseChecksComplete(db, epic.id);
     await db.$transaction(tx => resumeReviewAfterOwnerAcceptance(tx, { taskId: release.task.id, actorUserId: owner.id }));
     assert.equal(await db.taskProcedureRun.count({ where: { taskId: release.task.id } }), 1);
-    console.log("PASS conditional acceptance, owner-only evidence, concurrent completion, unchanged verdict, non-code finalization, stale plan/criteria/candidate and Epic release gate");
+    console.log("PASS conditional acceptance, owner checkbox acceptance without required evidence, concurrent completion, unchanged verdict, non-code finalization, stale plan/criteria/candidate and Epic release gate");
   } finally {
     await db.$disconnect();
     await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });

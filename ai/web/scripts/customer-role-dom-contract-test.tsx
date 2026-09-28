@@ -207,6 +207,7 @@ const customerBoard = renderToStaticMarkup(withNavigation(
       blockedByKeys: ["ENV-0"],
       executionState: "stalled",
       executionReason: "workflow dispatch stalled",
+      ownerAcceptancePending: true,
       hasActiveBlocker: true,
       activeBlockerCommentId: "comment-1",
       activeWorking: true,
@@ -217,7 +218,7 @@ const customerBoard = renderToStaticMarkup(withNavigation(
   />,
 ));
 assert.match(customerBoard, />Ready</, "Customer board renames the Review lane");
-assert.doesNotMatch(customerBoard, /Workflow board|>Review<|Attention|Backlog|Internal Agent|stalled|workflow dispatch|sub-tasks done|review topics|Unread|Move task to bin/, "Customer board DOM omits internal workflow copy, actors, checklists, blockers, and mutation nodes");
+assert.doesNotMatch(customerBoard, /Workflow board|>Review<|Attention|Backlog|Internal Agent|stalled|workflow dispatch|sub-tasks done|review topics|Unread|Move task to bin|Awaiting owner acceptance/, "Customer board DOM omits internal workflow copy, actors, checklists, blockers, and mutation nodes");
 assert.equal(customerSafeWorkflowLabel("Review", true), "Ready");
 
 for (const relative of [

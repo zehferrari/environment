@@ -45,6 +45,7 @@ type Task = {
   blockedByKeys: string[];
   executionState: string | null;
   executionReason: string | null;
+  ownerAcceptancePending?: boolean;
   hasActiveBlocker: boolean;
   activeBlockerCommentId: string | null;
   activeWorking: boolean;
@@ -94,6 +95,12 @@ const EXECUTION_BADGE_TONE: Record<string, string> = {
 
 function ExecutionBadge({ task }: { task: Task }) {
   if (task.status === "Done") return null;
+  if (task.status === "Review" && task.ownerAcceptancePending) return (
+    <span data-owner-acceptance-pending className="inline-flex shrink-0 rounded-md bg-warn/[0.07] px-1.5 py-0.5 text-micro font-semibold text-warn"
+      title="Code review is accepted. Open the task checklist and click the remaining owner checks when you accept them; no evidence note is required.">
+      Awaiting owner acceptance
+    </span>
+  );
   const tone = task.executionState ? EXECUTION_BADGE_TONE[task.executionState] : undefined;
   if (!task.executionState || !tone) return null;
   return (

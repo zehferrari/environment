@@ -68,6 +68,13 @@ It never resets PM tasks or resumes their work. Session-specific model overrides
 may still override a new configured default; inspect the effective model on a
 fresh turn when validating.
 
+OpenClaw 2026.9 migrated the legacy model map into `modelPolicy.allow`, which
+gates `/model`, session overrides and `--model` (configured defaults and
+fallbacks are not gated). When the defaults or main-agent policy has a
+non-empty list, promotion appends the new default unless an exact ref or
+`provider/*` wildcard already covers it. An empty or omitted list stays
+unrestricted.
+
 If the target already occurs in fallbacks, it is removed from that list as well
 as the original last fallback for the provider. The previous default is retained
 only once. With no fallback for that provider, the old default is added and no
@@ -86,9 +93,15 @@ Published IDs verified 10 September 2026:
 - [GPT-6 Astra](https://developers.openai.com/api/docs/models/gpt-6-astra): `gpt-6-astra`.
 - [Claude Fable 5.1](https://www.anthropic.com/claude/fable): `claude-fable-5-1`.
 - [Claude Opus](https://www.anthropic.com/claude/opus): current published Opus is `claude-opus-5`; no Opus 5.1 release confirmed.
+- Claude Opus 5.5: `claude-opus-5-5`, added 25 September 2026 after a live
+  request succeeded on Barekbaal's account.
 
 Barekbaal's original Claude Code 2.1.220 was rejected by the provider for Fable
 5.1 with a requirement for 2.1.251 or newer; upgrading the CLI is a prerequisite.
+Opus 5.5 likewise requires Claude Code 2.1.280 or newer; 2.1.267 received
+`400 Claude Code 2.1.267 does not support this model`. Such a rejection is not
+visible in chat: OpenClaw walks the fallback chain. Check
+`journalctl _UID=<uid> | grep model-fallback/decision` after any promotion.
 
 ## Effort by PM role
 
@@ -209,3 +222,20 @@ procedure. Do not build the currently served worktree without its immediate
 restart. Regression validation covers model rotation, effort selection,
 TypeScript/lint, PM runtime/lifecycle/transport, plugin compatibility and native
 task tools. The UI has not been deployed or browser-tested in production.
+
+## Opus 5.5 readiness — 25 September 2026
+
+- Barekbaal's primary `anthropic/claude-fable-5-1` was failing over to
+  `anthropic/claude-opus-5` on every turn: the Max subscription reported
+  "You've reached your Fable limit" (40 failed Fable attempts in 48 hours).
+- **Check available models** omitted Opus 5.5 because the suggestion lists
+  above are static for OAuth CLI accounts and predated its release.
+- Claude Code upgraded from 2.1.267 to 2.1.282 for Barekbaal. Tool-free
+  `claude -p` requests with OpenClaw's high-effort environment
+  (`--effort high|xhigh`, `CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1`,
+  `MAX_THINKING_TOKENS=16384`) succeeded on `claude-opus-5-5` and
+  `claude-opus-5-5[1m]`.
+- OpenClaw 2026.9.3 passes `claude-opus-5-5` through unchanged and applies its
+  Opus 5 effort profile. No explicit capability metadata is required.
+- The model promotion itself and a gateway-turn verification were not performed
+  in this record.

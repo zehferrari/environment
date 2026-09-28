@@ -21,6 +21,7 @@ import { db } from "@/lib/db";
 import { intEnv } from "@/lib/agents/context/caps";
 import { armPmChannelContinuations } from "@/lib/agents/pm-channel/continuations";
 import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
+import { enqueueWorkflowEffects } from "@/lib/tasks/transition-kernel";
 import type { WatchdogFinding } from "@/lib/agents/watchdog/detectors";
 import { readRecoveryBlocker, recoveryPermissionWaitReason } from "@/lib/tasks/recovery-permission";
 import { ACTIVE_RUN_STATUSES } from "@/lib/workflow-invariants";
@@ -346,26 +347,56 @@ export async function requestMissingActionPlan(args: {
     select: {
       id: true,
       title: true,
+      projectId: true,
       status: true,
       approvedOn: true,
       assigneeId: true,
       deletedAt: true,
-      actionPlan: { select: { id: true } },
+      archivedAt: true,
+      actionPlan: { select: { id: true, version: true, status: true } },
       assignee: { select: { agent: { select: { slug: true } } } },
     },
   });
   if (
     !task ||
     task.deletedAt ||
-    task.status !== "To Do" ||
+    task.archivedAt ||
+    !(task.status === "To Do" || (task.status === "Backlog" && task.actionPlan?.status === "revision_required")) ||
     task.approvedOn ||
-    task.actionPlan ||
+    (task.actionPlan && task.actionPlan.status !== "revision_required") ||
     !task.assigneeId
   ) {
     return { outcome: "noop", recoveryAction: null };
   }
   const slug = task.assignee?.agent?.slug;
   if (!slug) return { outcome: "noop", recoveryAction: null };
+
+  if (task.actionPlan?.status === "revision_required") {
+    // Bound recovery to one durable handoff per revision and assignee. The
+    // delivery boundary rechecks this scope before waking anyone.
+    if (await db.pmChannelRun.findFirst({ where: { taskId: task.id, status: { in: [...ACTIVE_RUN_STATUSES] } }, select: { id: true } })) {
+      return { outcome: "noop", recoveryAction: null };
+    }
+    const key = `plan-revision-recovery:${task.actionPlan.id}:${task.actionPlan.version}:${task.assigneeId}`;
+    if (await db.workflowOutbox.findUnique({ where: { dedupeKey: `${task.id}:v0:${key}` }, select: { id: true } })) {
+      return { outcome: "noop", recoveryAction: null };
+    }
+    await enqueueWorkflowEffects(db, {
+      taskId: task.id, projectId: task.projectId, aggregateVersion: 0,
+      effects: [{ type: "task_notification", key, payload: {
+        taskId: task.id, targetUserId: task.assigneeId,
+        actor: { id: task.assigneeId, kind: "agent", username: slug },
+        reason: "action_plan_feedback_received",
+        expectedPlanRevision: { id: task.actionPlan.id, version: task.actionPlan.version },
+        body: [
+          `PM recovered the pending Action Plan revision for "${task.title}".`,
+          "Read the current plan and the revision request, then call submit_plan with the complete revised plan. Preserve unchanged steps, verified evidence and completed work; keep unperformed owner acceptance checks pending.",
+          "After submission, stop for independent review and approval. Do not restart implementation or approve the plan yourself.",
+        ].join("\n"),
+      } }],
+    });
+    return { outcome: "repaired", recoveryAction: "Action Plan revision requested" };
+  }
 
   const notification = await sendTaskWorkflowNotification({
     taskId: task.id,

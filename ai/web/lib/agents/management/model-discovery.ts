@@ -3,11 +3,12 @@ import { configPath, readAgentModelSettings, type OpenClawConfig } from "./model
 
 // Published IDs are suggestions, never evidence of account entitlement.
 // Verified 2026-09-10: developers.openai.com/api/docs/models/gpt-6-astra,
-// anthropic.com/claude/fable and anthropic.com/claude/opus.
+// anthropic.com/claude/fable and anthropic.com/claude/opus. claude-opus-5-5
+// added 2026-09-25 (live request; Claude Code 2.1.280+ required).
 const published: Record<string, string[]> = {
   openai: ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"],
-  "claude-cli": ["claude-fable-5-1", "claude-opus-5", "claude-fable-5"],
-  anthropic: ["claude-fable-5-1", "claude-opus-5", "claude-fable-5"],
+  "claude-cli": ["claude-opus-5-5", "claude-fable-5-1", "claude-opus-5", "claude-fable-5"],
+  anthropic: ["claude-opus-5-5", "claude-fable-5-1", "claude-opus-5", "claude-fable-5"],
 };
 
 export async function discoverAgentModels(agent: string, provider: string) {
@@ -18,7 +19,7 @@ export async function discoverAgentModels(agent: string, provider: string) {
   const configured = settings.available.filter((m) => m.id.startsWith(`${provider}/`));
   const models = new Map(configured.map((m) => [m.id, { ...m, configured: true }]));
   let source: "live" | "published-and-configured" = "published-and-configured";
-  let note = "Published suggestions last checked 10 September 2026; account access is unverified. You can enter an exact model ID.";
+  let note = "Published suggestions last checked 25 September 2026; account access is unverified. You can enter an exact model ID.";
   let ids = published[provider] ?? [];
   try {
     const key = cfg.models?.providers?.[provider]?.apiKey;

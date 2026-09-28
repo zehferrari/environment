@@ -10,7 +10,7 @@ const initial = [
  {id:'b',text:'Correction 7: Reconcile paid totals',completedAt:null,kind:'implementation'},
  {id:'a',text:'Correction 1: Reconcile paid totals',completedAt:null,kind:'implementation'},
  {id:'d',text:'Correction 2: Verify supported cards',completedAt:'2026-09-23T02:30:00Z',kind:'implementation'},
- {id:'review',text:'Final owner acceptance',completedAt:null,kind:'review'},
+ {id:'review',text:'Final owner acceptance',completedAt:null,kind:'review',responsibleActor:'owner',canComplete:true},
 ].map(item=>({...item,minutesSpent:null,reviewFinding:findings.find(f=>f.id===item.id) ?? null}));
 function App(){
  const [items,setItems]=useState(initial);

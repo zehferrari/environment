@@ -12,13 +12,16 @@ import { queueAgentRestart } from "@/lib/agents/ops/restart";
 
 const AGENT_RE = /^[a-z][a-z0-9_-]{0,31}$/;
 
-type AgentModelEntry = { id?: string; default?: boolean; model?: string | { primary?: string; fallbacks?: string[] }; fallbacks?: string[] };
+type ModelPolicy = { allow?: string[] };
+
+type AgentModelEntry = { id?: string; default?: boolean; model?: string | { primary?: string; fallbacks?: string[] }; fallbacks?: string[]; modelPolicy?: ModelPolicy };
 
 export type OpenClawConfig = {
   agents?: {
     defaults?: {
       model?: { primary?: string; fallbacks?: string[] };
       models?: Record<string, { alias?: string; agentRuntime?: { id: string } }>;
+      modelPolicy?: ModelPolicy;
     };
     list?: AgentModelEntry[];
     entries?: Record<string, AgentModelEntry>;
@@ -127,6 +130,15 @@ function normalizeFallbacks(value: unknown) {
   }
   if (out.length > 12) throw new Error("fallbacks cannot contain more than 12 models");
   return out;
+}
+
+// OpenClaw 2026.9 migrated the legacy model map into modelPolicy.allow, which
+// gates /model and session overrides. Keep a promoted default selectable; an
+// omitted or empty list already allows every model.
+function allowPromotedModel(policy: ModelPolicy | undefined, target: string) {
+  const allow = policy?.allow;
+  if (!allow?.length || allow.some((ref) => ref === target || (ref.endsWith("/*") && target.startsWith(ref.slice(0, -1))))) return;
+  allow.push(target);
 }
 
 function assertAvailable(model: string, available: Set<string>, field: string) {
@@ -303,6 +315,8 @@ export async function promoteAgentModel(agent: string, provider: string, model: 
     cfg.agents!.defaults!.model = { ...cfg.agents!.defaults!.model, primary: target, fallbacks: preview.after.fallbacks };
     const main = mainEntry(cfg);
     if (main) main.model = { primary: target, fallbacks: preview.after.fallbacks };
+    allowPromotedModel(cfg.agents!.defaults!.modelPolicy, target);
+    allowPromotedModel(main?.modelPolicy, target);
     await db.activityLog.create({ data: { kind: "agent.model.promotion.requested", targetAgent: agent, userId: actorUserId ?? undefined,
       payload: JSON.stringify({ provider, before: preview.before, after: preview.after, removed: preview.removed }) } });
     await writeConfigAtomically(file, cfg, raw);

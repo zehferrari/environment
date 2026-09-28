@@ -70,6 +70,7 @@ async function main() {
     assert.equal(first.outcome, "operational-retry");
     assert.equal((await db.taskRepositoryRun.findUniqueOrThrow({ where: { taskId: transient.task.id } })).version, 29, "reporting a pending retry must preserve its repository identity");
     assert.equal((await db.task.findUniqueOrThrow({ where: { id: transient.task.id } })).alertReporter, true);
+    assert.equal(await db.workflowOutbox.count({ where: { taskId: transient.task.id, effectType: "task_notification" } }), 0, "bounded retries must not wake a competing reviewer retry");
     const retry = await takeRetry();
     await rm(failFlag);
     const recovered = await runEpicMergeSpoolJob(retry);
@@ -126,6 +127,24 @@ async function main() {
     assert.equal(await readFile(calls, "utf8"), beforeLateDelivery);
     await db.taskProcedureRun.update({ where: { id: historicalRetry.procedureId! }, data: { status: "completed" } });
     console.log("PASS historical missing callback recovery fences the abandoned job");
+
+    const dirty = await fixture("dirty");
+    await writeFile(`${repo}.worktrees/dirty/unreviewed.txt`, "unreviewed work");
+    assert.equal((await runEpicMergeSpoolJob(dirty.job)).outcome, "callback-applied");
+    const dirtyRepository = await db.taskRepositoryRun.findUniqueOrThrow({ where: { taskId: dirty.task.id } });
+    assert.equal(dirtyRepository.phase, "operational_error", "non-transient finalization failure must allow reviewer recovery");
+    assert.equal(dirtyRepository.validationOutcome, "succeeded");
+    assert.equal((await db.reviewRun.findUniqueOrThrow({ where: { id: dirty.review.id } })).status, "accepted");
+    const wake = await db.workflowOutbox.findFirstOrThrow({ where: { taskId: dirty.task.id, effectType: "task_notification" } });
+    assert.equal(JSON.parse(wake.payload).targetUserId, reviewer.id);
+    assert.equal(JSON.parse(wake.payload).reason, "review_requested");
+    await runProcedureRunner({ limit: 1 });
+    assert.equal((await db.taskProcedureRun.findUniqueOrThrow({ where: { id: dirty.procedure.procedureRunId } })).status, "operational_error");
+    await rm(`${repo}.worktrees/dirty/unreviewed.txt`);
+    const dirtyRetry = await submitWorkflowCommand({ ...recoveryCommand, taskId: dirty.task.id, idempotencyKey: "retry-after-dirty-repair", payload: { reviewRunId: dirty.review.id, candidateSha: sha } });
+    assert.equal(dirtyRetry.status, "accepted", JSON.stringify(dirtyRetry));
+    await db.taskProcedureRun.update({ where: { id: dirtyRetry.procedureId! }, data: { status: "completed" } });
+    console.log("PASS dirty candidate failure preserves acceptance and wakes the reviewer for a fenced retry");
 
     const stale = await fixture("stale");
     assert.equal((await runEpicMergeSpoolJob(stale.job)).outcome, "operational-retry");

@@ -246,7 +246,12 @@ validated `steps`). Free-form text in the Action Plan chat is discussion only;
 it is never executable plan state and does not notify the approver.
 Plan steps explicitly identify `phase` (`implementation` or `acceptance`),
 `responsibleActor` (`assignee`, `reviewer` or `owner`), and the verification
-environment when relevant. Physical owner checks belong to acceptance.
+environment when relevant. Agent-verifiable acceptance defaults to the task
+reviewer, or the acting Epic manager when there is no task reviewer. Assign
+`owner` only for explicitly owner-assigned checks or checks requiring the owner's
+physical access or authorization. Deferring verification is not a reason to
+assign it to the owner. An owner checkbox click records acceptance directly;
+additional written evidence is optional.
 
 An approved plan can be reopened with `request_plan_revision` (native
 `pm_request_plan_revision`) by the assignee, reviewer or authorised owner.
@@ -1395,6 +1400,16 @@ entry reaches a terminal status (`DONE`, `RESOLVED`, `CLOSED`,
   perspective**, not as a role hierarchy.
 - A task crosses multiple systems or has ambiguous acceptance criteria.
 
+PM permission requests go to the available independent task reviewer first,
+then the acting Epic manager if the task reviewer is missing, inactive or the
+assignee. They assess approved scope and use `review_permission` to approve
+routine authorized work, decline an unnecessary request, or explicitly escalate.
+The owner receives a permission request only after escalation or when neither
+independent reviewer nor manager is available. The initial request must identify
+its actual environment and effects; do not label routine development work as
+requiring the owner by default. Production, destructive/security changes and
+scope expansion still require owner authorization after reviewer assessment.
+
 **Escalate to zeh** when:
 
 - External communication or public action is ambiguous.
@@ -1404,11 +1419,29 @@ entry reaches a terminal status (`DONE`, `RESOLVED`, `CLOSED`,
 
 ### Reviewer classification of final acceptance checks
 
-When an approved plan explicitly separates an owner, physical-device or
-post-deployment acceptance check from implementation completion, the reviewer
+A reviewer browser/tool access failure remains an agent verification blocker.
+Request the specific access repair and keep the check assigned to the reviewer;
+do not revise the plan to make the owner perform it merely because navigation
+is denied. A revision adding owner checks to a reviewer plan requires
+`actionPlan.ownerInstructionCommentId` naming the explicit owner instruction
+on that task. Agent comments and instructions on another task are not consent.
+
+Required real-device verification can remain reviewer-owned: the reviewer
+coordinates a tester and assesses the supplied evidence, rather than claiming
+to operate a device they cannot access. Keep that acceptance step pending until
+real-device evidence exists. Lack of a device or consent to assign a new owner
+step must not prevent submitting an otherwise actionable plan, implementing it,
+or running emulated checks. Separate those steps in the plan; do not silently
+waive the real-device requirement or claim emulation satisfies it.
+
+When an approved plan separates an acceptance check from implementation completion, the reviewer
 can use `defer_acceptance_check` on the exact blocking checklist item. Read the
 criteria and decide deliberately; supply blockerCommentId, subtaskId, current
 actionPlanId/version and rationale. This moves the existing open item to the
-review checklist and unblocks implementation submission. It keeps final
-acceptance pending and authorizes no production operation. Never mark an
+review checklist and unblocks implementation submission. Agent-verifiable checks
+default to `responsibleActor=reviewer` (with the Epic manager as fallback).
+Specify `responsibleActor=owner` only for explicitly owner-assigned checks or
+required human access/authorization. Existing explicit owner requirements are
+preserved; revise the plan before changing them. It keeps final acceptance
+pending and authorizes no production operation. Never mark an
 unperformed check complete to get past a workflow gate.

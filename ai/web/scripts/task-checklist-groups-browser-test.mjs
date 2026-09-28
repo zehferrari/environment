@@ -43,6 +43,15 @@ try{
  const sent=await page.evaluate(()=>window.received.find(row=>row.subTaskId==='a'));
  assert.equal(sent.completionEvidence,'Verified payment reconciliation on the current candidate.');
  assert.match(await first.textContent(),/2\/2/);assert.match(await second.textContent(),/0\/1/);
+ let ownerDialogs=0;
+ const rejectDialog=async dialog=>{ownerDialogs++;await dialog.dismiss();};
+ page.on('dialog',rejectDialog);
+ await page.getByRole('checkbox',{name:'Mark "Final owner acceptance" done'}).check();
+ await page.waitForFunction(()=>window.received.some(row=>row.subTaskId==='review'));
+ assert.equal(ownerDialogs,0,'owner checkbox accepts directly without an evidence popup');
+ const acceptance=await page.evaluate(()=>window.received.find(row=>row.subTaskId==='review'));
+ assert.equal(acceptance.completed,'1');assert.equal(acceptance.completionEvidence,undefined);
+ page.off('dialog',rejectDialog);
  assert.deepEqual(errors,[]);
- console.log('PASS checklist groups: chronological feedback, clear names, isolated progress/reordering, completion evidence and superseded history');
+ console.log('PASS checklist groups: chronological feedback, isolated progress/reordering, correction evidence, direct owner acceptance without popup and superseded history');
 }finally{if(browser)await browser.close();await new Promise(resolve=>server.close(resolve));}

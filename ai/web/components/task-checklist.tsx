@@ -177,7 +177,7 @@ export default function TaskChecklist({
     (item: ChecklistItem) => {
       const completed = !item.completedAt;
       if (item.canComplete === false || item.kind === "superseded") return;
-      const needsEvidence = Boolean(item.reviewFinding) || item.responsibleActor === "owner";
+      const needsEvidence = Boolean(item.reviewFinding) && item.responsibleActor !== "owner";
       const evidence = needsEvidence && completed ? window.prompt("Describe what was verified and the evidence:")?.trim() : undefined;
       if (needsEvidence && completed && !evidence) return;
       setOrder((prev) =>
@@ -538,6 +538,7 @@ function ChecklistRow({
       >
         {(item.reviewFinding?.title ?? item.text)}
         {item.responsibleActor === "owner" ? <span className="ml-2 text-caption text-text-muted">Owner check · {item.acceptanceGate === "epic_release" ? "gates Epic release" : "gates task completion"}{item.verificationEnvironment ? ` · ${item.verificationEnvironment}` : ""}</span> : null}
+        {item.responsibleActor === "reviewer" ? <span className="ml-2 text-caption text-text-muted">Reviewer check{item.verificationEnvironment ? ` · ${item.verificationEnvironment}` : ""}</span> : null}
         {item.completionEvidence ? <span className="block whitespace-pre-wrap text-caption text-text-muted">Evidence: {item.completionEvidence}</span> : null}
       </span>
       {done ? (

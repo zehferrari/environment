@@ -196,7 +196,7 @@ export function decideCommand(
         taskData: { approvedOn: null, approvedById: null },
         effects: [
           { type: "board_touch", key: "plan-revision", payload: {} },
-          ...(state.assigneeId ? [{ type: "task_notification" as const, key: `plan-revision:${command.payload!.actionPlanId}:${command.payload!.actionPlanVersion}`, payload: { taskId: state.id, targetUserId: state.assigneeId, actor: command.actor, reason: "action_plan_feedback_received", body: `The approved plan was reopened. Preserve existing work and verified evidence, address this change, and submit a revised plan for approval.\n\n${command.payload!.reviewerComment}` } }] : []),
+          ...(state.assigneeId ? [{ type: "task_notification" as const, key: `plan-revision:${command.payload!.actionPlanId}:${command.payload!.actionPlanVersion}`, payload: { taskId: state.id, targetUserId: state.assigneeId, actor: command.actor, reason: "action_plan_feedback_received", expectedPlanRevision: { id: command.payload!.actionPlanId, version: command.payload!.actionPlanVersion }, body: `The approved plan was reopened. Preserve existing work and verified evidence, address this change, and submit a revised plan for approval.\n\n${command.payload!.reviewerComment}` } }] : []),
         ],
         evidence: { ...command.evidence ?? {}, actionPlanId: command.payload!.actionPlanId, actionPlanVersion: command.payload!.actionPlanVersion, reason: command.payload!.reviewerComment, decisionActorId, executorActorId },
         decisionActorId, executorActorId,
