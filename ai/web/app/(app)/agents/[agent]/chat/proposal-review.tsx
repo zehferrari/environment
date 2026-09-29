@@ -2,6 +2,9 @@ import {
   applyWorkItemProposal,
   rejectWorkItemProposal,
 } from "@/lib/work-items/actions";
+import Link from "next/link";
+import { proposalReviewPath } from "@/lib/work-items/proposal-links";
+import type { ProposalRelatedItem } from "@/lib/work-items/proposal-review-context";
 
 // Pending work-item proposals an agent submitted (propose → approve).
 // Server component: renders the change-set with per-op validation badges
@@ -16,6 +19,8 @@ export type ProposalForReview = {
   createdAt: string;
   projectName: string;
   agentSlug: string;
+  sourceUrl?: string;
+  relatedItems?: ProposalRelatedItem[];
 };
 
 type Op = Record<string, unknown>;
@@ -169,7 +174,8 @@ export default function ProposalReview({
         return (
           <div
             key={proposal.id}
-            className="rounded-card border border-line bg-panel p-3 shadow-sm"
+            id={`proposal-${proposal.id}`}
+            className="scroll-mt-24 rounded-card border border-line bg-panel p-3 shadow-sm"
           >
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
@@ -177,9 +183,18 @@ export default function ProposalReview({
                   {proposal.summary || `${ops.length} change${ops.length === 1 ? "" : "s"}`}
                 </p>
                 <p className="mt-0.5 text-nano text-text-muted">
-                  {proposal.projectName} · {ops.length} operation{ops.length === 1 ? "" : "s"}
+                  {proposal.projectName} · @{proposal.agentSlug} · {ops.length} operation{ops.length === 1 ? "" : "s"}
                   {errorCount > 0 ? ` · ${errorCount} need attention` : ""}
                 </p>
+                <p className="mt-1 text-nano text-text-muted">
+                  Published <time dateTime={proposal.createdAt}>{new Intl.DateTimeFormat("en-AU", {
+                    timeZone: "Australia/Brisbane", dateStyle: "medium", timeStyle: "short",
+                  }).format(new Date(proposal.createdAt))} AEST</time>
+                </p>
+                <div className="mt-1 flex gap-3 text-caption text-accent">
+                  <Link href={proposalReviewPath(proposal.id)} className="hover:underline">Direct review link</Link>
+                  {proposal.sourceUrl ? <Link href={proposal.sourceUrl} className="hover:underline">Original conversation</Link> : null}
+                </div>
               </div>
               <div className="flex shrink-0 gap-2">
                 <form action={applyWorkItemProposal}>
@@ -204,6 +219,22 @@ export default function ProposalReview({
                 </form>
               </div>
             </div>
+
+            {proposal.relatedItems && proposal.relatedItems.length > 0 ? (
+              <div className="mt-3 text-caption">
+                <p className="font-medium text-text-muted">Related work · current status</p>
+                <ul className="mt-1 space-y-1">
+                  {proposal.relatedItems.map(item => (
+                    <li key={`${item.kind}:${item.id}`} className="flex flex-wrap items-baseline gap-x-2">
+                      <span className="text-text-muted">{item.kind}</span>
+                      {item.href ? <Link href={item.href} className="text-accent hover:underline">{item.label}</Link> : <span>{item.label}</span>}
+                      <span className="rounded border border-line px-1.5 text-text">{item.status}</span>
+                      {item.archived ? <span className="text-text-muted">Archived</span> : null}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
 
             <details className="mt-3 rounded-lg border border-line bg-panel-soft">
               <summary className="flex cursor-pointer select-none items-center justify-between gap-3 px-3 py-2 text-caption font-medium text-text marker:text-text-muted">

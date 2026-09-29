@@ -132,6 +132,7 @@ open as a modal from a board and as a full page from a direct URL.
 | Project administration | `settings`, `bin` | Repository/deployment/default settings, live preview, and deleted items |
 | Work items | `tasks/[taskId]`, `epics/[epicId]` | Canonical editors, Action Plan, comments, attachments, activity, workflow, and deployment panels |
 | Agent deck | `/agents`, `/agents/[agent]`, `/agents/[agent]/chat` | Fleet state, profile/configuration, services, models, credentials, and direct chat |
+| Proposal review | `/proposals` | Owner inbox for pending project changes, linked from desktop/mobile navigation with a pending count; each proposal has a stable review anchor and source-conversation link |
 | System | `/system/activity`, `/system/settings`, `/system/users` | Cross-project audit, inherited settings, and human account lifecycle |
 | Authentication | `/login`, `/accept-invite`, `/set-password` | Credentials and invitation flows |
 

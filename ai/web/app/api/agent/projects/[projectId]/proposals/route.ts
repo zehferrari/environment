@@ -35,6 +35,7 @@ import { validateProposal } from "@/lib/work-items/proposal";
 import { commitProposal } from "@/lib/work-items/apply";
 import { resolveDirectedFromDiscussionRow } from "@/lib/agents/ops/directed-targets";
 import { taskCacheTag } from "@/lib/tasks/cache";
+import { proposalReviewPath } from "@/lib/work-items/proposal-links";
 import {
   absolutePublicUrl,
   isLoopbackOrigin,
@@ -408,6 +409,12 @@ export async function POST(
     );
   }
 
+  const publicOrigin =
+    await storedPublicOriginForGrant(grant) ??
+    requestedPublicOrigin ??
+    publicOriginFallback(req);
+  const reviewUrl = (id: string) => absolutePublicUrl(proposalReviewPath(id), publicOrigin);
+
   // Authenticate the grant before returning an idempotent proposal. Otherwise
   // a legacy non-owner grant could keep receiving a successful retry response
   // merely by reusing a stored planId.
@@ -426,6 +433,7 @@ export async function POST(
       ok: true,
       proposalId: existing.id,
       status: existing.status,
+      reviewUrl: reviewUrl(existing.id),
       idempotent: true,
     });
   }
@@ -483,10 +491,6 @@ export async function POST(
     autoApplyDirectOwnerRequest
     || autoApplyOwnerTaskRequest
     || autoApplyEpicManagerBreakdown;
-  const publicOrigin =
-    await storedPublicOriginForGrant(grant) ??
-    requestedPublicOrigin ??
-    publicOriginFallback(req);
 
   try {
     const created = await db.$transaction(async (tx) => {
@@ -565,6 +569,7 @@ export async function POST(
             ok: false,
             proposalId: created.id,
             status: "pending",
+            reviewUrl: reviewUrl(created.id),
             error: applied.error,
           },
           { status: 409 },
@@ -594,6 +599,8 @@ export async function POST(
       );
     }
 
+    revalidatePath("/proposals");
+    revalidatePath("/", "layout");
     if (grant.source === "direct") {
       revalidatePath(`/agents/${grant.agentSlug}/chat`);
     } else if (grant.taskId) {
@@ -603,7 +610,7 @@ export async function POST(
       revalidatePath(`/projects/${project.slug}/epics/${grant.epicId}`);
     }
     return NextResponse.json(
-      { ok: true, proposalId: created.id, status: "pending", validation },
+      { ok: true, proposalId: created.id, status: "pending", reviewUrl: reviewUrl(created.id), validation },
       { status: 201 },
     );
   } catch (err) {
@@ -620,6 +627,7 @@ export async function POST(
           ok: true,
           proposalId: winner.id,
           status: winner.status,
+          reviewUrl: reviewUrl(winner.id),
           idempotent: true,
         });
       }
@@ -643,6 +651,7 @@ export async function POST(
           ok: true,
           proposalId: winner.id,
           status: winner.status,
+          reviewUrl: reviewUrl(winner.id),
           idempotent: true,
         });
       }

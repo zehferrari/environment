@@ -1,3 +1,4 @@
+import { withProposalReviewContext } from "@/lib/work-items/proposal-review-context";
 import TaskThinkingPanel from "@/components/task-thinking-panel";
 import { notFound } from "next/navigation";
 import Link from "next/link";
@@ -1053,7 +1054,8 @@ export default async function TaskDetailPage({
     });
   }
   const pendingProposals = await getCachedPendingTaskProposals(task.id, task.projectId);
-  const pendingProposalReviews = pendingProposals.map((proposal) => ({
+  const proposalContexts = await withProposalReviewContext(viewer.canAccessOwnerFeatures ? pendingProposals : []);
+  const pendingProposalReviews = proposalContexts.map((proposal) => ({
     id: proposal.id,
     summary: proposal.summary,
     operations: proposal.operations,
@@ -1063,6 +1065,7 @@ export default async function TaskDetailPage({
       : String(proposal.createdAt),
     projectName: proposal.project.name,
     agentSlug: proposal.agentSlug,
+    relatedItems: proposal.relatedItems,
   }));
   const pendingDescriptionMessages = await db.agentChatMessage.findMany({
     where: {
@@ -1381,6 +1384,11 @@ export default async function TaskDetailPage({
     <StickyViewportSurface kind="task-detail" contained={contained}>
 
     <div data-task-quick-add-context className="mx-auto w-full max-w-none">
+      {viewer.canAccessOwnerFeatures && pendingProposalReviews.length > 0 ? (
+        <Link href={`/proposals#proposal-${pendingProposalReviews[0].id}`} className="mb-4 block rounded-panel border border-accent bg-accent-soft p-card text-body text-accent hover:underline">
+          {pendingProposalReviews.length} proposal{pendingProposalReviews.length === 1 ? "" : "s"} awaiting your review — review changes
+        </Link>
+      ) : null}
       {task.status === "Review" && (
         taskWorkflowActions.reviewStatus === "accepted" ||
         taskWorkflowActions.status !== task.status

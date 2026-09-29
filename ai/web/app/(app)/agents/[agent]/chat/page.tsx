@@ -1,3 +1,4 @@
+import { withProposalReviewContext } from "@/lib/work-items/proposal-review-context";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
@@ -338,6 +339,7 @@ export default async function DirectAgentChatPage({
         createdAt: true,
         agentSlug: true,
         grantMessageId: true,
+        projectId: true,
         project: { select: { name: true } },
       },
     }),
@@ -352,9 +354,9 @@ export default async function DirectAgentChatPage({
     : [];
   const taskEpicMessageIdSet = new Set(taskEpicMessages.map(m => m.id));
 
-  const pendingProposals = pendingProposalsRaw
+  const pendingProposals = await withProposalReviewContext(pendingProposalsRaw
     .filter((p) => !p.grantMessageId || !taskEpicMessageIdSet.has(p.grantMessageId))
-    .slice(0, 10);
+    .slice(0, 10));
   const activeBaseArchive = activeBaseArchiveId
     ? archives.find((archive) => archive.id === activeBaseArchiveId)
       ?? await db.directAgentChatArchive.findFirst({
@@ -674,6 +676,7 @@ export default async function DirectAgentChatPage({
                 createdAt: p.createdAt.toISOString(),
                 projectName: p.project.name,
                 agentSlug: p.agentSlug,
+                relatedItems: p.relatedItems,
               }))}
             />
 

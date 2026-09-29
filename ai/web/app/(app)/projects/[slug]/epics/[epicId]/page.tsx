@@ -1,3 +1,4 @@
+import { withProposalReviewContext } from "@/lib/work-items/proposal-review-context";
 import WorkItemSaveForm from "@/components/work-item-save-form";
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -745,6 +746,7 @@ export default async function EpicDetailPage({
       project: { select: { name: true } },
     },
   });
+  const proposalContexts = await withProposalReviewContext(viewer.canAccessOwnerFeatures ? pendingProposals : []);
   const pendingDescriptionMessages = await db.agentChatMessage.findMany({
     where: {
       epicId: epic.id,
@@ -1447,7 +1449,7 @@ export default async function EpicDetailPage({
                     firstUnreadMessageId={firstUnreadMessageId}
                     currentUserId={currentUserId}
                     currentUsername={viewer.username}
-                    pendingProposals={pendingProposals}
+                    pendingProposals={proposalContexts}
                   />
                 </div>
               </TabPanel> : null}

@@ -28,7 +28,7 @@ export default async function Sidebar() {
   const experience = viewerExperienceForRole(viewer.role);
   const projectWhere = accessibleProjectWhere(viewer, { archivedAt: null, deletedAt: null });
   const workspaceWhere = workspaceAccessWhere(viewer);
-  const [agents, snapshot, projects, workspaces, latestAgentMsgs] = await Promise.all([
+  const [agents, snapshot, projects, workspaces, latestAgentMsgs, pendingProposalCount] = await Promise.all([
     experience.canViewGlobalAgentOperations ? db.agent.findMany({
       where: {
         deactivatedAt: null,
@@ -88,6 +88,9 @@ export default async function Sidebar() {
       where: { deletedAt: null, sender: { is: { kind: "agent" } } },
       _max: { createdAt: true },
     }) : Promise.resolve([]),
+    viewer.canAccessOwnerFeatures ? db.workItemProposal.count({
+      where: { status: "pending", project: { deletedAt: null } },
+    }) : Promise.resolve(0),
   ]);
   const readCursors = experience.canViewGlobalAgentOperations
     ? await db.chatReadCursor.findMany({
@@ -196,6 +199,7 @@ export default async function Sidebar() {
   return (
     <SidebarNav
       isOwner={viewer.canAccessOwnerFeatures}
+      pendingProposalCount={pendingProposalCount}
       canViewAgents={experience.canViewGlobalAgentOperations}
       canManageCustomerAccess={experience.canManageCustomerAccess}
       customerSafe={experience.customerSafe}

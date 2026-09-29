@@ -27,6 +27,7 @@ type ProposalResponse = {
   autoApplied?: boolean;
   autoApplyReason?: string;
   idempotent?: boolean;
+  reviewUrl?: string;
 };
 
 async function main() {
@@ -280,6 +281,63 @@ async function main() {
     assert.equal(ownerDiscussionResult.status, 201, "owner discussion grant is accepted");
     assert.equal(ownerDiscussionResult.body.status, "pending", "owner discussion grant stays pending for review");
     assert.equal(ownerDiscussionResult.body.autoApplied, undefined, "only direct owner grants auto-apply");
+    const reviewLink = new URL(ownerDiscussionResult.body.reviewUrl!, "https://pm.test");
+    assert.equal(reviewLink.pathname, "/proposals", "pending task proposals link to the owner inbox, not direct agent chat");
+    assert.equal(reviewLink.hash, `#proposal-${ownerDiscussionResult.body.proposalId}`);
+    const discussionRetry = await callProposal({ messageId: ownerDiscussion.id, planId: "proposal-discussion-owner", title: "Owner discussion proposal" });
+    assert.equal(discussionRetry.body.idempotent, true);
+    assert.equal(discussionRetry.body.reviewUrl, ownerDiscussionResult.body.reviewUrl, "a retry retains the exact review destination");
+    const React = await import("react");
+    (globalThis as typeof globalThis & { React: typeof React }).React = React;
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { default: ProposalReview } = await import("../app/(app)/agents/[agent]/chat/proposal-review");
+    const { withProposalReviewContext } = await import("../lib/work-items/proposal-review-context");
+    const relatedEpic = await db.epic.create({ data: { projectId: project.id, title: "Related epic", status: "In Progress" } });
+    const relatedTask = await db.task.create({ data: { projectId: project.id, epicId: relatedEpic.id, title: "Related task", workItemKey: "TEST-42", status: "Review" } });
+    const otherProject = await db.project.create({ data: { slug: "other-proposal-project", name: "Other project" } });
+    const unrelatedTask = await db.task.create({ data: { projectId: otherProject.id, title: "Must not leak" } });
+    const contextInput = [{ projectId: project.id, grantMessageId: ownerDiscussion.id, operations: JSON.stringify([
+      { op: "update_task", target: relatedTask.id, status: "To Do", epic: "tmp:new-epic" },
+      { op: "comment_task", target: relatedTask.id, body: "Duplicate reference" },
+      { op: "comment_task", target: unrelatedTask.id, body: "Wrong project" },
+      { op: "comment_task", target: "missing-task", body: "Missing" },
+      { op: "create_subtask", parent: "tmp:new-task", title: "Proposed child" },
+    ]) }];
+    let [context] = await withProposalReviewContext(contextInput);
+    assert.equal(context.relatedItems.filter(item => item.id === relatedTask.id).length, 1, "deduplicate operation targets");
+    assert.equal(context.relatedItems.find(item => item.id === relatedTask.id)?.status, "Review", "show live status, not the proposed status");
+    assert.equal(context.relatedItems.find(item => item.id === relatedEpic.id)?.status, "In Progress", "include the task's current Epic");
+    assert.ok(context.relatedItems.some(item => item.id === publicTask.id), "include the source conversation task");
+    assert.equal(context.relatedItems.find(item => item.id === unrelatedTask.id)?.status, "Unavailable", "project boundaries remain enforced");
+    assert.equal(context.relatedItems.find(item => item.id === unrelatedTask.id)?.href, undefined);
+    assert.equal(context.relatedItems.find(item => item.id === "missing-task")?.status, "Unavailable");
+    assert.ok(!JSON.stringify(context.relatedItems).includes("Must not leak"));
+    assert.ok(!context.relatedItems.some(item => item.id.startsWith("tmp:")), "new proposed items do not have a current status");
+    await db.task.update({ where: { id: relatedTask.id }, data: { status: "Done", archivedAt: new Date() } });
+    [context] = await withProposalReviewContext(contextInput);
+    assert.equal(context.relatedItems.find(item => item.id === relatedTask.id)?.status, "Done", "refresh resolves status changes on an old proposal");
+    assert.equal(context.relatedItems.find(item => item.id === relatedTask.id)?.archived, true);
+    const publishedAt = "2026-09-01T03:04:00.000Z";
+    const reviewMarkup = renderToStaticMarkup(React.createElement(ProposalReview, { proposals: [{
+      id: ownerDiscussionResult.body.proposalId!, summary: "Review this update", operations: "[]", validation: null,
+      createdAt: publishedAt, projectName: "Test project", agentSlug: agent.slug,
+      relatedItems: context.relatedItems,
+      sourceUrl: `/projects/${project.slug}/tasks/${publicTask.id}`,
+    }] }));
+    assert.ok(reviewMarkup.includes(`id="proposal-${ownerDiscussionResult.body.proposalId}"`), "the returned link resolves to a rendered review card");
+    assert.ok(reviewMarkup.includes(`dateTime="${publishedAt}"`), "publication date retains the exact timestamp");
+    assert.ok(reviewMarkup.includes("1 Sept 2026") && reviewMarkup.includes("1:04 pm") && reviewMarkup.includes("AEST"), "publication date uses an explicit, stable timezone");
+    assert.ok(reviewMarkup.includes("Related work · current status") && reviewMarkup.includes("Done") && reviewMarkup.includes("Archived"));
+    assert.ok(reviewMarkup.includes(`/projects/${project.slug}/tasks/${relatedTask.id}`));
+    await db.task.update({ where: { id: relatedTask.id }, data: { deletedAt: new Date() } });
+    const [deletedContext] = await withProposalReviewContext(contextInput);
+    const deletedItem = deletedContext.relatedItems.find(item => item.id === relatedTask.id);
+    assert.equal(deletedItem?.status, "Deleted");
+    assert.equal(deletedItem?.href, undefined, "deleted items have no broken detail link");
+    assert.equal(deletedItem?.label, "TEST-42", "deleted item titles are not exposed");
+    assert.deepEqual((await withProposalReviewContext([{ projectId: project.id, grantMessageId: null, operations: "malformed" }]))[0].relatedItems, []);
+    assert.ok(reviewMarkup.includes('name="proposalId"'), "review card carries an actionable proposal identity");
+    assert.ok(reviewMarkup.includes("Original conversation"));
 
     const ownerTaskDiscussion = await discussionGrant("discussion-owner-task", owner.id, publicTask.id);
     const ownerTaskDiscussionResult = await callProposal({

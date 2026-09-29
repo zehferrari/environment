@@ -849,6 +849,11 @@ Rules:
   those operations until a human clicks Apply. Direct owner-chat requests keep
   their existing immediate-apply behaviour.
 - Re-submitting the same `planId` is idempotent.
+- When a proposal remains pending, include its returned `reviewUrl` in the
+  reply. The owner can also open **Proposals** in desktop or mobile navigation.
+  Task/Epic proposals appear on their source card, not the agent's direct chat.
+  A submitted proposal is not an applied change. Unrelated proposal approval
+  must not block finishing the current task's authorized work.
 
 Do not create tasks, epics, comments, or status changes by writing the
 database directly. Use the grant-scoped endpoint only when PM supplied a
@@ -1426,6 +1431,17 @@ is denied. A revision adding owner checks to a reviewer plan requires
 `actionPlan.ownerInstructionCommentId` naming the explicit owner instruction
 on that task. Agent comments and instructions on another task are not consent.
 
+Managed browser settings are reconciled from the PM-owned canonical
+`/srv/agents/openclaw/<agent>/openclaw.json` into the runtime copy. Do not edit
+`~/.openclaw/openclaw.json` repeatedly, exempt keys from reconciliation, or tell
+the owner to run runtime-only `openclaw config set/unset` commands: those changes
+can be overwritten and trigger restarts. Request a scoped managed configuration
+repair through the monitor/operator, citing any existing owner authorization.
+Keep browser security exceptions within that authorization. Apply and later
+remove temporary resolver settings at the canonical source, synchronize them,
+and schedule a supported gateway restart after the active turn settles. Verify
+the effective settings and destination identity before resuming browser checks.
+
 Required real-device verification can remain reviewer-owned: the reviewer
 coordinates a tester and assesses the supplied evidence, rather than claiming
 to operate a device they cannot access. Keep that acceptance step pending until
@@ -1445,3 +1461,21 @@ required human access/authorization. Existing explicit owner requirements are
 preserved; revise the plan before changing them. It keeps final acceptance
 pending and authorizes no production operation. Never mark an
 unperformed check complete to get past a workflow gate.
+
+### Owner changes to an active operational task
+
+An owner's later instruction can change the required final host state. Compare
+it with the approved plan and open blockers before acting. Use
+`request_plan_revision` to reconcile conflicting steps through independent
+approval, preserving completed work and evidence. Do not restore an old shutdown,
+maintenance fence or routing arrangement after the owner has asked to make the
+destination live. Identify the superseded requirement and owner comment; do not
+mark the old check passed. Clear an obsolete blocker with that resolution through
+the workflow after the requirement is reconciled, then resume the remaining work.
+
+For an authorized live routing change, verify the destination from the actual
+proxy/source host first, including TLS validation, forwarded host/scheme, upload
+limits and data freshness. Prepare rollback and check the proposed configuration
+before switching. Keep the source available until the new public route is healthy;
+coordinate writes so only the intended destination accepts them. Disabling the
+source before checking the route can turn a recoverable error into an outage.

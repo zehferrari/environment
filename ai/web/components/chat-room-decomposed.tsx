@@ -1507,6 +1507,7 @@ const MessageList = React.memo(function MessageList(props: any) {
                 createdAt: p.createdAt instanceof Date ? p.createdAt.toISOString() : p.createdAt,
                 projectName: p.project.name,
                 agentSlug: p.agentSlug,
+                relatedItems: p.relatedItems,
               }))}
             />
           </div>

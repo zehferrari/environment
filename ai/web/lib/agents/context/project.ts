@@ -326,6 +326,7 @@ export function buildWorkItemPlanningPrompt(args: {
         : "- Nothing is applied until the human reviews and approves the proposal.",
     "- New tasks and epics start in Backlog.",
     "- Use a fresh, unique planId per proposal; re-POSTing the same planId is idempotent (no duplicate).",
+    "- For a pending proposal, include the returned reviewUrl as a clickable link. It opens Proposals in PM navigation. Task/Epic proposals also appear on their source card; they are excluded from direct agent chat. Never invent a review location or claim pending changes have applied.",
     "",
     appliesAllImmediately
       ? "Only if you actually submit operations: briefly tell the user what changed and include returned links for created resources when possible. If you did not submit operations, do not mention this grant or endpoint."

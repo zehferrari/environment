@@ -1234,6 +1234,7 @@ export default function ChatRoom({
                 createdAt: p.createdAt instanceof Date ? p.createdAt.toISOString() : p.createdAt,
                 projectName: p.project.name,
                 agentSlug: p.agentSlug,
+                relatedItems: p.relatedItems,
               }))}
             />
           </div>

@@ -4,10 +4,11 @@
 // (Slice 3). Auth + cache revalidation only; the transactional commit
 // lives in lib/work-items/apply.ts (auth-free, unit-testable).
 
-import { revalidatePath } from "next/cache";
+import { revalidatePath, revalidateTag } from "next/cache";
 import { db } from "@/lib/db";
 import { commitProposal } from "@/lib/work-items/apply";
 import { requireOwner } from "@/lib/auth/permissions";
+import { taskCacheTag } from "@/lib/tasks/cache";
 
 async function requireUserId(): Promise<string> {
   return (await requireOwner()).id;
@@ -20,6 +21,8 @@ export async function applyWorkItemProposal(formData: FormData) {
   if (!proposalId) return;
 
   const result = await commitProposal(proposalId, userId);
+  revalidatePath("/proposals");
+  revalidatePath("/", "layout");
 
   const agentSlug = result.agentSlug || fallbackAgentSlug;
   if (agentSlug) revalidatePath(`/agents/${agentSlug}/chat`);
@@ -27,6 +30,7 @@ export async function applyWorkItemProposal(formData: FormData) {
     revalidatePath(`/projects/${result.projectSlug}`);
     revalidatePath(`/projects/${result.projectSlug}/epics`);
     if (result.taskId) {
+      revalidateTag(taskCacheTag.proposals(result.taskId));
       revalidatePath(`/projects/${result.projectSlug}/tasks/${result.taskId}`);
     }
     if (result.epicId) {
@@ -83,6 +87,8 @@ export async function rejectWorkItemProposal(formData: FormData) {
   ]);
 
   revalidatePath(`/agents/${proposal.agentSlug}/chat`);
+  revalidatePath("/proposals");
+  revalidatePath("/", "layout");
   const project = await db.project.findUnique({
     where: { id: proposal.projectId },
     select: { slug: true },
@@ -91,6 +97,7 @@ export async function rejectWorkItemProposal(formData: FormData) {
     revalidatePath(`/projects/${project.slug}`);
     revalidatePath(`/projects/${project.slug}/epics`);
     if (taskId) {
+      revalidateTag(taskCacheTag.proposals(taskId));
       revalidatePath(`/projects/${project.slug}/tasks/${taskId}`);
     }
     if (epicId) {

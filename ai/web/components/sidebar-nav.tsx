@@ -43,6 +43,7 @@ export type SidebarWorkspace = {
 
 type SidebarNavProps = {
   isOwner: boolean;
+  pendingProposalCount?: number;
   canViewAgents: boolean;
   canManageCustomerAccess: boolean;
   customerSafe: boolean;
@@ -287,6 +288,7 @@ function NavItem({
 
 export default function SidebarNav({
   isOwner,
+  pendingProposalCount = 0,
   canViewAgents,
   canManageCustomerAccess,
   customerSafe,
@@ -395,6 +397,7 @@ export default function SidebarNav({
   const mobilePrimaryItems = [
     { href: soleWorkspace ? `/workspaces/${soleWorkspace.slug}` : "/workspaces", icon: icons.workspaces, label: "Workspaces", active: isWorkspacesActive || isProjectsActive },
     ...(isOwner ? [
+      { href: "/proposals", icon: icons.activity, label: `Proposals${pendingProposalCount ? ` (${pendingProposalCount})` : ""}`, active: pathname === "/proposals", badge: pendingProposalCount > 0 },
       { href: "/agents", icon: icons.agents, label: "Agents", active: isAgentsActive, badge: hasUnreadAgents },
       { href: "/system/activity", icon: icons.activity, label: "Activity", active: isActivityActive },
       { href: "/system/settings", icon: icons.settings, label: "Settings", active: isSettingsActive },
@@ -665,6 +668,15 @@ export default function SidebarNav({
         /> : null}
         {isOwner ? <>
         <NavItem
+          href="/proposals"
+          icon={icons.activity}
+          label={`Proposals${pendingProposalCount ? ` (${pendingProposalCount})` : ""}`}
+          color={NAV_COLORS.activity}
+          collapsed={collapsed}
+          active={pathname === "/proposals"}
+          badge={pendingProposalCount > 0}
+        />
+        <NavItem
           href="/system/settings"
           icon={icons.settings}
           label="Settings"
@@ -886,6 +898,7 @@ export default function SidebarNav({
                 <section aria-label="System navigation" className="space-y-1">
                   {!isOwner ? <NavSheetLink href="/system/users" icon={icons.users} label="Customer access" color={NAV_COLORS.users} active={pathname === "/system/users"} onNavigate={closeMobileMenu} /> : null}
                   {isOwner ? <>
+                  <NavSheetLink href="/proposals" icon={icons.activity} label={`Proposals${pendingProposalCount ? ` (${pendingProposalCount})` : ""}`} color={NAV_COLORS.activity} active={pathname === "/proposals"} badge={pendingProposalCount > 0} onNavigate={closeMobileMenu} />
                   <NavSheetLink href="/system/activity" icon={icons.activity} label="Logs & Activity" color={NAV_COLORS.activity} active={isActivityActive} onNavigate={closeMobileMenu} />
                   <NavSheetLink href="/system/settings" icon={icons.settings} label="Settings" color={NAV_COLORS.settings} active={isSettingsActive} onNavigate={closeMobileMenu} />
                   <NavSheetLink href="/system/users" icon={icons.users} label="Users" color={NAV_COLORS.users} active={pathname === "/system/users"} onNavigate={closeMobileMenu} />

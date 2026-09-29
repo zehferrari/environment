@@ -47,6 +47,7 @@ function withNavigation(children: React.ReactNode, pathname = "/workspaces/clien
 const customerSidebar = renderToStaticMarkup(withNavigation(
   <SidebarNav
     isOwner={false}
+    pendingProposalCount={12}
     canViewAgents={false}
     canManageCustomerAccess={false}
     customerSafe
@@ -69,6 +70,17 @@ const customerSidebar = renderToStaticMarkup(withNavigation(
 assert.match(customerSidebar, /Client workspace/, "Customer navigation renders permitted workspace links");
 assert.match(customerSidebar, />Workspace</, "Customer shell uses human-facing branding");
 assert.doesNotMatch(customerSidebar, /Mission Control|Agents|Internal Agent|Unread messages|Customer access|Logs &amp; Activity|Settings/, "Customer navigation omits internal and administrative nodes from rendered DOM");
+assert.doesNotMatch(customerSidebar, /Proposals|\/proposals/, "Owner proposal counts and links stay out of customer navigation");
+
+const ownerSidebar = renderToStaticMarkup(withNavigation(
+  <SidebarNav isOwner pendingProposalCount={2} canViewAgents canManageCustomerAccess customerSafe={false}
+    agents={[]} projects={[]} workspaces={[]} meName="Owner" meKind="human" userId="owner"
+    userAvatarVersion={null} signOutAction={async () => undefined} />,
+  "/proposals",
+));
+assert.match(ownerSidebar, /href="\/proposals"/, "Owner has a direct proposal review destination");
+assert.ok((ownerSidebar.match(/href="\/proposals"/g) ?? []).length >= 2, "Proposal navigation is rendered for desktop and mobile");
+assert.match(ownerSidebar, /Proposals \(2\)/, "Pending count makes work awaiting review visible");
 
 const adminSidebar = renderToStaticMarkup(withNavigation(
   <SidebarNav
